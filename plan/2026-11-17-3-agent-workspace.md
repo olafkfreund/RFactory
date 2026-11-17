@@ -453,6 +453,19 @@ v1; Wayland in the guest.
       only when the injected `desktop.phase === 'desktop'` and the scope has
       writes enabled; otherwise the gateway is unchanged. The credential
       refusal list is injected until step 13 wires the real one.
+    - Step 9: the RFB filter assumes RFB 3.7/3.8 with security type None
+      (x11vnc on the guest loopback behind vsock); anything else closes the
+      stream. The WebSocket is a small RFC 6455 implementation (binary
+      frames, ping/pong, close; text frames and frames over 1 MiB close),
+      with an Origin == Host check and the same `X-Forwarded-Email`
+      allowlist as the HTTP routes; membership is re-checked every 5 s and a
+      failing lookup closes the stream. **noVNC is not vendored yet:**
+      `web/public/live.js` imports `/vendor/novnc/core/rfb.js` (pin v1.6.0);
+      upstream `core/` and `vendor/` must be added to
+      `web/public/vendor/novnc/` before step 17 can show frames. The image
+      copies `desktop/runner/{vnc,vsock}.js` for `web/live-view.js`; step 13
+      may repackage. Bearer-token identity for the step 15 scripts is step
+      13 wiring.
 
 ## Prerequisites (named revisions)
 

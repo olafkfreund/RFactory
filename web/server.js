@@ -9,7 +9,10 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/live.html': ['live.html', 'text/html; charset=utf-8'],
+  '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };
+const NOVNC = /^\/vendor\/novnc\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.js$/; // pinned, vendored noVNC; never a CDN
 const HEADERS = {
   // Factory suite fonts come from Google Fonts (plan D8); scripts stay 'self' only
   'Content-Security-Policy': "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -22,7 +25,7 @@ const codeOf = (error, allowed, fallback) => {
   return allowed ? (allowed.has(code) ? code : fallback) : (/^[a-z]+(-[a-z]+)+$/.test(code) ? code : fallback);
 };
 
-function createApp({ source, brain, allowedEmails, deadlineMs = 55000 }) {
+function createApp({ source, brain, allowedEmails, deadlineMs = 55000, live }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -42,7 +45,7 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000 }) {
       fetched_at, newest_update, summary, summary_error, destination: brain.label() }];
   }
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     const email = req.headers['x-forwarded-email'];
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!allowedEmails.includes(String(email).toLowerCase())) return json(res, 403, { error: 'forbidden' });
@@ -60,8 +63,14 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000 }) {
         .finally(() => { busy = false; }); // brain.turn has returned by now, so no CLI outlives its request
       return;
     }
+    if (req.method === 'GET' && NOVNC.test(url)) {
+      const file = path.join(PUBLIC, url);
+      if (fs.existsSync(file)) return send(res, 200, 'text/javascript; charset=utf-8', fs.readFileSync(file));
+    }
     json(res, 404, { error: 'not-found' });
   });
+  if (live) require('./live-view.js').attachLiveView(server, { allowedEmails, ...live }); // live: { isMember, openVnc }
+  return server;
 }
 
 function refuseKeyEnv(env) {
