@@ -406,6 +406,14 @@ v1; Wayland in the guest.
       runner path carries nftables (deviation 9); secrets arrive through
       `LoadCredential` paths. The firewall also opens UDP/TCP 53 on `rfd+`
       interfaces only, for the per-tap resolver.
+    - Step 7 found gaps in step 4's protocol, to close in steps 8 and 9:
+      `desktop_*` messages carry no `action_id` (the guest numbers them in
+      order), nothing returns a screenshot or page text, there is no
+      `hosts` list (the guest allows only the opened origins), and
+      `desktop_login` has no way to receive a login, so it uses an injected
+      `resolveLogin`. Playwright's `serviceWorkers: 'block'` did not stop
+      registration in Chromium, so `control.js` also blocks
+      `navigator.serviceWorker.register` with an init script.
 
 ## Prerequisites (named revisions)
 
