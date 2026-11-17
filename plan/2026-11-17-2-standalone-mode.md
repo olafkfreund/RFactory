@@ -176,6 +176,17 @@ these calls:
     content) and only covered by the fake server. Step 10 confirms or
     breaks them; a mismatch there is fixed before `RESULTS.md`.
 
+- **D9, found while building step 8** (recorded with the step 8 commit):
+  - `bench/ollama-standup.js --model` must equal `scope.brain.model`, else
+    exit 2 `model-mismatch`: the model is part of the approved destination
+    hash, so the bench cannot swap it without a new approval.
+  - `bench/prompts.json` uses literal item numbers (`#1` to `#4`) for the
+    plan's `#N`, because prompts are written without a snapshot.
+  - Exit codes: a missing `token_env` value exits 4; exit 3 covers any
+    `destination-*` error, including a redirect during a turn (fixed after
+    the Opus review); anything unclassified exits 1. `approve-destination`
+    needs no token and never starts the GitHub source.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
