@@ -57,3 +57,35 @@ lobby 13.3 s, in-call 15.0 s, clip played 15.0–20.2 s.
 ## Not done
 
 - The share check (D5, not gating) was not run.
+
+## D5 and D5b: share check, and the #13 camera check (2026-11-17, Chrome, p620)
+
+Owner's Meet, owner present and admitting the bot.
+
+- **D5 as written: not supported.** `call._inner.startShare('window')`
+  returned `undefined` within 40 ms and Meet's share code never ran. The
+  library documents why: sharing on the Playwright host "needs the WebRTC
+  loopback the design proposes; neither is built" (`docs/status.md:93-94`).
+  This tests the library's entry point, not Meet.
+- **D5b: pass.** `SHARE_MODE=click`: the bot clicks Meet's own "Share
+  screen" button; Chrome, started with
+  `--auto-select-desktop-capture-source=RFactory share test`, picks the
+  page titled that. Log: `getDisplayMedia → 1 video, 1 audio`,
+  `displaySurface: "browser"`, Meet's buttons then read "You are
+  presenting", and the speaker tracker reports "screen shares: RFactory Bot
+  (AI)". The bot's own screenshot (`d5b-after-share.png`) shows the page
+  presented. The owner confirmed in the call.
+  - **Chrome shared a tab, not a window** (`displaySurface: "browser"`).
+    #3's step 11 checks `displaySurface === 'window'`; it must accept the
+    tab share, still bound to the per-share title nonce (a deviation for
+    #3's plan).
+- **#13 camera check: pass.** `CAMERA_TEST=1`: a renderer set through
+  `window.__vibeconfMedia.setCameraRenderer` plus `setCameraOn(true)`;
+  Meet's button then reads "Turn off camera" and the owner saw the
+  portrait with the "AI" badge as the bot's tile, the glow following the
+  speech. **The mouth overlay looked bad** (a dark ellipse over the
+  portrait's mouth, owner's screenshot): the animation needs a different
+  approach in #13's spec. CPU not measured in this run.
+- **Ghost tile:** the first run's container was stopped by force (it was
+  still holding), which left an extra "RFactory Bot (AI)" tile in Meet.
+  Leave through `call.leave()`, never by killing the container.

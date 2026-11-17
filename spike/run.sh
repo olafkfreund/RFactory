@@ -8,5 +8,5 @@ podman build --build-arg BROWSER="$browser" -t "rfactory-spike:$browser" .
 mkdir -p out
 podman run --rm --init --shm-size=1g --userns=keep-id \
   -v "rfactory-spike-profile-$browser:/profile" -v "$PWD/out:/out:Z" \
-  -e BOT_NAME -e HOLD_MS -e SHARE_TEST -e SHARE_TYPE "rfactory-spike:$browser" "$1" 2>&1 | tee "out/run-$browser-$(date +%s).log"
+  -e BOT_NAME -e HOLD_MS -e SHARE_TEST -e SHARE_TYPE -e SHARE_MODE -e CAMERA_TEST "rfactory-spike:$browser" "$1" 2>&1 | tee "out/run-$browser-$(date +%s).log"
 exit "${PIPESTATUS[0]}"

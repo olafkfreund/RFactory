@@ -54,13 +54,41 @@ async function run(argv, env, deps = {}) {
     log(ts(), 'captions: enable requested');
     // D8 diagnostics: the library's in-page audio and mic logs, which say whether Meet took the virtual mic.
     if (call._inner.page && call._inner.page.on) {
-      call._inner.page.on('console', (m) => { const t = m.text(); if (/bots-in-calls|\[CC\]|mic|Mic|getUserMedia|unmute|mute/.test(t)) log(ts(), '[page]', t); });
+      call._inner.page.on('console', (m) => { const t = m.text(); if (/bots-in-calls|\[CC\]|mic|Mic|getUserMedia|unmute|mute|share|Share|present|Present|DisplayMedia|camera|avatar/.test(t)) log(ts(), '[page]', t); });
     }
     call.on('caption', (t) => {
       log(ts(), t.final ? 'final' : 'partial', t.speaker + ':', t.text);
       fs.appendFileSync(path.join(out, 'captions.jsonl'), JSON.stringify({ ms: Date.now() - t0, ...t }) + '\n');
     });
     call.on('chat', (m) => log(ts(), 'chat', m.sender + ':', m.text));
+    if (env.CAMERA_TEST === '1') {
+      // #13 feasibility. shortcut: private fields of an alpha lib.
+      try {
+        const img = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, 'avatar.webp')).toString('base64');
+        await call._inner.page.evaluate((src) => {
+          const im = new Image(); im.src = src;
+          let mouth = 0;
+          window.__vibeconfMedia.setCameraRenderer((s) => ({ render() {
+            const { ctx, canvas } = s; const W = canvas.width, H = canvas.height;
+            const lvl = window.__vibeconfMedia.speechLevel ? window.__vibeconfMedia.speechLevel() : 0;
+            mouth = lvl > 0.05 ? Math.min(1, lvl * 1.5) : Math.max(0, mouth - 0.25);
+            ctx.fillStyle = '#1d2021'; ctx.fillRect(0, 0, W, H);
+            const sz = Math.round(H * 0.6), x = (W - sz) / 2, y = (H - sz) / 2 - H * 0.04;
+            if (mouth > 0) { ctx.fillStyle = `rgba(254,128,25,${0.25 + 0.5 * mouth})`; ctx.beginPath(); ctx.arc(W / 2, y + sz / 2, sz / 2 + 18 + 10 * mouth, 0, 7); ctx.fill(); }
+            if (im.complete) ctx.drawImage(im, x, y, sz, sz);
+            const k = sz / 256; // mouth anchor for m01, measured roughly
+            if (mouth > 0) { ctx.fillStyle = '#3c1a12'; ctx.beginPath(); ctx.ellipse(x + 100 * k, y + 152 * k, 13 * k, 2 * k + 9 * k * mouth, 0, 0, 7); ctx.fill(); }
+            ctx.fillStyle = '#fe8019'; ctx.fillRect(W - 120, 24, 96, 56); ctx.fillStyle = '#1d2021'; ctx.font = 'bold 40px sans-serif'; ctx.fillText('AI', W - 96, 66);
+            ctx.fillStyle = '#ebdbb2'; ctx.font = '32px sans-serif'; ctx.fillText('RFactory Bot (AI)', 32, H - 32);
+          } }));
+          console.log('[avatar] renderer set');
+        }, img);
+        await call._inner.setCameraOn(true);
+        await d.sleep(3000);
+        log(ts(), 'camera buttons:', JSON.stringify(await call._inner.page.evaluate(() =>
+          [...document.querySelectorAll('button[aria-label*="camera" i]')].map((b) => b.getAttribute('aria-label')))));
+      } catch (e) { log(ts(), 'camera: failed', e.message); }
+    }
     log(ts(), 'speak: start');
     await (await call.speak(clip)).done;
     log(ts(), 'speak: done');
@@ -76,7 +104,21 @@ async function run(argv, env, deps = {}) {
       try {
         const p = await call._inner.page.context().newPage();
         await p.setContent(`<title>${SHARE_TITLE}</title><h1 style="font-size:96px">${SHARE_TITLE}</h1>`);
-        log(ts(), 'share:', await call._inner.startShare(env.SHARE_TYPE || 'window'));
+        if (env.SHARE_MODE === 'click') {
+          // D5b: click Meet's own share button; Chrome auto-selects the source titled SHARE_TITLE.
+          const meet = call._inner.page;
+          await meet.bringToFront();
+          const btn = meet.locator('button[aria-label*="Share screen" i], button[aria-label*="Present now" i], button[aria-label*="present" i]').first();
+          log(ts(), 'share button:', await btn.getAttribute('aria-label').catch(() => 'not found'));
+          await btn.click({ timeout: 10000 });
+          await d.sleep(1500);
+          const item = meet.locator('[role="menuitem"]:has-text("window"), [role="menuitem"]:has-text("tab"), li:has-text("A window")').first();
+          if (await item.count()) { log(ts(), 'share menu item:', (await item.innerText()).slice(0, 60)); await item.click({ timeout: 5000 }); }
+          await d.sleep(6000);
+          const presenting = await meet.evaluate(() => [...document.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label')).filter((l) => /present|shar/i.test(l)));
+          log(ts(), 'share: buttons after', JSON.stringify(presenting));
+          try { fs.writeFileSync(path.join(out, 'after-share.png'), await call.screenshot()); log(ts(), 'screenshot: after-share.png'); } catch (e) { log(ts(), 'screenshot failed', e.message); }
+        } else log(ts(), 'share:', await call._inner.startShare(env.SHARE_TYPE || 'window'));
       } catch (e) { log(ts(), 'share: failed', e.message); }
     }
     try { await call.chat.send('Hi, I am the RFactory test bot. I leave in 90 seconds.'); } catch (e) { log(ts(), 'chat: failed', e.message); }

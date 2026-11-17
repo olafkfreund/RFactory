@@ -19,7 +19,7 @@ RUN set -eu; \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY --chmod=0644 hello-call.js ./
+COPY --chmod=0644 hello-call.js avatar.webp ./
 RUN mkdir -p /profile /out && chown node:node /profile /out
 USER node
 ENTRYPOINT ["xvfb-run","-a","-s","-screen 0 1280x800x24","node","hello-call.js"]
