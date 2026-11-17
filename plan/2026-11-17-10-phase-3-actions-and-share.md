@@ -122,6 +122,17 @@ reviewers:
   keeps the budget slot for an uncertain start.
 - **D3, step 0.** The fresh card read the spec relies on does not exist
   in 1a's adapter (it exposes only `snapshot`); step 0 adds it.
+- **D8, step 8 results.** CFactory now holds a third key entry,
+  `cfk_…:read,write`, for the executor only (agent bus first, CFactory
+  restarted). `pod.sh` turns writes on only when
+  `~/.config/rfactory/cfactory-write-key` exists with mode 600: it then
+  sets `RFACTORY_WRITES=on`, `RFACTORY_APPROVERS` (default: the
+  allowlist), mounts the key read-only and a `rfactory-actions` volume
+  (`:U`, owned by the app user) at `/var/lib/rfactory/actions`. With the
+  pod up: `GET /api/actions` answers `{pending, history, can_approve}`;
+  an approve without the action header gets 403; the write key appears
+  in no container log. The agenix seed still lacks both new keys (owner
+  follow-up).
 
 ## Waves
 
