@@ -75,4 +75,4 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
   return { turn, label };
 }
 
-module.exports = { createClaudeBrain };
+module.exports = { createClaudeBrain, ARGV };

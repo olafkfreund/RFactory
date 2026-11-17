@@ -80,3 +80,55 @@ test('standup prints destination line, data age and checked text', async () => {
     assert.ok(requests.length >= 1);
   } finally { srv.close(); }
 });
+
+// approve-destination for claude-cli, with an injected fake spawn (never the real CLI).
+const { EventEmitter } = require('node:events');
+const { PassThrough, Writable } = require('node:stream');
+const { main } = require('../bin/rfactory-standup.js');
+
+function claudeScope(name) {
+  const home = fs.mkdtempSync(path.join(dir, 'home-'));
+  const keyFile = path.join(dir, `${name}.key`);
+  fs.writeFileSync(keyFile, 'cfk_' + 'a'.repeat(20), { mode: 0o600 });
+  const f = path.join(dir, `${name}.json`);
+  fs.writeFileSync(f, JSON.stringify({ name: 'demo', source: { kind: 'cfactory', mcp_url: 'https://example.org/mcp', repository_id: 2, key_file: keyFile },
+    brain: { kind: 'claude-cli', home, approved_hash: '', destination: 'third-party' }, writes_enabled: false }));
+  return f;
+}
+
+function fakeSpawn(init) {
+  const calls = [];
+  const spawn = (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new Writable({ write(c, e, done) { done(); }, final(done) {
+      setImmediate(() => {
+        child.stdout.end(args[0] === '--version' ? '1.0.0\n' : `${JSON.stringify({ type: 'system', subtype: 'init', ...init })}\n`);
+        child.emit('close', 0);
+      });
+      done();
+    } });
+    child.kill = () => {};
+    calls.push(args);
+    return child;
+  };
+  return { spawn, calls };
+}
+
+test('approve-destination (claude-cli) exits 3 when the init event lists a tool', async () => {
+  const f = fakeSpawn({ tools: ['Bash'], mcp_servers: [] });
+  const lines = [];
+  const code = await main(['approve-destination', '--scope', claudeScope('tools')], {}, (s) => lines.push(s), { spawn: f.spawn });
+  assert.equal(code, 3);
+  assert.match(lines.join('\n'), /destination-tools-present.*Bash/);
+  assert.ok(f.calls[1].includes('stream-json') && f.calls[1].includes('--verbose'));
+});
+
+test('approve-destination (claude-cli) prints a 64-hex hash for empty tools and servers', async () => {
+  const f = fakeSpawn({ tools: [], mcp_servers: [] });
+  const lines = [];
+  const code = await main(['approve-destination', '--scope', claudeScope('empty')], {}, (s) => lines.push(s), { spawn: f.spawn });
+  assert.equal(code, 0, lines.join('\n'));
+  assert.match(lines.join('\n'), /approved_hash: [0-9a-f]{64}/);
+});

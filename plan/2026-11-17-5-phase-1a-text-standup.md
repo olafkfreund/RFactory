@@ -150,6 +150,12 @@ reviewers:
     point. Error codes in responses are whitelisted (the five brain codes;
     kebab-case source codes, else `source-error`), and a non-200 shows
     "Failed: <code>" in the page's status region.
+  - Step 5: `claude-cli.js` exports its `ARGV` so the approval inventory
+    call uses the exact 1a flags; `main()` and `setup()` take an optional
+    `{ spawn }` for tests; `standup` and `ask` with `claude-cli` both run
+    the snapshot-and-summary path (`ask`'s question is ignored, since 1a
+    has no follow-up questions); the destination line reads
+    `brain: claude-cli (<destination>)`.
 
 ## Steps
 
