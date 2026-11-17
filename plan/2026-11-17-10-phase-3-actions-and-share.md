@@ -129,6 +129,16 @@ reviewers:
 - **Wave 2 (parallel, after wave 1):** steps 2, 4.
 - **Wave 3:** step 6. **Wave 4:** step 7. Then steps 8–11 (mine).
 
+- **D4, wave 1 details (steps 0, 3 and 5), for later steps to honour.**
+  `getCard` returns `{ card, inRepository }` or `{ error }`, and rejects
+  with `source-timeout` on a timeout (step 4/6 treat that as uncertain
+  for a re-check, so nothing is sent). `loadScope` refuses
+  `writes_enabled: true` with a missing write key file (raw `ENOENT`), a
+  mode other than exactly 600, or a `github` source (write keys apply to
+  the `cfactory` source only). The record's clock is `{ now() }` in ms;
+  each entry gets an `at` timestamp, and step 6 must write the state in a
+  `state` field, which `unfinished()` reads.
+
 ## Steps
 
 0. **`core/src/sources/cfactory.js`** (additive), **`core/test/cfactory.test.js`** (extend).
