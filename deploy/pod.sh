@@ -30,7 +30,10 @@ up() {
   done
   case $(stat -c %s "$cfg/oauth2-cookie-secret") in 16|24|32) ;; *) echo "oauth2-cookie-secret must be 16, 24 or 32 bytes" >&2; exit 2;; esac
   [ -d "$claude_home" ] || { echo "missing $claude_home" >&2; exit 2; }
-  podman build -q -f "$here/web/Containerfile" -t rfactory-web "$here" >/dev/null
+  # AGPL §13 (#13): the image carries the clean, pushed commit it was built from
+  commit=$("$here/deploy/source-guard.sh" "$here")
+  podman build -q -f "$here/web/Containerfile" --build-arg RFACTORY_COMMIT="$commit" -t rfactory-web "$here" >/dev/null
+  "$here/deploy/source-guard.sh" --check-public "$commit"
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
   podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null

@@ -51,9 +51,17 @@ COPY --chown=node:node core/test/fixtures/github-tools-1.14.0.json core/test/fix
 COPY --chown=node:node bot/run.js bot/
 COPY --chown=node:node web/server.js web/call.js web/tts.js web/actions.js web/actions-record.js web/
 COPY --chown=node:node web/public web/public
+# #13: the avatar renderer and portraits; the licence texts and notices (AGPL §13)
+COPY --chown=node:node bot/avatar bot/avatar
+COPY --chown=node:node bot/avatars bot/avatars
+COPY --chown=node:node LICENSE NOTICE.md ./
+COPY --chown=node:node LICENSES LICENSES
+# The commit this image was built from, for the source offer (deploy/source-guard.sh checks it is public)
+ARG RFACTORY_COMMIT
 
 USER node
 ENV PORT=8080 \
+    RFACTORY_COMMIT=$RFACTORY_COMMIT \
     PATH=/opt/piper/bin:$PATH \
     RFACTORY_VOICE=/opt/voices/en_US-ljspeech-medium.onnx \
     RFACTORY_VOICE_MALE=/opt/voices/en_US-joe-medium.onnx \

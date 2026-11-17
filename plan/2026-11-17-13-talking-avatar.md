@@ -190,6 +190,16 @@ reviewers:
   level alone (already fixed with its regression test in `649b35a`); the
   geometry tests run over
   every mesh in the real manifest at d = 0..maxDrop.
+- **D13, step 7 shape.** The build guard is its own script,
+  `deploy/source-guard.sh` (clean tree incl. untracked files, `HEAD` on an
+  `origin` branch, prints the commit; `--check-public <sha>` runs `curl`
+  with `GITHUB_TOKEN`/`GH_TOKEN` removed), called by `deploy/pod.sh up`
+  before and after `podman build`; tested in `web/test/source-guard.test.js`
+  with temporary git repos and a fake `curl`. `deploy/check-image.sh` also
+  fails when the image has no `RFACTORY_COMMIT`. The image was not built
+  in step 7 (builds on p620 need the owner's OK); `check-image.sh` first
+  runs in step 8. Lead review of step 4: the camera is confirmed 3 s after
+  each turn-on, and `cancel` does not wait for the idle call.
 
 ## Steps
 
