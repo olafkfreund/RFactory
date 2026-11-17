@@ -13,9 +13,9 @@ async function start(t, { withDesktop = true } = {}) {
   const clock = { t: 1_000_000, now() { return this.t; } };
   const ran = [], shares = [], stops = [];
   const desktop = createDesktop({ roles, scopeName: 's1', clock: () => clock.t,
-    runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
+    runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1', nonce: 'n1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
     run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true }; },
-    startShare: async (x) => shares.push(x), stopShare: async (x) => stops.push(x), destroy: async () => {}, nonceFor: () => 'n1' });
+    startShare: async (x) => shares.push(x), stopShare: async (x) => stops.push(x), destroy: async () => {} });
   const server = createApp({ roles, source: {}, brain: {}, desktop: withDesktop ? desktop : null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -119,7 +119,7 @@ test('share: proposal needs approval, starts the share, stop ends it', async (t)
   const ok = await s.call('POST', `/api/desktop/d1/share/${p.id}/approve`, APPROVER, { hash: p.hash });
   assert.equal(ok.status, 200);
   assert.equal(s.shares.length, 1);
-  assert.equal(s.shares[0].nonce, 'n1');
+  assert.deepEqual(s.shares[0], { desktop_id: 'd1', share_id: s.shares[0].share_id, url: `${HOST}/page`, hosts: [HOST] });
   const state = await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json();
   assert.equal(state.share.url, `${HOST}/page`);
   assert.ok(!JSON.stringify(state).includes('n1'), 'the nonce is not shown');
@@ -136,4 +136,9 @@ test('revoke ends the handover; an expired handover can be replaced', async (t) 
   assert.equal((await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant)).status, 200);
   s.clock.t += 11 * 60000;
   assert.equal((await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant)).status, 200);
+});
+
+test('the nonce is read from the runner and never shown in state', async (t) => {
+  const s = await start(t);
+  assert.ok(!JSON.stringify(await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json()).includes('n1'));
 });

@@ -221,3 +221,111 @@ test('tap name matches the NixOS module tap rule (^rfd[0-9a-z]{1,10}$, rfd* base
   assert.match(tap, /^rfd[0-9a-z]{1,10}$/);
   assert.ok(tap.length <= 15, 'Linux IFNAMSIZ');
 });
+
+// ---- step 13b: host -> guest channel, call-config, action / share routes ----
+const { EventEmitter } = require('node:events');
+const { encode: enc, createDecoder: dec } = require('./protocol');
+
+function agentSetup(over = {}) {
+  const conns = [];
+  const connectGuest = async () => {
+    const conn = new EventEmitter();
+    conn.out = []; conn.destroy = () => conn.emit('close');
+    const d = dec((m) => conn.out.push(m));
+    conn.write = (b) => { d.write(b); if (over.onWrite) over.onWrite(conn, conn.out.at(-1)); };
+    conns.push(conn);
+    return conn;
+  };
+  const ctx = setup({ deps: { connectGuest, ...over.deps } });
+  ctx.conns = conns;
+  ctx.reply = (conn, m) => conn.emit('data', enc(m));
+  return ctx;
+}
+const echoOk = (conn, m) => { if (m.action_id) setImmediate(() => conn.emit('data', enc({ type: 'action-result', action_id: m.action_id, ok: true, content: 'text' }))); };
+
+test('create returns a per-call nonce; call-config is the first message on the guest channel', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const r = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  assert.match(r.nonce, /^[0-9a-f]{32}$/);
+  await tick(); await tick();
+  assert.deepEqual(ctx.conns[0].out, [{ type: 'call-config', nonce: r.nonce }]);
+  assert.equal(ctx.lc.list()[0].nonce, r.nonce);
+  const other = await ctx.lc.create({ call_id: 'b', scope: 's' });
+  assert.notEqual(other.nonce, r.nonce);
+});
+
+test('a spare gets its nonce only when claimed, and call-config is still first', async () => {
+  const ctx = agentSetup();
+  const spare = await ctx.lc.createSpare();
+  await tick(); await tick();
+  assert.equal(spare.nonce, undefined);
+  assert.deepEqual(ctx.conns[0].out, []);
+  assert.deepEqual(await ctx.lc.action(spare.desktop_id, { type: 'desktop_screenshot' }), { error: 'no-control' });
+  const claimed = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  assert.equal(claimed.desktop_id, spare.desktop_id);
+  assert.deepEqual(ctx.conns[0].out, [{ type: 'call-config', nonce: claimed.nonce }]);
+});
+
+test('action: validated, answered by action_id, content reassembled; failures are error results', async () => {
+  const ctx = agentSetup({ onWrite: (conn, m) => {
+    if (m.type === 'desktop_screenshot') setImmediate(() => {
+      conn.emit('data', Buffer.concat([enc({ type: 'action-content', action_id: m.action_id, index: 1, chunk: Buffer.from('cd').toString('base64') }),
+        enc({ type: 'action-content', action_id: m.action_id, index: 0, chunk: Buffer.from('ab').toString('base64') }),
+        enc({ type: 'action-result', action_id: m.action_id, ok: true })]));
+    }); else echoOk(conn, m);
+  } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.deepEqual(await ctx.lc.action(desktop_id, { type: 'desktop_scroll', dy: 5, call_id: 'forged', scope: 'x' }), { ok: true, content: 'text' });
+  const sent = ctx.conns[0].out.at(-1);
+  assert.deepEqual([sent.type, sent.dy, 'call_id' in sent, 'scope' in sent], ['desktop_scroll', 5, false, false]);
+  assert.match(sent.action_id, /^[0-9a-f-]{36}$/);
+  assert.equal(Buffer.from((await ctx.lc.action(desktop_id, { type: 'desktop_screenshot' })).image_base64, 'base64').toString(), 'abcd');
+  for (const bad of [{ type: 'cancel' }, { type: 'call-end' }, { type: 'desktop_scroll', dy: 'x' }, null, { type: 'profile-attach', key: 'k' }]) {
+    assert.equal((await ctx.lc.action(desktop_id, bad)).error, 'bad-message');
+  }
+  assert.deepEqual(await ctx.lc.action('nope', { type: 'desktop_screenshot' }), { error: 'no-control' });
+});
+
+test('action: no answer in time or a closed channel is an error, never ok', async () => {
+  const ctx = agentSetup();
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  const slow = ctx.lc.action(desktop_id, { type: 'desktop_scroll', dy: 1 }, 20);
+  assert.deepEqual(await slow, { error: 'timeout' });
+  const pending = ctx.lc.action(desktop_id, { type: 'desktop_scroll', dy: 1 }, 5000);
+  await tick();
+  ctx.conns[0].emit('close');
+  assert.deepEqual(await pending, { error: 'control-closed' });
+  assert.deepEqual(await ctx.lc.action(desktop_id, { type: 'desktop_scroll', dy: 1 }), { error: 'no-control' });
+});
+
+test('share-start / share-stop go over the channel and arm and disarm the control-channel rule', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  assert.deepEqual(ctx.conns[0].out.at(-1), { type: 'share-start', share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'], action_id: ctx.conns[0].out.at(-1).action_id });
+  assert.equal(ctx.lc.status().count, 1);
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'not a url', hosts: ['x'] })).error, 'bad-message');
+  assert.equal((await ctx.lc.shareStop(desktop_id, { share_id: 's1' })).ok, true);
+  assert.equal(ctx.lc.vncSock(desktop_id).endsWith('/vsock.sock'), true);
+  assert.equal(ctx.lc.vncSock('missing'), null);
+});
+
+test('runner routes: action, share-start, share-stop map to the lifecycle; a bad message is 400', async () => {
+  const calls = [];
+  const lifecycle = { action: async (id, m) => { calls.push(['action', id, m]); return m.type === 'cancel' ? { error: 'bad-message' } : { ok: true }; },
+    shareStart: async (id, b) => { calls.push(['start', id, b.share_id]); return { ok: true }; },
+    shareStop: async (id, b) => { calls.push(['stop', id, b.share_id]); return { error: 'timeout' }; } };
+  const server = http.createServer(createHandler(lifecycle, { tls: false }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const post = async (route, body) => { const r = await fetch(`http://127.0.0.1:${server.address().port}/${route}`, { method: 'POST', body: JSON.stringify(body) }); return [r.status, await r.json()]; };
+    assert.deepEqual(await post('action', { desktop_id: 'd', message: { type: 'desktop_scroll', dy: 1 } }), [200, { ok: true }]);
+    assert.equal((await post('action', { desktop_id: 'd', message: { type: 'cancel' } }))[0], 400);
+    assert.deepEqual(await post('share-start', { desktop_id: 'd', share_id: 's' }), [200, { ok: true }]);
+    assert.deepEqual(await post('share-stop', { desktop_id: 'd', share_id: 's' }), [503, { error: 'timeout' }]);
+    assert.deepEqual(calls.map((c) => c[0]), ['action', 'action', 'start', 'stop']);
+  } finally { server.closeAllConnections(); server.close(); }
+});

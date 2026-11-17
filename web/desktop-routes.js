@@ -65,7 +65,7 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
 }
 
 // runner: { list() -> {status, body: {desktops, alert}} }. run/startShare/stopShare/cancel/destroy reach the guest through the runner.
-function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, cancel, destroy, nonceFor, openVnc, clock = Date.now }) {
+function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, cancel, destroy, openVnc, clock = Date.now }) {
   const sessions = createSessions({ isApprover: (user) => roles.has(user, 'approver'), cancel: cancel || destroy, destroy, clock });
   const queue = createDesktopQueue({ roles, run, clock });
   async function runnerState() {
@@ -125,9 +125,9 @@ function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, c
       if (t.error) return json(res, t.status, { error: t.error });
       if (t.entry.name !== 'propose_share') return json(res, 409, { error: 'not-a-share' });
       try {
-        const share = sessions.approveShare(email, id, { share_id: randomUUID(), nonce: nonceFor(id), url: t.entry.args.url });
+        const share = sessions.approveShare(email, id, { share_id: randomUUID(), nonce: desk.nonce, url: t.entry.args.url });
         queue.drop(proposal);
-        try { await startShare({ desktop_id: id, share_id: share.share_id, nonce: share.nonce, url: share.url }); }
+        try { await startShare({ desktop_id: id, share_id: share.share_id, url: share.url, hosts: [share.origin] }); }
         catch { sessions.stopShare(id, share.share_id); return json(res, 502, { error: 'share-failed' }); }
         return json(res, 200, { ok: true, share_id: share.share_id });
       } catch (e) { return json(res, e.message === 'approver-required' ? 403 : 409, { error: e.message }); }

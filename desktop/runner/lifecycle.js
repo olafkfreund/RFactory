@@ -3,7 +3,8 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { buildRules } = require('./net');
-const { createDecoder, tag } = require('./protocol');
+const { createDecoder, tag, encode } = require('./protocol');
+const { nonce: newNonce } = require('../guest/agent/share');
 const { listenGuest } = require('./vsock');
 
 const UNIT = 'rfactory-vm-';
@@ -12,6 +13,7 @@ const REQUIRED = ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatT
 
 // deps: exec(argv, {input}) -> Promise, clock {now, setInterval, clearInterval, sleep},
 // fs {mkdir, rm, readdir, readFile}, hasKvm(), listen(sock, handler) (defaults to vsock.listenGuest).
+// connectGuest(sock, port) -> duplex (optional; without it there is no host -> guest channel: action, share-* and call-config fail closed).
 function createLifecycle(config, deps) {
   for (const key of REQUIRED) if (config[key] === undefined) throw new Error(`missing config: ${key}`);
   const { exec, clock, fs } = deps;
@@ -59,6 +61,8 @@ function createLifecycle(config, deps) {
     vm.destroying = (async () => {
       owners.delete(vm.sock);
       if (vm.server) vm.server.close();
+      if (vm.agent) vm.agent.destroy();
+      failPending(vm, 'destroyed');
       const ok = await cleanup(id);
       if (ok) vms.delete(id); else vm.destroying = null; // a later destroy retries
       return { ok, reason };
@@ -74,6 +78,76 @@ function createLifecycle(config, deps) {
     else if (tagged.type === 'call-end') destroy(vm.id, 'call-end');
     else if (deps.onGuestMessage) deps.onGuestMessage(tagged);
   }
+
+  // Host -> guest control channel (vsock 5000, duplex): call-config goes first, then actions; replies are matched by action_id.
+  const MAX_CONTENT = 4 * 1024 * 1024;
+  function failPending(vm, error) { for (const p of vm.pending.values()) p.resolve({ error }); vm.pending.clear(); }
+  function onAgentMessage(vm, m) {
+    if (m.type === 'action-content' || m.type === 'action-result') {
+      const p = vm.pending.get(m.action_id);
+      if (!p) return;
+      if (m.type === 'action-content') {
+        p.size += m.chunk.length;
+        if (p.size > MAX_CONTENT) { vm.pending.delete(m.action_id); p.resolve({ error: 'too-large' }); } else p.chunks[m.index] = m.chunk;
+        return;
+      }
+      vm.pending.delete(m.action_id);
+      const image = p.chunks.length && p.chunks.every((c) => typeof c === 'string') ? Buffer.concat(p.chunks.map((c) => Buffer.from(c, 'base64'))).toString('base64') : undefined;
+      return p.resolve({ ok: m.ok, ...(m.content === undefined ? {} : { content: m.content }), ...(image ? { image_base64: image } : {}) });
+    }
+    onMessage(vm, m);
+  }
+  async function connectAgent(vm) {
+    while (vms.get(vm.id) === vm && !vm.destroying) {
+      let conn;
+      try { conn = await deps.connectGuest(vm.sock, 5000); } catch { await clock.sleep(1000); continue; }
+      if (vms.get(vm.id) !== vm || vm.destroying) return conn.destroy();
+      vm.agent = conn;
+      const decoder = createDecoder((m) => onAgentMessage(vm, m));
+      const closed = () => { if (vm.agent === conn) { vm.agent = null; failPending(vm, 'control-closed'); } };
+      conn.on('data', (c) => decoder.write(c));
+      conn.on('end', closed); conn.on('error', closed); conn.on('close', closed);
+      sendCallConfig(vm);
+      return;
+    }
+  }
+  function sendCallConfig(vm) {
+    if (!vm.nonce || !vm.agent || vm.configSent) return;
+    vm.configSent = true; // first message on the channel; never twice
+    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce }));
+  }
+  const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
+  async function toGuest(id, message, timeoutMs = 30000) {
+    const vm = vms.get(id);
+    if (!vm || vm.destroying || vm.spare || !vm.agent || !vm.configSent) return { error: 'no-control' };
+    const action_id = crypto.randomUUID();
+    const { call_id, scope, desktop_id, ...rest } = message; // the runner sets identity; nothing the caller sends is trusted
+    let frame;
+    try { frame = encode({ ...rest, action_id }); } catch { return { error: 'bad-message' }; }
+    vm.lastActivity = clock.now();
+    return new Promise((resolve) => {
+      let timer;
+      const done = (r) => { clearTimeout(timer); resolve(r); };
+      vm.pending.set(action_id, { chunks: [], size: 0, resolve: done });
+      timer = setTimeout(() => { vm.pending.delete(action_id); resolve({ error: 'timeout' }); }, timeoutMs);
+      try { vm.agent.write(frame); } catch { vm.pending.delete(action_id); done({ error: 'no-control' }); }
+    });
+  }
+  async function action(id, message, timeoutMs) {
+    if (!message || !TOOLS.has(message.type)) return { error: 'bad-message' };
+    return toGuest(id, message, timeoutMs);
+  }
+  async function shareStart(id, { share_id, url, hosts }) {
+    const r = await toGuest(id, { type: 'share-start', share_id, url, hosts });
+    if (r.ok) sharing(id, true);
+    return r.error || r.ok ? r : { ...r, error: 'share-failed' };
+  }
+  async function shareStop(id, { share_id }) {
+    const r = await toGuest(id, { type: 'share-stop', share_id });
+    if (r.ok) sharing(id, false); // a stop that did not land keeps the control-channel rule armed
+    return r.error || r.ok ? r : { ...r, error: 'share-stop-failed' };
+  }
+  const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? vm.sock : null; };
 
   async function boot(vm) {
     const n = names(vm.id);
@@ -122,14 +196,16 @@ function createLifecycle(config, deps) {
     const id = crypto.randomBytes(4).toString('hex');
     const now = clock.now();
     const vm = { id, cid: nextCid++, sock: path.join(config.runDir, id, 'vsock.sock'), created: now,
-      lastWorker: now + (config.bootGraceMs || 0), lastServer: now, lastActivity: now, call_id, scope };
+      lastWorker: now + (config.bootGraceMs || 0), lastServer: now, lastActivity: now, call_id, scope,
+      pending: new Map(), nonce: call_id ? newNonce() : null };
     vms.set(id, vm);
     if (call_id) owners.set(vm.sock, { call_id, scope, desktop_id: id });
     try { await boot(vm); } catch (error) {
       await destroy(id, 'boot-failed');
       return { error: 'boot-failed', message: error.message };
     }
-    return { desktop_id: id, cid: vm.cid, sock: vm.sock };
+    if (deps.connectGuest) connectAgent(vm).catch(() => {});
+    return { desktop_id: id, cid: vm.cid, sock: vm.sock, ...(vm.nonce ? { nonce: vm.nonce } : {}) };
   }
 
   async function create({ call_id, scope }) {
@@ -140,7 +216,9 @@ function createLifecycle(config, deps) {
       spare.spare = false; spare.call_id = call_id; spare.scope = scope;
       const t = clock.now(); spare.lastWorker = t; spare.lastServer = t; spare.lastActivity = t;
       owners.set(spare.sock, { call_id, scope, desktop_id: spare.id });
-      return { desktop_id: spare.id, cid: spare.cid, sock: spare.sock };
+      spare.nonce = newNonce(); // per call, fixed from here; the guest gets it as its first message
+      sendCallConfig(spare);
+      return { desktop_id: spare.id, cid: spare.cid, sock: spare.sock, nonce: spare.nonce };
     }
     return start(call_id, scope);
   }
@@ -153,7 +231,7 @@ function createLifecycle(config, deps) {
     return result;
   }
 
-  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare }));
+  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, ...(v.nonce ? { nonce: v.nonce } : {}) }));
 
   function heartbeat(id) {
     const vm = vms.get(id);
@@ -212,7 +290,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, destroy, list, heartbeat, activity, sharing, check, reconcile, clear, run, stop,
+  return { create, createSpare, destroy, list, heartbeat, activity, sharing, action, shareStart, shareStop, vncSock, check, reconcile, clear, run, stop,
     status: () => ({ ...state, count: vms.size }) };
 }
 

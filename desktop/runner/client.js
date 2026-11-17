@@ -25,7 +25,20 @@ function createRunnerClient({ url, key, cert, ca, timeoutMs = 30000, request = h
       req.end(payload);
     });
   }
-  return { call, list: () => call('list'), create: (b) => call('create', b), destroy: (id) => call('destroy', { desktop_id: id }), clear: () => call('clear') };
+  // GET /vnc/<id> with Upgrade: rfactory-vnc; resolves the upgraded socket (raw RFB bytes), rejects on any other answer.
+  function openVnc(id) {
+    if (!/^[0-9a-f]{1,16}$/.test(String(id))) return Promise.reject(new Error('bad-desktop-id'));
+    return new Promise((resolve, reject) => {
+      const req = request({ hostname: base.hostname, port: base.port || 443, path: `/vnc/${id}`, method: 'GET', ...tls, timeout: timeoutMs,
+        headers: { connection: 'Upgrade', upgrade: 'rfactory-vnc' } });
+      req.on('upgrade', (res, socket, head) => { socket.setTimeout(0); socket.pause(); if (head.length) socket.unshift(head); resolve(socket); queueMicrotask(() => socket.resume()); });
+      req.on('response', (res) => { res.resume(); reject(new Error(`vnc-refused-${res.statusCode}`)); });
+      req.on('timeout', () => req.destroy(new Error('runner-timeout')));
+      req.on('error', reject);
+      req.end();
+    });
+  }
+  return { call, openVnc, list: () => call('list'), create: (b) => call('create', b), destroy: (id) => call('destroy', { desktop_id: id }), clear: () => call('clear') };
 }
 
 module.exports = { createRunnerClient };

@@ -25,6 +25,9 @@ const schemas = Object.freeze({
   desktop_scroll: { dy: number, action_id: optional(string) },
   desktop_screenshot: { action_id: optional(string) },
   desktop_login: { profile: string },
+  'call-config': { nonce: string },
+  'share-start': { share_id: string, url: string, hosts, action_id: optional(string) },
+  'share-stop': { share_id: string, action_id: optional(string) },
 });
 const identity = new Set(['call_id', 'scope', 'desktop_id']);
 

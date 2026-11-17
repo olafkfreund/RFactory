@@ -160,3 +160,27 @@ test('control: only the opened origin is reachable', browser, async (t) => {
   assert.ok(Date.now() - t0 < 2000, 'cancel within 2 s');
   assert.equal(control.started, false);
 });
+
+test('agent: the call Chrome is launched only after call-config, once, with the share flag', async () => {
+  const { callLaunchArgs } = require('./share');
+  const launched = [];
+  const agent = createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (nonce) => launched.push(callLaunchArgs(nonce)) });
+  await agent.handle({ type: 'desktop_scroll', dy: 1, action_id: 'x' }); // an action first does not launch anything
+  assert.deepEqual(launched, []);
+  await agent.handle({ type: 'call-config', nonce: 'n1' });
+  await agent.handle({ type: 'call-config', nonce: 'n2' });
+  assert.deepEqual(launched, [['--auto-select-desktop-capture-source=RFactory share n1']]);
+});
+
+test('agent: share-start and share-stop reach the share module; without one they fail closed', async () => {
+  const log = [];
+  const sent = [];
+  const agent = createAgent({ control: {}, profile: {}, send: (m) => sent.push(m), share: { start: async (m) => log.push(['start', m.share_id, m.url]), stop: async () => log.push(['stop']) } });
+  await agent.handle({ type: 'share-start', share_id: 's', url: 'https://a.test/p', hosts: ['https://a.test'], action_id: 'a1' });
+  await agent.handle({ type: 'share-stop', share_id: 's', action_id: 'a2' });
+  assert.deepEqual(log, [['start', 's', 'https://a.test/p'], ['stop']]);
+  assert.deepEqual(sent.map((m) => [m.action_id, m.ok]), [['a1', true], ['a2', true]]);
+  const bare = [];
+  await createAgent({ control: {}, profile: {}, send: (m) => bare.push(m) }).handle({ type: 'share-start', share_id: 's', url: 'https://a.test/', hosts: ['https://a.test'], action_id: 'b' });
+  assert.equal(bare[0].ok, false);
+});

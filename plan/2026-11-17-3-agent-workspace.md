@@ -529,6 +529,26 @@ v1; Wayland in the guest.
     `nonceFor` reads the stored value. The step 15 scripts' `/desktop/*`
     contract is re-pointed to the real routes before step 17.
 
+15. **Step 13b results (coder, lead verified).** The runner's own channel
+    to the guest agent is vsock 5000 (5001 is guest-to-host only): the
+    runner connects with `connectGuest`, retrying every second after
+    create, sends `call-config {nonce}` first and once, then actions and
+    share messages matched to replies by `action_id`; without the channel
+    every desktop route fails closed (`no-control`). The nonce is made at
+    create (spares when claimed), returned by `create` and `list`, read by
+    the server from `list`, never shown in `state`. The `action` route
+    takes only the five `desktop_*` tools; the runner sets `action_id` and
+    strips caller `call_id`, `scope`, `desktop_id`; screenshots come back
+    reassembled, capped at 4 MiB. `sharing(id, false)` only after the guest
+    confirms the stop. VNC is `GET /vnc/<id>` upgraded on the mTLS server.
+    **Two plan gaps found (owner decision needed before step 17's e2e):**
+    (a) no step builds the call worker inside the guest (launching the
+    call Chrome with `callLaunchArgs(nonce)` and joining the Meet), so a
+    real guest has no call and `share-start` fails closed; (b) the desktop
+    tools have no production consumer: the web app's brain is `claude-cli`
+    with no tools, and `createGateway` is built only for GitHub scopes,
+    which cannot enable writes.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

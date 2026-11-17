@@ -171,15 +171,13 @@ async function main() {
   let desktop = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
     const { createRunnerClient } = require('../desktop/runner/client.js');
-    const { nonce } = require('../desktop/guest/agent/share.js');
     const runner = createRunnerClient({ url: process.env.RFACTORY_RUNNER_URL, key: process.env.RFACTORY_RUNNER_KEY,
       cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
-    // the runner has no guest-action routes yet: these 404 and fail closed until it does (plan deviation)
-    const guest = (route) => async (b, c) => { const r = await runner.call(route, { ...b, ...c }); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
-    const nonces = new Map();
+    const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner,
-      run: (name, args, ctx) => guest('action')({ name, args }, ctx), startShare: guest('share-start'), stopShare: guest('share-stop'),
-      destroy: (id) => runner.destroy(id), nonceFor: (id) => { if (!nonces.has(id)) nonces.set(id, nonce()); return nonces.get(id); } });
+      run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, ...(name === 'desktop_open' ? { hosts: ctx.hosts } : {}) } }),
+      startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
+      destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
   createApp({ source, brain, roles, call, actions, desktop }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }

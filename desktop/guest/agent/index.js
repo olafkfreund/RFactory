@@ -9,10 +9,13 @@ const { startHeartbeat } = require('./heartbeat');
 
 // Dispatches runner messages. `send(msg)` goes back on the control socket.
 // Actions run one at a time; `cancel` jumps the queue so it can stop one in flight.
-function createAgent({ control, profile, send, resolveLogin }) {
+// share (optional, from share.js createShare) handles share-start/share-stop. onCallConfig(nonce) launches the call Chrome:
+// it is called once, only after the runner's call-config message, never before (the auto-select flag is fixed at launch).
+function createAgent({ control, profile, send, resolveLogin, share, onCallConfig }) {
   let seq = 0;
   let chain = Promise.resolve();
   let cancelled = false;
+  let configured = false;
   const result = (id, ok, content) => {
     if (Buffer.isBuffer(content)) {
       for (let offset = 0, index = 0; offset < content.length; offset += 24 * 1024, index++) {
@@ -31,6 +34,8 @@ function createAgent({ control, profile, send, resolveLogin }) {
       case 'desktop_type': await control.type(m.target, m.text); break;
       case 'desktop_scroll': await control.scroll(m.dy); break;
       case 'desktop_screenshot': return control.screenshot();
+      case 'share-start': if (!share) throw new Error('no share'); await share.start(m); break;
+      case 'share-stop': if (!share) throw new Error('no share'); await share.stop(); break;
       // The guest holds no credentials: the login comes from the runner-supplied resolver only.
       case 'desktop_login': {
         const fill = resolveLogin && await resolveLogin(m.profile);
@@ -48,6 +53,11 @@ function createAgent({ control, profile, send, resolveLogin }) {
       if (m.type === 'cancel') {
         cancelled = true;
         return control.cancel().then(() => profile.detach()).finally(() => send({ type: 'cancel-ack' }));
+      }
+      if (m.type === 'call-config') {
+        if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
+        configured = true;
+        return Promise.resolve(onCallConfig(m.nonce)).catch(() => {});
       }
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
       const id = m.action_id || String(++seq);
