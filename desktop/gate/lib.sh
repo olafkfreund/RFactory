@@ -26,7 +26,9 @@ vm_start() {
   if systemctl list-units --all --no-legend "$GATE_UNIT.service" | grep -q .; then die "$GATE_UNIT already exists, not ours"; fi
   [ ! -e "$GATE_DIR" ] || die "$GATE_DIR already exists, not ours"
   mkdir -p "$GATE_DIR"; DIR_CREATED=1
-  systemd-run --quiet --unit="$GATE_UNIT" --collect -p "WorkingDirectory=$GATE_DIR" -p RuntimeMaxSec=900 "$runner/bin/microvm-run"
+  # microvm-run calls coreutils; a systemd-run unit's default PATH has none
+  systemd-run --quiet --unit="$GATE_UNIT" --collect -p "WorkingDirectory=$GATE_DIR" -p RuntimeMaxSec=900 \
+    --setenv=PATH=/run/current-system/sw/bin "$runner/bin/microvm-run"
   UNIT_STARTED=1
 }
 
@@ -39,7 +41,12 @@ vm_stop() {
 vm_wait() {
   local port=$1 end=$((SECONDS + ${2:-120}))
   while [ $SECONDS -lt $end ]; do
-    node "$HERE/frame.js" "$SOCK" "$port" >/dev/null 2>&1 && return 0
+    # 5900 (VNC) speaks first; the probe on 5000 only answers a frame, so send one (any reply means it's up)
+    if [ "$port" = 5000 ]; then
+      node "$HERE/frame.js" "$SOCK" "$port" '{"type":"ping"}' >/dev/null 2>&1 && return 0
+    else
+      node "$HERE/frame.js" "$SOCK" "$port" >/dev/null 2>&1 && return 0
+    fi
     sleep 2
   done
   return 1
