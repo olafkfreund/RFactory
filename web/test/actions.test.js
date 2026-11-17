@@ -40,6 +40,32 @@ test('sixth pending action is declined', async () => {
   assert.equal(f.manager.list().pending.length, 5);
 });
 
+test('a none proposal returns the utterance to the question path', async () => {
+  const f = setup({ propose: async () => ({ action: 'none' }) });
+  await f.manager.recover(); f.manager.startCall(1);
+  assert.deepEqual(await f.manager.request('build status of FCT-9?', 'Someone'), { status: 200, question: true });
+});
+
+test('run_card reserves one slot per owed stage and refuses insufficient budget', async () => {
+  const f = setup({ propose: async () => ({ action: 'run_card', args: { card_key: 'FCT-9' } }) });
+  await f.manager.recover(); f.manager.startCall(1);
+  const first = await proposal(f);
+  assert.deepEqual(first.effects.stages, ['plan', 'code', 'test']);
+  assert.match((await approve(f, first)).text, /starts planning, then a build, then tests/);
+  await approve(f, await proposal(f));
+  await approve(f, await proposal(f));
+  assert.equal((await approve(f, await proposal(f))).status, 409);
+  assert.equal(f.calls.length, 3);
+});
+
+test('failed write releases all run_card slots', async () => {
+  const f = setup({ propose: async () => ({ action: 'run_card', args: { card_key: 'FCT-9' } }),
+    result: { outcome: 'failed', detail: 'Nothing was sent.' } });
+  await f.manager.recover(); f.manager.startCall(1);
+  for (let i = 0; i < 4; i++) assert.equal((await approve(f, await proposal(f))).status, 200);
+  assert.equal(f.calls.length, 4);
+});
+
 test('time, call end and changed card expire pending actions', async () => {
   const f = setup(); await f.manager.recover(); f.manager.startCall(1);
   const first = await proposal(f);

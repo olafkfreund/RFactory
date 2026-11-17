@@ -53,7 +53,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     const proposal = await brain.propose(snapshot, { deadline: now() + 55000, request: text });
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
-    if (proposal.action === 'none') return reply(400, "I can't do that.");
+    if (proposal.action === 'none') return { status: 200, question: true };
     const snapshotKeys = new Set(snapshot.items.map((item) => item.id));
     const checked = validate(proposal, { scope, snapshotKeys, redactor });
     if (!checked.ok) return reply(400, checked.reason);
@@ -95,18 +95,18 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const entry = pending.get(id);
     if (!entry || entry.hash !== hash || entry.state !== 'pending') return reply(409, 'This action is no longer pending.');
     if (!live(entry)) { await expire(entry); return reply(409, 'This action has expired.'); }
-    const reserved = entry.payload.effects.startsWork;
-    if (reserved && entry.budget.used >= LIMIT) return reply(409, 'The call has reached its work limit.');
+    const reserved = entry.payload.effects.stages.length;
+    if (entry.budget.used + reserved > LIMIT) return reply(409, 'The call has reached its work limit.');
     // Claim and reserve synchronously: another approval cannot pass these checks.
     entry.state = 'executing';
     pending.delete(id);
-    if (reserved) entry.budget.used++;
+    entry.budget.used += reserved;
     const base = { ...entry.payload, hash, approved_by: String(email).toLowerCase() };
     try {
       await record.append({ ...base, state: 'approved' });
       await record.append({ ...base, state: 'executing' });
     } catch {
-      if (reserved) entry.budget.used--;
+      entry.budget.used -= reserved;
       entry.state = 'failed';
       return reply(500, 'The action could not be recorded.');
     }
@@ -132,24 +132,29 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
       }
       if (!state && !live(entry)) state = 'expired';
       if (state) {
-        if (reserved) entry.budget.used--;
+        entry.budget.used -= reserved;
         await finish(entry, state, { approved_by: base.approved_by });
-        return reply(state === 'uncertain' ? 200 : 409, state === 'expired' ? 'This action has expired.'
+        const result = reply(state === 'uncertain' ? 200 : 409, state === 'expired' ? 'This action has expired.'
           : state === 'uncertain' ? "I'm not sure that went through; check the board." : "I can't do that.");
+        emit('action-result', { generation: entry.generation, text: result.text });
+        return result;
       }
       let result;
       try { result = await writer.apply(entry.payload.action, entry.payload.args, before); }
       catch { result = { outcome: 'uncertain', detail: 'The result could not be confirmed.' }; }
       state = FINAL.has(result?.outcome) ? result.outcome : 'uncertain';
-      if (reserved && !['done (started)', 'uncertain'].includes(state)) entry.budget.used--;
+      if (!['done (started)', 'uncertain'].includes(state)) entry.budget.used -= reserved;
       const item = await finish(entry, state, { approved_by: base.approved_by, detail: safe(result?.detail || ''), card: safe(result?.card || null) });
       const target = entry.payload.card_key || `'${entry.payload.args.title}'`;
       const work = { plan_card: 'planning', code_card: 'build', test_card: 'test', run_card: 'work' }[entry.payload.action] || 'work';
       const sentence = state === 'uncertain' ? `I'm not sure ${target} went through; check the board.`
         : state === 'already done' ? `${target}'s ${work} already finished.`
-          : state === 'done (started)' ? `${target} changed and work started.`
+          : state === 'done (started)' ? entry.payload.action === 'run_card'
+            ? `${target} starts ${entry.payload.effects.stages.map((name) => ({ plan: 'planning', code: 'a build', test: 'tests' })[name]).join(', then ')}.`
+            : `${target} changed and work started.`
             : state === 'done, start failed' ? `${target} changed, but work did not start.`
               : state === 'done' ? `${target} changed.` : `${target} failed. ${item.detail}`;
+      emit('action-result', { generation: entry.generation, text: safe(sentence) });
       return reply(200, safe(sentence), item);
     } catch {
       // After dispatch or an unconfirmed record write, do not retry the action.

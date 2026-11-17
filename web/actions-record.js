@@ -13,12 +13,21 @@ function createRecord({ dir, clock = Date, redactor }) {
   let queue = Promise.resolve(); // appends run in call order
 
   function append(entry) {
-    const line = `${JSON.stringify(redactor.logSafe({ at: new Date(now()).toISOString(), ...entry }))}\n`;
+    const line = `${JSON.stringify(redactor.logSafe({ ...entry, at: new Date(now()).toISOString() }))}\n`;
     const file = path.join(dir, `${today()}.jsonl`);
     const run = async () => {
       await fs.promises.mkdir(dir, { recursive: true });
-      const fh = await fs.promises.open(file, 'a', 0o600);
-      try { await fh.appendFile(line); await fh.sync(); } finally { await fh.close(); }
+      const fh = await fs.promises.open(file, 'a+', 0o600);
+      try {
+        const { size } = await fh.stat();
+        if (size) {
+          const last = Buffer.alloc(1);
+          await fh.read(last, 0, 1, size - 1);
+          if (last[0] !== 10) await fh.appendFile('\n');
+        }
+        await fh.appendFile(line);
+        await fh.sync();
+      } finally { await fh.close(); }
     };
     const result = queue.then(run);
     queue = result.catch(() => {});

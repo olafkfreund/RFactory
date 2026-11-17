@@ -18,7 +18,7 @@ const TOOLS = Object.freeze({
 });
 const STAGES = new Set(['run_card', 'plan_card', 'code_card', 'test_card']);
 
-function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, timeoutMs = 10000 }) {
+function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, connectClient, timeoutMs = 10000 }) {
   const key = fs.readFileSync(writeKeyFile, 'utf8').trim();
   if (!/^(?:cfk|acw)_[A-Za-z0-9]{16,}$/.test(key)) throw new Error('invalid-write-key');
   const keyRedactor = makeRedactor([key]);
@@ -30,13 +30,19 @@ function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, timeoutM
   let connected;
   async function getClient() {
     if (client) return client;
-    if (!connected) connected = (async () => {
-      const next = new Client({ name: 'rfactory-core-write', version: '0' });
-      await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), {
-        requestInit: { headers: { Authorization: `Bearer ${key}` } },
-      }));
-      return next;
-    })();
+    if (!connected) {
+      const connection = (async () => {
+        if (connectClient) return connectClient();
+        const next = new Client({ name: 'rfactory-core-write', version: '0' });
+        await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), {
+          requestInit: { headers: { Authorization: `Bearer ${key}` } },
+        }));
+        return next;
+      })();
+      let pending;
+      pending = connection.catch((error) => { if (connected === pending) connected = undefined; throw error; });
+      connected = pending;
+    }
     return connected;
   }
 
@@ -45,14 +51,20 @@ function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, timeoutM
       if (!Object.hasOwn(TOOLS, action)) throw new Error('write-action-not-allowed');
       let timer;
       let expired = false;
+      let sent = false;
       let reply;
       try {
         reply = await Promise.race([
-          getClient().then((c) => expired ? undefined : c.callTool({ name: TOOLS[action], arguments: args })),
+          getClient().then((c) => {
+            if (expired) return undefined;
+            sent = true;
+            return c.callTool({ name: TOOLS[action], arguments: args });
+          }),
           new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error('write-timeout')); }, timeoutMs); }),
         ]);
       } catch {
-        return { outcome: 'uncertain', detail: 'The result could not be confirmed.', card: null };
+        connected = undefined;
+        return { outcome: sent ? 'uncertain' : 'failed', detail: sent ? 'The result could not be confirmed.' : 'Nothing was sent.', card: null };
       } finally {
         clearTimeout(timer);
       }

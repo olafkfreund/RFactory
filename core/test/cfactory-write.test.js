@@ -106,10 +106,25 @@ test('a connection arriving after timeout never sends a write', async (t) => {
   const lateClient = new Promise((resolve) => { connect = resolve; });
   const writer = createCfactoryWriter({ writeKeyFile: s.file, redactor: s.redactor,
     client: lateClient, timeoutMs: 5 });
-  assert.equal((await writer.apply('move_card', { card_key: 'FCT-9', status: 'ready' }, before)).outcome, 'uncertain');
+  assert.equal((await writer.apply('move_card', { card_key: 'FCT-9', status: 'ready' }, before)).outcome, 'failed');
   connect({ callTool: (request) => { s.calls.push(request); return reply(bareStarted); } });
   await Promise.resolve();
   assert.equal(s.calls.length, 0);
+});
+
+test('failed connection sends nothing and a later action reconnects', async (t) => {
+  const s = setup(t);
+  let attempts = 0;
+  const writer = createCfactoryWriter({ writeKeyFile: s.file, redactor: s.redactor,
+    connectClient: async () => {
+      if (++attempts === 1) throw new Error('connect refused');
+      return { callTool: (request) => { s.calls.push(request); return reply(stageStarted); } };
+    } });
+  assert.equal((await writer.apply('plan_card', { card_key: 'FCT-9' }, before)).outcome, 'failed');
+  assert.equal(s.calls.length, 0);
+  assert.equal((await writer.apply('code_card', { card_key: 'FCT-9' }, before)).outcome, 'done (started)');
+  assert.equal(attempts, 2);
+  assert.equal(s.calls.length, 1);
 });
 
 test('never-allowed actions throw before any tool call', async (t) => {

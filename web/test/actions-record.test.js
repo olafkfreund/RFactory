@@ -56,3 +56,14 @@ test('unfinished finds executing actions across files and ignores a truncated li
   fs.writeFileSync(path.join(dir, '2026-11-17.jsonl'), j({ id: 'done', state: 'done' }) + '{"id":"half","state":"exec');
   assert.deepEqual(rec.unfinished().map((e) => e.id), ['lost']);
 });
+
+test('append separates a truncated line and uses its own timestamp for recovery', async (t) => {
+  const { dir, rec } = setup(t);
+  const file = path.join(dir, '2026-11-17.jsonl');
+  fs.writeFileSync(file, '{"id":"broken"');
+  await rec.append({ id: 'recover', state: 'executing', at: 'wrong' });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').at(-1)).at, '2026-11-17T12:00:00.000Z');
+  assert.deepEqual(rec.unfinished().map((e) => e.id), ['recover']);
+  await rec.append({ id: 'recover', state: 'uncertain' });
+  assert.deepEqual(rec.unfinished(), []);
+});

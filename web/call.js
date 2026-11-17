@@ -22,7 +22,11 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     for (const fn of listeners) fn(event);
   };
-  if (actions) actions.subscribe(emit);
+  if (actions) actions.subscribe((event) => {
+    if (event.type === 'action-result') {
+      if (call && callCount === event.action.generation && !call.stopping) queueSpeech(call, event.action.text);
+    } else emit(event);
+  });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
 
@@ -139,7 +143,11 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
 
   async function requestAction(c, item, generation) {
     let text;
-    try { text = (await actions.request(item.text, item.speaker)).text; }
+    try {
+      const result = await actions.request(item.text, item.speaker);
+      if (result.question) return answer(c, { ...item, kind: 'question' }, generation);
+      text = result.text;
+    }
     catch (error) {
       if (c.generation === generation && !c.stopping) log(`action failed: ${error.message}`);
       text = "Sorry, I can't do that right now.";

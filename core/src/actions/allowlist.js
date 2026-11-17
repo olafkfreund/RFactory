@@ -16,7 +16,7 @@ const plain = (value) => value !== null && typeof value === 'object' && !Array.i
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const bounded = (value, min, max) => typeof value === 'string' && value.length >= min && value.length <= max;
 const criteria = (value) => Array.isArray(value) && value.length <= 20 &&
-  value.every((item) => bounded(item, 0, 500));
+  value.every((item) => bounded(item, 1, 500) && item.trim().length > 0);
 
 function validate(proposal, { scope, snapshotKeys, redactor }) {
   const refuse = () => ({ ok: false, reason: 'I can\'t do that.' });

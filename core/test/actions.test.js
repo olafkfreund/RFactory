@@ -28,10 +28,12 @@ test('all eight actions accept their specified arguments', () => {
 test('each action refuses an invalid or out-of-bounds argument', () => {
   for (const args of [{ title: '' }, { title: 'x'.repeat(201) }, { title: 'x', status: 'done' },
     { title: 'x', tier: 'huge' }, { title: 'x', acceptance_criteria: Array(21).fill('x') },
-    { title: 'x', acceptance_criteria: ['x'.repeat(501)] }]) refused('create_card', args);
+    { title: 'x', acceptance_criteria: ['x'.repeat(501)] },
+    { title: 'x', acceptance_criteria: ['  '] }]) refused('create_card', args);
   for (const args of [{ card_key: 'FCT-9' }, { card_key: 'FCT-9', title: '' },
     { card_key: 'FCT-9', assignee: 'x'.repeat(81) }, { card_key: 'FCT-9', milestone: 'x'.repeat(81) },
-    { card_key: 'FCT-9', acceptance_criteria: [1] }, { card_key: 'FCT-9', tier: 'standard' }]) refused('update_card', args);
+    { card_key: 'FCT-9', acceptance_criteria: [1] },
+    { card_key: 'FCT-9', acceptance_criteria: [''] }, { card_key: 'FCT-9', tier: 'standard' }]) refused('update_card', args);
   refused('move_card', { card_key: 'FCT-9', status: 'review' });
   refused('move_card', { card_key: 'FCT-9' });
   refused('reprioritise_card', { card_key: 'FCT-9' });
@@ -81,6 +83,12 @@ test('stage actions start unless already done; run resumes the first unfinished 
   const finished = { ...card, stage_runs: { plan: { status: 'done' }, code: { status: 'done' }, test: { status: 'done' } } };
   assert.equal(deriveEffects('run_card', { card_key: 'FCT-9' }, finished).startsWork, false);
   assert.equal(deriveEffects('run_card', { card_key: 'FCT-9' }, finished).github, false);
+});
+
+test('run_card names and counts every owed stage', () => {
+  const effects = deriveEffects('run_card', { card_key: 'FCT-9' }, card);
+  assert.deepEqual(effects.stages, ['plan', 'code', 'test']);
+  assert.match(effects.text, /starts planning, then a build, then tests/);
 });
 
 test('server sentence names card key and title and ignores model wording', () => {
