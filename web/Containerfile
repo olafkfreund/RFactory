@@ -11,6 +11,8 @@ RUN cd core && npm ci --omit=dev
 COPY --chown=node:node web/package.json web/package-lock.json web/
 COPY --chown=node:node core/src core/src
 COPY --chown=node:node core/bin core/bin
+# #2's GitHub adapter loads its recorded read-only tool inventory from this fixture (#2 plan step 4)
+COPY --chown=node:node core/test/fixtures/github-tools-1.14.0.json core/test/fixtures/
 RUN cd web && npm ci --omit=dev
 COPY --chown=node:node web/server.js web/
 COPY --chown=node:node web/public web/public
