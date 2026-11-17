@@ -135,6 +135,12 @@ reviewers:
   1a the check becomes: the grep matches only `core/src/sources/cfactory.js`,
   `core/test/cfactory.test.js` and `core/test/fixtures/cfactory-*.json`.
   #2's own files stay free of Factory names.
+- **D6, found while building steps 2 to 4** (each recorded with its step's
+  commit):
+  - Step 2: `loadScope(file, env, secrets = [])` pushes the loaded
+    CFactory key onto the `secrets` array the caller then passes to
+    `makeRedactor`. The scope object never holds the key. Step 5's CLI and
+    step 6's server must pass that array.
 
 ## Steps
 

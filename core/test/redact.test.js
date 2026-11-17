@@ -51,3 +51,11 @@ test('authorization: Bearer <token> hides the token (plan D7)', () => {
   const out = toModel('authorization: Bearer samplevalue1234567890');
   assert.ok(!out.includes('samplevalue1234567890'), out);
 });
+
+test('CFactory credential patterns redact standalone and embedded keys', () => {
+  for (const prefix of ['acw', 'cfk']) {
+    const key = `${prefix}_${'A'.repeat(16)}`;
+    assert.equal(toModel(key), '[redacted]');
+    assert.equal(toModel(`title contains ${key} now`), 'title contains [redacted] now');
+  }
+});
