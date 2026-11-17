@@ -161,6 +161,34 @@ reviewers:
   `-` for `/`. The Codex review of wave A found two P2s in step 2 (a stale
   close state blocks reopening from the level; the geometry tests used a
   local copy of m01); they are fixed in the next commit.
+- **D11, all faces and a voice per face (owner, 2026-11-17).** The owner
+  asked for more animated faces, picked at random per stand-up or project,
+  and a male voice for male faces; approved the contact sheet ("approve
+  all"). All 40 portraits get anchors in `manifest.json`: 34 with a mesh
+  (m01 plus 33 fitted from m01's mesh by an affine map through each face's
+  lip corners and chin, each passing the fold and containment checks;
+  `maxDrop` is m01's 13 px scaled to each face) and
+  6 bearded faces (m04, m07, m08, m12, m15, m17) as `{ still: true, eyes }`:
+  blink, sway, nods and frame glow, no mouth warp. Step 5: scope `avatar`
+  takes an id, a list of ids or `"random"`, resolved once per call; the
+  voice follows the face: `m*` → Piper `en_US-joe-medium` (CC0, pinned by
+  SHA-256 `abf4b998…3f08d2`, built into the image, added to `NOTICE.md`),
+  `f*` → LJSpeech (unchanged). Selectable = has anchors.
+- **D12, renderer test and review fixes.** The renderer test failed on the
+  lead's host (the fallback frame differed from the reference in the frame
+  region: 1243 pixels, max delta 59) and passed in Codex's pane; commit
+  `a0123ab` was made with that failure. Cause: after repeated
+  `getImageData` reads Chrome moves the test canvas from GPU to CPU, and
+  the two resample the portrait (drawn at a half-pixel offset) differently;
+  only hosts with a GPU switch. Fix in the test only: the test canvas is
+  created with `willReadFrequently: true` (CPU from the first frame), and
+  the closed-frame checks compare regions (mouth, frame, badge,
+  disclosure) within 4 changed pixels. The renderer is unchanged for this;
+  Meet's camera is never read back with `getImageData`. The renderer draws
+  `still` anchors (D11) without the warp. Codex review of wave A/step 3: a
+  stale `closingAt` survives past 150 ms and blocks reopening from the
+  level alone (fixed with a regression test); the geometry tests run over
+  every mesh in the real manifest at d = 0..maxDrop.
 
 ## Steps
 

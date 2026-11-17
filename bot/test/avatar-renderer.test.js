@@ -24,7 +24,7 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
         Math.random = () => 0;
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 512;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         const labels = [];
         const fillText = ctx.fillText.bind(ctx);
         ctx.fillText = (value, ...args) => { labels.push(value); fillText(value, ...args); };
@@ -85,9 +85,35 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
       const changed = (a, b) => a.reduce((count, value, i) => count + (value !== b[i]), 0);
       assert.ok(changed(idle.mouth, open.mouth) > 100, 'mouth region should change when speaking');
       assert.equal(result.drawImages, 3, 'exception should occur during a mesh triangle');
-      assert.equal(triangleFailure.image, idle.image, 'triangle error fallback should draw the complete closed frame');
-      assert.equal(levelFailure.image, idle.image, 'speech error fallback should draw the closed frame');
-      assert.equal(result.idleFrame, idle.image, 'idle() should draw the closed frame immediately');
+      const closedFrames = await page.evaluate(async (urls) => {
+        const pixels = async (url) => {
+          const image = new Image();
+          image.src = url;
+          await image.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 512;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(image, 0, 0);
+          return ctx.getImageData(0, 0, 512, 512).data;
+        };
+        const [idle, ...others] = await Promise.all(urls.map(pixels));
+        const regions = { mouth: [205, 245, 55, 55], frame: [84, 68, 344, 344], ai: [392, 24, 96, 56], disclosure: [0, 412, 512, 100] };
+        return others.map((other) => Object.fromEntries(Object.entries(regions).map(([name, [x, y, width, height]]) => {
+          let changed = 0, maxDelta = 0;
+          for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
+            const i = (row * 512 + col) * 4;
+            const delta = Math.max(...[0, 1, 2, 3].map((channel) => Math.abs(other[i + channel] - idle[i + channel])));
+            if (delta > 2) changed++;
+            maxDelta = Math.max(maxDelta, delta);
+          }
+          return [name, { changed, maxDelta }];
+        })));
+      }, [idle.image, triangleFailure.image, levelFailure.image, result.idleFrame]);
+      for (const [index, name] of ['triangle fallback', 'speech fallback', 'idle()'].entries()) {
+        for (const [region, diff] of Object.entries(closedFrames[index])) {
+          assert.ok(diff.changed <= 4, `${name} changed ${diff.changed} pixels in ${region} (max channel delta ${diff.maxDelta})`);
+        }
+      }
       assert.equal(result.failed, 30);
       assert.equal(errors.filter((message) => message.includes('[avatar] render error')).length, 3);
     } finally {

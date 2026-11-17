@@ -26,20 +26,24 @@ test('every file matches its SHA-256', () => {
   }
 });
 
-test('m01 anchors lie inside 256x256 and reference known points', () => {
-  const a = manifest.portraits.m01.anchors;
-  assert.strictEqual(a.maxDrop, 13);
-  const { points, move, triangles } = a.mesh; // shape read by bot/avatar/state.js
-  for (const [x, y] of Object.values(points)) {
-    assert.ok(x >= 0 && x < 256 && y >= 0 && y < 256);
-  }
-  for (const t of triangles) for (const n of t) assert.ok(points[n], n);
-  for (const [n, f] of Object.entries(move)) assert.ok(points[n] && typeof f === 'number', n);
-  for (const e of a.eyes) assert.ok(e.x >= 0 && e.x < 256 && e.y >= 0 && e.y < 256 && e.w > 0);
+const inside = ([x, y]) => x >= 0 && x < 256 && y >= 0 && y < 256;
+
+test('m01 keeps its approved maxDrop', () => {
+  assert.strictEqual(manifest.portraits.m01.anchors.maxDrop, 13);
 });
 
-test('ids without anchors are not selectable', () => {
-  const selectable = ids.filter((id) => manifest.portraits[id].anchors);
-  assert.deepStrictEqual(selectable, ['m01']);
-  assert.strictEqual(ids.length - selectable.length, 39);
+test('every portrait has anchors: a mesh inside 256x256, or still with eyes', () => {
+  const still = [];
+  for (const id of ids) {
+    const a = manifest.portraits[id].anchors;
+    assert.ok(a, id);
+    for (const e of a.eyes) assert.ok(inside([e.x, e.y]) && e.w > 0, id);
+    if (a.still) { still.push(id); assert.ok(!a.mesh, id); continue; }
+    const { points, move, triangles } = a.mesh; // shape read by bot/avatar/state.js
+    for (const p of Object.values(points)) assert.ok(inside(p), id);
+    for (const t of triangles) for (const n of t) assert.ok(points[n], `${id} ${n}`);
+    for (const [n, f] of Object.entries(move)) assert.ok(points[n] && typeof f === 'number', `${id} ${n}`);
+    assert.ok(a.maxDrop > 0 && a.maxDrop <= 15, id); // m01's 13 px scaled to each face by the affine fit
+  }
+  assert.deepStrictEqual(still, ['m04', 'm07', 'm08', 'm12', 'm15', 'm17']);
 });
