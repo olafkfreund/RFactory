@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 10
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
@@ -113,3 +113,17 @@ New for Phase 3:
    and for how long?
 7. **Flooding:** how many pending proposals may wait at once before the
    bot declines new ones?
+
+## Decisions at approval (owner, 2026-11-17)
+
+The owner approved with the recommended answers:
+
+1. Only the owner may approve, for now.
+2. Anyone in the call may propose; approval is the safeguard.
+3. Approved actions may start plan, build and test runs, at most 10 per
+   call.
+4. "Start or resume" is enough; finished stages are not forced to re-run.
+5. An unapproved proposal expires after 10 minutes, at the end of the
+   call, or when its card changes, whichever comes first.
+6. The action record is kept for 90 days as an audit trail.
+7. At most 5 proposals may wait for approval at once.
