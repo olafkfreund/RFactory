@@ -207,6 +207,16 @@ these calls:
   The PAT is a fine-grained, read-only token for the fixture repo only,
   created by the owner in GitHub's UI (it cannot be minted by API).
 
+- **D12, step 10 uses the existing agenix GitHub token (owner, 2026-11-17).**
+  The owner chose `/run/agenix/api-github-token` over a fine-grained,
+  read-only PAT for the end-to-end run. That token is not read-only, so
+  for this run the read-only guarantee rests on `github-mcp-server
+  --read-only` plus the start-up inventory check (every listed tool is in
+  the recorded 27 and has `readOnlyHint: true`). The token is read from
+  agenix into the run's environment only (`token_env`), never copied to a
+  file or a scope. A fine-grained read-only PAT remains the production
+  requirement (spec).
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
