@@ -53,7 +53,7 @@ test('per-call checks run in order, each has its own error', async () => {
   await assert.rejects(g.call('get_item', { scope: 'local', id: 1 }), /invalid-arguments/);
   await assert.rejects(g.call('list_items', { scope: 'local', state: 'todo' }), /invalid-arguments/);
   await assert.rejects(g.call('list_items', { scope: 'local', extra: 'x' }), /invalid-arguments/);
-  for (const id of ['foreign/repo#1', 'see foreign/repo#1 and #2', 'https://github.com/foreign/repo/issues/1', 'https://api.github.com/repos/foreign/repo/issues/1']) {
+  for (const id of ['foreign/repo#1', 'see foreign/repo#1 and #2', 'https://github.com/foreign/repo/issues/1', 'https://api.github.com/repos/foreign/repo/issues/1', 'github.com/foreign/repo/issues/1', 'api.github.com/repos/foreign/repo/issues/1']) {
     await assert.rejects(g.call('get_item', { scope: 'local', id }), /foreign-reference/, id);
   }
   assert.deepEqual(source.calls, []);
