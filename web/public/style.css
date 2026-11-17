@@ -1,0 +1,5 @@
+body { font-family: sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+section { margin-top: 1rem; }
+li { margin-bottom: .5rem; }
+.evidence { color: #555; font-size: .9em; }
+#age, #destination { color: #555; font-size: .9em; }

@@ -143,6 +143,13 @@ reviewers:
     CFactory key onto the `secrets` array the caller then passes to
     `makeRedactor`. The scope object never holds the key. Step 5's CLI and
     step 6's server must pass that array.
+  - Step 6: `core/` has no package entry point, so `web/` requires deep
+    paths (`@rfactory/core/src/scope.js` and so on) through the `file:`
+    link. `server.js` exports `createApp({ source, brain, allowedEmails,
+    deadlineMs = 55000 })` for tests and runs `main()` only as the entry
+    point. Error codes in responses are whitelisted (the five brain codes;
+    kebab-case source codes, else `source-error`), and a non-200 shows
+    "Failed: <code>" in the page's status region.
 
 ## Steps
 
