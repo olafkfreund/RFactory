@@ -85,7 +85,9 @@ async function connect({ bin, token, logSafe = () => {} }) {
         if (itemRepo?.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) continue;
         const n = it.content?.number ?? it.number;
         const st = (it.fields || []).find((f) => f.name === 'Status');
-        if (n != null && st) projectStatus[n] = st.value ?? st.text ?? st.name_value;
+        // live 1.14.0 returns a single-select value as { id, name, color }; strings kept for older shapes
+        const v = st && (st.value ?? st.text ?? st.name_value);
+        if (n != null && st) projectStatus[n] = v && typeof v === 'object' ? v.name : v;
       }
     }
     return { repo: `${owner}/${repo}`, issues: iss.items, pulls: prs.items, checks, projectStatus, truncated: iss.truncated || prs.truncated || projTruncated, fetched_at: new Date().toISOString() };

@@ -52,6 +52,7 @@ test('fetchScope normalises, paginates, fetches checks and excludes foreign proj
     'pull_request_read:get_check_runs': { check_runs: [{ name: 'ci', conclusion: 'failure' }] },
     'projects_list:list_project_items': { items: [
       { content: { number: 1, url: 'https://github.com/o/r/issues/1' }, fields: [{ name: 'Status', value: 'Todo' }] },
+      { content: { number: 2, url: 'https://github.com/o/r/issues/2' }, fields: [{ name: 'Status', value: { id: '47fc9ee4', name: 'In Progress', color: 'YELLOW' } }] },
       { content: { number: 1, repository: { nameWithOwner: 'other/repo' } }, fields: [{ name: 'Status', value: 'Done' }] },
     ] },
   } });
@@ -61,7 +62,7 @@ test('fetchScope normalises, paginates, fetches checks and excludes foreign proj
   assert.deepEqual(raw.issues.map((i) => [i.number, i.state]), [[1, 'open'], [2, 'closed']]);
   assert.deepEqual(raw.pulls[0].closingIssuesReferences, []);
   assert.equal(raw.checks[3][0].name, 'ci');
-  assert.deepEqual(raw.projectStatus, { 1: 'Todo' });
+  assert.deepEqual(raw.projectStatus, { 1: 'Todo', 2: 'In Progress' }); // object form, as the live server returns it
   assert.equal(raw.truncated, false);
   assert.ok(raw.fetched_at);
 });
