@@ -44,7 +44,10 @@ function checkFacts(text, snapshot) {
     }) || countClaims.some((match) => {
       const amount = /^\d+$/.test(match[1]) ? Number(match[1]) : WORDS.indexOf(match[1].toLowerCase());
       return counts[CLAIM[match[2].toLowerCase()]] !== amount;
-    });
+    }) || (references.length > 0 && states.some((state) =>
+      // every state word outside a count must belong to some named item ("#3 is blocked and done")
+      !countClaims.some((c) => state.start >= c.index && state.start < c.index + c[0].length) &&
+      !references.some((ref) => byNumber.get(ref.number)?.state === state.state)));
     return invalid ? "I couldn't confirm that." : sentence;
   }).join('');
 }

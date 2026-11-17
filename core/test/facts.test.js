@@ -62,3 +62,11 @@ test('sentences without an ID or count survive and sentence boundaries stay inta
   assert.equal(checked('The update is done. #3 is done. #3 is blocked.'), `The update is done. ${refused} #3 is blocked.`);
   assert.equal(checked('No status was reported.'), 'No status was reported.');
 });
+
+test('a second, wrong state word next to a correct one is replaced (step 10 review)', () => {
+  const snap = { items: [{ id: 'o/r#3', state: 'blocked' }, { id: 'o/r#4', state: 'done' }] };
+  assert.equal(checkFacts('#3 is blocked and done.', snap), "I couldn't confirm that.");
+  assert.equal(checkFacts('#3 is blocked.', snap), '#3 is blocked.');
+  assert.equal(checkFacts('#3 is blocked and #4 is done.', snap), '#3 is blocked and #4 is done.');
+  assert.equal(checkFacts('1 blocked: #3 is blocked.', snap), '1 blocked: #3 is blocked.');
+});
