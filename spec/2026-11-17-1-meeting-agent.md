@@ -1,5 +1,5 @@
 ---
-status: approved
+status: draft
 issue: 1
 intent: intent/2026-11-17-1-meeting-agent.md
 ---
@@ -85,11 +85,14 @@ Phase 0 **passes** if, in one run with Chrome:
 - `host.enableCaptions()` returns true
 - the owner hears `hello.mp3` in the Meet
 - the owner says the known sentence "RFactory standup test one two three".
-  Within 10 s of them finishing it, a caption with their name and the
-  words "standup test" is printed. A partial caption counts. Captions are
-  only marked final once the next turn begins (`api/captions.js:1-4`), so a
-  final caption is checked separately, after the owner speaks a second
-  sentence.
+  Within 10 s of them saying it, judged by when the caption text grows to
+  include it, a caption with their name and the words "stand up" and
+  "test" is printed. A partial caption counts, and word order and spacing
+  are not checked (Meet heard "Test stand up").
+- one caption grows across both of the owner's sentences, and Meet
+  finalises it when the bot leaves. Meet keeps a single caption open while
+  the same person speaks, so a sentence-1 `final` before leaving cannot
+  happen with one speaker (amended after the step 6 runs, plan D9).
 - the bot leaves, Chrome closes, and the process exits with code 0
 
 These are recorded but do not decide pass or fail: the chat message, the

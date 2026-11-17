@@ -1,5 +1,5 @@
 ---
-status: approved
+status: draft
 issue: 1
 spec: spec/2026-11-17-1-meeting-agent.md
 coders:
@@ -46,13 +46,10 @@ admits the bot from the lobby.
     included
   - captions are enabled. This is proven by the owner's caption arriving (D7).
   - the owner hears the clip
-  - Sentence 1, "RFactory standup test one two three": the owner says it,
-    then sends `1` in the Meet chat. Within 10 s of that chat line, a
-    caption (partial is fine) with the owner's name and "standup test" is
-    logged.
-  - A final caption for sentence 1 is logged **before the `leaving`
-    marker**, which proves it came while the call was live and not from
-    cleanup.
+  - Sentence 1, "RFactory standup test one two three": within 10 s of the
+    owner saying it, judged by the caption's growth, a caption (partial is
+    fine) with the owner's name, "stand up" and "test" is logged (D9).
+  - One caption grows across both sentences and is finalised on leave (D9).
   - the bot leaves, Chrome closes, and the process exits 0
 - **Recorded but not gating:** the bot's own chat message, the Chromium
   run, the timings, and the share check (D5).
@@ -117,6 +114,20 @@ admits the bot from the lobby.
   All three are best-effort: a failure is logged and never changes the
   exit code. They use `call._inner.page` under the same `shortcut:` as D1.
   There are no new tests; the stub has no `page`, and the 10 tests still pass.
+
+- **D9, caption criteria changed after the second Chrome run (owner
+  approved, 2026-11-17).** Both Chrome runs showed that Meet keeps one
+  caption (id 1) open while the same person speaks: neither a second
+  sentence nor 30 s of silence finalised it, and the `final` came only on
+  leave. With one human speaker, D4 cannot pass. The chat `1` window from
+  D3 measured the owner's typing, not caption latency (rerun: the caption
+  came 10.5 s before the chat). So:
+  - latency is judged from the caption's growth: the sentence-1 words
+    appear within 10 s of being said. The chat `1` stays as a marker only;
+  - words are matched loosely ("stand up" and "test"), because Meet
+    transcribed "Test stand up";
+  - D4 is replaced by "one caption grows across both sentences and is
+    finalised on leave".
 
 ## Steps
 
@@ -357,9 +368,9 @@ admits the bot from the lobby.
    `captions.jsonl`:
    - `state: in-call`
    - `captions: enable requested`. The owner's caption arriving is the proof (D7).
-   - a caption containing "standup test" logged within 10 s of the owner's
-     `chat … 1` line
-   - a `final` line for sentence 1 logged before `leaving`
+   - a caption containing "stand up" and "test" within 10 s of the owner
+     saying sentence 1, from the caption's growth (D9)
+   - one caption that grows across both sentences, with a `final` on leave (D9)
    - exit 0
    - the owner confirms they heard the clip
 
