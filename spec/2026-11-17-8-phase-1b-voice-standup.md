@@ -37,18 +37,36 @@ flowchart LR
   `CHROME_PATH`, as Phase 0 did.
 - It talks to the server only through JSON lines on stdin/stdout:
   - out: `state` (joining, lobby, in-call, left, error + code),
-    `heard` (speaker, text, offset), `mic` (muted true/false), `spoke`
-    (done/cancelled), `log`;
-  - in: `speak` (base64 WAV), `cancel`, `leave`.
+    `heard` (caption block `id`, speaker, text: the library's
+    `{ id, speaker, text, final }` as-is), `mic` (muted true/false, a
+    local observation), `spoke` (done/cancelled/failed), `log`;
+  - in: `speak` (base64 WAV), `cancel`, `leave`;
+  - every line is size-limited (64 KiB in, 4 MiB out for WAV) and parsed
+    defensively; a malformed line is logged and dropped, never executed.
 - **Mic check after joining** (Phase 0 lesson): it reads Meet's mic
   button state (`data-is-muted`, as Phase 0's D8 diagnostics did, under a
   `shortcut:` comment because it uses `call._inner.page`), reports it, and
   speaks a short greeting ("RFactory here. Say 'RFactory' and your
-  question."). If the mic reads muted or `speak` throws `MutedError`, the
-  web page shows "the bot may not be heard" instead of pretending.
-- It leaves on `leave`, on Meet ending the call (`state: left/removed`),
-  on stdin closing, and after a hard limit of 60 minutes. `host.close()`
-  always runs (Phase 0's cleanup rule).
+  question."). It awaits both the `speak()` promise (rejects with
+  `MutedError` when the library's mute flag is set) and the playback
+  handle's `.done` (can reject or report `cancelled`). These are **local
+  observations**: an unmuted button and a finished playback do not prove
+  that attendees heard it. If either fails, or the mic reads muted, the
+  page shows "the bot may not be heard"; otherwise "greeting played (not
+  confirmed heard)".
+- **One shutdown path, `stop(reason)`,** for every trigger: `leave` on
+  stdin, stdin closing, Meet ending the call (`state: left/removed`), a
+  spoken leave command (below), and the 60-minute limit. It aborts a join
+  in progress (an `AbortController` passed as `join`'s `signal`), clears
+  timers and the question queue, cancels playback, marks the call
+  generation as ended so late brain or TTS results are dropped, then
+  calls `call.leave()` and `host.close()` (Phase 0's cleanup rule).
+- **The parent enforces it.** The server starts the child detached, in
+  its own process group (`xvfb-run`, Node, Xvfb and Chrome all inside).
+  To stop, it sends `leave`, waits 10 s for exit, then ends the whole
+  group (terminate, then forced after 5 s more), and waits for the exit
+  before allowing a new call. The parent enforces the 60-minute limit
+  the same way.
 
 ### Hearing: wake phrase and end of a question
 
@@ -56,8 +74,11 @@ The library gives no "speaker finished" signal, and a speaker's caption
 is one block that keeps growing (Phase 0, plan D9). So the server, not
 the library, decides when a question is complete:
 
-- **Per speaker block** it keeps an *answered offset*; only text after it
-  is new.
+- **Per caption block `id`** (not per speaker: a speaker can have
+  several blocks, and two people can share a display name) it keeps an
+  *answered offset*; only text after it is new. If a block's text gets
+  shorter or is revised before the offset, the offset is clamped to the
+  new length and nothing before it is re-answered.
 - **Wake phrase:** new text must contain the bot's name, matched loosely
   because Meet mis-captions it. Accepted forms (case-insensitive, word
   boundaries): `rfactory`, `r factory`, `r-factory`, `our factory`, `are
@@ -78,12 +99,19 @@ the library, decides when a question is complete:
 
 ### Understanding and answering
 
-- **Standup vs question:** if the question contains `standup` or
+- **Leave first:** if the addressed text is a leave command (`leave`,
+  `leave the call`, `go away`, `goodbye`, `stop`, `you can go`), the bot
+  says "Leaving now." and runs `stop('asked')` without calling the brain,
+  even while an answer is being spoken (that answer is cancelled).
+- **Standup vs question:** otherwise, if it contains `standup` or
   `stand up` / `stand-up`, it is a standup request; otherwise a project
   question.
 - **The brain gains a question.** `createClaudeBrain(...).turn(snapshot,
-  { deadline, question })`: when `question` is set, the prompt carries it
-  as `content: { untrusted: true, text }` next to the snapshot, and a
+  { deadline, question })`: when `question` is set, it first goes through
+  the same `toModel()` redactor as the snapshot (a credential spoken or
+  pasted into a caption never reaches Claude or the logs), then the prompt
+  carries it as `content: { untrusted: true, text }` next to the snapshot,
+  and a
   second fixed system prompt file is used
   (`claude-qa-system-prompt.txt`): answer only from the snapshot, at most
   three spoken sentences, say "I don't know" when the snapshot does not
@@ -99,16 +127,26 @@ the library, decides when a question is complete:
   3 s, the bot says "One moment." once. The 55 s deadline and the "board
   without summary" fallback stay; on a brain failure the bot says "Sorry,
   I can't answer that right now."
-- **Speaking card keys:** card keys are read as written ("F C T one"
-  would garble); the prompts tell the brain to say the card's title
-  briefly rather than the key where it can.
+- **Card keys stay in the answer until after the facts check.** The
+  prompts require every card the answer mentions to be named by its key,
+  optionally with a short title ("FCT-1, the accessibility card"),
+  because `checkFacts` validates keys, not titles: a sentence that states
+  a card's state by title alone would pass unchecked. Only after
+  `checkFacts` does a speech formatter rewrite keys for the voice ("FCT-1"
+  becomes "F C T 1"). The residual gap (a sentence with a title and a
+  state but no key) is the same as 1a's: it is not verified, and the
+  board on the page is the truth.
 
 ### Speech (TTS)
 
-- **Piper** (`piper-tts` 1.8.0 in nixpkgs, GPL-3.0, run as a separate
-  process) with the voice **`en_US-ljspeech-medium`**, trained on the
-  public-domain LJSpeech dataset. The voice files are fetched by a pinned
-  URL and SHA-256 at image build time.
+- **Piper**, run as a separate process, with the voice
+  **`en_US-ljspeech-medium`**, trained on the public-domain LJSpeech
+  dataset. The image is Debian-based, so Piper comes from its upstream
+  release, not nixpkgs: `pip install piper-tts==<pinned>` (the GPL-3.0
+  `piper1-gpl` project, which writes WAV to stdout) into a venv in the
+  image. The voice model (`.onnx`) and its config (`.onnx.json`) come
+  from `rhasspy/piper-voices` at a pinned commit, checked against pinned
+  SHA-256s at build time; the plan records exact versions and hashes.
 - Fallback when Piper or the voice is missing: **`espeak-ng`** (robotic,
   GPL-3.0-or-later). The page shows which voice is in use.
 - Piper writes WAV to stdout, which goes straight to `call.speak(Buffer)`;
@@ -125,7 +163,10 @@ the library, decides when a question is complete:
   - `GET /api/call/events`: Server-Sent Events with the bot state, mic
     state, voice, each addressed question (speaker as Meet shows it,
     marked "display name, not verified") and each answer (after the
-    facts check).
+    facts check), **together with the snapshot that answer used**: items,
+    counts, unknown states, `fetched_at` and `newest_update`. The page
+    re-renders the board and the data age from that snapshot, so what is
+    shown always matches what was said.
 - **Page:** a "Call" panel on the standup page in the same Factory style:
   link field and Join / Leave, status pill (joining, lobby, in call,
   left), mic and voice indicators, and the live log of questions and
@@ -197,8 +238,20 @@ the library, decides when a question is complete:
      prompt file is used; argv, env and destination check unchanged;
    - bot process protocol with a fake call object: state, heard, mic,
      speak, leave, and the 60-minute limit; `host.close()` always;
-   - routes: sign-in rules, link validation, 409 for a second call,
-     SSE stream content, `textContent`-only rendering, CSP unchanged.
+   - routes: sign-in rules, link validation (strict URL parse, only
+     `meet.google.com/<code>`), 409 for a second call, SSE content
+     including the snapshot per answer, `textContent`-only rendering,
+     CSP unchanged;
+   - shutdown: stop in the lobby, during playback, and with a child that
+     ignores `leave` (its process group is ended, and a new call is
+     allowed only after exit); late brain results after stop are dropped;
+   - the leave command is routed before the brain, also while speaking;
+   - caption ids: two blocks with the same speaker name, a shortened
+     block, a revised block;
+   - redaction: a credential-shaped string in a question never reaches
+     the brain's stdin or the logs;
+   - facts: an answer naming a blocked card as done by key is replaced;
+     the speech formatter runs only after the check.
 2. TTS smoke on p620: Piper with the voice produces WAV for a sample
    sentence; the espeak-ng fallback works with Piper missing.
 3. **Live run on p620** (owner's OK, agent bus first), in a Meet the owner
@@ -211,5 +264,6 @@ the library, decides when a question is complete:
      plan stage;
    - "RFactory, what about project X?" (another project): it declines;
    - normal talk without the name: no answer;
+   - "RFactory, leave": it says "Leaving now." and leaves;
    - Leave from the page: the bot leaves; no Chrome or Xvfb left.
    Results with quoted log lines go in the PR, with names replaced.
