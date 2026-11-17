@@ -5,16 +5,31 @@ spec: spec/2026-11-17-12-factory-screen-share.md
 coders:
   1: codex   # projection: redaction order, UTF-8 cap and trimming are small, tricky logic
   2: coder   # one routing rule plus tests, follows #10 D7's pattern
-  3: codex   # share manager: start token and stop races are small, tricky logic
-  4: coder   # routes, record composition, call wiring and page panel: broad but routine
+  3: codex   # share manager: start token, cancellation and recovery are small, tricky logic
+  4: coder   # scope switch, routes, record composition, call wiring and page panel: broad but routine
   5: coder   # viewer page and its headless Chrome tests
-  6: codex   # #3 protocol additions: schema-checked, security-sensitive, small
-  7: coder   # production adapter onto #3's runner client
+  6: codex   # #3 protocol, guest and runner additions: schema-checked, security-sensitive
+  7: coder   # production adapter onto #3's server→runner client
 reviewers:
   - codex    # independent review of the diff against this plan (agent-team)
 ---
 
 # Plan: Show the CFactory board in the call
+
+Nothing in this plan is built before both gates pass (intent constraint
+"D5 passes before any share work is built", decision 3, spec "Order and
+dependencies").
+
+## Gates
+
+- **G1, D5:** #1's share check passes on p620: with the owner's Meet link
+  and OK, `SHARE_TEST=1 spike/run.sh '<meet link>'` (Chrome), and the owner
+  sees the "RFactory share test" window in the call. Result recorded in
+  `spike/RESULTS.md`. **If it fails:** stop and report; #3's spec needs a
+  loopback design approved again (#3 spec 29–32) before any share work.
+- **G2, #3:** #3's steps 11 (window share), 13 and 14 (desktop routes and
+  page wiring) are merged to main. They themselves wait for #2's roles and
+  #3's other prerequisites (#3 plan 470–480).
 
 ## Decisions carried over (approved intent and spec)
 
@@ -22,23 +37,24 @@ reviewers:
   Factories and holds no credential. RFactory sends board **data** over
   #3's control channel; a viewer built into the desktop image draws it.
 - **First and only view:** the configured project's CFactory board.
-- **Projection** (`boardView`), from raw `cfactory_list_cards` + the
-  repository list, read key, configured repository only:
+- **Projection** from raw `cfactory_list_cards` + the repository list
+  (read key), configured repository only:
   `{ project ≤80, at, columns: {backlog|ready|in_progress|blocked|done:
   {total, shown, omitted}}, cards: [{ key ≤16, title ≤120, column,
   priority int|null, tier low|medium|hard|null, stages: {plan|code|test:
   none|queued|running|done|failed|unknown} }] }`. Stage from the latest
   `stage_runs` entry per stage: queued/dispatched → queued,
   running/in_progress → running, succeeded/done → done, failed/error →
-  failed, none → none, else unknown. Unknown card statuses are dropped and
-  counted as omitted. Never: descriptions, acceptance criteria, comments,
-  assignee emails, URLs, logs, other repositories.
+  failed, no run → none, else unknown. Never: descriptions, acceptance
+  criteria, comments, assignee emails, URLs, logs, other repositories.
 - **Order per string:** `redactor.logSafe` → title guard (`(password|passwd|
   secret|token|api[ _-]?key|credential)s?\s*[:=]`, case-insensitive →
-  "[title hidden]") → truncate.
+  "[title hidden]") → truncate. The guard lowers the risk of a secret in a
+  title; it cannot prove a title safe; the owner's approval is the check.
 - **Cap:** UTF-8 JSON ≤ 48 KiB after redaction and truncation. Trim `done`
-  first, then least recently updated per column; fixed fields alone over
-  the cap → not started, "the board is too large".
+  first, then the least recently updated per column; each column's
+  `omitted` says how many. Fixed fields alone over the cap → not started,
+  "the board is too large".
 - **Refresh** every 30 s while running, one read in flight; a failed read
   keeps the last frame marked stale ("as of hh:mm").
 - **Viewer:** `desktop/guest/agent/viewer/board.{html,js,css}`, constant URL
@@ -50,17 +66,21 @@ reviewers:
 - **#3 share contract:** approval record `{share_id, nonce, url:
   'https://rfactory-viewer.invalid/board.html', origin:
   'https://rfactory-viewer.invalid'}`; that origin is the share page's only
-  host; title locked `RFactory share <nonce>`; navigation, popup or window
-  change → `share-target-changed` → stop; driving tools refused on the
-  shared page. `view: 'board'` maps to the constant on server and guest;
-  the brain never names a URL.
+  host; title locked `RFactory share <nonce>`; navigation (even
+  same-origin), popup or window change → `share-target-changed` → stop;
+  driving tools refused on the shared page. `view: 'board'` maps to the
+  constant on server and guest; the brain never names a URL.
+- **Consent covers live updates.** The approval reads, on the page and in
+  the record: **"Share the live CFactory board of <project>, refreshed
+  every 30 seconds."** New data for the same view is not a change of what
+  is shown; another view or project needs a new approval (decision 5).
 - **Protocol additions** (host→guest): `view-open {share_id, nonce, view:
   'board', data}`, `view-data {share_id, data}`, `view-close {share_id}`;
   guest→host reply `view-closed {share_id}`. Guest validates `data`
-  against the schema and refuses any `share_id` but the open one. Recorded
-  as a #3 deviation. (The spec's Risks and Order sections say "two message
-  types"; its Design section, which this plan follows, defines three plus
-  one reply.)
+  against the schema and refuses any `share_id` but the open one.
+  Recorded as a #3 deviation. (The spec's Risks and Order sections say
+  "two message types"; its Design section, which this plan follows,
+  defines three plus one reply.)
 - **Hearing:** after leave, before action: "show/display/share/put up" +
   "board" at the start of the utterance → share request.
 - **Share manager** `web/shares.js`, its own module on `web/actions.js`'s
@@ -68,15 +88,14 @@ reviewers:
   proposed_by, proposed_at, expires_at}` + SHA-256 hash; 10-minute
   proposal expiry; ≤1 pending and ≤1 running per call; states `pending →
   starting → running → stopping → stopped | failed`; synchronous claim;
-  a **start token** rechecked after every await (read, `view-open`, share
-  start); Stop/expiry/call end/replacement invalidate it; a stale start
-  sends `view-close` + #3's stop. Replacement starts only after the old
+  a **start token** rechecked after every await; Stop, expiry, call end
+  or a replacement invalidate it. Replacement starts only after the old
   share is `stopped`.
-- **Stop:** route, call end, desktop/controller gone, failed `view-open`,
-  `share-target-changed`, or the **30-minute share lifetime**. Invalidate
-  token, clear timer, drop cached data, send #3 stop + `view-close`, wait
-  5 s for `view-closed`, retry once, then the runner destroys the desktop
-  and the failure is recorded and shown.
+- **Stop:** the stop route, call end, desktop or controller gone, a failed
+  open, `share-target-changed`, or the **30-minute share lifetime**.
+  Invalidate the token, clear the timer, drop cached data, stop capture
+  and close the viewer, wait 5 s for `view-closed`, retry once, then the
+  runner destroys the desktop and the failure is recorded and shown.
 - **Routes:** `POST /api/shares/:id/approve|reject` `{hash}` with
   `X-RFactory-Action: 1`, same-origin `Origin`, email in
   `RFACTORY_APPROVERS` (owner only). `POST /api/shares/stop` with the same
@@ -84,140 +103,248 @@ reviewers:
 - **Spoken (server-written only):** "I'd like to share the CFactory board.
   Approve it on the RFactory page." / "Sharing the board." / "Stopped
   sharing." / "I can't share the board right now: <reason>." / "Sharing is
-  turned off here."
+  turned off here." **Unavailable** (no desktop, shares off, CFactory read
+  fails, desktop refuses, too large): spoken **and** shown on the page
+  with the reason; nothing else is shared instead.
 - **Switches:** scope `shares_enabled: true` **and** `RFACTORY_SHARES=on`
   **and** the call has a #3 desktop.
-- **Record:** #10's daily action record gets `proposed, approved,
-  rejected, expired, started, stopped (reason), failed` with share id,
-  view, approver; never board data. `web/server.js` builds the record when
-  writes **or** shares are on, with no writer when writes are off. After a
-  restart, `starting`/`running` → `stopped (restart)`.
+- **Record:** #10's daily action record gets share entries; never board
+  data. `web/server.js` builds the record when writes **or** shares are
+  on, with no writer when writes are off. After a restart, a share whose
+  last state is `starting` or `running` is recorded `stopped (restart)`.
 
-## Open question for the owner
+## Deviations
 
-1. **Build order.** The spec says nothing in #12 is built before D5 and
-   #3's steps 11, 13 and 14. Steps 1–5 below do not touch #3 and stay off
-   behind the switches. Either **(a)** follow the spec: every step waits;
-   or **(b)** build steps 1–5 now, off by default, and only steps 6–8 wait
-   for D5 and #3. Recommended: (b); recorded as deviation D1 if chosen.
-
-## Gates
-
-- **G1:** D5 passes on p620 (owner's Meet link and OK), result in
-  `spike/RESULTS.md`. If it fails: stop; #3's spec needs a re-approved
-  loopback design first.
-- **G2:** #3's steps 11, 13 and 14 are on main (they themselves wait for
-  #2's roles, #3 plan 470–480).
+- **D1, unknown card status.** The spec counts a card with an unknown
+  status "in that card's nearest column", which it does not define. The
+  plan counts it in **backlog**'s `total` and `omitted` (never shown),
+  so the counts stay complete and the rule is deterministic.
 
 ## Steps
 
-Waves: A = steps 1, 2, 3, 5 in parallel worktrees; B = step 4; then
-(after G1, G2) step 6, step 7, steps 8–11 mine. Each step: worktree
-`RFactory-wt/12-stepN`, branch `wip/12-stepN`; commit only when core,
-web and bot suites all pass.
+Baseline and integration: when G1 and G2 pass, merge main (with #3 and
+Phase 3) into `feat/12-factory-screen-share`; that is the integration
+branch. Each step runs in worktree `RFactory-wt/12-stepN` on branch
+`wip/12-stepN` cut from the integration branch at that moment. The lead
+applies each finished step onto the integration branch and commits only
+when every suite in **Tests** passes there.
 
-1. **Board projection.** `core/src/sources/cfactory.js`: add
-   `boardView()` (raw list + repositories, same 10 s budget as
-   `snapshot()`), calling a pure `projectBoard(rawCards, repoId, project,
-   redactor, now)` in new `core/src/share/board.js`. Tests
-   `core/test/board.test.js`: fields only; other repos dropped; redaction
-   (`password=…`, `cfk_…`); title guard; redact-before-truncate (secret
-   across char 120); UTF-8 cap with multibyte and escaped titles; `done`
-   trimmed first; `omitted` right; fixed fields over cap → `{error:
-   'too-large'}`; every stage mapping incl. unknown; unknown status
-   counted as omitted.
-   Verify: `cd core && npm test`.
-   Traps: do not change `mapCard` or `snapshot()` (1a/1b depend on them);
-   measure bytes with `Buffer.byteLength(JSON.stringify(x))`.
-2. **Hearing.** `core/src/call/hearing.js`: kind `share` after leave,
-   before action, anchored at the utterance start (optional "please",
-   "can you"), needs "board". Tests: "show the board", "can you put up the
-   board" → share; "show me what's blocked" → question; "move FCT-9 to
-   done" → action; "leave" unchanged.
-   Verify: `cd core && npm test`. Traps: #10 D7 anchoring; keep every
-   existing hearing test.
-3. **Share manager.** New `web/shares.js` + `web/test/shares.test.js`:
-   `createShareManager({ board, desktop, record, redactor, clock, scope,
-   approvers, enabled })` → `request(text, speaker)`, `approve(id, email,
-   hash)`, `reject(...)`, `stop(email)`, `list()`, `subscribe(fn)`,
-   `startCall(generation, { desktop })`, `endCall()`, `recover()`.
-   `desktop` is an injected interface `{ open(shareId, nonce, data),
-   update(shareId, data), close(shareId) → Promise<'closed'|'timeout'>,
-   destroy(reason) }`; tests use a fake with controllable delays. Tests:
-   every share-manager line of the spec's Verification (owner-only 403,
-   hash, 10-min expiry, 30-min lifetime, concurrent approvals → one start,
-   Stop/expiry/call end/replacement during a delayed read or delayed open
-   never start a share, replacement only after `closed`, no `closed` → one
-   retry then `destroy` + `failed` recorded, stop by any allowlisted user,
-   refresh every 30 s with one read in flight, stale marking).
-   Verify: `cd web && npm test`. Traps: no `await` between check and
-   claim; token checked after **every** await; never put board data in
-   the record or events.
-4. **Server, call and page.** `web/server.js`: build the record when
-   `writes_enabled || shares on`; build the share manager when shares are
-   on (scope `shares_enabled` and `RFACTORY_SHARES=on`, `loadScope`
-   refuses one without the other, as #10's write switch); routes as in
-   Decisions; `GET /api/shares` for first render with `can_approve`;
-   `recover()` before listen. `web/call.js`: route `share` utterances to
-   `shares.request`, speak server sentences only for the live call
-   (#10 D7's counter), forward events with replay, `endCall` on every stop
-   path; with shares off answer "Sharing is turned off here." `web/public`:
-   "Share" panel (pending with Approve/Reject for approvers, "Sharing:
-   CFactory board" + Stop), `textContent` only. Until step 7 the `desktop`
-   is `null`, so a request is answered "I can't share the board right now:
-   no desktop for this call."
-   Tests: route checks (header, origin, non-approver, wrong hash), stop by
-   allowlisted non-approver, server composition with writes off + shares
-   on (record built and written, no writer), restart → `stopped
-   (restart)`, hostile payload rendered as text.
-   Verify: core, web, bot suites; `grep -rn innerHTML web/public` empty.
-   Traps: do not change #10's action routes or their behaviour.
-5. **Viewer.** New `desktop/guest/agent/viewer/board.{html,js,css}` and
-   `desktop/guest/agent/viewer/board.test.js` using the Playwright already
-   in `bot/node_modules` (headless Chrome, no network): a harness opens
-   the constant URL with the same route handler the guest will use
-   (export it from `desktop/guest/agent/viewer/route.js`). Tests: renders a
-   fixture; hostile title stays text; CSP enforced (injected `fetch` and
-   an external `<img>` fail); a fourth path is aborted; no `a[href]`,
-   `form`, `input`; banner and stale "as of"; "+N more" from `omitted`.
-   Verify: `node --test desktop/guest/agent/viewer/`. Traps: no inline
-   script or style (CSP); the files are standalone (no imports from web/).
-6. **[after G1, G2] #3 protocol and guest.** In #3's code on main:
-   `desktop/guest/agent/control.js` schema gains `view-open`, `view-data`,
-   `view-close` (host→guest) and `view-closed` (guest→host); the guest
-   agent opens the viewer through step 11's share window (title nonce,
-   lock, auto-select, consent bound to the constant URL/origin,
-   `share-target-changed`), feeds `data` to the page, refuses foreign
-   `share_id`s, closes on `view-close` and answers `view-closed`; the
-   runner forwards them and enforces the 64 KiB limit. Record the
-   additions as a deviation in #3's plan. Tests: schema accept/refuse,
-   foreign id refused, oversize refused, close answered, navigation and
-   popup → `share-target-changed`.
-   Verify: #3's desktop suites plus core, web, bot.
-7. **[after step 6] Production adapter.** `web/share-desktop.js`: the
-   `desktop` interface over #3's server→runner client (mTLS) for the
-   call's desktop; `startCall` passes it when the call has a desktop.
-   Tests with a fake runner client.
-   Verify: all suites.
-8. **Deploy (mine, owner's OK, agent bus first).** Containerfile copies
-   `web/shares.js`, `web/share-desktop.js`, `core/src/share/`; the guest
-   image gains the viewer; scope `shares_enabled: true`; `pod.sh`
-   `RFACTORY_SHARES=on`. Check: `GET /api/shares`, approve without header
-   → 403, no board data in logs.
-9. **Reviews:** fresh Opus agent (plan + `git diff`) and Codex
-   (`reviewers`), read-only; fix findings with tests.
-10. **Live test (owner):** the spec's Verification 2.
-11. **PR** linking intent, spec and plan; who did each step.
+Waves: **A** = steps 1, 2, 3, 5 in parallel; **B** = steps 4 and 6 in
+parallel (after A is on the integration branch); **C** = step 7; then
+steps 8–11 (lead).
+
+1. **Board projection.**
+   - Files: `core/src/sources/cfactory.js` (add `boardView()`), new
+     `core/src/share/board.js` (pure `projectBoard(rawCards, repos,
+     repoId, project, redactor, now)`), new `core/test/board.test.js`.
+   - `boardView()` reads `cfactory_list_cards` and the repository list in
+     one 10 s budget, like `snapshot()`. `projectBoard` keeps a card only
+     when the existing `repositoryOf(card, repos)` equals `repoId` (this
+     covers the `issue_ref` fallback and the default repository), then
+     projects, redacts, guards, truncates and caps as in Decisions; D1 for
+     unknown statuses.
+   - Tests: only the listed fields; a card of another repository and one
+     that falls back to the default repository via `issue_ref`; redaction
+     (`password=…`, `cfk_…`); the guard hides "DB password:
+     horse-battery"; a secret straddling character 120 is still removed;
+     the cap on UTF-8 bytes with multibyte (`ø`, emoji) and escaped
+     (`"`, `\`) titles; `done` trimmed first and `omitted` right; fixed
+     fields over the cap → `{ error: 'too-large' }`; every stage mapping
+     including an unknown value; a card with status `archived` → counted
+     in backlog `total` and `omitted` (D1).
+   - Verify: `cd core && npm test` → 0 failures.
+   - Traps: do not change `mapCard` or `snapshot()` (1a/1b depend on
+     them); measure with `Buffer.byteLength(JSON.stringify(x), 'utf8')`;
+     redact before truncating.
+2. **Hearing.**
+   - Files: `core/src/call/hearing.js`, `core/test/hearing.test.js`.
+   - Kind `share` after leave and before action, anchored at the start of
+     the utterance (optional "please", "can you"), and the utterance must
+     contain "board".
+   - Tests: "show the board", "can you put up the board", "please display
+     the board" → share; "show me what's blocked" → question; "move FCT-9
+     to done" → action; "run the standup" → standup; "leave the call" →
+     leave.
+   - Verify: `cd core && npm test` → 0 failures.
+   - Traps: #10 D7's anchoring; every existing hearing test stays.
+3. **Share manager.**
+   - Files: new `web/shares.js`, new `web/test/shares.test.js`;
+     `web/actions-record.js` and `web/test/actions-record.test.js`.
+   - `createShareManager({ board, record, redactor, clock, scope,
+     approvers, enabled })` → `request(text, speaker)`, `approve(id,
+     email, hash)`, `reject(id, email, hash)`, `stop(email)`, `list()`,
+     `subscribe(fn)`, `startCall(generation, { desktop })`, `endCall()`,
+     `recover()`.
+   - **Desktop interface** (injected per call; tests use a fake with
+     controllable delays and failures). Every method takes the
+     `shareId`; the manager keeps the desktop it claimed with, so stale
+     cleanup always targets the original share and desktop:
+     - `openView(shareId, nonce, data)` → resolves when the viewer page
+       is loaded, **no capture yet**;
+     - `startShare(shareId, nonce)` → resolves when #3's window capture
+       runs;
+     - `updateView(shareId, data)`;
+     - `stopShare(shareId)` → stops capture (best effort, may reject);
+     - `closeView(shareId)` → resolves `'closed'` on `view-closed` or
+       `'timeout'` after 5 s;
+     - `onEvent(fn)` → delivers `{ type: 'share-target-changed' |
+       'desktop-gone', shareId }`;
+     - `destroy(reason)`.
+   - **Start sequence:** claim (sync) → `starting`, record `starting` →
+     `board()` → token check → `openView` → token check → `startShare` →
+     token check → `running`, record `running`. A stale token at any check
+     → `stopShare` + `closeView` for that share, no `running`. Stop calls
+     `stopShare` **and** `closeView` even if `stopShare` rejects (closing
+     the viewer ends the capture). `closeView` `'timeout'` → one retry →
+     `destroy('close-timeout')`, record `failed`, show it.
+   - **Record changes:** share entries carry `kind: 'share'`; durable
+     states `proposed, approved, rejected, expired, starting, running,
+     stopped (reason), failed`. `unfinished()` returns only action
+     entries (`kind` absent) in `executing`, unchanged for #10; new
+     `unfinishedShares()` returns share ids whose **last** state is
+     `starting` or `running`. `recover()` records each as
+     `stopped (restart)`.
+   - Tests: owner-only approve (403 otherwise) and hash; 10-minute
+     proposal expiry; 30-minute lifetime stop; two concurrent approvals →
+     one `openView`; **Stop, expiry, call end and a replacement while
+     `board()`, `openView` or `startShare` is delayed** → never `running`,
+     cleanup on the original share and desktop; a late `openView` that
+     resolves after `closeView` → closed again, never `running`;
+     `stopShare` rejecting → `closeView` still called; replacement starts
+     only after `'closed'`; `'timeout'` → one retry then `destroy` and
+     `failed`; `share-target-changed` and `desktop-gone` → stopped with
+     reason; stop by an allowlisted non-approver; refresh every 30 s with
+     one read in flight; failed read → stale, last frame kept; the
+     approval text is "Share the live CFactory board of <project>,
+     refreshed every 30 seconds."; never board data in records or events;
+     `unfinished()` ignores share entries and `unfinishedShares()` ignores
+     actions, both from real JSONL files.
+   - Verify: `cd web && npm test` → 0 failures.
+   - Traps: no `await` between check and claim; token checked after
+     **every** await; do not change `unfinished()`'s behaviour for actions.
+4. **Switch, server, call and page.**
+   - Files: `core/src/scope.js` + `core/test/scope.test.js` (the
+     `shares_enabled` switch: `loadScope` refuses `shares_enabled: true`
+     without `RFACTORY_SHARES=on` and the reverse, like #10's write
+     switch); `web/server.js` + `web/test/server.test.js`; `web/call.js` +
+     `web/test/call.test.js`; `web/public/index.html`, `web/public/app.js`,
+     `web/public/style.css` + `web/test/app.test.js`.
+   - Server: build the record when `writes_enabled` **or** shares are on,
+     the writer only when writes are on; build the share manager when
+     shares are on; routes as in Decisions; `GET /api/shares` →
+     `{ pending, running, history, can_approve }`; `recover()` before
+     listen.
+   - Call: route `share` utterances to `shares.request`; speak server
+     sentences only in the originating live call (#10 D7's counter);
+     forward share events into the event stream with replay; `endCall` on
+     every stop path; shares off → "Sharing is turned off here." Until
+     step 7 the call's `desktop` is `null`, so a request is answered "I
+     can't share the board right now: no desktop for this call." and the
+     page shows that reason.
+   - Page: a **Share** panel: a pending share shows the approval text
+     "Share the live CFactory board of <project>, refreshed every 30
+     seconds." with Approve/Reject for approvers; a running share shows
+     "Sharing: CFactory board" with Stop; an unavailable share shows its
+     reason. `textContent` only.
+   - Tests: `loadScope` switch both ways; route checks (missing header,
+     foreign origin, non-approver, wrong hash → 403/409); stop by an
+     allowlisted non-approver; server with writes off + shares on (record
+     built and written, no writer object); restart with a `running` share
+     in the JSONL → `stopped (restart)`; the approval text and an
+     unavailable reason rendered; a hostile payload rendered as text.
+   - Verify: `cd core && npm test`, `cd web && npm test`, `cd bot && npm
+     test` → 0 failures; `grep -rn innerHTML web/public` → no output.
+   - Traps: do not change #10's action routes or their behaviour; the
+     action manager still exists only with writes on.
+5. **Viewer.**
+   - Files: new `desktop/guest/agent/viewer/board.html`, `board.js`,
+     `board.css`, `route.js` (the route handler the guest uses: fulfils
+     exactly the three paths, aborts the rest), `board.test.js`.
+   - The test uses `desktop/`'s own `playwright-core` (installed by #3)
+     and Chrome from `RF_TEST_CHROME`, like #3's browser tests, but it
+     **fails** instead of skipping when `RFACTORY_REQUIRE_BROWSER=1`.
+   - Tests: renders a fixture board; a hostile title (`<img src=x
+     onerror=…>`, a URL) stays text; the CSP is enforced (an injected
+     `fetch('https://example.com')` and an external `<img>` fail); a
+     fourth path (`/x.js`) is aborted; no `a[href]`, `form` or `input`;
+     banner with "as of hh:mm" and stale marking; "+N more" from
+     `omitted`.
+   - Verify: `cd desktop && RF_TEST_CHROME=/usr/bin/google-chrome-stable
+     RFACTORY_REQUIRE_BROWSER=1 node --test guest/agent/viewer/` → 0
+     failures, 0 skipped.
+   - Traps: no inline script or style (the CSP blocks them); the files
+     import nothing from `web/`.
+6. **#3 protocol, guest and runner.**
+   - Files (#3's code on main): `desktop/runner/protocol.js` (schemas for
+     `view-open`, `view-data`, `view-close`, `view-closed`; the 64 KiB
+     frame limit stays); `desktop/guest/agent/index.js` (dispatch);
+     `desktop/guest/agent/share.js` (from #3 step 11: open the viewer as
+     the share window with the nonce title, lock, auto-select and consent
+     bound to the constant URL/origin; `share-target-changed` on
+     navigation, popup or window change); `desktop/runner/runner.js`
+     (forward the messages; the server→runner request body limit, 16 KiB
+     today, raised to **64 KiB for the view messages only**); the
+     server→runner client used by step 7; their tests; and a deviation
+     entry in `plan/2026-11-17-3-agent-workspace.md`.
+   - Guest rules: validate `data` against the projection schema; refuse
+     any `share_id` but the open one; keep a set of closed ids and refuse
+     a late `view-open` for one of them; `view-close` closes the window,
+     drops the data and answers `view-closed`.
+   - Tests: schema accept/refuse per type; foreign and closed ids
+     refused; an oversize frame refused; a board of ~47 KiB passes through
+     client → runner → vsock framing; `view-closed` answered; navigation,
+     popup and window change → `share-target-changed`.
+   - Verify: `cd desktop && RF_TEST_CHROME=/usr/bin/google-chrome-stable
+     RFACTORY_REQUIRE_BROWSER=1 npm test`, plus core, web, bot → 0
+     failures.
+   - Traps: additive only; no change to #3's network rules, handover or
+     other message types.
+7. **Production adapter.**
+   - Files: new `web/share-desktop.js` + `web/test/share-desktop.test.js`;
+     `web/call.js` (pass the adapter in `startCall` when the call has a
+     desktop).
+   - Implements step 3's desktop interface over #3's server→runner client
+     (mTLS) for the call's desktop: `openView`→`view-open`,
+     `updateView`→`view-data`, `closeView`→`view-close` awaiting
+     `view-closed` (5 s), `startShare`/`stopShare` → #3 step 11's share
+     start/stop, `onEvent` from `share-target-changed` and desktop loss,
+     `destroy` → the runner's destroy.
+   - Tests with a fake runner client: each mapping; a ~47 KiB board
+     accepted; `view-closed` timeout → `'timeout'`.
+   - Verify: all suites in **Tests** → 0 failures.
+   - Traps: the adapter never builds a URL; it sends `view: 'board'`.
+8. **Deploy (lead; owner's OK; agent bus first).**
+   `web/Containerfile` copies `web/shares.js`, `web/share-desktop.js`,
+   `core/src/share/`; the guest image gains the viewer; scope
+   `shares_enabled: true`; `deploy/pod.sh` passes `RFACTORY_SHARES=on`.
+   Checks: `GET /api/shares` answers; an approve without the header →
+   403; no board data in the container logs.
+9. **Reviews:** a fresh Opus agent given this plan and `git diff`, and
+   Codex (`reviewers`), read-only; findings fixed with tests.
+10. **Live test (owner, on p620):** in a Meet: "RFactory, show the board"
+    → the page shows the approval text → Approve → Meet shows only the
+    board window, refreshing; **Stop** ends it at once; a second "show
+    the board" needs a new approval; a non-owner account gets 403 on
+    approve; an unapproved proposal expires after 10 minutes; "RFactory,
+    show the board" with shares off → "Sharing is turned off here."
+11. **PR** linking intent, spec and plan; which steps Codex and the coder
+    did.
 
 ## Tests
 
-`cd core && npm test`, `cd web && npm test`, `cd bot && npm test`,
-`node --test desktop/guest/agent/viewer/`, and from step 6 #3's desktop
-suites: all pass. `grep -rn innerHTML web/public` prints nothing.
+On the integration branch, all with 0 failures:
+
+```bash
+cd core && npm test
+cd web && npm test
+cd bot && npm test
+cd desktop && RF_TEST_CHROME=/usr/bin/google-chrome-stable RFACTORY_REQUIRE_BROWSER=1 npm test
+grep -rn innerHTML web/public   # no output
+```
 
 ## Rollback
 
 Shares are off unless both switches are on: set `RFACTORY_SHARES=off` (or
-`shares_enabled: false`) and restart the pod. Steps 1–5 are additive
+`shares_enabled: false`) and restart the pod. Steps 1–5 and 7 are additive
 modules; revert their commits. Step 6's message types are additive in
 #3's schema; revert that commit to remove them.
