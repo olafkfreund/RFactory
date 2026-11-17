@@ -78,9 +78,12 @@ test('rejects a pasted CFactory key anywhere in the scope', () => {
 test('rejects readable key files and malformed keys', () => {
   const f = fixture();
   try {
-    fs.chmodSync(f.keyFile, 0o644);
-    assert.throws(() => f.load(), /key-file-mode/);
+    for (const mode of [0o644, 0o620, 0o602]) {
+      fs.chmodSync(f.keyFile, mode);
+      assert.throws(() => f.load(), /key-file-mode/);
+    }
     fs.chmodSync(f.keyFile, 0o600);
+    assert.deepEqual(f.load(), f.scope);
     fs.writeFileSync(f.keyFile, 'cfk_short\n');
     assert.throws(() => f.load(), /invalid-key/);
   } finally { f.cleanup(); }

@@ -68,3 +68,39 @@ test('source-timeout when the client never answers', async () => {
   const s = src({ callTool: () => new Promise(() => {}) });
   await assert.rejects(s.snapshot(), /source-timeout/);
 });
+
+test('failed calls close and reconnect once within the snapshot deadline', async () => {
+  let closed = 0, connected = 0, created = 0;
+  const first = { ...fake(), async connect() { connected++; }, async callTool(req) {
+    if (req.name === 'cfactory_list_git_repositories' && !this.started) {
+      this.started = true;
+      return reply(repos);
+    }
+    throw new Error('connection lost');
+  }, async close() { closed++; } };
+  const second = { ...fake(), async connect() { connected++; }, async close() {} };
+  const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2,
+    clientFactory: () => (++created === 1 ? first : second), timeoutMs: 100 });
+  await s.start();
+  assert.deepEqual((await s.snapshot()).items.map((i) => i.id).slice(0, 2), ['FCT-1', 'FCT-2']);
+  assert.equal(closed, 1);
+  assert.equal(connected, 2);
+  assert.equal(created, 2);
+  await s.close();
+});
+
+test('a second failed call throws after one reconnect', async () => {
+  let created = 0;
+  const clientFactory = () => {
+    created++;
+    return { connect: async () => {}, close: async () => {}, callTool: async ({ name }) => {
+      if (created === 1 && name === 'cfactory_list_git_repositories') return reply(repos);
+      throw new Error('still down');
+    } };
+  };
+  const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2,
+    clientFactory, timeoutMs: 100 });
+  await s.start();
+  await assert.rejects(s.snapshot(), /still down/);
+  assert.equal(created, 2);
+});

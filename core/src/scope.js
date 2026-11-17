@@ -24,7 +24,7 @@ function loadScope(file, env = process.env, secrets = []) {
         !path.isAbsolute(source.key_file)) throw new Error('invalid-scope');
     const url = new URL(source.mcp_url);
     if (url.protocol !== 'https:' && (url.protocol !== 'http:' || url.hostname !== '127.0.0.1')) throw new Error('invalid-scope');
-    if (fs.statSync(source.key_file).mode & 0o044) throw new Error('key-file-mode');
+    if (fs.statSync(source.key_file).mode & 0o077) throw new Error('key-file-mode');
     key = fs.readFileSync(source.key_file, 'utf8').trim();
     if (!/^(acw|cfk)_[A-Za-z0-9]{16,}$/.test(key)) throw new Error('invalid-key');
   } else if (scope.source?.kind !== 'github') throw new Error('invalid-scope');

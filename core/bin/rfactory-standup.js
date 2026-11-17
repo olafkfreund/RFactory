@@ -27,10 +27,14 @@ function parse(argv) {
 }
 
 // Loads the scope and wires every module; shared with bench/ollama-standup.js.
-async function setup(scopeFile, env, { needSource = true, spawn } = {}) {
+async function setup(scopeFile, env, { needSource = true, spawn, sourceFactory = createCfactorySource } = {}) {
   let scope;
   const loaded = [];
   try { scope = loadScope(scopeFile, env, loaded); } catch (e) { throw fail(4, `scope: ${e.message}`); }
+  if (!((scope.source.kind === 'cfactory' && scope.brain.kind === 'claude-cli') ||
+        (scope.source.kind === 'github' && ['openai-compat', 'ollama'].includes(scope.brain.kind)))) {
+    throw fail(4, 'unsupported-scope');
+  }
   const secretOf = (name) => (name ? env[name] : undefined);
   const token = secretOf(scope.source.token_env);
   const cfactory = scope.source.kind === 'cfactory';
@@ -41,7 +45,7 @@ async function setup(scopeFile, env, { needSource = true, spawn } = {}) {
   if (!needSource) return { scope, redactor };
   const logSafe = (s) => process.stderr.write(redactor.logSafe(s));
   if (cfactory) {
-    const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: loaded[0], repositoryId: scope.source.repository_id });
+    const source = sourceFactory({ mcpUrl: scope.source.mcp_url, key: loaded[0], repositoryId: scope.source.repository_id });
     await source.start();
     return { scope, redactor, source, brain: createClaudeBrain(scope, redactor, { spawn }) };
   }
@@ -100,13 +104,13 @@ async function approveClaude(brain, spawn) {
 
 const ageOf = (snapshot) => Math.max(0, Math.round((Date.now() - Date.parse(snapshot.fetched_at)) / 1000));
 
-async function main(argv, env, write, { spawn = nodeSpawn } = {}) {
+async function main(argv, env, write, { spawn = nodeSpawn, sourceFactory } = {}) {
   let redactor = makeRedactor([]);
   let out = (s) => write(redactor.logSafe(s));
   let source;
   try {
     const { command, scopeFile, question } = parse(argv);
-    const ctx = await setup(scopeFile, env, { needSource: command !== 'approve-destination', spawn });
+    const ctx = await setup(scopeFile, env, { needSource: command !== 'approve-destination', spawn, sourceFactory });
     redactor = ctx.redactor;
     source = ctx.source;
     out(destinationLine(ctx.scope));

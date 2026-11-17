@@ -38,34 +38,54 @@ function mapCard(card) {
   };
 }
 
-function createCfactorySource({ mcpUrl, key, repositoryId, client, timeoutMs = 10000 }) {
+function createCfactorySource({ mcpUrl, key, repositoryId, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
   let c = client;
-  async function call(name) {
+  let reconnecting;
+  async function within(promise, deadline) {
     let timer;
-    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('source-timeout')), timeoutMs); });
-    try {
-      const r = await Promise.race([c.callTool({ name, arguments: {} }), timeout]);
-      const text = (r.content || []).map((x) => x.text || '').join('');
-      if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
-      const v = JSON.parse(text);
-      return v && typeof v === 'object' ? v : {};
-    } finally { clearTimeout(timer); }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('source-timeout');
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('source-timeout')), remaining); });
+    try { return await Promise.race([promise, timeout]); }
+    finally { clearTimeout(timer); }
   }
-  const repoList = async () => {
-    const r = await call('cfactory_list_git_repositories');
+  async function connect() {
+    const next = clientFactory();
+    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+    c = next;
+  }
+  async function call(name, deadline = Date.now() + timeoutMs) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const current = c;
+      try {
+        const r = await within(current.callTool({ name, arguments: {} }), deadline);
+        const text = (r.content || []).map((x) => x.text || '').join('');
+        if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
+        const v = JSON.parse(text);
+        return v && typeof v === 'object' ? v : {};
+      } catch (error) {
+        if (attempt || error.message === 'source-timeout') throw error;
+        if (!reconnecting && c === current) reconnecting = (async () => {
+          if (current.close) await current.close().catch(() => {});
+          await connect();
+        })().finally(() => { reconnecting = undefined; });
+        if (reconnecting) await within(reconnecting, deadline);
+      }
+    }
+  }
+  const repoList = async (deadline) => {
+    const r = await call('cfactory_list_git_repositories', deadline);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
   return {
     async start() {
-      if (!c) {
-        c = new Client({ name: 'rfactory-core', version: '0' });
-        await c.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
-      }
+      if (!c) await connect();
       if (!(await repoList()).repositories.some((r) => r.id === repositoryId)) throw new Error('scope-unknown-repository');
     },
     async snapshot() {
       // in parallel, so both reads fit the plan's single 10 s budget
-      const [repos, { cards }] = await Promise.all([repoList(), call('cfactory_list_cards')]);
+      const deadline = Date.now() + timeoutMs;
+      const [repos, { cards }] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]);
       const items = (Array.isArray(cards) ? cards : []).filter((x) => x && repositoryOf(x, repos) === repositoryId).map(mapCard);
       const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
       return { items, fetched_at: new Date().toISOString(), newest_update };

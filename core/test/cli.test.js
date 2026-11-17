@@ -6,7 +6,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
-const { destinationHash } = require('../src/brains/destination.js');
+const { destinationHash, claudeHash } = require('../src/brains/destination.js');
 const recorded = require('./fixtures/github-tools-1.14.0.json');
 
 const CLI = path.join(__dirname, '..', 'bin', 'rfactory-standup.js');
@@ -96,7 +96,7 @@ function claudeScope(name) {
   return f;
 }
 
-function fakeSpawn(init) {
+function fakeSpawn(init, result) {
   const calls = [];
   const spawn = (command, args) => {
     const child = new EventEmitter();
@@ -104,7 +104,7 @@ function fakeSpawn(init) {
     child.stderr = new PassThrough();
     child.stdin = new Writable({ write(c, e, done) { done(); }, final(done) {
       setImmediate(() => {
-        child.stdout.end(args[0] === '--version' ? '1.0.0\n' : `${JSON.stringify({ type: 'system', subtype: 'init', ...init })}\n`);
+        child.stdout.end(args[0] === '--version' ? '1.0.0\n' : JSON.stringify(result || { type: 'system', subtype: 'init', ...init }) + '\n');
         child.emit('close', 0);
       });
       done();
@@ -131,4 +131,44 @@ test('approve-destination (claude-cli) prints a 64-hex hash for empty tools and 
   const code = await main(['approve-destination', '--scope', claudeScope('empty')], {}, (s) => lines.push(s), { spawn: f.spawn });
   assert.equal(code, 0, lines.join('\n'));
   assert.match(lines.join('\n'), /approved_hash: [0-9a-f]{64}/);
+});
+
+test('unsupported source and brain pairings exit 4', async () => {
+  const cfactory = claudeScope('wrong-cfactory');
+  const scope = JSON.parse(fs.readFileSync(cfactory, 'utf8'));
+  scope.brain.kind = 'ollama';
+  fs.writeFileSync(cfactory, JSON.stringify(scope));
+  const github = scopeFile('wrong-github', { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' });
+  for (const file of [cfactory, github]) {
+    const r = await run(['standup', '--scope', file], env);
+    assert.equal(r.code, 4, r.stdout + r.stderr);
+    assert.match(r.stdout, /unsupported-scope/);
+  }
+});
+
+test('CFactory standup prints destination, data age, counts, and checked summary', async () => {
+  const file = claudeScope('standup');
+  const scope = JSON.parse(fs.readFileSync(file, 'utf8'));
+  scope.brain.approved_hash = claudeHash({ version: '1.0.0', home: scope.brain.home });
+  fs.writeFileSync(file, JSON.stringify(scope));
+  const fake = fakeSpawn({}, { result: 'FCT-1 is done. FCT-99 is done.' });
+  const calls = [];
+  const sourceFactory = () => ({
+    async start() { calls.push('start'); },
+    async snapshot() { calls.push('snapshot'); return { fetched_at: new Date().toISOString(), items: [
+      { id: 'FCT-1', kind: 'card', state: 'done', rule: 'board', basis: 'observed', title: 'Done card', evidence: [] },
+    ] }; },
+    async close() { calls.push('close'); },
+  });
+  const lines = [];
+  const code = await main(['standup', '--scope', file], {}, (line) => lines.push(line), { spawn: fake.spawn, sourceFactory });
+  assert.equal(code, 0, lines.join('\n'));
+  assert.equal(lines[0], 'brain: claude-cli (third-party)');
+  assert.match(lines.join('\n'), /data age: \d+s/);
+  assert.match(lines.join('\n'), /done\s+1/);
+  assert.match(lines.join('\n'), /blocked\s+0/);
+  assert.match(lines.join('\n'), /FCT-1 card done/);
+  assert.match(lines.join('\n'), /FCT-1 is done\. I couldn't confirm that\./);
+  assert.deepEqual(calls, ['start', 'snapshot', 'close']);
+  assert.equal(fake.calls.length, 2);
 });

@@ -174,6 +174,19 @@ reviewers:
   - The Claude login home is `~/.local/share/rfactory/claude-home` (700),
     mounted at `/var/lib/rfactory/claude-home`; it is seeded by the owner
     (browser sign-in), then approved inside the container (step 8).
+  - Step 8 runs oauth2-proxy with `--reverse-proxy=false` (the plan said
+    `true`): the pod is reached directly on 127.0.0.1, with no proxy in
+    front whose `X-Forwarded-*` headers should be trusted, so `false` is the
+    safe value here. `--cookie-secure=false` and the 127.0.0.1 redirect are
+    for this local pod; an HTTPS URL later needs both changed.
+  - The Claude home is mounted read-write: the CLI writes its own state
+    (`.claude.json`, session files) into `HOME`, so read-only breaks it.
+  - Step 9 review fixes (Opus review, fixed by Codex with a test each):
+    CFactory client reconnects once inside the 10 s budget; `source_state`
+    and `assignees` moved inside `content.untrusted`; key files refuse any
+    group or world bit; unsupported source/brain pairings exit 4; a CLI
+    `standup` test for cfactory + claude-cli. `CARD_KEY` stays
+    case-sensitive, as step 3 specifies.
 
 ## Steps
 

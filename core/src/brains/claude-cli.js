@@ -54,8 +54,8 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
     try {
       const safe = redactor.toModel(snapshot);
-      const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, ...item }) => ({
-        ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence }) },
+      const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
+        ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
       })) });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
