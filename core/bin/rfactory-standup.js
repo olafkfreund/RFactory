@@ -68,7 +68,7 @@ async function main(argv, env, write) {
     source = ctx.source;
     out(destinationLine(ctx.scope));
     if (command === 'approve-destination') {
-      const { hash } = await resolveDestination(ctx.scope.brain);
+      const { hash } = await resolveDestination(ctx.scope.brain, env);
       out(`approved_hash: ${hash}`);
       return 0;
     }

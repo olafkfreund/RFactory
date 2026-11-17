@@ -32,7 +32,7 @@ function checkFacts(text, snapshot) {
     }));
     const countClaims = [...sentence.matchAll(COUNT)].filter((match) =>
       !references.some((ref) => match.index < ref.end && match.index + match[1].length > ref.start));
-    const invalid = references.some((ref) => {
+    const invalid = ((references.length || countClaims.length) && states.length && /\b(?:not|isn't|isn’t|no longer|never)\b/i.test(sentence)) || references.some((ref) => {
       const item = byNumber.get(ref.number);
       if ((ref.repo && ref.repo !== repo) || !item) return true;
       if (!states.length) return false;

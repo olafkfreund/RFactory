@@ -17,7 +17,11 @@ function createBrain(scope, gateway, redactor, env = process.env) {
       maxRetries: 0,
     });
     const snapshot = await gateway.call('standup_snapshot', { scope: scope.name });
-    const history = redactor.toModel([{ role: 'system', content: SYSTEM }, ...messages]);
+    const history = redactor.toModel([
+      { role: 'system', content: `${SYSTEM} The trusted scope is ${scope.name}.` },
+      { role: 'user', content: JSON.stringify(snapshot) },
+      ...messages,
+    ]);
     const toolCalls = [];
     const tools = gateway.tools();
     const allowed = new Set(tools.map((tool) => tool.function.name));

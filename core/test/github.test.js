@@ -45,12 +45,15 @@ test('wrong version: fails', async () => {
 
 const issue = (i, o = {}) => ({ number: i, title: `t${i}`, state: 'OPEN', labels: [], assignees: [], ...o });
 
-test('fetchScope normalises, paginates, fetches checks and project status', async () => {
+test('fetchScope normalises, paginates, fetches checks and excludes foreign project status', async () => {
   const gh = await conn({ results: {
     list_issues: { pages: [{ issues: [issue(1)], pageInfo: { hasNextPage: true, endCursor: 'c1' } }, { issues: [issue(2, { state: 'CLOSED' })], pageInfo: { hasNextPage: false } }] },
     list_pull_requests: { pages: [[{ number: 3, state: 'open' }]] },
     'pull_request_read:get_check_runs': { check_runs: [{ name: 'ci', conclusion: 'failure' }] },
-    'projects_list:list_project_items': { items: [{ content: { number: 1 }, fields: [{ name: 'Status', value: 'Todo' }] }] },
+    'projects_list:list_project_items': { items: [
+      { content: { number: 1, url: 'https://github.com/o/r/issues/1' }, fields: [{ name: 'Status', value: 'Todo' }] },
+      { content: { number: 1, repository: { nameWithOwner: 'other/repo' } }, fields: [{ name: 'Status', value: 'Done' }] },
+    ] },
   } });
   const raw = await gh.fetchScope({ source: { owner: 'o', repo: 'r', project: { owner: 'o', number: 1 } } });
   await gh.close();
@@ -75,15 +78,16 @@ test('1000 cap sets truncated', async () => {
   assert.equal(raw.truncated, true);
 });
 
-test('getItem and itemActivity call the planned tools', async () => {
+test('getItem and PR activity use pull_request_read get_commits', async () => {
+  assert.ok(recorded.find((tool) => tool.name === 'pull_request_read').inputSchema.properties.method.enum.includes('get_commits'));
   const gh = await conn({ results: {
     'issue_read:get': { number: 3, pull_request: {} },
     'pull_request_read:get': { number: 3, head: { sha: 'abc' } },
     'pull_request_read:get_check_runs': { check_runs: [] },
-    'pull_request_read:get_comments': [], 'pull_request_read:get_reviews': [], list_commits: [],
+    'pull_request_read:get_comments': [], 'pull_request_read:get_reviews': [], 'pull_request_read:get_commits': [{ commit: { message: 'PR commit' } }],
   } });
   assert.ok((await gh.getItem(scope, 3)).pr);
-  assert.ok((await gh.itemActivity(scope, 3, true)).commits);
+  assert.deepEqual((await gh.itemActivity(scope, 3, true)).commits, [{ commit: { message: 'PR commit' } }]);
   await gh.close();
 });
 
