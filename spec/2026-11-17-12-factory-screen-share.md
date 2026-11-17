@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 12
 intent: intent/2026-11-17-12-factory-screen-share.md
 ---
