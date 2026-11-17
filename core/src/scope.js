@@ -9,8 +9,9 @@ function loadScope(file, env = process.env, secrets = []) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
-  if (scope.writes_enabled !== false) throw new Error('writes-enabled');
-  if (env.RFACTORY_WRITES && env.RFACTORY_WRITES !== 'off') throw new Error('writes-enabled-env');
+  if (scope.writes_enabled !== false && scope.writes_enabled !== true) throw new Error('writes-enabled');
+  if (scope.writes_enabled === true && env.RFACTORY_WRITES !== 'on') throw new Error('writes-enabled');
+  if (scope.writes_enabled === false && env.RFACTORY_WRITES && env.RFACTORY_WRITES !== 'off') throw new Error('writes-enabled-env');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
@@ -27,7 +28,12 @@ function loadScope(file, env = process.env, secrets = []) {
     if (fs.statSync(source.key_file).mode & 0o077) throw new Error('key-file-mode');
     key = fs.readFileSync(source.key_file, 'utf8').trim();
     if (!/^(acw|cfk)_[A-Za-z0-9]{16,}$/.test(key)) throw new Error('invalid-key');
-  } else if (scope.source?.kind !== 'github') throw new Error('invalid-scope');
+    if (scope.writes_enabled) {
+      if (typeof source.write_key_file !== 'string' || !path.isAbsolute(source.write_key_file)) throw new Error('invalid-scope');
+      const writeFile = fs.statSync(source.write_key_file);
+      if (!writeFile.isFile() || (writeFile.mode & 0o777) !== 0o600) throw new Error('write-key-file-mode');
+    }
+  } else if (scope.source?.kind !== 'github' || scope.writes_enabled) throw new Error('invalid-scope');
   if (scope.brain?.kind === 'claude-cli' &&
       (typeof scope.brain.home !== 'string' || !path.isAbsolute(scope.brain.home) ||
        !/^(?:[a-fA-F0-9]{64})?$/.test(scope.brain.approved_hash) ||
