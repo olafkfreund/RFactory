@@ -136,6 +136,17 @@ reviewers:
   by the end or a clause break (`.`, `!`, `?`, `;`), optionally with
   "please", "now" or "thanks". Tests cover both sides.
 
+- **D5, the bot's wire format (step 4), which step 6 must match.** stdin
+  line 1 is the bare Meet link; later stdin lines are `{type:'speak',
+  seq, wav}`, `{type:'cancel'}`, `{type:'leave'}`. stdout lines are
+  `{type:'state', state, code?}`, `{type:'heard', id, speaker, text,
+  final}`, `{type:'mic', muted}`, `{type:'spoke', seq, result}`,
+  `{type:'log', message}`. `run()` exits 0 normally and 1 after a failed
+  join or an `error` state; empty stdin exits 0. `bot/run.js` uses
+  `core/src/redact.js` for `logSafe`, so the image copies `core/src` next
+  to `bot/`. A Playwright launch that hangs cannot be aborted from inside
+  the child; the parent's process-group stop covers it.
+
 ## Steps
 
 1. **`core/src/brains/claude-cli.js`** (additive),
