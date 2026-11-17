@@ -4,19 +4,26 @@ const MAX = 64 * 1024;
 const string = (v) => typeof v === 'string';
 const boolean = (v) => typeof v === 'boolean';
 const number = (v) => typeof v === 'number' && Number.isFinite(v);
+const optional = (check) => (v) => v === undefined || check(v);
+const hosts = (v) => Array.isArray(v) && v.every((h) => {
+  if (!string(h)) return false;
+  try { const u = new URL(h); return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin === h; }
+  catch { return false; }
+});
 const schemas = Object.freeze({
   heartbeat: {},
   'call-end': {},
   cancel: {},
   'cancel-ack': {},
-  'action-result': { action_id: string, ok: boolean },
+  'action-result': { action_id: string, ok: boolean, content: optional(string) },
+  'action-content': { action_id: string, index: number, chunk: string },
   'share-target-changed': { share_id: string },
   'profile-attach': { key: string },
-  desktop_open: { url: string },
-  desktop_click: { target: string },
-  desktop_type: { target: string, text: string },
-  desktop_scroll: { dy: number },
-  desktop_screenshot: {},
+  desktop_open: { url: string, action_id: optional(string), hosts: optional(hosts) },
+  desktop_click: { target: string, action_id: optional(string) },
+  desktop_type: { target: string, text: string, action_id: optional(string) },
+  desktop_scroll: { dy: number, action_id: optional(string) },
+  desktop_screenshot: { action_id: optional(string) },
   desktop_login: { profile: string },
 });
 const identity = new Set(['call_id', 'scope', 'desktop_id']);

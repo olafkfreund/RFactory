@@ -6,6 +6,7 @@ const http = require('node:http');
 const { createProfile } = require('./profile');
 const { startHeartbeat } = require('./heartbeat');
 const { createAgent } = require('./index');
+const { encode } = require('../../runner/protocol');
 
 let chromium = null;
 try { ({ chromium } = require('playwright-core')); } catch { /* browser test skips */ }
@@ -64,7 +65,7 @@ test('agent: attach, then shutdown closes Chrome, unmounts, closes the mapping, 
   const sent = [];
   const agent = createAgent({ control, profile, send: (m) => sent.push(m) });
   await agent.handle({ type: 'profile-attach', key: 'k' });
-  await agent.handle({ type: 'desktop_open', url: 'http://x' });
+  await agent.handle({ type: 'desktop_open', url: 'http://x', hosts: ['http://x'] });
   assert.deepEqual(sent, [{ type: 'action-result', action_id: '1', ok: true }, { type: 'action-result', action_id: '2', ok: true }]);
   assert.ok(log.includes('dir /run/rfactory/profile/chrome'));
   log.length = 0;
@@ -79,6 +80,35 @@ test('agent: a failed action reports ok:false; cancel acks', async () => {
   await agent.handle({ type: 'desktop_click', target: 'a' });
   await agent.handle({ type: 'cancel' });
   assert.deepEqual(sent, [{ type: 'action-result', action_id: '1', ok: false }, { type: 'cancel-ack' }]);
+});
+
+test('agent: cancel prevents queued actions from restarting control Chrome', async () => {
+  const sent = [];
+  let release;
+  let clicks = 0;
+  const agent = createAgent({
+    control: { click: () => new Promise((resolve) => { release = resolve; }), open: async () => { clicks++; }, cancel: async () => {} },
+    profile: { detach: async () => {} }, send: (m) => sent.push(m),
+  });
+  const first = agent.handle({ type: 'desktop_click', action_id: 'first', target: '#x' });
+  const second = agent.handle({ type: 'desktop_open', action_id: 'second', url: 'https://preview.test', hosts: ['https://preview.test'] });
+  await Promise.resolve();
+  await agent.handle({ type: 'cancel' });
+  release();
+  await Promise.all([first, second]);
+  assert.equal(clicks, 0);
+  assert.deepEqual(sent.filter((m) => m.type === 'action-result').map((m) => [m.action_id, m.ok]), [['first', true], ['second', false]]);
+});
+
+test('agent: screenshot bytes are returned in bounded ordered frames', async () => {
+  const shot = Buffer.alloc(100 * 1024, 7);
+  const sent = [];
+  const agent = createAgent({ control: { screenshot: async () => shot }, profile: {}, send: (m) => { encode(m); sent.push(m); } });
+  await agent.handle({ type: 'desktop_screenshot', action_id: 'shot' });
+  const chunks = sent.filter((m) => m.type === 'action-content');
+  assert.deepEqual(chunks.map((m) => m.index), [0, 1, 2, 3, 4]);
+  assert.deepEqual(Buffer.concat(chunks.map((m) => Buffer.from(m.chunk, 'base64'))), shot);
+  assert.deepEqual(sent.at(-1), { type: 'action-result', action_id: 'shot', ok: true });
 });
 
 test('agent: desktop_login without a runner-supplied resolver fails', async () => {
@@ -117,11 +147,11 @@ test('control: only the opened origin is reachable', browser, async (t) => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (const p of ['/redirect', '/hop', '/meta', '/js', '/form', '/fetch', '/popup']) {
-    await control.open(ao + p).catch(() => {});
+    await control.open(ao + p, [ao]).catch(() => {});
     await wait(700);
     assert.equal(hits.b, 0, `${p} reached the other origin`);
   }
-  await control.open(`${ao}/sw`);
+  await control.open(`${ao}/sw`, [ao]);
   await wait(700);
   assert.deepEqual(reports, ['/report?blocked']); // a service worker does not register
 

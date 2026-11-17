@@ -1,7 +1,9 @@
 'use strict';
 const { mapGithub, summarise, STATES } = require('./items.js');
+const { origin } = require('./desktop/session.js');
 
 const NAMES = ['standup_snapshot', 'list_items', 'get_item', 'item_activity'];
+const DESKTOP = ['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot', 'propose_share'];
 const NEVER = /merge|delete|remove|force|push|setting|permission|collaborator|member|webhook|hook|integration|install|credential|secret|token|password|api_?key|ssh|deploy_?key|admin|protect|ruleset|transfer|archive/i;
 const REFS = /(?:\b([\w.-]+)\/([\w.-]+)#\d+|(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?|(?:https?:\/\/)?api\.github\.com\/repos\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?)/gi;
 const SCHEMAS = {
@@ -9,9 +11,15 @@ const SCHEMAS = {
   list_items: { scope: 'string', state: 'state?' },
   get_item: { scope: 'string', id: 'string' },
   item_activity: { scope: 'string', id: 'string' },
+  desktop_open: { scope: 'string', url: 'string' },
+  desktop_click: { scope: 'string', target: 'string' },
+  desktop_type: { scope: 'string', target: 'string', text: 'string' },
+  desktop_scroll: { scope: 'string', dy: 'number' },
+  desktop_screenshot: { scope: 'string' },
+  propose_share: { scope: 'string', url: 'string' },
 };
 
-function createGateway({ scope, source, redactor }) {
+function createGateway({ scope, source, redactor, desktop }) {
   const trusted = scope.name;
   const repo = `${scope.source.owner}/${scope.source.repo}`.toLowerCase();
   let cache;
@@ -49,7 +57,7 @@ function createGateway({ scope, source, redactor }) {
     return Number(match[1]);
   }
   async function call(name, args) {
-    if (!NAMES.includes(name)) throw new Error('unknown-tool');
+    if (!NAMES.includes(name) && !(desktop && DESKTOP.includes(name))) throw new Error('unknown-tool');
     if (NEVER.test(name)) throw new Error('never-allowed');
     if (args?.scope !== trusted) throw new Error('unknown-scope');
     const schema = SCHEMAS[name];
@@ -57,7 +65,23 @@ function createGateway({ scope, source, redactor }) {
         Object.keys(args).some((key) => !Object.hasOwn(schema, key)) ||
         Object.entries(schema).some(([key, type]) => type.endsWith('?')
           ? args[key] !== undefined && (typeof args[key] !== 'string' || !STATES.includes(args[key]))
-          : typeof args[key] !== type)) throw new Error('invalid-arguments');
+          : typeof args[key] !== type || (type === 'number' && !Number.isFinite(args[key])))) throw new Error('invalid-arguments');
+    if (DESKTOP.includes(name)) {
+      if (desktop.phase !== 'desktop' || scope.writes_enabled !== true) throw new Error('desktop-disabled');
+      if (!(await desktop.isAllowed(scope, name, args))) throw new Error('scope-not-allowed');
+      if ((name === 'desktop_open' || name === 'propose_share') && !origin(args.url)) throw new Error('invalid-url');
+      if (name === 'desktop_type' && (desktop.credentials || []).some((value) => value && args.text.includes(value))) throw new Error('credential-refused');
+      const running = desktop.running();
+      if (!running || running.scope !== trusted || typeof running.call_id !== 'string' || typeof running.desktop_id !== 'string') throw new Error('scope-not-allowed');
+      const session = desktop.sessions.get(running?.desktop_id);
+      const reason = desktop.sessions.check(session, running, name, args);
+      if (reason || name === 'propose_share') return redactor.toModel(await desktop.queue.enqueue({ name, args, running, reason: reason || 'share-approval' }));
+      logged.push(name);
+      const result = await desktop.run(name, args, { running, hosts: session.hosts });
+      if (desktop.sessions.check(session, desktop.running(), name, args)) throw new Error('session-ended');
+      if (result?.ok === false) throw new Error('desktop-action-failed');
+      return redactor.toModel({ content: content(result?.content ?? result) });
+    }
     scan(args);
     if (scope.writes_enabled !== false || (process.env.RFACTORY_WRITES && process.env.RFACTORY_WRITES !== 'off')) throw new Error('writes-enabled-call');
 
@@ -91,8 +115,8 @@ function createGateway({ scope, source, redactor }) {
     return redactor.toModel(result);
   }
   function tools() {
-    return NAMES.map((name) => ({ type: 'function', function: { name, description: `Read ${name.replaceAll('_', ' ')}`, parameters: {
-      type: 'object', properties: Object.fromEntries(Object.entries(SCHEMAS[name]).map(([key, type]) => [key, { type: 'string', ...(type === 'state?' ? { enum: STATES } : {}) }])),
+    return [...NAMES, ...(desktop?.phase === 'desktop' && scope.writes_enabled === true ? DESKTOP : [])].map((name) => ({ type: 'function', function: { name, description: `${DESKTOP.includes(name) ? 'Use' : 'Read'} ${name.replaceAll('_', ' ')}`, parameters: {
+      type: 'object', properties: Object.fromEntries(Object.entries(SCHEMAS[name]).map(([key, type]) => [key, { type: type === 'number' ? 'number' : 'string', ...(type === 'state?' ? { enum: STATES } : {}) }])),
       required: Object.entries(SCHEMAS[name]).filter(([, type]) => !type.endsWith('?')).map(([key]) => key), additionalProperties: false,
     } } }));
   }

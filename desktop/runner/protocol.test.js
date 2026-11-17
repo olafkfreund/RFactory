@@ -55,6 +55,19 @@ test('tag replaces guest identity from the socket map', () => {
   assert.throws(() => tag({ type: 'heartbeat' }, '/vm/two/vsock.sock', map), /unknown desktop socket/);
 });
 
+test('desktop messages carry action ids, host grants and untrusted result bytes', () => {
+  const sent = [];
+  const decoder = createDecoder((m) => sent.push(m));
+  decoder.write(encode({ type: 'desktop_open', action_id: 'a1', url: 'https://example.test/x', hosts: ['https://example.test'] }));
+  decoder.write(encode({ type: 'action-result', action_id: 'a1', ok: true, content: 'page text' }));
+  assert.equal(sent[0].action_id, 'a1');
+  assert.deepEqual(sent[0].hosts, ['https://example.test']);
+  assert.equal(sent[1].content, 'page text');
+  decoder.write(encode({ type: 'action-content', action_id: 'a2', index: 0, chunk: 'aGVsbG8=' }));
+  assert.equal(sent[2].chunk, 'aGVsbG8=');
+  assert.throws(() => encode({ type: 'desktop_open', url: 'https://example.test', hosts: ['file:///tmp/x'] }), /invalid protocol/);
+});
+
 async function withSocket(run, reply) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-vsock-'));
   const sock = path.join(dir, 'vsock.sock');

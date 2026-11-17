@@ -442,6 +442,17 @@ v1; Wayland in the guest.
       idle, so idle expiry is not isolated; the 4 GiB overlay check may OOM
       a 3 GiB guest before `ENOSPC`. The step also found the `rf<id>` vs
       `rfd<id>` tap mismatch, fixed in `5632406`.
+    - Step 8 closed step 7's protocol gaps (additive in `protocol.js`, with
+      the guest agent updated to match): optional `action_id` on
+      `desktop_*`, optional `hosts` (validated http(s) origins) on
+      `desktop_open`, optional `content` on `action-result`, and a new
+      `action-content {action_id, index, chunk}` for screenshots (JPEG q40,
+      24 KiB base64 chunks) and page text (32 KiB cap). `control.open()`
+      now refuses an origin not in the granted `hosts`. `propose_share`
+      always queues for approval. `desktop_*` tools are listed and callable
+      only when the injected `desktop.phase === 'desktop'` and the scope has
+      writes enabled; otherwise the gateway is unchanged. The credential
+      refusal list is injected until step 13 wires the real one.
 
 ## Prerequisites (named revisions)
 

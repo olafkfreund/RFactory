@@ -12,16 +12,25 @@ const { startHeartbeat } = require('./heartbeat');
 function createAgent({ control, profile, send, resolveLogin }) {
   let seq = 0;
   let chain = Promise.resolve();
-  const result = (id, ok) => send({ type: 'action-result', action_id: id, ok });
+  let cancelled = false;
+  const result = (id, ok, content) => {
+    if (Buffer.isBuffer(content)) {
+      for (let offset = 0, index = 0; offset < content.length; offset += 24 * 1024, index++) {
+        send({ type: 'action-content', action_id: id, index, chunk: content.subarray(offset, offset + 24 * 1024).toString('base64') });
+      }
+      return send({ type: 'action-result', action_id: id, ok });
+    }
+    return send({ type: 'action-result', action_id: id, ok, ...(content === undefined ? {} : { content }) });
+  };
 
   async function run(m) {
     switch (m.type) {
       case 'profile-attach': control.setUserDataDir(await profile.attach(m.key)); break;
-      case 'desktop_open': await control.open(m.url); break;
+      case 'desktop_open': await control.open(m.url, m.hosts); break;
       case 'desktop_click': await control.click(m.target); break;
       case 'desktop_type': await control.type(m.target, m.text); break;
       case 'desktop_scroll': await control.scroll(m.dy); break;
-      case 'desktop_screenshot': await control.screenshot(); break;
+      case 'desktop_screenshot': return control.screenshot();
       // The guest holds no credentials: the login comes from the runner-supplied resolver only.
       case 'desktop_login': {
         const fill = resolveLogin && await resolveLogin(m.profile);
@@ -31,16 +40,18 @@ function createAgent({ control, profile, send, resolveLogin }) {
       }
       default: throw new Error('unexpected message');
     }
+    return control.pageText?.();
   }
 
   return {
     handle(m) {
       if (m.type === 'cancel') {
+        cancelled = true;
         return control.cancel().then(() => profile.detach()).finally(() => send({ type: 'cancel-ack' }));
       }
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
-      const id = String(++seq);
-      chain = chain.then(() => run(m)).then(() => result(id, true), () => result(id, false));
+      const id = m.action_id || String(++seq);
+      chain = chain.then(() => { if (cancelled) throw new Error('cancelled'); return run(m); }).then((content) => result(id, true, content), () => result(id, false));
       return chain;
     },
     // Shutdown: Chrome, unmount, cryptsetup close, in that order.

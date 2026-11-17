@@ -75,17 +75,18 @@ function createControl({ chromium, launchOptions = {} }) {
       if (context) throw new Error('control Chrome already running');
       userDataDir = dir;
     },
-    async open(url) {
+    async open(url, hosts) {
       const origin = originOf(url);
-      if (!origin) throw new Error('only http(s) urls');
-      // The runner only forwards desktop_open after the gateway checked `hosts`.
-      allowed.add(origin);
+      if (!origin || !Array.isArray(hosts) || !hosts.includes(origin)) throw new Error('origin not granted');
+      allowed.clear();
+      for (const host of hosts) allowed.add(host);
       await (await page()).goto(url);
     },
     async click(target) { await (await page()).click(target, { timeout: 5000 }); },
     async type(target, text) { await (await page()).fill(target, text, { timeout: 5000 }); },
     async scroll(dy) { await (await page()).mouse.wheel(0, dy); },
-    screenshot: async () => (await page()).screenshot(),
+    pageText: async () => (await page()).locator('body').innerText().then((text) => text.slice(0, 32 * 1024)),
+    screenshot: async () => (await page()).screenshot({ type: 'jpeg', quality: 40 }),
     // Closes the context and stops anything in flight; gives up waiting after 2 s (runner then destroys the VM).
     async cancel() {
       const ctx = context;
