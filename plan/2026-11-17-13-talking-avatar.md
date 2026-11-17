@@ -5,12 +5,12 @@ spec: spec/2026-11-17-13-talking-avatar.md
 coders:
   1: coder   # portraits, manifest and notices: fetch, hash, write files
   2: codex   # state module: timing rules and mesh geometry are small, tricky logic
-  3: coder   # renderer drawing and its headless Chrome tests
+  3: codex   # renderer drawing and its headless Chrome tests (owner: "use codex in agent teams", 2026-11-17)
   4: codex   # bot integration: retries, stop paths and the stopping flag are small, tricky logic
-  5: coder   # scope switch, env pass-through, page footer and chat link: routine
+  5: codex   # scope switch, env pass-through, page footer and chat link (owner, 2026-11-17)
   6: coder   # licence files, package fields, upstream texts, README: mechanical
 reviewers:
-  - codex    # independent review of the diff against this plan (agent-team)
+  - codex    # independent review of the diff against this plan (agent-team), plus a herdr-team review of each wave's diff before its commit (owner, 2026-11-17)
 ---
 
 # Plan: A face for the bot that talks when it speaks
