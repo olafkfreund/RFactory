@@ -51,7 +51,7 @@ cat >"$GATE_DIR/rules.nft" <<RULES
 table inet $TABLE {
   counter spoof {}
   counter host {}
-  counter meta {}
+  counter metadata {}
   counter private {}
   counter last {}
   chain input {
@@ -72,7 +72,7 @@ table inet $TABLE {
   }
   chain guest_fwd {
     ip saddr != 10.77.0.2 counter name spoof drop
-    ip daddr 169.254.169.254 counter name meta drop
+    ip daddr 169.254.169.254 counter name metadata drop
     ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter name private drop
     ip6 daddr { fc00::/7, fe80::/10 } counter name private drop
     counter name last drop
@@ -103,7 +103,7 @@ for p in tcp udp; do
 done
 
 # the drop rules must actually have been hit, so a timeout is not just an empty route
-for c in host meta private; do
+for c in host metadata private; do
   n=$(nft list counter inet "$TABLE" "$c" | sed -n 's/.*packets \([0-9]*\).*/\1/p')
   if [ "${n:-0}" -gt 0 ]; then pass "counter-$c ($n packets)"; else fail "counter-$c" "no packets hit the $c drop rule"; fi
 done

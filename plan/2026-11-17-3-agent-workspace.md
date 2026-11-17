@@ -369,6 +369,11 @@ v1; Wayland in the guest.
      owner decides: package `spike/` into the probe image, or run the join
      by hand inside the VM.
    - Guest-to-guest isolation needs two taps; it stays in step 17.
+9. **Found on the first p620 gate run** (2026-11-17): p620 has no `nft`
+   binary on its PATH (its firewall is iptables-nft). The gate ran with
+   `nftables` 1.1.7 from nixpkgs for that run only. Step 6's runner module
+   must add `pkgs.nftables` to the runner's path; nothing on the host
+   changed.
 
 ## Prerequisites (named revisions)
 
