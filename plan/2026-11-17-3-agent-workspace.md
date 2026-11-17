@@ -350,6 +350,25 @@ v1; Wayland in the guest.
    - Not yet checked: Playwright in the guest against the pinned
      `playwright-core` 1.65.1, and that `google-chrome` builds under the
      unfree predicate. Both are checked by the step 2 build.
+8. **Found while writing step 2** (recorded with the step 2 scripts; not
+   run yet, the run is owner-gated):
+   - Shared helpers in `desktop/gate/lib.sh` and a host framing client
+     `desktop/gate/frame.js`.
+   - The probe image only (`desktop/guest/probe.{js,nix}`) also answers
+     `fswrite`, `fsexists` and `chrome`; `vm.sh` uses the first two for
+     Deviation 7's check (a marker in `/var` and `/tmp` must both be gone
+     after destroy and reboot).
+   - The probe VM uses tap `rfgate0`, `10.77.0.2` / `fd77::2`, and its
+     own control service on vsock 5000 instead of the bridge.
+   - microvm.nix names the vsock socket `notify.vsock` in the VM's working
+     directory; the gate uses it. Step 5 sets the plan's path with
+     `--vsock … socket=` through `extraArgs`.
+   - **Fact 4 is only partly covered:** `meet.sh` shows Chrome starts in
+     the VM and reaches Meet's landing page through NAT, not a full Phase 0
+     join, because the guest has no spike code. Before the step 2 run, the
+     owner decides: package `spike/` into the probe image, or run the join
+     by hand inside the VM.
+   - Guest-to-guest isolation needs two taps; it stays in step 17.
 
 ## Prerequisites (named revisions)
 

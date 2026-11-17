@@ -25,14 +25,6 @@
     {
       nixosConfigurations.desktop-guest = mk [ ];
       # Test-only: adds rfactory-probe. Used by steps 2 and 15, never shipped.
-      nixosConfigurations.desktop-guest-probe = mk [ ({ pkgs, ... }: {
-        systemd.services.rfactory-probe = {
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig.ExecStart = "${pkgs.socat}/bin/socat VSOCK-LISTEN:5000,fork EXEC:${pkgs.writeShellScript "rfactory-probe" ''
-            # Reads one framed {type:"probe",proto,addr,port}; step 2 fills in the connect logic.
-            exit 0
-          ''}";
-        };
-      }) ];
+      nixosConfigurations.desktop-guest-probe = mk [ ./desktop/guest/probe.nix ];
     };
 }
