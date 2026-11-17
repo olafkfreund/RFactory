@@ -122,6 +122,19 @@ reviewers:
   (the CFactory key pattern, D1), `scope.js` (the two new kinds) and the
   CLI (`approve-destination` for `claude-cli`, D2). All are additive, and
   #2's own tests must still pass unchanged after each step.
+- **D4, building on #2 before it reaches `main` (owner, 2026-11-17).**
+  The owner asked for the issues to be worked in parallel. #2 S1 steps 1
+  to 7 are merged from `feat/2-standalone-mode` into this branch
+  (`d06c496`), and 1a steps 1 to 4 start on top of them. Steps 5 and 6
+  wait for #2 step 8 (the CLI). Before this PR merges, #2 must be on
+  `main`; then this branch merges `main` again and the #2 commits drop out
+  of its diff.
+- **D5, #2's independence grep.** #2 step 9 requires
+  `grep -riE 'cfactory|pfactory|aifactory|tfactory' core/` to be empty, but
+  1a adds `core/src/sources/cfactory.js` and CFactory tests on purpose. For
+  1a the check becomes: the grep matches only `core/src/sources/cfactory.js`,
+  `core/test/cfactory.test.js` and `core/test/fixtures/cfactory-*.json`.
+  #2's own files stay free of Factory names.
 
 ## Steps
 
