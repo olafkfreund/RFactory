@@ -17,9 +17,9 @@ const send = (o) => {
   process.stdout.write(Buffer.concat([h, b]));
 };
 
-function probeTcp(addr, port) {
+function probeTcp(addr, port, src) {
   return new Promise((resolve) => {
-    const s = net.connect({ host: addr, port, timeout: 3000 });
+    const s = net.connect({ host: addr, port, timeout: 3000, ...(src && { localAddress: src }) });
     s.on('connect', () => { s.destroy(); resolve('connected'); });
     s.on('timeout', () => { s.destroy(); resolve('timeout'); });
     s.on('error', (e) => resolve(e.code === 'ETIMEDOUT' ? 'timeout' : e.code || 'error'));
@@ -44,8 +44,41 @@ async function handle(m) {
     if (!['tcp', 'udp'].includes(m.proto) || !net.isIP(m.addr) || !Number.isInteger(m.port) || m.port < 1 || m.port > 65535) {
       return { type: 'error', error: 'bad probe' };
     }
-    const result = await (m.proto === 'tcp' ? probeTcp : probeUdp)(m.addr, m.port);
+    if (m.src !== undefined && (m.proto !== 'tcp' || !net.isIPv4(m.src))) return { type: 'error', error: 'bad src' };
+    if (m.src) fs.writeFileSync('/proc/sys/net/ipv4/ip_nonlocal_bind', '1'); // step 15: a spoofed source address
+    const result = await (m.proto === 'tcp' ? probeTcp(m.addr, m.port, m.src) : probeUdp(m.addr, m.port));
     return { type: 'probe-result', result };
+  }
+  if (m.type === 'dns') { // step 15: resolve through the guest's resolver
+    if (typeof m.name !== 'string' || !/^[a-z0-9.-]{1,253}$/i.test(m.name)) return { type: 'error', error: 'bad name' };
+    return new Promise((resolve) => require('dns').resolve4(m.name, { ttl: false }, (err, a) => resolve({ type: 'dns-result', addrs: a || [], error: err && err.code })));
+  }
+  if (m.type === 'fetch') { // step 15: a preview loads (DNS, connect and HTTP)
+    if (typeof m.url !== 'string' || !/^https?:\/\/[^\s]+$/.test(m.url)) return { type: 'error', error: 'bad url' };
+    try { const r = await fetch(m.url, { signal: AbortSignal.timeout(8000), redirect: 'manual' }); return { type: 'fetch-result', status: r.status }; } catch (e) { return { type: 'fetch-result', status: 0, error: String((e.cause && e.cause.code) || e.name) }; }
+  }
+  if (m.type === 'fill') { // step 15: fill a file in /tmp until the overlay says no (ENOSPC), report how far it got
+    const fd = fs.openSync('/tmp/rf-fill', 'w');
+    const chunk = Buffer.alloc(1 << 20, 1);
+    let mib = 0;
+    try { while (mib < 5120) { fs.writeSync(fd, chunk); mib++; } return { type: 'fill-result', mib, error: null }; } catch (e) { return { type: 'fill-result', mib, error: e.code }; } finally { fs.closeSync(fd); fs.rmSync('/tmp/rf-fill', { force: true }); }
+  }
+  if (m.type === 'flood') { // step 15: send m.mib MiB of UDP to m.addr (the host drops it; the tap still counts it)
+    if (!net.isIPv4(m.addr) || !Number.isInteger(m.mib) || m.mib < 1 || m.mib > 4096) return { type: 'error', error: 'bad flood' };
+    const s = dgram.createSocket('udp4');
+    const payload = Buffer.alloc(1400, 2);
+    const total = Math.ceil((m.mib * 1048576) / 1400);
+    let sent = 0;
+    for (; sent < total; sent++) await new Promise((resolve) => s.send(payload, 9, m.addr, resolve));
+    s.close();
+    return { type: 'flood-result', sent };
+  }
+  if (m.type === 'vsock-send') { // step 15: raw bytes guest -> host over socat (no AF_VSOCK in node); a port other than 5001 must fail
+    if (!Number.isInteger(m.port) || m.port < 1 || m.port > 65535 || typeof m.b64 !== 'string') return { type: 'error', error: 'bad vsock-send' };
+    return new Promise((resolve) => {
+      const c = execFile('socat', ['-t1', '-', `VSOCK-CONNECT:2:${m.port}`], { timeout: 8000 }, (err) => resolve({ type: 'vsock-send-result', exit: err ? (err.code === undefined ? String(err.signal) : err.code) : 0 }));
+      c.stdin.end(Buffer.from(m.b64, 'base64'));
+    });
   }
   if (m.type === 'fswrite' && okPath(m.path)) {
     try { fs.writeFileSync(m.path, 'gate'); return { type: 'fswrite-result', ok: true }; } catch (e) { return { type: 'fswrite-result', ok: false, error: e.code }; }

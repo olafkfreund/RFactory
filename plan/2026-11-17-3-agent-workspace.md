@@ -424,6 +424,24 @@ v1; Wayland in the guest.
       and ports are recorded from the vendors' published lists. `refresh.js`
       refuses CIDRs wider than /16 (IPv4) or /32 (IPv6) and empty lists, and
       never edits ports. The workflow file only opens a PR.
+    - Step 15: the probe image (test-only) also answers `dns`, `fetch`,
+      `vsock-send`, `fill` and `flood`, and gets `socat`, so net, channel and
+      capacity can probe from inside the guest. Step 17 needs two runner
+      configs: one that boots `desktop-guest-probe` with test timings
+      (`runtimeMaxSec` 60) and one with the production image.
+      **Server contract the scripts assume, which steps 8, 9, 11 and 13 must
+      match or update:** `/desktop/grant`, `/desktop/revoke`,
+      `/desktop/tool`, `/desktop/share/*`, `/desktop/profile/*`,
+      `/desktop/live/<id>`, `/desktop/member/remove`,
+      `/desktop/call/{join,end}`, plus test hooks for share
+      (`force-surface-monitor`, `fail-stopshare`, `drop-control`) and
+      profile `expire`.
+      Known limits until those steps land: `net.js` emits no counters, so
+      anti-spoof is checked by behaviour; `channel-call-id-retagged` fails
+      until the runner logs tagged messages; any guest message refreshes
+      idle, so idle expiry is not isolated; the 4 GiB overlay check may OOM
+      a 3 GiB guest before `ENOSPC`. The step also found the `rf<id>` vs
+      `rfd<id>` tap mismatch, fixed in `5632406`.
 
 ## Prerequisites (named revisions)
 

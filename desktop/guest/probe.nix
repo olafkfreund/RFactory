@@ -57,6 +57,7 @@ in
   systemd.services.vsock-control.enable = lib.mkForce false;
   systemd.services.rfactory-probe = {
     wantedBy = [ "multi-user.target" ];
+    path = [ pkgs.socat ]; # step 15: the vsock-send probe
     environment = {
       CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable";
       NODE = "${pkgs.nodejs_22}/bin/node";
