@@ -217,6 +217,18 @@ these calls:
   file or a scope. A fine-grained read-only PAT remains the production
   requirement (spec).
 
+- **D13, step 10's expected table and isolation target, corrected by the
+  run.** By the precedence rules (step 2) the fixture gives done 3,
+  in_progress 1, blocked 3, left 2, unknown 1: the failing open PR is its
+  own `blocked` item (3b), and the mapped board item is `in_progress`.
+  The plan's table (blocked 2, no in_progress row) omitted both. Isolation
+  also blocks the Factories' current public hostnames (`cfactory`,
+  `cfactory-mcp`, `pfactory`, `aifactory`, `tfactory` on
+  `freundcloud.org.uk`, TCP 80/443, both families) for the run's cgroup:
+  p620's LAN ports 3101-3114 no longer answer even outside the scope, so
+  blocking only them proved nothing. The control check outside the scope
+  must show those hosts answering.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
