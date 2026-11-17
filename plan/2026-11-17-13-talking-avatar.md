@@ -100,6 +100,58 @@ reviewers:
 - **AI disclosure:** name, chat line and listening announcement unchanged;
   "AI" badge and name strip on every frame; illustrations only.
 
+## Deviations (Codex review of the approved plan, 2026-11-17)
+
+- **D1, camera API.** Use the public `call.camera.setOn(on)` for every
+  turn-on, retry, failure cleanup and render-failure shutdown (not the
+  internal `setCameraOn`). The fake call in tests exposes `camera.setOn`.
+- **D2, mesh containment.** "Moved points stay inside the ring" means
+  inside the lower-face polygon UL → UM → UR → OR → OBR → OB → OBL → OL →
+  UL (the upper lip line plus the fixed ring); LM at (101,138) starts just
+  below UM, inside it. The spec's containment line is read this way.
+- **D3, stop paths.** Add to step 4's list: the direct `h.cancel()` in
+  `play()` when a pending `call.speak()` resolves after cancellation
+  (`bot/run.js:73`), stdin `error`, and a join failure. Each calls
+  `__rfAvatar.idle()` (≤ 200 ms) when a page exists and is a no-op when
+  it does not; tests cover the speak-after-cancel race and the absent
+  page.
+- **D4, scope to child.** Step 5 adds an `avatar` option to
+  `createCallManager()`, passes `scope.avatar` from `web/server.js`, and
+  tests the child's environment (`RFACTORY_AVATAR` present only when set).
+- **D5, chat test.** Step 5 updates `bot/test/run.test.js`'s chat-line
+  assertion for the appended source link (applied after step 4).
+- **D6, test commands.** Run each suite in a subshell; Chrome on this host
+  is `/etc/profiles/per-user/olafkfreund/bin/google-chrome-stable` (the
+  image's is `/usr/bin/google-chrome-stable`); the `innerHTML` search is
+  expected to find nothing and is checked separately:
+
+  ```bash
+  (cd core && npm test)
+  (cd web && npm test)
+  (cd bot && RF_TEST_CHROME=/etc/profiles/per-user/olafkfreund/bin/google-chrome-stable RFACTORY_REQUIRE_BROWSER=1 npm test)
+  ! grep -rn innerHTML web/public
+  shellcheck deploy/*.sh
+  ```
+- **D7, licence inputs and detail.** Step 6 runs `npm ci` in `bot/` and
+  `core/` first so upstream licence files exist; `NOTICE.md` names Piper
+  (GPL-3.0, separate process), the LJSpeech voice (public domain) and
+  Google Chrome (proprietary, from Google's repository, not in this
+  repository) explicitly; `bot/avatars/NOTICE.md` states the provenance
+  rule (OmegaStar's licence is the only evidence of permission; the
+  portraits are replaced if a rights claim is raised) and that any later
+  change to a file is listed with what and when.
+- **D8, executable checks.** Step 7 tests: a dirty tree, an untracked file
+  and an unpushed commit are each refused; the anonymous source check
+  runs (a fake `curl` in tests, the real one in the live build). Step 4
+  tests that polling `__rfAvatar.errors` ≥ 30 calls
+  `call.camera.setOn(false)`.
+- **D9, order.** Reviews (step 9) run before step 8; step 8 needs the
+  reviews' fixes committed. Step 8: `deploy/pod.sh up` with the existing
+  environment, then `deploy/check-image.sh`. Step 10 measures with
+  `podman stats --no-stream rfactory-web` every 30 s for 5 minutes, with
+  and without `avatar`. Step 11: `gh pr create`. Traps: agent bus first;
+  never while the owner is testing.
+
 ## Steps
 
 Integration branch `feat/13-talking-avatar` (main with Phase 3 merged).
