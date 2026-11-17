@@ -22,7 +22,7 @@ function createLifecycle(config, deps) {
   let nextCid = 3;
   let timer = null;
 
-  const names = (id) => ({ unit: UNIT + id, tap: `rf${id}`, table: `rfd_${id}`, dir: path.join(config.runDir, id) });
+  const names = (id) => ({ unit: UNIT + id, tap: `rfd${id}`, table: `rfd_${id}`, dir: path.join(config.runDir, id) });
 
   async function retry(fn) {
     for (let attempt = 0; ; attempt++) {

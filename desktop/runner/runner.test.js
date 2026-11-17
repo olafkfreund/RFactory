@@ -201,3 +201,12 @@ test('HTTP handler: refuses unauthorised sockets, routes create, 409 on capacity
   await createHandler(lc)({ socket: { authorized: false }, url: '/list', method: 'POST' }, res);
   assert.equal(res.code, 401);
 });
+
+test('tap name matches the NixOS module tap rule (^rfd[0-9a-z]{1,10}$, rfd* base rules)', async () => {
+  const { lc, calls } = setup();
+  await lc.create({ call_id: 'c1', scope: 's1' });
+  const add = calls.find((c) => c.argv[0] === 'ip' && c.argv[1] === 'tuntap').argv;
+  const tap = add[add.indexOf('dev') + 1];
+  assert.match(tap, /^rfd[0-9a-z]{1,10}$/);
+  assert.ok(tap.length <= 15, 'Linux IFNAMSIZ');
+});
