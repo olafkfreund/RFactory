@@ -42,7 +42,7 @@ function readJson(req, limit = 4096) {
   });
 }
 
-function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live }) {
+function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -96,6 +96,7 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
       });
       return;
     }
+    if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
     if (call && url === '/api/call') {
       if (req.method === 'POST') {
         readJson(req).then((body) => {
@@ -127,6 +128,7 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
     }
     json(res, 404, { error: 'not-found' });
   });
+  if (desktop && !live) live = { isMember: desktop.isMember, openVnc: desktop.openVnc };
   if (live) require('./live-view.js').attachLiveView(server, { roles, ...live }); // live: { isMember, openVnc }
   return server;
 }
@@ -166,7 +168,20 @@ async function main() {
     const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
     call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions });
   }
-  createApp({ source, brain, roles, call, actions }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  let desktop = null;
+  if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
+    const { createRunnerClient } = require('../desktop/runner/client.js');
+    const { nonce } = require('../desktop/guest/agent/share.js');
+    const runner = createRunnerClient({ url: process.env.RFACTORY_RUNNER_URL, key: process.env.RFACTORY_RUNNER_KEY,
+      cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
+    // the runner has no guest-action routes yet: these 404 and fail closed until it does (plan deviation)
+    const guest = (route) => async (b, c) => { const r = await runner.call(route, { ...b, ...c }); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
+    const nonces = new Map();
+    desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner,
+      run: (name, args, ctx) => guest('action')({ name, args }, ctx), startShare: guest('share-start'), stopShare: guest('share-stop'),
+      destroy: (id) => runner.destroy(id), nonceFor: (id) => { if (!nonces.has(id)) nonces.set(id, nonce()); return nonces.get(id); } });
+  }
+  createApp({ source, brain, roles, call, actions, desktop }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {

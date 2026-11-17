@@ -506,6 +506,29 @@ v1; Wayland in the guest.
       `share.js` exports `callLaunchArgs(nonce)` for step 13 to pass to the
       call Chrome. The label is checked live in step 17.
 
+14. **Step 13 in two parts (lead, 2026-11-17).** Step 13a (server side,
+    committed): `web/desktop-routes.js` with the step's routes plus
+    `actions/:aid/approve|reject` for step 14, all behind sign-in, the
+    member check and the actions' CSRF guard (`x-rfactory-action: 1`,
+    Origin == Host); approver-only via `roles.has(email,'approver')`, the
+    cleanup alert admin-only; mounted only with `RFACTORY_DESKTOP=1`.
+    Deviations: (a) a separate desktop queue `createDesktopQueue` with
+    Phase 3's approval rules (approver-only, hash-bound, one-time, 10-min
+    expiry, at most 5 pending), because `createActionManager` is bound to
+    CFactory; (b) `share/stop` is open to any member (stopping is always
+    safe); (c) sessions are in memory: a server restart drops handovers,
+    which fails closed (the runner's server-heartbeat rule ends the VM);
+    (d) `grant` allows a new session once the old one has expired.
+    Step 13b (next): the runner gains `action`, `share-start` and
+    `share-stop` routes (validated protocol messages over the VM's control
+    channel, awaiting `action-result`/`action-content`) and a VNC upgrade on
+    the same mTLS server for `openVnc`; the runner generates the per-call
+    share nonce at `create`, returns it, and sends it to the guest as a
+    `call-config {nonce}` message when the control channel connects; the
+    guest launches the call Chrome with `callLaunchArgs(nonce)`; the server's
+    `nonceFor` reads the stored value. The step 15 scripts' `/desktop/*`
+    contract is re-pointed to the real routes before step 17.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

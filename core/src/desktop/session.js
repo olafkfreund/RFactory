@@ -18,7 +18,8 @@ function createSessions({ isApprover, cancel, destroy, clock = Date.now }) {
         !Array.isArray(value.actions) || value.actions.some((a) => !ACTIONS.has(a)) ||
         !Array.isArray(value.hosts) || value.hosts.some((h) => origin(h) !== h) ||
         !Number.isFinite(value.until) || value.until <= clock() || value.until > clock() + MAX_MS) throw new Error('invalid-session');
-    if (active.has(value.desktop_id)) throw new Error('session-active');
+    const old = active.get(value.desktop_id);
+    if (old && clock() < old.until) throw new Error('session-active');
     const session = { ...value, actions: [...value.actions], hosts: [...value.hosts], revoked: false };
     active.set(value.desktop_id, session);
     return session;

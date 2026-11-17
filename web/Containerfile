@@ -44,8 +44,9 @@ COPY --chown=node:node core/bin core/bin
 # #2's GitHub adapter loads its recorded read-only tool inventory from this fixture (#2 plan step 4)
 COPY --chown=node:node core/test/fixtures/github-tools-1.14.0.json core/test/fixtures/
 COPY --chown=node:node bot/run.js bot/
-COPY --chown=node:node web/server.js web/call.js web/tts.js web/actions.js web/actions-record.js web/live-view.js web/
-COPY --chown=node:node desktop/runner/vnc.js desktop/runner/vsock.js desktop/runner/
+COPY --chown=node:node web/server.js web/call.js web/tts.js web/actions.js web/actions-record.js web/live-view.js web/desktop-routes.js web/
+COPY --chown=node:node desktop/runner/vnc.js desktop/runner/vsock.js desktop/runner/client.js desktop/runner/
+COPY --chown=node:node desktop/guest/agent/share.js desktop/guest/agent/
 COPY --chown=node:node web/public web/public
 
 USER node
