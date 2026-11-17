@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 3
 spec: spec/2026-11-17-3-agent-workspace.md
 coders:
