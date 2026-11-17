@@ -6,6 +6,8 @@ upstreamConfig:
     - id: rfactory-web
       path: /
       uri: http://127.0.0.1:8080
+      # above the app's 55 s standup deadline (the default is 30 s)
+      timeout: 60s
 server:
   BindAddress: 0.0.0.0:4180
 providers:
