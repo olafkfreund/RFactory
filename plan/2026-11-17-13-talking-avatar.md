@@ -187,7 +187,8 @@ reviewers:
   Meet's camera is never read back with `getImageData`. The renderer draws
   `still` anchors (D11) without the warp. Codex review of wave A/step 3: a
   stale `closingAt` survives past 150 ms and blocks reopening from the
-  level alone (fixed with a regression test); the geometry tests run over
+  level alone (already fixed with its regression test in `649b35a`); the
+  geometry tests run over
   every mesh in the real manifest at d = 0..maxDrop.
 
 ## Steps

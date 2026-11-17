@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { createState, meshAt, source } = require('../avatar/state.js');
-const m01 = require('../avatars/manifest.json').portraits.m01.anchors;
+const portraits = require('../avatars/manifest.json').portraits;
+const m01 = portraits.m01.anchors;
 
 const approvedM01 = {
   mesh: {
@@ -95,16 +96,21 @@ function inside([x, y], polygon) {
   return hit;
 }
 
-test('m01 mesh keeps positive triangle area and moving points inside its outer boundary', () => {
+test('every mesh keeps positive triangle area and moving points inside its outer boundary', () => {
   assert.deepEqual(m01, approvedM01);
-  const ring = ['OL', 'UL', 'UM', 'UR', 'OR', 'OBR', 'OB', 'OBL'].map((name) => m01.mesh.points[name]);
-  for (let d = 0; d <= m01.maxDrop; d++) {
-    const points = meshAt(m01, d);
-    for (const triangle of m01.mesh.triangles) {
-      assert.ok(signedArea(triangle, points) > 0, `${triangle.join(',')} folded at d=${d}`);
-    }
-    for (const name of Object.keys(m01.mesh.move)) {
-      assert.ok(inside(points[name], ring), `${name} left the ring at d=${d}`);
+  for (const [id, portrait] of Object.entries(portraits)) {
+    const anchors = portrait.anchors;
+    if (anchors.still) continue;
+    const ring = ['OL', 'UL', 'UM', 'UR', 'OR', 'OBR', 'OB', 'OBL'].map((name) => anchors.mesh.points[name]);
+    for (let d = 0; ; d = Math.min(d + 0.5, anchors.maxDrop)) {
+      const points = meshAt(anchors, d);
+      for (const triangle of anchors.mesh.triangles) {
+        assert.ok(signedArea(triangle, points) > 0, `${id}: ${triangle.join(',')} folded at d=${d}`);
+      }
+      for (const name of Object.keys(anchors.mesh.move)) {
+        assert.ok(inside(points[name], ring), `${id}: ${name} left the ring at d=${d}`);
+      }
+      if (d === anchors.maxDrop) break;
     }
   }
   assert.deepEqual(meshAt(m01, 13).LM, [101, 151]);

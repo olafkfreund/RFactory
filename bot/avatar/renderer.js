@@ -87,7 +87,7 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
       ctx.strokeRect(-6, -6, size + 12, size + 12);
       const texture = portrait(size);
       ctx.drawImage(texture, 0, 0);
-      if (pose.open > 0) {
+      if (pose.open > 0 && !anchors.still) {
         const points = anchors.mesh.points;
         const moved = meshAt(anchors, pose.open * anchors.maxDrop);
         const source = meshAt(anchors, 0);

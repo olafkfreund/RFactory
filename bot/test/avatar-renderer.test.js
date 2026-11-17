@@ -5,6 +5,7 @@ const path = require('node:path');
 const { chromium } = require('playwright-core');
 const { buildRendererSource } = require('../avatar/renderer.js');
 const anchors = require('../avatars/manifest.json').portraits.m01.anchors;
+const stillAnchors = require('../avatars/manifest.json').portraits.m04.anchors;
 
 const chrome = process.env.RF_TEST_CHROME;
 if (process.env.RFACTORY_REQUIRE_BROWSER === '1') {
@@ -116,6 +117,49 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
       }
       assert.equal(result.failed, 30);
       assert.equal(errors.filter((message) => message.includes('[avatar] render error')).length, 3);
+    } finally {
+      await browser.close();
+    }
+  });
+
+test('a still face renders speaking frames without errors',
+  { skip: !chrome || !fs.existsSync(chrome) }, async () => {
+    const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const errors = [];
+      page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+      await page.goto('about:blank');
+      await page.evaluate(() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 512;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const labels = [];
+        const fillText = ctx.fillText.bind(ctx);
+        ctx.fillText = (value, ...args) => { labels.push(value); fillText(value, ...args); };
+        window.labels = labels;
+        window.__vibeconfMedia = {
+          on() {},
+          setCameraRenderer(factory) { window.renderer = factory({ canvas, ctx }); },
+          speechLevel() { return 0.8; },
+        };
+      });
+      const portraitDataUrl = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, '../avatars/m04.webp')).toString('base64');
+      await page.evaluate((script) => eval(script), buildRendererSource({ portraitDataUrl, anchors: stillAnchors }));
+      const result = await page.evaluate(() => {
+        const frames = [];
+        for (let i = 0; i < 8; i++) {
+          labels.length = 0;
+          renderer.render();
+          frames.push([...labels]);
+        }
+        return { frames, errors: __rfAvatar.errors };
+      });
+      assert.equal(result.errors, 0);
+      assert.deepEqual(errors, []);
+      for (const labels of result.frames) {
+        assert.deepEqual(labels, ['AI', 'RFactory Bot (AI)', 'Source: github.com/olafkfreund/RFactory']);
+      }
     } finally {
       await browser.close();
     }
