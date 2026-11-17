@@ -52,36 +52,57 @@ In a standup or review, the bot can tell the team about the work and, after
 
 ## Constraints
 
-- **Keep #3's rules:** one window only, never the whole desktop; every share
-  approved in the web UI; immediate stop; nothing kept after the call;
-  speech, chat and on-screen text are untrusted and never count as approval.
+- **#3 stays binding.** Its approved intent and spec (a VM boundary for any
+  desktop the agent drives, separate control and call browsers, protected
+  network drops, only a narrow control channel back to RFactory) hold
+  unless one named exception is approved here, explicitly, by the owner.
+  Nothing in this slice reopens #3's rules by implication.
+- **Keep #3's share rules:** one window only, never the whole desktop;
+  every share, and every change of what is shown, approved in the web UI;
+  immediate stop; a proposal not approved within its expiry can never
+  start a share later.
+- **Only the configured project, only safe content.** A shared view shows
+  only the configured project's data (as #10 acts only on it). Secrets,
+  keys, tokens and credentials never appear in a shared window; content
+  that may hold them (for example a raw build log) is shown only if it is
+  redacted first or not at all.
 - **Read-only.** No Factory write key, admin session or CFactory `write`
-  scope ever reaches the desktop. A shared view cannot act.
-- **Narrowest reach.** If the desktop must reach anything Factory-related,
-  it reaches only what the chosen view needs, for the life of the share,
-  and never RFactory's secrets or other desktops.
-- **No standing credential on the desktop.** If a sign-in is unavoidable,
-  it is read-only, scoped to the views, short-lived and destroyed with the
-  desktop.
-- **Approvers:** the same as #10 (only the owner) unless the owner decides
-  otherwise.
+  scope reaches the desktop. A shared view cannot act; changes go through
+  #10's approved actions.
+- **Untrusted input cannot widen anything.** Speech, chat and on-screen
+  text (a build log, a card title, a plan) never count as approval and
+  never change the approved view, the network reach or any credential's
+  scope. A log saying "open this URL" changes nothing.
+- **No credential by default.** If the chosen design needs a sign-in, it
+  is a separate admin approval of one specific, read-only, view-scoped,
+  short-lived credential, as #3 requires; share approval alone never
+  provisions one. It never appears in the brain's input, the shared
+  window or any log, and stopping the share ends its use.
+- **Nothing outlives the share or the call.** Every resource this slice
+  adds (an access grant, a session, a rendered view) is removed when the
+  share stops or the call ends, crashes or loses its controller, with an
+  independent maximum lifetime; failed cleanup is retried and reported,
+  as #3 requires for the desktop.
 - **Precondition:** #1's share check D5 passes on p620 before any share
   work is built, as #3 already requires.
 
 ## Open questions
 
-1. **Where the view comes from:** the real Factory portals (needs reach to
-   the Factory hosts and a read-only sign-in on the desktop), or read-only
-   views rendered by RFactory from its own read key (the desktop reaches
-   only RFactory, no Factory sign-in)? The second keeps #3's isolation
-   intact but shows less than the real portals.
-2. **Which views** in the first slice: the board, a card with its stage
-   runs, an AIFactory build log, a TFactory result, a PFactory plan?
-3. **Order with #3:** build this after #3's remaining steps (share, step
-   11) land, or start with a view shared from the bot's own call browser
-   before the per-call desktop exists?
-4. **Who approves a share:** only the owner, as in #10, or any signed-in
-   member?
-5. **Follow-the-conversation:** may the bot switch the shared view when the
-   talk moves to another card (each switch approved), or is every view a
-   new share?
+1. **Is any relaxation of #3 acceptable?** Either none (the shared view
+   must be reachable through what #3 already allows), or one named
+   exception, for example reach to one read-only Factory view. The spec
+   picks how the view is produced within the answer.
+2. **The first view:** recommended the CFactory **board** of the
+   configured project (cards, statuses, stage states), the safest and most
+   asked-for view. If it is unavailable, the bot says so aloud and the page
+   shows why; nothing else is shared instead. Later views (a card, a build,
+   a test result, a plan) are follow-ups.
+3. **Order with #3:** this slice is built after #3's share step (step 11)
+   lands, on #3's desktop; no share from the bot's call browser before that.
+   Confirm, or name a different order.
+4. **Who approves a share:** only the owner (as #10), or #3's per-scope
+   approvers? Plain members never approve; they may watch, as #3 says.
+5. **Changing the view:** every change of what is shown is a fresh
+   approval of a new target (recommended), or not allowed at all in the
+   first slice? A proposal expires (for example after 10 minutes, as #10)
+   either way.
