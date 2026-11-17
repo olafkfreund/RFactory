@@ -333,6 +333,23 @@ v1; Wayland in the guest.
    to the runner's resolver; approved `ip:port` previews come next, then
    the remaining private ranges are dropped. The protection the spec cares
    about (host, cluster and Factories never reachable) is unchanged.
+7. **Found while building step 1** (recorded with the step 1 commit):
+   - Pins: the plan named no revision, so microvm.nix
+     `fdfc1821a0eb76e44a13d206b72e6ca6961fbb7c` and nixpkgs
+     `e554fab72f81915600f3f449b786fd9af40439a5`, the ones nixarchy pins.
+   - The 4 GiB tmpfs is a `/tmp` mount (`size=4G`), not yet a full
+     overlay over the erofs root. Step 2's `vm.sh` checks that the guest
+     boots and that writes outside `/tmp` fail or vanish on destroy;
+     if not, step 2 adds the overlay before anything else.
+   - The control bridge forwards vsock 5000 to `127.0.0.1:5000` in the
+     guest, where step 7's agent listens. 5001 (heartbeat) is guest → host
+     only, so the guest has no listener for it.
+   - `rfactory-probe` is a stub that listens and exits; step 2 fills in
+     the connect logic.
+   - `vsock.cid = 3` is a placeholder until step 5 assigns one per VM.
+   - Not yet checked: Playwright in the guest against the pinned
+     `playwright-core` 1.65.1, and that `google-chrome` builds under the
+     unfree predicate. Both are checked by the step 2 build.
 
 ## Prerequisites (named revisions)
 
