@@ -143,6 +143,19 @@ these calls:
   to the slices that add them, S2 for captions and a later slice for
   diffs.
 
+- **D6, found while building step 2** (recorded with the step 2 commit):
+  - A closed PR that was never merged is not in the precedence table. It
+    maps to `unknown`, rule `closed-unmerged`, basis `observed`, so it is
+    listed and never counted as done.
+  - GitHub check runs carry no "required" flag. A run counts as required
+    unless the adapter marks it `required: false`; failing conclusions are
+    `failure`, `timed_out`, `cancelled` and `action_required`. This can
+    over-report `blocked`, never under-report it. Step 4 sets `required`
+    when the branch-protection data is available.
+  - `mapGithub`'s `raw` also takes `repo: 'owner/repo'`, used for item ids.
+    Step 4 must supply it, and PRs carry `closingIssuesReferences` as a
+    list of issue numbers.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
