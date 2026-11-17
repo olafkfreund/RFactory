@@ -1,0 +1,20 @@
+# RFactory Phase 1a web app (plan step 8). Build from the repo root:
+#   podman build -f web/Containerfile -t rfactory-web .
+FROM docker.io/library/node:22-bookworm-slim
+
+# The brain runs `claude -p`; pinned to the version step 7 checked (destination hash includes it).
+RUN npm install -g @anthropic-ai/claude-code@2.1.326 && npm cache clean --force
+
+WORKDIR /app
+COPY --chown=node:node core/package.json core/package-lock.json core/
+RUN cd core && npm ci --omit=dev
+COPY --chown=node:node web/package.json web/package-lock.json web/
+COPY --chown=node:node core/src core/src
+COPY --chown=node:node core/bin core/bin
+RUN cd web && npm ci --omit=dev
+COPY --chown=node:node web/server.js web/
+COPY --chown=node:node web/public web/public
+
+USER node
+ENV PORT=8080
+CMD ["node", "web/server.js"]

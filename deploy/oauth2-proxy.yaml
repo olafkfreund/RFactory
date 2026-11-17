@@ -1,0 +1,26 @@
+# oauth2-proxy alpha config for the RFactory pod (plan step 8).
+# Keycloak realm `factory`, confidential client `rfactory`. The app trusts
+# X-Forwarded-Email only because nothing but this proxy can reach it.
+upstreamConfig:
+  upstreams:
+    - id: rfactory-web
+      path: /
+      uri: http://127.0.0.1:8080
+server:
+  BindAddress: 0.0.0.0:4180
+providers:
+  - id: keycloak
+    provider: oidc
+    clientID: rfactory
+    clientSecretFile: /etc/oauth2-proxy/client-secret
+    code_challenge_method: S256
+    oidcConfig:
+      issuerURL: https://keycloak.freundcloud.org.uk/realms/factory
+      emailClaim: email
+      audienceClaims: [aud]
+      insecureSkipNonce: false
+# Set by the proxy from the verified token; a client-sent value is replaced.
+injectRequestHeaders:
+  - name: X-Forwarded-Email
+    values:
+      - claim: email

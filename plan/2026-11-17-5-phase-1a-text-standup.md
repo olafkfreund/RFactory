@@ -156,6 +156,24 @@ reviewers:
     the snapshot-and-summary path (`ask`'s question is ignored, since 1a
     has no follow-up questions); the destination line reads
     `brain: claude-cli (<destination>)`.
+- **D7, owner setup done by the lead (owner: "do this yourself", 2026-11-17)**
+  and step 8 details:
+  - CFactory: a new `cfk_` key appended as `:read` to `factory/cfactory-api-keys`
+    (`api-keys`), then `rollout restart deploy/cfactory`. Verified: reads repo 2,
+    and a write is refused with "MCP token lacks required scope: 'write'". The
+    agenix seed on p510 does not have it yet (owner follow-up), so a cluster
+    rebuild would drop it.
+  - Keycloak realm `factory`: confidential client `rfactory`, standard flow
+    only, PKCE S256, redirect `http://127.0.0.1:4180/oauth2/callback`,
+    `audience-self` mapper. Client and cookie secrets are 600 files in
+    `~/.config/rfactory/`; the scope file there holds no secret.
+  - oauth2-proxy 7.7.0 has no `--cookie-secret-file`, so the 32-byte cookie
+    secret is a podman secret exposed as `OAUTH2_PROXY_COOKIE_SECRET`; the
+    proxy runs as the owner's uid (keep-id) to read the 600 files, with
+    `--skip-provider-button=true` like CFactory's.
+  - The Claude login home is `~/.local/share/rfactory/claude-home` (700),
+    mounted at `/var/lib/rfactory/claude-home`; it is seeded by the owner
+    (browser sign-in), then approved inside the container (step 8).
 
 ## Steps
 
