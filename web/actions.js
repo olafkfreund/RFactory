@@ -10,10 +10,9 @@ const LIFETIME = 10 * 60 * 1000;
 const FINAL = new Set(['done', 'done (started)', 'done, start failed', 'already done', 'failed', 'uncertain']);
 const reply = (status, text, action) => ({ status, text, ...(action ? { action } : {}) });
 
-function createActionManager({ readSource, writer, brain, record, redactor, clock = Date, scope, approvers, enabled }) {
+function createActionManager({ readSource, writer, brain, record, redactor, clock = Date, scope, roles, enabled }) {
   const now = () => clock.now();
   const safe = (value) => redactor.logSafe(value);
-  const allowed = new Set(approvers.map((email) => email.toLowerCase()));
   const listeners = new Set();
   const history = [];
   let pending = new Map();
@@ -91,7 +90,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
 
   async function approve(id, email, hash) {
     if (!recovered) return reply(503, 'Actions are recovering.');
-    if (!allowed.has(String(email).toLowerCase())) return reply(403, 'Forbidden.');
+    if (!roles.has(email, 'approver')) return reply(403, 'Forbidden.');
     const entry = pending.get(id);
     if (!entry || entry.hash !== hash || entry.state !== 'pending') return reply(409, 'This action is no longer pending.');
     if (!live(entry)) { await expire(entry); return reply(409, 'This action has expired.'); }
@@ -164,7 +163,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
 
   async function reject(id, email, hash) {
     if (!recovered) return reply(503, 'Actions are recovering.');
-    if (!allowed.has(String(email).toLowerCase())) return reply(403, 'Forbidden.');
+    if (!roles.has(email, 'approver')) return reply(403, 'Forbidden.');
     const entry = pending.get(id);
     if (!entry || entry.hash !== hash || entry.state !== 'pending') return reply(409, 'This action is no longer pending.');
     if (!live(entry)) { await expire(entry); return reply(409, 'This action has expired.'); }

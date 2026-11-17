@@ -14,13 +14,15 @@ const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const ME = 'owner@example.com';
+const { loadRoles } = require('@rfactory/core/src/roles.js');
+const rolesFor = (members, approvers = '', admins = '') => loadRoles({ RFACTORY_ALLOWED_EMAILS: members, RFACTORY_APPROVERS: approvers, RFACTORY_ADMINS: admins });
 const items = [{ id: 'AF-1', kind: 'card', title: 'a', state: 'done', evidence: [] },
   { id: 'AF-2', kind: 'card', title: 'b', state: 'unknown', evidence: [] }];
 const source = { snapshot: async () => ({ items, fetched_at: 'F', newest_update: 'N' }) };
 const fakeBrain = { label: () => 'fake', turn: async () => ({ text: 'ok' }) };
 
 async function start(t, opts) {
-  const server = createApp({ allowedEmails: [ME], ...opts });
+  const server = createApp({ roles: rolesFor(ME), ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -208,7 +210,7 @@ function fakeActions() {
 }
 
 async function startActions(t, opts) {
-  const server = createApp({ allowedEmails: [ME, 'other@example.com'], source, brain: fakeBrain, approvers: [ME], ...opts });
+  const server = createApp({ roles: rolesFor(`${ME},other@example.com`, ME), source, brain: fakeBrain, ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const host = `127.0.0.1:${server.address().port}`;
@@ -246,4 +248,16 @@ test('approve route: missing header, foreign origin, non-approver and wrong hash
   const list = await (await get('/api/actions', { method: 'GET' })).json();
   assert.deepEqual(list, { pending: [], history: [], can_approve: true });
   assert.equal((await (await get('/api/actions', { method: 'GET', email: 'other@example.com' })).json()).can_approve, false);
+});
+
+test('an admin who is not an approver gets can_approve: false', async (t) => {
+  const get = await startActions(t, { actions: fakeActions(), roles: rolesFor(`${ME},admin@example.com`, ME, 'admin@example.com') });
+  assert.equal((await (await get('/api/actions', { method: 'GET', email: 'admin@example.com' })).json()).can_approve, false);
+});
+
+test('main() throws roles-not-members before listening when an approver is not a member', async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { RFACTORY_ALLOWED_EMAILS: ME, RFACTORY_APPROVERS: 'x@example.com' });
+  try { await assert.rejects(require('../server.js').main(), /roles-not-members/); }
+  finally { for (const k of ['RFACTORY_ALLOWED_EMAILS', 'RFACTORY_APPROVERS']) { if (k in saved) process.env[k] = saved[k]; else delete process.env[k]; } }
 });

@@ -39,7 +39,7 @@ function readJson(req, limit = 4096) {
   });
 }
 
-function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null, actions = null, approvers = [] }) {
+function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -62,7 +62,7 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = nu
   return http.createServer((req, res) => {
     const email = req.headers['x-forwarded-email'];
     if (!email) return json(res, 401, { error: 'unauthenticated' });
-    if (!allowedEmails.includes(String(email).toLowerCase())) return json(res, 403, { error: 'forbidden' });
+    if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const url = req.url.split('?')[0];
     if (req.method === 'GET' && Object.hasOwn(STATIC, url)) {
       const [file, type] = STATIC[url];
@@ -78,7 +78,7 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = nu
       return;
     }
     if (actions && req.method === 'GET' && url === '/api/actions') {
-      return json(res, 200, { ...actions.list(), can_approve: approvers.includes(String(email).toLowerCase()) });
+      return json(res, 200, { ...actions.list(), can_approve: roles.has(email, 'approver') });
     }
     const act = actions && req.method === 'POST' && /^\/api\/actions\/([\w-]{1,64})\/(approve|reject)$/.exec(url);
     if (act) {
@@ -128,6 +128,7 @@ function refuseKeyEnv(env) {
 
 async function main() {
   refuseKeyEnv(process.env);
+  const roles = require('@rfactory/core/src/roles.js').loadRoles(process.env);
   const { loadScope } = require('@rfactory/core/src/scope.js');
   const { makeRedactor } = require('@rfactory/core/src/redact.js');
   const { createCfactorySource } = require('@rfactory/core/src/sources/cfactory.js');
@@ -139,9 +140,7 @@ async function main() {
   const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id });
   await source.start();
   const brain = createClaudeBrain(scope, redactor);
-  const allowedEmails = (process.env.RFACTORY_ALLOWED_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   let actions = null;
-  const approvers = (process.env.RFACTORY_APPROVERS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
   if (scope.writes_enabled) {
     const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
     const record = require('./actions-record.js').createRecord({
@@ -150,7 +149,7 @@ async function main() {
     record.prune();
     setInterval(() => record.prune(), 86400000).unref();
     actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor,
-      scope, approvers, enabled: true });
+      scope, roles, enabled: true });
     await actions.recover();
   }
   let call = null;
@@ -158,11 +157,11 @@ async function main() {
     const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
     call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions });
   }
-  createApp({ source, brain, allowedEmails, call, actions, approvers }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  createApp({ source, brain, roles, call, actions }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { createApp, refuseKeyEnv };
+module.exports = { createApp, refuseKeyEnv, main };
