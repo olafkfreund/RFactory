@@ -1,5 +1,5 @@
 ---
-status: approved
+status: draft
 issue: 1
 author: olafkfreund
 ---
@@ -70,9 +70,14 @@ Later phases, each with its own intent, spec and plan:
 - **Must** be a web app. No Electron and no desktop client. The call bot
   runs server-side in Chrome under Xvfb.
 - **Must** be self-hosted. No Recall.ai or other paid meeting-bot service.
-- **Must** use the Claude Code CLI on the owner's subscription as the brain,
-  with access only to RFactory's own tools. It gets no shell or file
-  access.
+- **Must** use the Claude Code CLI on the owner's subscription as the
+  first brain, with access only to RFactory's own tools. It gets no shell or
+  file access.
+- **Must not** assume that the Factories, or a single brain, are always
+  there. A standalone mode without the Factories (GitHub, GitLab, Jira or
+  Linear, or a local git repo) and a choice of brain are planned as their
+  own task (intent for #2). Later phases keep the status source and the
+  brain replaceable.
 - **Must not** give the brain any Factory key, `merge_pr`, `delete_card` or
   credential tools. Server scopes are only read or write, so RFactory's own
   allowlist is the guard, and it is checked again when each tool runs.
