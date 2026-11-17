@@ -44,7 +44,7 @@ admits the bot from the lobby.
 - **Pass** (one Chrome run):
   - the bot reaches `in-call` within `timeoutMs` 300 s, lobby time
     included
-  - captions report on
+  - captions are enabled. This is proven by the owner's caption arriving (D7).
   - the owner hears the clip
   - Sentence 1, "RFactory standup test one two three": the owner says it,
     then sends `1` in the Meet chat. Within 10 s of that chat line, a
@@ -84,6 +84,28 @@ admits the bot from the lobby.
   finalised when the call ends (`api/captions.js:37-39`, called from
   `api/call.js:241-245`). A final caption that only appears during cleanup
   therefore proves nothing.
+
+- **D6, implementation details found while building** (recorded with the
+  step 5 commit):
+  - `podman run --init`, in `run.sh` and in the smoke check. Without it,
+    `xvfb-run` runs as PID 1 and never gets Xvfb's ready signal, so the
+    container hangs. With `--init`, both images print `smoke: browser up`
+    with the sandbox on.
+  - The base image is written as `docker.io/library/node:22-bookworm-slim`,
+    because podman needs a fully named image.
+  - `apt-get install --no-install-recommends`. The Chromium smoke run still
+    passes with the sandbox on, using user namespaces.
+  - `COPY --chmod=0644 hello-call.js`.
+  - There are 8 stub tests rather than 7, because case (e) is two tests.
+    With step 4b's case (h), there are 9.
+
+- **D7, the captions check.** Meet's `enableCaptions()` always resolves
+  to `undefined` (`providers/google-meet-provider.js:4154`), so a logged
+  `captions on: true` could never appear. The script now logs `captions:
+  enable requested`. Captions being on is proven by the stronger
+  criterion: the owner's own caption arrives within 10 s.
+  - Also, a custom `BOT_NAME` always gets "(AI)" added. That is test
+    (i), so there are now 10 tests.
 
 ## Steps
 
@@ -131,9 +153,10 @@ admits the bot from the lobby.
    - **Join.** Run `call = await deps.join(link, { name: env.BOT_NAME ||
      'RFactory Bot (AI)', host, timeoutMs: 300000, onState: (s) =>
      log(ts(), 'state:', s) })`.
-   - **Captions on.** Log `captions on:` followed by `await
-     call._inner.enableCaptions()`, with the comment `// shortcut: private
-     field of an alpha lib, replace when Call exposes it (D1)`.
+   - **Captions on.** `await call._inner.enableCaptions()`, then log
+     `captions: enable requested` (D7). Add the comment `// shortcut: private
+     field of an alpha lib, replace when Call exposes it (D1)`. The bot's
+     name goes through `botName()`, which always keeps "(AI)" (D7).
    - **Captions.** On `call.on('caption', t)`, log `ts(), t.final ? 'final'
      : 'partial', t.speaker + ':', t.text`. Also run
      `fs.appendFileSync('/out/captions.jsonl', JSON.stringify({ ms:
@@ -182,7 +205,7 @@ admits the bot from the lobby.
    Inject `fs` so the tests write to a temp dir. Make `/out` a constant
    that tests can override, e.g. `env.OUT_DIR || '/out'`.
 
-   → verify: `cd spike && npm test` passes all 7 tests, and `node --check
+   → verify: `cd spike && npm test` passes all 8 tests (D6), and `node --check
    hello-call.js` passes.
 
    Traps:
@@ -219,7 +242,7 @@ admits the bot from the lobby.
    - `podman build -t rfactory-spike:chrome spike/` and
      `podman build --build-arg BROWSER=chromium -t rfactory-spike:chromium spike/`
      both succeed.
-   - `podman run --rm --shm-size=1g rfactory-spike:chrome --smoke` and the
+   - `podman run --rm --init --shm-size=1g rfactory-spike:chrome --smoke` and the
      same with `:chromium` both print `smoke: browser up` and exit 0. This
      proves that the sandboxed browser starts and that each image finds
      its executable.
@@ -238,7 +261,7 @@ admits the bot from the lobby.
      `browser=${2:-chrome}`.
    - Build: `podman build --build-arg BROWSER="$browser" -t "rfactory-spike:$browser" .`
    - `mkdir -p out`
-   - Run: `podman run --rm --shm-size=1g --userns=keep-id -v "rfactory-spike-profile-$browser:/profile" -v "$PWD/out:/out:Z" -e BOT_NAME -e HOLD_MS "rfactory-spike:$browser" "$1" 2>&1 | tee "out/run-$browser-$(date +%s).log"`
+   - Run: `podman run --rm --init --shm-size=1g --userns=keep-id -v "rfactory-spike-profile-$browser:/profile" -v "$PWD/out:/out:Z" -e BOT_NAME -e HOLD_MS "rfactory-spike:$browser" "$1" 2>&1 | tee "out/run-$browser-$(date +%s).log"`
    - Exit with the podman status (`exit "${PIPESTATUS[0]}"`).
 
    → verify:
@@ -275,7 +298,7 @@ admits the bot from the lobby.
      `startShare` still returns 0.
    - **`spike/run.sh`**: also pass `-e SHARE_TEST`.
 
-   → verify: `npm test` passes all 8 tests, and `shellcheck` is clean.
+   → verify: `npm test` passes all 10 tests (D6, D7), and `shellcheck` is clean.
 
    Traps:
    - The flag matches the source by window title. If Meet asks for a
@@ -322,7 +345,7 @@ admits the bot from the lobby.
    → verify against the pass criteria, using `spike/out/run-*.log` and
    `captions.jsonl`:
    - `state: in-call`
-   - `captions on: true`
+   - `captions: enable requested`. The owner's caption arriving is the proof (D7).
    - a caption containing "standup test" logged within 10 s of the owner's
      `chat … 1` line
    - a `final` line for sentence 1 logged before `leaving`
@@ -353,7 +376,7 @@ admits the bot from the lobby.
 
 ## Tests
 
-- `cd spike && npm ci && npm test`: 7 stub tests pass, with no browser and
+- `cd spike && npm ci && npm test`: 10 stub tests pass (D6, D7), with no browser and
   no network.
 - `node --check spike/hello-call.js`.
 - `shellcheck spike/run.sh` is clean. With no argument it exits 2, and

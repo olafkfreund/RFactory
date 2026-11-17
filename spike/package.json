@@ -1,0 +1,13 @@
+{
+  "name": "rfactory-spike",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@vibeconferencing/calls": "0.1.0-alpha.3",
+    "playwright-core": "1.65.1"
+  },
+  "scripts": {
+    "start": "node hello-call.js",
+    "test": "node --test"
+  }
+}
