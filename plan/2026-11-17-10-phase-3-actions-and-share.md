@@ -148,6 +148,16 @@ reviewers:
   parsed `{ error }` payload counts as a refusal (`failed`); any other
   error reply, including `isError` with prose, is `uncertain`.
 
+- **D6, wave 3 details (step 6).** `create_card` has no card yet, so its
+  re-check covers the allowlist, effects and the switches but no fresh
+  card read. If the fresh read at re-check fails (timeout or error), the
+  action ends `expired` with 409 and nothing sent, like every other
+  failed re-check (the lead changed Codex's first version, which called
+  it `uncertain`; `uncertain` is kept for a dispatch whose outcome is
+  unknown). `startCall` clears the in-memory history shown for a call;
+  the record files keep everything. The race tests hold the first
+  approval at the record write while the second is attempted.
+
 ## Steps
 
 0. **`core/src/sources/cfactory.js`** (additive), **`core/test/cfactory.test.js`** (extend).
