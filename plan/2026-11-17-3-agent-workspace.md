@@ -390,6 +390,15 @@ v1; Wayland in the guest.
     or adjust the field names and record any change here.
     `listenGuest(sockPath, onConnection)` takes the connection handler as
     a second argument.
+12. **Found while building steps 5 to 12** (each recorded with its step's
+    commit):
+    - Step 5: tap and nft names derive from the VM id (`rfd<id>`,
+      `rfd_<id>`); per-VM addresses and the `microvm-run` argv come from
+      config hooks (`net.addr(cid)`, `vmArgv(vm)`) that step 6 supplies; the
+      1 GiB egress quota reads the tap's `rx_bytes`; rate limit is `tc` tbf
+      plus an ingress police filter; spares count toward the limit and only
+      `RuntimeMaxSec` applies to them; `bootGraceMs` (default 0) delays the
+      first heartbeat deadline. The mTLS handshake is untested until step 17.
 
 ## Prerequisites (named revisions)
 
