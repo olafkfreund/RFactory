@@ -3,7 +3,7 @@ const { mapGithub, summarise, STATES } = require('./items.js');
 
 const NAMES = ['standup_snapshot', 'list_items', 'get_item', 'item_activity'];
 const NEVER = /merge|delete|remove|force|push|setting|permission|collaborator|member|webhook|hook|integration|install|credential|secret|token|password|api_?key|ssh|deploy_?key|admin|protect|ruleset|transfer|archive/i;
-const REFS = /(?:\b([\w.-]+)\/([\w.-]+)#\d+|https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?|https?:\/\/api\.github\.com\/repos\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?)/gi;
+const REFS = /(?:\b([\w.-]+)\/([\w.-]+)#\d+|(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?|(?:https?:\/\/)?api\.github\.com\/repos\/([\w.-]+)\/([\w.-]+)(?:\/[^\s]*)?)/gi;
 const SCHEMAS = {
   standup_snapshot: { scope: 'string' },
   list_items: { scope: 'string', state: 'state?' },

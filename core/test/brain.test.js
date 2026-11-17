@@ -78,7 +78,7 @@ test('completion redirects fail without contacting the target', async () => {
   const target = await server((req, res) => json(res, { role: 'assistant', content: 'target' }));
   const first = await server((req, res) => { res.writeHead(302, { location: `${target.url}/chat/completions` }); res.end(); });
   try {
-    await assert.rejects(ask(setup(first.url)), /connection error|fetch failed|redirect/i);
+    await assert.rejects(ask(setup(first.url)), /^destination-redirect$/);
     assert.equal(target.requests.length, 0);
   } finally { await first.close(); await target.close(); }
 });

@@ -42,6 +42,8 @@ function createBrain(scope, gateway, redactor, env = process.env) {
       }
       throw new Error('tool-round-limit');
     } catch (error) {
+      // the SDK wraps a refused redirect as "Connection error" with the reason in the cause chain
+      for (let e = error; e; e = e.cause) if (/redirect/i.test(String(e.message))) throw new Error('destination-redirect');
       throw new Error(redactor.logSafe(error.message));
     }
   }
