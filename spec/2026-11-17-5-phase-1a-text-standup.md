@@ -25,7 +25,10 @@ on `feat/2-standalone-mode`). It reuses, unchanged:
   (`core/src/brains/destination.js`).
 
 1a adds three things on top: a CFactory source adapter, a Claude Code CLI
-brain with no tools, and a small web server behind sign-in.
+brain with no tools, and a small web server behind sign-in. It also makes
+two **additive** changes to #2 files, and #2's own tests must still pass
+after both: `checkFacts` learns CFactory card keys, and `destination.js`
+learns a `claude-cli` kind (both below).
 
 ```mermaid
 flowchart LR
@@ -40,8 +43,8 @@ flowchart LR
 ```
 
 **Order of work:** 1a is implemented after #2 S1 steps 1 to 7 are merged to
-`main`. 1a's plan only adds files; it does not change `core/` files that #2
-owns, other than registering the new source and brain.
+`main`. Apart from the two additive changes above and registering the new
+source and brain, 1a adds files and changes nothing #2 owns.
 
 ### CFactory source (`core/src/sources/cfactory.js`)
 
@@ -55,9 +58,17 @@ owns, other than registering the new source and brain.
   (`mcp.py:920-976`). The adapter calls nothing else.
 - **Scope.** A 1a scope is `{ source: "cfactory", repository_id: <n> }`.
   `cfactory_list_cards` is tenant-wide and has no repository filter
-  (`mcp.py:242-256`), so the adapter filters on `repository_id` itself.
-  At start-up it checks that the id exists in
-  `cfactory_list_git_repositories`; otherwise the scope is refused.
+  (`mcp.py:242-256`), so the adapter decides which cards belong to the
+  scope. It uses CFactory's own resolution order
+  (`CFactory/apps/backend/cfactory/cards.py:1292-1312`), with the repository
+  list from `cfactory_list_git_repositories`:
+  1. the card's `repository_id`, if set;
+  2. otherwise the repository whose `project` equals the `owner/repo` part
+     of the card's `issue_ref` (the default wins a tie);
+  3. otherwise the tenant default (`is_default`).
+
+  A card is in scope when that resolves to `<n>`. A scope id missing from
+  the repository list is refused at start-up.
 - **State mapping.** CFactory's board status is the observed state
   (`cards.py:98`):
 
@@ -69,20 +80,28 @@ owns, other than registering the new source and brain.
   | `backlog`, `ready` | `left` |
   | anything else | `unknown`, listed with its raw `source_state` |
 
-- **Fields kept.** `id` = `card_key`, `title`, `status` as `source_state`,
-  `assignee`, `updated_at`, `issue_ref`. Everything else is dropped in the
+- **Item.** The adapter returns #2's item shape exactly:
+  `{ id: card_key, kind: "card", title, url, state, source_state: status,
+  rule: "board", basis: "observed", assignees: assignee ? [assignee] : [],
+  updated_at, evidence[] }`.
+- **Fields kept.** `card_key`, `title`, `status`, `assignee`,
+  `updated_at`, `issue_ref`, `repository_id`, `issue_state`, `stage_runs`. Everything else is dropped in the
   adapter, so it never reaches the brain, the logs or the page:
   `description`, `acceptance_criteria` and comments are **not** read in 1a.
 - **Link.** CFactory's UI has no per-card URL (the cockpit links to the
   GitHub issue, `BacklogView.tsx:70`). So `url` is the GitHub issue from
-  `issue_ref` (`owner/repo#n` → `https://github.com/owner/repo/issues/n`),
+  `issue_ref`, built only when it matches `^[\w.-]+/[\w.-]+#\d+$`
+  (`owner/repo#n` → `https://github.com/owner/repo/issues/n`),
   and the card key is always shown next to it. A card with no
-  `issue_ref` shows its key with no link. This is narrower than the
-  intent's "linked to its CFactory card"; it is the only link CFactory has.
+  `issue_ref` shows its key with no link. CFactory has no per-card URL, so
+  the intent's "linked to its CFactory card" is amended to "linked to its
+  GitHub issue, with the card key shown" (intent amendment, for approval
+  with this spec).
 - **Evidence.** Two kinds, taken from fields the card already has:
   - each `stage_runs` entry whose `status` is `failed`, as
     `"<stage> (<service>) failed: <detail>"`. This is the nearest thing
-    CFactory has to a blocked reason (there is no blocked-reason field);
+    CFactory has to a blocked reason (there is no blocked-reason field).
+    `detail` is free text, so it is untrusted, like titles;
   - a disagreement between the board and the issue, for example a
     `blocked` card whose `issue_state` is `closed`. As in #2, the board
     decides the state and the disagreement is listed; nothing is re-decided.
@@ -102,19 +121,35 @@ the snapshot in its prompt and writes the summary.
   need.
 - **Process.** A dedicated `HOME` that holds only the subscription login,
   an environment with only `PATH`, `HOME` and `LANG` (no `ANTHROPIC_*`,
-  proxy or base-URL variables), an empty working directory, and a 90 s
+  proxy or base-URL variables), an empty working directory, and a 40 s
   timeout.
-- **Pinned version.** The CLI version is part of the destination hash
-  (#2's design). The version tested in the plan is recorded; a different
-  version disables the brain until the owner approves it again.
+- **Deadline.** One standup has 55 s in total, inside the intent's one
+  minute: 10 s for the CFactory reads, 40 s for the brain, the rest for
+  checking and rendering. A late brain gives the board without a summary.
+- **Destination approval** (extends #2's `destination.js` with
+  `kind: "claude-cli"`):
+  - **Approve, once, by the owner:** `rfactory-standup approve-destination`
+    (#2's CLI) runs `claude --version` in the scrubbed environment and the
+    dedicated `HOME`. It refuses when that `HOME`'s
+    `.claude/settings.json` sets any `env` entry, `apiKeyHelper` or a
+    base-URL or proxy value, and otherwise prints
+    `sha256("claude-cli|" + version + "|" + realpath(HOME))`.
+  - **Where it lives:** `RFACTORY_BRAIN_APPROVED_HASH` in the web
+    server's environment.
+  - **Each standup, before any request:** the same local check is repeated
+    with no network. A missing hash, a different hash, or a failed check
+    means the CLI is not started for the prompt, and the page says the
+    brain needs approval. The board still shows.
 - **Input.** `toModel(snapshot)`: card key, title, state, source state,
   assignee, `updated_at` and evidence lines, plus the counts from
-  `summarise`. Card titles are wrapped as untrusted content, as in #2.
+  `summarise`. Card titles and evidence details are wrapped as untrusted
+  content, as in #2.
 - **Output.** The CLI's JSON `result` text goes through `checkFacts`. A
   sentence that names a card key not in the snapshot, a wrong state or a
   wrong count is replaced with "I couldn't confirm that." `checkFacts`
-  learns CFactory card keys (`[A-Z]+-\d+`) as a reference form, in addition
-  to #2's GitHub forms.
+  learns CFactory card keys (`\b[A-Z][A-Z0-9]+-\d+\b`) as one more
+  reference form. This is additive: #2's GitHub forms and tests are
+  unchanged.
 - **Failure.** A timeout, a non-zero exit or a destination mismatch shows
   the board without a summary and says why. The board never depends on the
   brain.
@@ -134,12 +169,16 @@ the snapshot in its prompt and writes the summary.
   summary; and the brain's destination label (#2). It uses semantic HTML
   (headings, lists, a live region for the result) and works with the
   keyboard.
+- **Rendering untrusted text.** Titles, evidence and the summary are set
+  with `textContent` only, never `innerHTML`. Links come only from the
+  validated `url`. The page sends a `Content-Security-Policy` of
+  `default-src 'self'` with no inline script.
 - **One standup at a time.** A second request while one runs gets `409`.
   This bounds the subscription use.
 - **Configuration** is environment only: `CFACTORY_MCP_URL`,
   `CFACTORY_READ_KEY` (from a file, `CFACTORY_READ_KEY_FILE`),
   `RFACTORY_SCOPE_REPOSITORY_ID`, `RFACTORY_ALLOWED_EMAILS`,
-  `RFACTORY_CLAUDE_HOME`, `PORT`. A key passed directly in the environment
+  `RFACTORY_CLAUDE_HOME`, `RFACTORY_BRAIN_APPROVED_HASH`, `PORT`. A key passed directly in the environment
   is refused, as in #2's "credential in scope" rule.
 
 ### Sign-in
@@ -151,6 +190,8 @@ the snapshot in its prompt and writes the summary.
   only) and trusts `X-Forwarded-Email` because only oauth2-proxy can reach
   it. It still checks that header against `RFACTORY_ALLOWED_EMAILS` on every
   request and returns `403` otherwise, and `401` when the header is missing.
+  oauth2-proxy runs with `--pass-user-headers=true`, so it sets the header
+  itself and replaces any value a client sends.
 - **1a users:** the owner only. `RFACTORY_ALLOWED_EMAILS` holds one address.
 
 ### Data
@@ -226,23 +267,33 @@ the snapshot in its prompt and writes the summary.
 ## Verification
 
 1. `cd core && npm test`: the new tests pass along with #2's:
-   - the CFactory state mapping, including an unknown status;
-   - the `repository_id` filter, an unknown repository refused;
-   - `issue_ref` to URL, and a card with no `issue_ref`;
+   - the CFactory state mapping, including an unknown status, and the
+     exact #2 item shape;
+   - repository resolution: an explicit id, a null id resolved by
+     `issue_ref` project, a null id falling to the default, a card of
+     another repository excluded, an unknown scope id refused;
+   - `issue_ref` to URL, a malformed `issue_ref` (no link), and a card with
+     no `issue_ref`;
    - failed `stage_runs` and board/issue disagreement as evidence;
    - descriptions and acceptance criteria never present in the items;
    - `checkFacts` with card keys: a made-up `FCT-99`, a wrong state, a
      correct one;
    - the Claude brain's argv and environment (asserted, as
-     `nixarchy-microvm` does), a timeout, and a destination mismatch.
+     `nixarchy-microvm` does), the 40 s timeout, and a missing, changed or
+     overridden destination: the CLI is never started for the prompt;
+   - #2's existing tests, unchanged, still pass.
 2. `cd web && npm test`: `401` without the header, `403` for another
    email, `409` for a concurrent standup, a direct key in the environment
-   refused, and `/api/standup` against a fake source and brain.
+   refused, `/api/standup` against a fake source and brain within the
+   55 s deadline, and the CSP header present. A fixture card titled
+   `<img src=x onerror=alert(1)>` is rendered as text (checked in the
+   page script's unit test).
 3. **CLI check:** a real `claude -p` run with the 1a flags reports no tools
    and no MCP servers.
 4. **End to end on the workstation,** against CFactory with the read key:
    the page shows the five cards of repository 2 in the right groups, the
    failed stages as evidence, the data age, and a checked summary.
 5. **On p620,** after the owner's OK: the owner signs in through Keycloak
-   and sees the same; another account gets `403`; the app port is not
-   reachable from outside the pod.
+   and sees the same; another account gets `403`; a request through
+   oauth2-proxy with a forged `X-Forwarded-Email` is still answered as the
+   signed-in user; the app port is not reachable from outside the pod.

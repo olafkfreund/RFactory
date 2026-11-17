@@ -1,5 +1,5 @@
 ---
-status: approved
+status: draft
 issue: 5
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
@@ -25,7 +25,8 @@ A signed-in team member opens the RFactory web app, picks the one
 configured project, and asks for a standup. Within a minute the page shows:
 
 - the project's cards grouped as done, in progress, blocked and left,
-  each item linked to its CFactory card;
+  each item showing its CFactory card key and linked to its GitHub issue
+  (CFactory has no per-card URL; amended with the spec);
 - how old the data is ("as of 11:42, 3 min ago");
 - any card state the app does not recognise, listed as-is, not guessed;
 - a short spoken-style summary (the text Phase 1b will later say aloud).
