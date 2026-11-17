@@ -1,0 +1,11 @@
+{
+  "name": "@rfactory/core",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "openai": "7.57.0"
+  },
+  "scripts": { "test": "node --test" }
+}

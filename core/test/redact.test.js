@@ -1,0 +1,53 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { makeRedactor } = require('../src/redact.js');
+
+const secret = 'planted-secret-value';
+const { toModel, logSafe } = makeRedactor([secret]);
+
+test('nested values, errors, multiline text and JSON text are redacted', () => {
+  assert.equal(toModel, logSafe);
+  const error = new Error(`failed: ${secret}`);
+  error.stack = `Error: ${secret}\n at ${secret}`;
+  error.cause = new Error(secret);
+  const output = toModel({ nested: [{ value: secret }], error, multiline: `a\n${secret}\nb`, json: JSON.stringify({ token: secret }) });
+  assert.deepEqual(output.nested, [{ value: '[redacted]' }]);
+  assert.equal(output.error.message, 'failed: [redacted]');
+  assert.equal(output.error.stack, 'Error: [redacted]\n at [redacted]');
+  assert.equal(output.error.cause.message, '[redacted]');
+  assert.equal(output.multiline, 'a\n[redacted]\nb');
+  assert.equal(output.json, '{"token":"[redacted]"}');
+});
+
+test('each credential pattern is redacted', () => {
+  const patterns = [
+    `ghp_${'A'.repeat(36)}`,
+    `github_pat_${'A_'.repeat(11)}`,
+    `sk-proj-${'A'.repeat(20)}`,
+    `xoxb-${'a'.repeat(10)}`,
+    `AKIA${'A'.repeat(16)}`,
+    '-----BEGIN RSA PRIVATE KEY-----\nprivate\nkey\n-----END RSA PRIVATE KEY-----',
+    'authorization: credential',
+    `Bearer ${'a'.repeat(16)}`,
+  ];
+  for (const value of patterns) assert.equal(toModel(value), value.startsWith('authorization') ? 'authorization: [redacted]' : '[redacted]', value);
+  assert.equal(toModel(`before ${patterns[5]} after`), 'before [redacted] after');
+  assert.equal(toModel('x-api-key="value" api_key: other token=thing password: top'),
+    'x-api-key=[redacted] api_key: [redacted] token=[redacted] password: [redacted]');
+});
+
+test('short configured secret is rejected', () => {
+  assert.throws(() => makeRedactor(['1234567']), /secret-too-short/);
+});
+
+test('ordinary text and common references are unchanged', () => {
+  const text = 'The standup for #123 was finished on 2026-11-17 at 11:00. SHA-1: 0123456789abcdef0123456789abcdef01234567.';
+  assert.equal(toModel(text), text);
+});
+
+test('authorization: Bearer <token> hides the token (plan D7)', () => {
+  const { toModel } = require('../src/redact.js').makeRedactor([]);
+  const out = toModel('authorization: Bearer samplevalue1234567890');
+  assert.ok(!out.includes('samplevalue1234567890'), out);
+});
