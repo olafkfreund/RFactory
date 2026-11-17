@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 10
 intent: intent/2026-11-17-10-phase-3-actions-and-share.md
 ---
