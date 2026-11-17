@@ -29,6 +29,7 @@ function stateFactory() {
       wasIdle = isIdle;
       const blink = isIdle && time >= nextBlink && time < nextBlink + 130;
       if (isIdle && time >= nextBlink + 130) nextBlink += 3000 + random() * 3000;
+      if (closingAt !== null && time - closingAt >= 150) closingAt = null;
       return { open, nod, blink };
     }
 

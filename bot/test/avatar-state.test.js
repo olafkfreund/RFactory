@@ -2,9 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { createState, meshAt, source } = require('../avatar/state.js');
+const m01 = require('../avatars/manifest.json').portraits.m01.anchors;
 
-// The approved m01 anchors are local to this test so step 1 can land independently.
-const m01 = {
+const approvedM01 = {
   mesh: {
     points: {
       OL: [58, 150], OBL: [74, 194], OB: [116, 204], OBR: [162, 188], OR: [168, 146],
@@ -21,7 +21,7 @@ const m01 = {
       ['JR', 'OBR', 'OB'], ['JR', 'OR', 'OBR'],
     ],
   },
-  eyes: { left: [78, 99, 10], right: [126, 95, 11] },
+  eyes: [{ x: 78, y: 99, w: 10 }, { x: 126, y: 95, w: 11 }],
   maxDrop: 13,
 };
 
@@ -44,6 +44,14 @@ test('a stop event closes within 150 ms despite the library’s decaying level',
   assert.equal(stopped.nod, 0);
   assert.ok(level > 0.06);
   assert.equal(state.step(200, { level: 0.05 }).open, 0);
+});
+
+test('level rise reopens the mouth after a completed close without a start event', () => {
+  const state = createState({ now: 0, random: () => 0 });
+  state.step(0, { level: 0.8, speakingEvent: true });
+  state.step(10, { level: 0.8, speakingEvent: false });
+  assert.equal(state.step(160, { level: 0.1 }).open, 0);
+  assert.equal(state.step(200, { level: 0.9 }).open, 0.9);
 });
 
 test('below 0.06 without an event is closed; idle closes immediately', () => {
@@ -88,6 +96,7 @@ function inside([x, y], polygon) {
 }
 
 test('m01 mesh keeps positive triangle area and moving points inside its outer boundary', () => {
+  assert.deepEqual(m01, approvedM01);
   const ring = ['OL', 'UL', 'UM', 'UR', 'OR', 'OBR', 'OB', 'OBL'].map((name) => m01.mesh.points[name]);
   for (let d = 0; d <= m01.maxDrop; d++) {
     const points = meshAt(m01, d);
