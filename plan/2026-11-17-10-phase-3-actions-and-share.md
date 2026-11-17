@@ -3,6 +3,7 @@ status: draft
 issue: 10
 spec: spec/2026-11-17-10-phase-3-actions-and-share.md
 coders:
+  0: coder    # read adapter getCard (fresh, read key, repository check): small, follows 1a's adapter
   1: codex    # allowlist, payload, hash, redaction check, effects: small, security-critical
   2: codex    # brain action mode: zero tools, strict JSON: small, security-critical
   3: codex    # write switches and write key in loadScope: small, security-critical
@@ -43,13 +44,16 @@ reviewers:
   `card_key` must belong to the configured repository (CFactory's
   resolution order, as 1a's adapter). A payload that `toModel()` would
   change is refused.
-- **Effects** come from a fresh `cfactory_get_card` (read key) and the
-  card state after the action: *starts work* for the four stage actions
-  (unless the stage is already done) and whenever the resulting card is
-  `ready` with a tier and no `correlation_key` (covers create/move into
-  ready, update adding a tier, reprioritise of a ready undispatched
-  card); *updates a GitHub issue* for card writes. Work-starting actions
-  use the run budget.
+- **Effects** come from a fresh `getCard` (step 0, read key) and the
+  card state after the action, using **CFactory's own rule** (D1): the
+  tier's default stage is `code` for low/medium and `plan` for hard;
+  intake dispatches when the resulting card is `ready` with a tier and
+  `stage_runs[default stage]` is neither `dispatched` nor `done`. So
+  *starts work* for create/move into ready, update adding or changing a
+  tier on a ready card, and reprioritise of a ready card whose default
+  stage has not run; and for the four stage actions unless that stage is
+  already `done`. *Updates a GitHub issue* for card writes.
+  Work-starting actions use the run budget.
 - **Sentences** spoken and shown are written by the server from the
   payload and effects; the model's text is never spoken for an action.
 - **Pending payload** is immutable: `{ id, action, args, effects,
@@ -67,15 +71,29 @@ reviewers:
   dispatch through the fixed table with the write key; (5) classify,
   record, release an unused slot, speak the result. After a restart, any
   `executing` without a final state becomes `uncertain`; never re-run.
-- **Classification:** parse the MCP text JSON. `done` (applied; for
-  work-starting actions `dispatched: true`); `already done` (`ok: true`
-  with `dispatched: false` or `skipped`); `failed` (explicit `ok: false`
-  or error before any change); `uncertain` (timeout, lost connection,
-  unparsable reply, generic internal error). Never retried.
+- **Classification** (D2), parsing the MCP text JSON in its two real
+  shapes:
+  - *stage tools* (`run_card`, `plan_card`, `code_card`, `test_card`)
+    reply `{ stage: { dispatched, ok, reason, … }, card }`: `stage.ok &&
+    stage.dispatched` → `done (started)`; `stage.ok && !stage.dispatched`
+    → `already done` (reason e.g. "already dispatched"); `!stage.ok` →
+    `failed` (the card may now be `blocked`; the page shows it);
+  - *card writes* (create, update, move, reprioritise) reply the bare
+    card: applied → `done`; if the action was expected to start work,
+    compare `stage_runs[default stage]` before and after: now
+    `dispatched` → `done (started)`; still not dispatched, or the card
+    turned `blocked` → `done, start failed`;
+  - an error payload `{ error, reason }` (a refusal) → `failed`;
+  - a timeout, lost connection, unparsable reply or generic internal
+    error → `uncertain`; the budget slot stays reserved for an uncertain
+    start. Never retried.
 - **Switches:** writes only when the scope has `writes_enabled: true`
-  **and** `RFACTORY_WRITES=on` **and** `source.write_key_file` exists and
-  holds a `cfk_`/`acw_` key with mode 600; else "Changes are turned off
-  here." The write key is read only by the executor.
+  **and** `RFACTORY_WRITES=on` **and** `source.write_key_file` exists with
+  mode 600; else "Changes are turned off here." `loadScope` checks only
+  the switches, the path and the file mode; it never reads the key. The
+  executor (step 4) reads the key, checks its `cfk_`/`acw_` shape, and
+  adds it to the redactor that guards logs, events and the record; the
+  brain's process never receives it.
 - **Record:** append-only JSONL per state change, daily files
   `/var/lib/rfactory/actions/YYYY-MM-DD.jsonl`, deleted when the date is
   more than 90 days before today (UTC), at start-up and daily. No keys.
@@ -90,15 +108,43 @@ reviewers:
 
 ## Deviations from the spec (approved with this plan)
 
-None yet.
+- **D1, the dispatch rule.** The spec says intake dispatches when a
+  ready, tiered card has "no `correlation_key`". CFactory actually checks
+  the tier's default stage (`card_intake.py:606`: dispatch unless
+  `stage_runs[default stage]` is `dispatched` or `done`); planning sets
+  `correlation_key`, so the spec's rule would miss a planned card that is
+  retiered and moved to ready, starting work outside the budget. The plan
+  uses CFactory's rule.
+- **D2, result shapes.** The spec reads `dispatched`/`skipped` flags from
+  every reply. CFactory nests stage results under `stage` with a `card`
+  beside them, and returns a bare card for create/update/move/
+  reprioritise. The plan classifies both shapes as in Decisions, and
+  keeps the budget slot for an uncertain start.
+- **D3, step 0.** The fresh card read the spec relies on does not exist
+  in 1a's adapter (it exposes only `snapshot`); step 0 adds it.
 
 ## Waves
 
-- **Wave 1 (parallel):** steps 1, 3, 5.
+- **Wave 1 (parallel):** steps 0, 1, 3, 5.
 - **Wave 2 (parallel, after wave 1):** steps 2, 4.
 - **Wave 3:** step 6. **Wave 4:** step 7. Then steps 8–11 (mine).
 
 ## Steps
+
+0. **`core/src/sources/cfactory.js`** (additive), **`core/test/cfactory.test.js`** (extend).
+   - `getCard(card_key)`: a fresh `cfactory_get_card` with the **read**
+     key and the 10 s timeout, returning the full card (`tier`, `status`,
+     `updated_at`, `correlation_key`, `stage_runs`, `repository_id`,
+     `issue_ref`) and whether it belongs to the configured repository
+     (1a's `repositoryOf`). An error payload or unknown card →
+     `{ error }`. The internal MCP caller gains an `arguments` parameter;
+     `snapshot()` is unchanged.
+   - Tests (fake client): full card returned; a foreign-repository card
+     flagged; an error payload; a timeout; 1a's tests unchanged.
+
+   → verify: `cd core && npm test`.
+
+   Traps: never use the write key here.
 
 1. **`core/src/actions/allowlist.js`**, **`core/src/actions/effects.js`**,
    **`core/test/actions.test.js`** (new).
@@ -116,8 +162,9 @@ None yet.
      tool name; a foreign card key; a `password=…` title refused;
      `create_card` gets the scope's repository; effects for create/move
      into ready, update adding a tier to a ready card, reprioritise of a
-     ready undispatched card, a stage already done, a backlog move (no
-     work); the sentence names card key and title and never uses model
+     ready card whose default stage has not run, **a planned card (has a
+     `correlation_key`, plan done) retiered to low and moved to ready
+     (starts code)**, a stage already done, a backlog move (no work); the sentence names card key and title and never uses model
      text; hash stable across key order.
 
    → verify: `cd core && node --test test/actions.test.js && npm test`.
@@ -142,14 +189,13 @@ None yet.
 
 3. **`core/src/scope.js`** (additive), **`core/test/scope.test.js`**
    (extend).
-   - Accept `writes_enabled: true` only with `RFACTORY_WRITES=on` and a
-     readable `source.write_key_file` (mode 600, key pattern); return the
-     write key separately (never on the scope object, never in the read
-     path's `secrets` used for the brain) and register it with the
-     redactor. Everything else as today.
+   - Accept `writes_enabled: true` only with `RFACTORY_WRITES=on` and an
+     existing `source.write_key_file` with mode 600. `loadScope` checks the
+     path and mode only and **never reads the key** (the executor does,
+     step 4). Everything else as today.
    - Tests: each missing switch refuses `writes_enabled: true`; a world-
-     readable write key refused; the write key never appears in the
-     returned scope; `writes_enabled: false` unchanged.
+     readable write key file refused; the key file is never opened by
+     `loadScope` (fake fs); `writes_enabled: false` unchanged.
 
    → verify: `cd core && npm test`.
 
@@ -157,17 +203,21 @@ None yet.
 
 4. **`core/src/sinks/cfactory-write.js`**, **`core/test/cfactory-write.test.js`**
    (new).
-   - `createCfactoryWriter({ mcpUrl, writeKey, client?, timeoutMs })` →
-     `{ apply(action, args) → { outcome: 'done'|'already done'|'failed'|'uncertain', detail } }`
-     through a frozen table of the eight allowed tools; `getCard(card_key)`
-     is a read through the **read** source, not this writer.
-   - Classification as in Decisions; the write key only in the transport
-     header.
-   - Tests (fake client): each tool name mapped; a never-allowed action
-     throws before any call; `ok:false` → failed; `dispatched:false` /
-     `skipped` → already done; a timeout and an unparsable reply →
-     uncertain; no retry on any outcome; the key never in a returned
-     value or thrown message.
+   - `createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client?,
+     timeoutMs })` reads the write key from `writeKeyFile` (shape check),
+     adds it to `redactor`, and returns `{ apply(action, args, before) →
+     { outcome: 'done'|'done (started)'|'done, start failed'|'already done'|'failed'|'uncertain', detail, card } }`
+     through a frozen table of the eight allowed tools.
+   - Classification exactly as in Decisions (D2), for both reply shapes.
+   - Tests use **real-shaped fixtures** copied from CFactory's replies:
+     a stage reply `{stage:{dispatched:true,ok:true}, card}`, a stage
+     reply `{stage:{dispatched:false,ok:true,reason:'already dispatched'}}`,
+     a stage reply `{stage:{dispatched:false,ok:false}}`, a bare card
+     whose default stage became `dispatched`, a bare card that turned
+     `blocked`, an error payload `{error, reason}`, a timeout and an
+     unparsable reply; each never-allowed action throws before any call;
+     no retry; the key never in a returned value, thrown message or the
+     redactor's output.
 
    → verify: `cd core && npm test`.
 
@@ -175,12 +225,16 @@ None yet.
 
 5. **`web/actions-record.js`**, **`web/test/actions-record.test.js`** (new).
    - `createRecord({ dir, clock, redactor })` → `{ append(entry) →
-     Promise (resolves after the write is flushed), prune() }`; daily
-     files `YYYY-MM-DD.jsonl` (UTC); `prune()` deletes files whose date is
-     more than 90 days before today; entries pass through `logSafe`.
+     Promise (resolves after the write is flushed), prune(),
+     unfinished() → entries }`; daily files `YYYY-MM-DD.jsonl` (UTC);
+     `prune()` deletes files whose date is more than 90 days before today;
+     `unfinished()` reads the retained files and returns each action whose
+     last state is `executing`, ignoring an incomplete final line; entries
+     pass through `logSafe`.
    - Tests (temp dir, fake clock): append order and durability (await);
      a write error rejects; prune at exactly 90 and 91 days; a planted key
-     never written.
+     never written; `unfinished()` with real files holding a finished and
+     an unfinished action and a truncated last line.
 
    → verify: `cd web && npm test`.
 
@@ -190,17 +244,26 @@ None yet.
    - `createActionManager({ readSource, writer, brain, record, redactor,
      clock, scope, approvers, enabled })` → `{ request(text, speaker),
      approve(id, email, hash), reject(id, email, hash), list(),
-     subscribe(fn), endCall(), recover() }` implementing pending, limits,
-     expiry, approval checks, the five-step execution and the events, all
-     as in Decisions.
+     subscribe(fn), startCall(generation), endCall(), recover() }`
+     implementing pending, limits, expiry, approval checks, the five-step
+     execution and the events, all as in Decisions.
+   - `recover()` runs at server start, **before approvals are served**:
+     every `record.unfinished()` entry is recorded `uncertain`.
+   - **Per call:** `startCall(generation)` resets the run budget and the
+     pending list; every `request` is bound to the current generation, and
+     a brain reply for an older generation is dropped; `endCall()` expires
+     all pending actions and ignores late replies.
    - Tests (fakes): 6th pending declined; expiry by time, call end and
      card change; approval by a non-approver → 403-style refusal; wrong
      hash refused; **two concurrent approvals of one action → one
      dispatch**; **two actions competing for the last budget slot → one
      dispatch**; record failure → nothing sent; changed card at
      re-check → nothing sent; each classification and its sentence;
-     `recover()` turns `executing` into `uncertain`; disabled writes →
-     "Changes are turned off here."; the write key in no event or log.
+     `recover()` turns `executing` into `uncertain` before any approval;
+     two successive calls get separate budgets and pending lists; a brain
+     reply arriving after `endCall()` creates no pending action; disabled
+     writes → "Changes are turned off here."; the write key in no event or
+     log.
 
    → verify: `cd web && npm test`.
 
@@ -212,9 +275,12 @@ None yet.
    (extend).
    - Hearing: a fourth kind `action` for the change verbs, after leave
      and before standup/question.
-   - Call manager: `action` utterances go to `actions.request`; spoken
-     replies are the server sentences; action events flow into the event
-     stream and are replayed on reload.
+   - Call manager: calls `actions.startCall(generation)` on start and
+     `actions.endCall()` on every stop path; `action` utterances go to
+     `actions.request` with the call's generation; spoken replies are the
+     server sentences; action events flow into the event stream and are
+     replayed on reload. `server.js` runs `actions.recover()` before it
+     listens.
    - Routes: `POST /api/actions/:id/approve|reject` as in Decisions;
      `GET /api/actions` for the page's first render.
    - Page: Pending actions and History panels in the Factory style;
@@ -229,7 +295,10 @@ None yet.
 
    Traps: the routes never accept an action body, only an id and hash.
 
-8. **Deploy (mine).** Add a CFactory `write` key (`cfk_…:read,write` in
+8. **Deploy (mine).** `web/Containerfile`: also copy `web/actions.js`,
+   `web/actions-record.js`, `core/src/actions/`, `core/src/sinks/`, and the
+   new prompt file (covered by `core/src`); check in the built image that
+   `node -e "require('./web/actions.js')"` loads. Add a CFactory `write` key (`cfk_…:read,write` in
    `factory/cfactory-api-keys`, as the 1a read key was added, CFactory
    restarted, agent bus first) into
    `~/.config/rfactory/cfactory-write-key` (600); scope
