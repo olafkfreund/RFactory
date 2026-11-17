@@ -133,8 +133,10 @@ reviewers:
   `grep -riE 'cfactory|pfactory|aifactory|tfactory' core/` to be empty, but
   1a adds `core/src/sources/cfactory.js` and CFactory tests on purpose. For
   1a the check becomes: the grep matches only `core/src/sources/cfactory.js`,
-  `core/test/cfactory.test.js` and `core/test/fixtures/cfactory-*.json`.
-  #2's own files stay free of Factory names.
+  `core/test/cfactory.test.js`, `core/test/fixtures/cfactory-*.json`, and
+  the step 2 additions in `core/src/scope.js`, `core/test/scope.test.js`
+  and `core/test/redact.test.js` (the `cfactory` scope kind and the
+  CFactory key pattern). No other #2 file names a Factory.
 - **D6, found while building steps 2 to 4** (each recorded with its step's
   commit):
   - Step 2: `loadScope(file, env, secrets = [])` pushes the loaded
