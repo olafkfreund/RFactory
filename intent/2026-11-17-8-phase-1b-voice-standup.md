@@ -34,7 +34,8 @@ link for the configured project and starts the bot. Then:
 - It leaves when asked, when the call ends, or when a person stops it
   from the web app.
 
-Nothing is written anywhere. Approving changes from a call is Phase 3.
+Nothing is written to the Factories. Approving changes from a call is
+Phase 3. What happens to the call's content is open question 7.
 
 ## Affected users and systems
 
@@ -77,17 +78,20 @@ them:
 - Chat sending failed in one of two runs, so chat cannot be the only way
   the bot answers.
 - The library (0.1.0-alpha.3) is an alpha whose Meet support depends on
-  the page structure, and it speaks audio, not text: speech must be
-  produced locally.
+  the page structure, and it plays audio, not text, so the bot needs a
+  way to turn its answer into intelligible speech without a paid speech
+  service.
+- Meet's captions mangle names: "RFactory standup test" arrived as "our
+  Factory. Test stand up". Normal transcription errors must not stop
+  people from addressing the bot.
 
 ## Open questions
 
 1. **Wake phrase:** must people address the bot by name ("RFactory, …")
    before it answers, or should it answer any question it hears?
    Recommended: by name only, so it never talks over people.
-2. **Voice:** a natural local neural voice (larger, its own licence) or a
-   small robotic one? Recommended: neural, with the robotic one as a
-   fallback.
+2. **Voice quality:** is a natural-sounding voice required, or is an
+   intelligible but robotic one acceptable for 1b?
 3. **Length:** say the whole standup (about six sentences, as in 1a), or
    a short headline with the detail on the web page?
 4. **Typed questions in Meet chat:** answer them too, or voice only?
@@ -100,3 +104,7 @@ them:
    keeps standups), or stored, and for how long?
 8. **Real meetings:** will the team's real Meet calls admit an anonymous
    guest, or does the bot need a signed-in Google account?
+9. **Who may hear and ask:** everyone in the call hears the bot's answers,
+   including guests, and speaker names can be spoofed. May a person who
+   starts the bot expose the configured project's status to every
+   attendee? May any attendee ask questions, or only some?
