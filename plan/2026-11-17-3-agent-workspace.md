@@ -380,6 +380,16 @@ v1; Wayland in the guest.
     `protocol.js`) are pure libraries with no host effect, so building them
     early wastes nothing if fact 4 fails. No step that builds, deploys or
     runs on p620 starts before fact 4 passes.
+11. **Found while building step 4** (recorded with the step 4 commit):
+    the plan names no message types, so `protocol.js`'s schema allowlist
+    is Codex's choice: `heartbeat`, `call-end`, `cancel`, `cancel-ack`,
+    `action-result {action_id, ok}`, `share-target-changed {share_id}`,
+    `profile-attach {key}`, `desktop_open {url}`, `desktop_click {target}`,
+    `desktop_type {target, text}`, `desktop_scroll {dy}`,
+    `desktop_screenshot`, `desktop_login {profile}`. Steps 7 to 9 confirm
+    or adjust the field names and record any change here.
+    `listenGuest(sockPath, onConnection)` takes the connection handler as
+    a second argument.
 
 ## Prerequisites (named revisions)
 
