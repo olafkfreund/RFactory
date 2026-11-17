@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 2
 intent: intent/2026-11-17-2-standalone-mode.md
 ---
