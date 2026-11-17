@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 8
 intent: intent/2026-11-17-8-phase-1b-voice-standup.md
 ---
