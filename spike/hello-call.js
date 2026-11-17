@@ -52,6 +52,10 @@ async function run(argv, env, deps = {}) {
     // Meet's enableCaptions() resolves to undefined; captions being on is proven by the owner's caption arriving (D7).
     await call._inner.enableCaptions();
     log(ts(), 'captions: enable requested');
+    // D8 diagnostics: the library's in-page audio and mic logs, which say whether Meet took the virtual mic.
+    if (call._inner.page && call._inner.page.on) {
+      call._inner.page.on('console', (m) => { const t = m.text(); if (/bots-in-calls|\[CC\]|mic|Mic|getUserMedia|unmute|mute/.test(t)) log(ts(), '[page]', t); });
+    }
     call.on('caption', (t) => {
       log(ts(), t.final ? 'final' : 'partial', t.speaker + ':', t.text);
       fs.appendFileSync(path.join(out, 'captions.jsonl'), JSON.stringify({ ms: Date.now() - t0, ...t }) + '\n');
@@ -60,6 +64,13 @@ async function run(argv, env, deps = {}) {
     log(ts(), 'speak: start');
     await (await call.speak(clip)).done;
     log(ts(), 'speak: done');
+    try { fs.writeFileSync(path.join(out, 'after-speak.png'), await call.screenshot()); log(ts(), 'screenshot: after-speak.png'); } catch (e) { log(ts(), 'screenshot: failed', e.message); }
+    try {
+      // D8: Meet's mic buttons and their mute state, as the page sees them.
+      log(ts(), 'mic buttons:', JSON.stringify(await call._inner.page.evaluate(() =>
+        [...document.querySelectorAll('[data-is-muted], button[aria-label*="microphone" i]')]
+          .map((b) => ({ label: b.getAttribute('aria-label'), muted: b.getAttribute('data-is-muted') })))));
+    } catch (e) { log(ts(), 'mic buttons: failed', e.message); }
     if (shareTest) {
       // D5, not gating. shortcut: private fields of an alpha lib; public call.share.start throws on this host.
       try {

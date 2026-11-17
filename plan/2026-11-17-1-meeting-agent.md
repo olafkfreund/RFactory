@@ -107,6 +107,17 @@ admits the bot from the lobby.
   - Also, a custom `BOT_NAME` always gets "(AI)" added. That is test
     (i), so there are now 10 tests.
 
+- **D8, diagnostics after the first Chrome run (step 6).** That run joined
+  and captioned the owner, but the owner heard no clip, `chat.send`
+  failed, and sentence 1's `final` only came after `leaving` (D4). Before
+  the next run (PARR: cause first), `hello-call.js` logs:
+  - the page's console lines about the mic and audio (`[page] …`);
+  - `after-speak.png`, a screenshot taken after `speak: done`, into `out/`;
+  - Meet's mic buttons and their `data-is-muted` state after speaking.
+  All three are best-effort: a failure is logged and never changes the
+  exit code. They use `call._inner.page` under the same `shortcut:` as D1.
+  There are no new tests; the stub has no `page`, and the 10 tests still pass.
+
 ## Steps
 
 1. **`spike/package.json`** (new).
