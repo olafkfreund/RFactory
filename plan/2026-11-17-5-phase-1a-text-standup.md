@@ -116,6 +116,12 @@ reviewers:
   `tools` and `mcp_servers` are both empty. This is the spec's "a run
   lists no tools and loads no MCP servers" check, done once per approval
   rather than per standup, so a standup costs one CLI call.
+- **D3, more additive edits to #2's files than the spec's two.** The spec
+  allows additive changes to `facts.js` and `destination.js`, plus
+  registering the new source and brain. The plan also adds to `redact.js`
+  (the CFactory key pattern, D1), `scope.js` (the two new kinds) and the
+  CLI (`approve-destination` for `claude-cli`, D2). All are additive, and
+  #2's own tests must still pass unchanged after each step.
 
 ## Steps
 
