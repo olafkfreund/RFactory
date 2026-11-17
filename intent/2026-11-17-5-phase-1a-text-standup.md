@@ -24,16 +24,13 @@ slice is the standup itself, in text, in a web page.
 A signed-in team member opens the RFactory web app, picks the one
 configured project, and asks for a standup. Within a minute the page shows:
 
-- four columns: done, in progress, blocked, left, each item linked to its
-  CFactory card;
+- the project's cards grouped as done, in progress, blocked and left,
+  each item linked to its CFactory card;
 - how old the data is ("as of 11:42, 3 min ago");
 - any card state the app does not recognise, listed as-is, not guessed;
 - a short spoken-style summary (the text Phase 1b will later say aloud).
 
-The user can type a follow-up question about the same project ("why is
-card 42 blocked?") and gets a text answer from the same data.
-
-No call is joined in 1a, and nothing is written anywhere.
+No call is joined in 1a, and nothing is written to the Factories.
 
 ## Affected users and systems
 
@@ -49,14 +46,15 @@ No call is joined in 1a, and nothing is written anywhere.
 
 Carried over from the parent intent (#1), which still applies:
 
-- **Must** be read-only. No write key is held; the brain gets no shell,
-  file, credential, `merge_pr` or `delete_card` tools.
-- **Must** keep the status source and the brain replaceable (#2): the
-  standup is built from a source interface, not straight from CFactory
-  calls in the UI.
+- **Must** be read-only toward the Factories. No write key is held.
+- **Must not** give the brain any Factory key, shell, file, credential,
+  `merge_pr` or `delete_card` tools. RFactory's own allowlist is the
+  guard, and it is checked again each time a tool runs.
+- **Must** keep the status source and the brain replaceable (#2).
 - **Must** answer only about the selected project, show data age, and
   surface unknown states.
-- **Must** be a web app, self-hosted, no paid services.
+- **Must** be a web app and self-hosted, with no paid meeting-bot
+  service. The brain runs on the owner's Claude subscription.
 - **p620:** no build or deploy without the owner's OK.
 
 New for 1a:
@@ -76,6 +74,10 @@ These were left open by the parent intent and now need an answer for 1a:
 2. **First project:** which CFactory project is configured first?
 3. **Who may use it:** owner only in 1a, or named team members?
 4. **Data:** may card titles and descriptions go to Claude through the
-   subscription CLI? Are standups stored, and for how long?
+   subscription CLI? Are standups stored, for how long, and who may read
+   stored ones?
 5. **Where it runs:** p620 next to the Factories, or the workstation until
    1b?
+6. **Follow-up questions:** should 1a also answer typed questions about the
+   same project ("why is card 42 blocked?"), or only produce the standup?
+   Recommended: standup only, with questions as the next slice.
