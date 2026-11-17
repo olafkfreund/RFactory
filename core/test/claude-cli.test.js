@@ -1,0 +1,137 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const { PassThrough, Writable } = require('node:stream');
+const { claudeHash, checkClaudeHome } = require('../src/brains/destination.js');
+const { createClaudeBrain } = require('../src/brains/claude-cli.js');
+const { makeRedactor } = require('../src/redact.js');
+
+const secret = 'planted-secret-value';
+const snapshot = { items: [{ id: 'owner/repo#3', state: 'blocked', title: `Title ${secret}`, evidence: ['failed'] }],
+  counts: { blocked: 1 }, fetched_at: 'now' };
+
+function setup(t, reply = { result: '#3 is blocked.' }) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const scope = { brain: { kind: 'claude-cli', home, destination: 'third-party',
+    approved_hash: claudeHash({ version: '1.0.0', home }) } };
+  const calls = [];
+  const spawn = (command, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let stdin = '';
+    child.stdin = new Writable({ write(chunk, encoding, done) { stdin += chunk; done(); },
+      final(done) {
+        setImmediate(() => {
+          if (!child.hang) {
+            child.stdout.end(args[0] === '--version' ? '1.0.0\n' : JSON.stringify(reply));
+            child.emit('close', 0);
+          }
+        });
+        done();
+      } });
+    child.kill = (signal) => { calls.at(-1).signals.push(signal); setImmediate(() => child.emit('close', null)); };
+    calls.push({ command, args, options, child, signals: [],
+      cwdEntries: options.cwd ? fs.readdirSync(options.cwd) : null, get stdin() { return stdin; } });
+    return child;
+  };
+  const brain = createClaudeBrain(scope, makeRedactor([secret]), { spawn });
+  return { home, scope, calls, spawn, brain };
+}
+
+test('approved CLI gets exact flags, scrubbed environment, empty temporary cwd and redacted untrusted content', async (t) => {
+  const s = setup(t);
+  assert.equal(s.brain.label(), 'claude-cli (third-party), approval ok');
+  assert.deepEqual(await s.brain.turn(snapshot), { text: '#3 is blocked.' });
+  assert.equal(s.calls.length, 2);
+  assert.deepEqual(s.calls[0].args, ['--version']);
+  assert.deepEqual(s.calls[1].args, ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
+    '--no-session-persistence', '--output-format', 'json', '--system-prompt-file',
+    path.join(__dirname, '../src/brains/claude-system-prompt.txt')]);
+  for (const call of s.calls) {
+    assert.equal(call.command, 'claude');
+    assert.deepEqual(Object.keys(call.options.env).sort(), ['HOME', 'LANG', 'PATH']);
+    assert.equal(call.options.env.HOME, s.home);
+    assert.equal(call.options.env.LANG, 'C.UTF-8');
+  }
+  const prompt = s.calls[1];
+  assert.deepEqual(prompt.cwdEntries, []);
+  assert.deepEqual(fs.existsSync(prompt.options.cwd), false);
+  assert.ok(!prompt.stdin.includes(secret));
+  const item = JSON.parse(prompt.stdin).items[0];
+  assert.deepEqual(item.content.untrusted, true);
+  assert.ok(item.content.text.includes('[redacted]'));
+  assert.equal(item.title, undefined);
+  assert.equal(item.evidence, undefined);
+});
+
+test('changed version, missing hash and nested settings override prevent the prompt spawn', async (t) => {
+  const s = setup(t);
+  s.scope.brain.approved_hash = claudeHash({ version: 'different', home: s.home });
+  await assert.rejects(s.brain.turn(snapshot), /destination-changed/);
+  assert.deepEqual(s.calls.map((call) => call.args), [['--version']]);
+
+  const missing = setup(t);
+  missing.scope.brain.approved_hash = '';
+  assert.equal(missing.brain.label(), 'claude-cli (third-party), approval missing');
+  await assert.rejects(missing.brain.turn(snapshot), /destination-missing/);
+  assert.equal(missing.calls.length, 1);
+
+  const override = setup(t);
+  fs.mkdirSync(path.join(override.home, '.claude'));
+  fs.writeFileSync(path.join(override.home, '.claude/settings.json'), JSON.stringify({ nested: [{ Proxy: '' }] }));
+  assert.throws(() => checkClaudeHome(override.home), /destination-override/);
+  await assert.rejects(override.brain.turn(snapshot), /destination-override/);
+  assert.equal(override.calls.length, 0);
+});
+
+test('timeout waits for child close and a 10-second deadline allows at most 8 seconds', async (t) => {
+  const s = setup(t);
+  const original = global.setTimeout;
+  let promptTimeout;
+  t.mock.method(global, 'setTimeout', (callback, ms) => {
+    if (ms === 8000) { promptTimeout = ms; setImmediate(callback); return 0; }
+    return original(callback, ms);
+  });
+  const brain = createClaudeBrain(s.scope, makeRedactor([secret]), {
+    spawn: (...args) => {
+      const child = s.spawn(...args);
+      if (args[1][0] === '-p') child.hang = true;
+      return child;
+    }, clock: () => 0,
+  });
+  let exited = false;
+  const pending = brain.turn(snapshot, { deadline: 10000 });
+  setImmediate(() => {
+    const wait = () => {
+      const prompt = s.calls[1];
+      if (!prompt) return setImmediate(wait);
+      prompt.child.once('close', () => { exited = true; });
+    };
+    wait();
+  });
+  await assert.rejects(pending, (error) => error.message === 'brain-timeout' && exited);
+  assert.equal(promptTimeout, 8000);
+  assert.deepEqual(s.calls[1].signals, ['SIGTERM']);
+});
+
+test('result passes through fact checking and CLI errors redact stderr', async (t) => {
+  const s = setup(t, { result: '#3 is done.' });
+  assert.deepEqual(await s.brain.turn(snapshot), { text: "I couldn't confirm that." });
+  const failed = setup(t);
+  const spawn = (...args) => {
+    const child = failed.spawn(...args);
+    if (args[1][0] === '-p') {
+      child.hang = true;
+      setImmediate(() => { child.stderr.end(secret); child.emit('close', 1); });
+    }
+    return child;
+  };
+  await assert.rejects(createClaudeBrain(failed.scope, makeRedactor([secret]), { spawn }).turn(snapshot),
+    (error) => error.message.includes('[redacted]') && !error.message.includes(secret));
+});
