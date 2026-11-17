@@ -55,7 +55,7 @@ admits the bot from the lobby.
     cleanup.
   - the bot leaves, Chrome closes, and the process exits 0
 - **Recorded but not gating:** the bot's own chat message, the Chromium
-  run, and the timings.
+  run, the timings, and the share check (D5).
 - **Fail:** Meet refuses the guest, or the audio or caption check fails in
   two runs, with the cause investigated in between.
 - **Inconclusive:** a setup problem is still unsolved at the end of the
@@ -254,6 +254,36 @@ admits the bot from the lobby.
    - Keep podman's default seccomp profile.
    - Each browser has its own profile volume.
 
+4b. **Share check, not gating** (D5: added by the owner on 2026-11-17,
+   after the plan was approved; implemented by me once steps 1–4 are done).
+   - **`spike/hello-call.js`**, only when `env.SHARE_TEST === '1'`:
+     1. Pass `args: ['--auto-select-desktop-capture-source=RFactory share test']`
+        to `playwrightHost`.
+     2. After `speak: done`, open `const p = await
+        call._inner.page.context().newPage()` and run `await
+        p.setContent('<title>RFactory share test</title><h1
+        style="font-size:96px">RFactory share test</h1>')`.
+     3. Log `share:` followed by the result of `await
+        call._inner.startShare('window')`, with a `shortcut:` comment.
+        The public `call.share.start` throws on this host
+        (`api/call.js:218`), and Meet's provider clicks "Present now"
+        (`providers/google-meet-provider.js:4160`).
+     4. Any error only logs `share: failed <msg>`. It never changes the
+        exit code.
+   - **`spike/hello-call.test.js`**, test (h): with `SHARE_TEST=1` and a stub
+     host, the flag is in `args`, `startShare` is called, and a rejecting
+     `startShare` still returns 0.
+   - **`spike/run.sh`**: also pass `-e SHARE_TEST`.
+
+   → verify: `npm test` passes all 8 tests, and `shellcheck` is clean.
+
+   Traps:
+   - The flag matches the source by window title. If Meet asks for a
+     screen instead of a window, try `'screen'` once and record which one
+     worked.
+   - The new page becomes the active tab. The background-throttling flags
+     the library already sets keep the Meet tab alive.
+
 5. **Review (mine).**
    - Files: everything under `spike/`.
    - Reviewers: a fresh Opus agent given only this plan and
@@ -284,6 +314,10 @@ admits the bot from the lobby.
    - **Chromium run:** `spike/run.sh '<link>' chromium`, with the same
      script.
    - **On a failure,** investigate the cause before running again (PARR).
+   - **Share run** (D5, not gating): `SHARE_TEST=1 spike/run.sh '<link>'`
+     with Chrome, after the gating run. The owner says whether they see the
+     "RFactory share test" page in the Meet. The result goes in
+     `RESULTS.md` and feeds #3, the agent workspace.
 
    → verify against the pass criteria, using `spike/out/run-*.log` and
    `captions.jsonl`:
