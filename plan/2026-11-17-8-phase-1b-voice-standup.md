@@ -129,6 +129,13 @@ reviewers:
   server, so the parent sends the greeting as `speak` seq 0 after
   `in-call`; the child only plays it.
 
+- **D4, a leave command must start the utterance (found in step 2).** The
+  plan lists the leave words but not where they may appear; matching them
+  anywhere made "RFactory, why did the build stop?" end the call. A leave
+  command now has to start what follows the wake phrase and be followed
+  by the end or a clause break (`.`, `!`, `?`, `;`), optionally with
+  "please", "now" or "thanks". Tests cover both sides.
+
 ## Steps
 
 1. **`core/src/brains/claude-cli.js`** (additive),
