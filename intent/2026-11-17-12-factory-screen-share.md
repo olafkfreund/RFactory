@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 12
 author: olafkfreund
 ---
@@ -106,3 +106,16 @@ In a standup or review, the bot can tell the team about the work and, after
    approval of a new target (recommended), or not allowed at all in the
    first slice? A proposal expires (for example after 10 minutes, as #10)
    either way.
+
+## Decisions (owner, 2026-11-17)
+
+Approved with the recommendations:
+
+1. No relaxation of #3: the shared view comes through what #3 already
+   allows (a read-only view drawn by RFactory); the desktop never reaches
+   the Factories or signs in.
+2. First view: the CFactory board of the configured project.
+3. Built after #3's share step (step 11) lands, on #3's desktop.
+4. Only the owner approves a share, as #10.
+5. Every change of what is shown is a fresh approval; proposals expire
+   after 10 minutes.
