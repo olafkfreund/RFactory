@@ -515,6 +515,12 @@ v1; Wayland in the guest.
 | step 13 | #2's admin / approver / member roles in code | #2 spec only (S6), not built |
 | step 13 | #1 Phase 3 per-action approval queue | #1 intent only, not built |
 
+**Status 2026-11-17 (lead):** all four are on `main` and merged into this
+branch (`0b8e258`): #2 S1 (PR #7), #5 (PR #6), #2's roles as
+`core/src/roles.js` `loadRoles(env).has(email, role)` (PR #15), and the
+Phase 3 approval queue as `web/actions.js` `createActionManager` (PR #11).
+Steps 13 and 14 may start.
+
 Steps 1–12 do not need any of these. Steps 13 and 14 do not start until all
 four are on `main`; this plan does not build the roles or the queue.
 
