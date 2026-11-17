@@ -41,22 +41,25 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
       return [x + (x - cx) * 0.8 / length, y + (y - cy) * 0.8 / length];
     });
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(...grown[0]);
-    ctx.lineTo(...grown[1]);
-    ctx.lineTo(...grown[2]);
-    ctx.closePath();
-    ctx.clip();
-    ctx.transform(
-      (u0 * (y1 - y2) + u1 * (y2 - y0) + u2 * (y0 - y1)) / den,
-      (v0 * (y1 - y2) + v1 * (y2 - y0) + v2 * (y0 - y1)) / den,
-      (u0 * (x2 - x1) + u1 * (x0 - x2) + u2 * (x1 - x0)) / den,
-      (v0 * (x2 - x1) + v1 * (x0 - x2) + v2 * (x1 - x0)) / den,
-      (u0 * (x1 * y2 - x2 * y1) + u1 * (x2 * y0 - x0 * y2) + u2 * (x0 * y1 - x1 * y0)) / den,
-      (v0 * (x1 * y2 - x2 * y1) + v1 * (x2 * y0 - x0 * y2) + v2 * (x0 * y1 - x1 * y0)) / den,
-    );
-    ctx.drawImage(texture, 0, 0);
-    ctx.restore();
+    try {
+      ctx.beginPath();
+      ctx.moveTo(...grown[0]);
+      ctx.lineTo(...grown[1]);
+      ctx.lineTo(...grown[2]);
+      ctx.closePath();
+      ctx.clip();
+      ctx.transform(
+        (u0 * (y1 - y2) + u1 * (y2 - y0) + u2 * (y0 - y1)) / den,
+        (v0 * (y1 - y2) + v1 * (y2 - y0) + v2 * (y0 - y1)) / den,
+        (u0 * (x2 - x1) + u1 * (x0 - x2) + u2 * (x1 - x0)) / den,
+        (v0 * (x2 - x1) + v1 * (x0 - x2) + v2 * (x1 - x0)) / den,
+        (u0 * (x1 * y2 - x2 * y1) + u1 * (x2 * y0 - x0 * y2) + u2 * (x0 * y1 - x1 * y0)) / den,
+        (v0 * (x1 * y2 - x2 * y1) + v1 * (x2 * y0 - x0 * y2) + v2 * (x0 * y1 - x1 * y0)) / den,
+      );
+      ctx.drawImage(texture, 0, 0);
+    } finally {
+      ctx.restore();
+    }
   }
 
   function draw(surface, pose, now) {
@@ -75,42 +78,45 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
     ctx.fillStyle = '#1d2021';
     ctx.fillRect(0, 0, width, height);
     ctx.save();
-    ctx.translate(width / 2 + swayX + nodX, height / 2 - height * 0.03 + swayY + nodY);
-    ctx.rotate(angle);
-    ctx.translate(-size / 2, -size / 2);
-    ctx.strokeStyle = `rgba(254,128,25,${0.3 + 0.7 * pose.nod})`;
-    ctx.lineWidth = 6;
-    ctx.strokeRect(-6, -6, size + 12, size + 12);
-    const texture = portrait(size);
-    ctx.drawImage(texture, 0, 0);
-    if (pose.open > 0) {
-      const points = anchors.mesh.points;
-      const moved = meshAt(anchors, pose.open * anchors.maxDrop);
-      const source = meshAt(anchors, 0);
-      const [ulx, uly] = points.UL;
-      const [umx, umy] = points.UM;
-      const [urx, ury] = points.UR;
-      ctx.fillStyle = '#2a0e09';
-      ctx.beginPath();
-      ctx.moveTo(ulx * scale, uly * scale);
-      ctx.quadraticCurveTo(umx * scale, (umy - 0.5) * scale, urx * scale, ury * scale);
-      ctx.quadraticCurveTo(moved.LM[0] * scale, (moved.LM[1] + 1) * scale, ulx * scale, uly * scale);
-      ctx.fill();
-      for (const names of anchors.mesh.triangles) triangle(ctx, texture, names, source, moved, scale);
+    try {
+      ctx.translate(width / 2 + swayX + nodX, height / 2 - height * 0.03 + swayY + nodY);
+      ctx.rotate(angle);
+      ctx.translate(-size / 2, -size / 2);
+      ctx.strokeStyle = `rgba(254,128,25,${0.3 + 0.7 * pose.nod})`;
+      ctx.lineWidth = 6;
+      ctx.strokeRect(-6, -6, size + 12, size + 12);
+      const texture = portrait(size);
+      ctx.drawImage(texture, 0, 0);
+      if (pose.open > 0) {
+        const points = anchors.mesh.points;
+        const moved = meshAt(anchors, pose.open * anchors.maxDrop);
+        const source = meshAt(anchors, 0);
+        const [ulx, uly] = points.UL;
+        const [umx, umy] = points.UM;
+        const [urx, ury] = points.UR;
+        ctx.fillStyle = '#2a0e09';
+        ctx.beginPath();
+        ctx.moveTo(ulx * scale, uly * scale);
+        ctx.quadraticCurveTo(umx * scale, (umy - 0.5) * scale, urx * scale, ury * scale);
+        ctx.quadraticCurveTo(moved.LM[0] * scale, (moved.LM[1] + 1) * scale, ulx * scale, uly * scale);
+        ctx.fill();
+        for (const names of anchors.mesh.triangles) triangle(ctx, texture, names, source, moved, scale);
+      }
+      if (pose.blink) anchors.eyes.forEach((eye, i) => {
+        ctx.fillStyle = skin[i];
+        ctx.beginPath();
+        ctx.ellipse(eye.x * scale, eye.y * scale, eye.w * scale, 4 * scale, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#2a1a14';
+        ctx.lineWidth = 1.2 * scale;
+        ctx.beginPath();
+        ctx.moveTo((eye.x - eye.w) * scale, (eye.y + 1) * scale);
+        ctx.quadraticCurveTo(eye.x * scale, (eye.y + 3) * scale, (eye.x + eye.w) * scale, (eye.y + 1) * scale);
+        ctx.stroke();
+      });
+    } finally {
+      ctx.restore();
     }
-    if (pose.blink) anchors.eyes.forEach((eye, i) => {
-      ctx.fillStyle = skin[i];
-      ctx.beginPath();
-      ctx.ellipse(eye.x * scale, eye.y * scale, eye.w * scale, 4 * scale, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#2a1a14';
-      ctx.lineWidth = 1.2 * scale;
-      ctx.beginPath();
-      ctx.moveTo((eye.x - eye.w) * scale, (eye.y + 1) * scale);
-      ctx.quadraticCurveTo(eye.x * scale, (eye.y + 3) * scale, (eye.x + eye.w) * scale, (eye.y + 1) * scale);
-      ctx.stroke();
-    });
-    ctx.restore();
     ctx.fillStyle = '#282828';
     ctx.fillRect(0, height - 100, width, 100);
     ctx.fillStyle = '#fe8019';
@@ -153,8 +159,12 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
           consecutiveErrors++;
           avatar.errors = Math.max(avatar.errors, consecutiveErrors);
           if (loggedErrors++ < 3) console.error('[avatar] render error', error);
-          try { draw(surface, { open: 0, nod: 0, blink: false }, performance.now()); }
-          catch { try { surface.ctx.setTransform(1, 0, 0, 1, 0, 0); surface.ctx.fillStyle = '#1d2021'; surface.ctx.fillRect(0, 0, surface.canvas.width, surface.canvas.height); } catch {} }
+          try {
+            surface.canvas.width = surface.canvas.width;
+            draw(surface, { open: 0, nod: 0, blink: false }, performance.now());
+          } catch {
+            try { surface.ctx.setTransform(1, 0, 0, 1, 0, 0); surface.ctx.fillStyle = '#1d2021'; surface.ctx.fillRect(0, 0, surface.canvas.width, surface.canvas.height); } catch {}
+          }
         }
       } };
     });
