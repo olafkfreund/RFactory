@@ -140,7 +140,14 @@ async function run(argv, env, deps = {}) {
       // D5, not gating. shortcut: private fields of an alpha lib; public call.share.start throws on this host.
       try {
         const p = await call._inner.page.context().newPage();
-        await p.setContent(`<title>${SHARE_TITLE}</title><h1 style="font-size:96px">${SHARE_TITLE}</h1>`);
+        if (env.SHARE_URL) {
+          // keep the tab title fixed so Chrome's auto-select finds it whatever the site sets
+          await p.addInitScript((tt) => { const fix = () => { if (document.title !== tt) document.title = tt; };
+            document.addEventListener('DOMContentLoaded', () => { fix(); new MutationObserver(fix).observe(document.querySelector('title') || document.head, { childList: true, subtree: true, characterData: true }); }); }, SHARE_TITLE);
+          await p.goto(env.SHARE_URL, { waitUntil: 'load', timeout: 30000 });
+          await p.evaluate((tt) => { document.title = tt; }, SHARE_TITLE);
+          log(ts(), 'share page:', env.SHARE_URL, 'title:', await p.title());
+        } else await p.setContent(`<title>${SHARE_TITLE}</title><h1 style="font-size:96px">${SHARE_TITLE}</h1>`);
         if (env.SHARE_MODE === 'click') {
           // D5b: click Meet's own share button; Chrome auto-selects the source titled SHARE_TITLE.
           const meet = call._inner.page;

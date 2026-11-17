@@ -107,3 +107,23 @@ Owner's Meet, owner present and admitting the bot.
 - The renderer is now guarded: a drawing error paints a plain frame and is
   logged instead of failing Meet's camera request (the library does not
   catch renderer errors).
+
+### Run 4: a real web page (same call)
+
+- **Pass.** `SHARE_URL=https://en.wikipedia.org/wiki/Kanban_board`: the
+  page is opened in a new tab whose title is held at "RFactory share
+  test" (init script plus a title observer), Meet's "Share screen" is
+  clicked, Chrome auto-selects the tab (`displaySurface: "browser"`), and
+  the owner saw the live page as the bot's presentation, sharp and
+  readable (owner's screenshot).
+- **The library's banner shows in shares.** The call library injects a
+  yellow "Bot's view — Not in a call" bar into every page of the bot's
+  browser context, the shared page included, so participants see it. A
+  shared view (#12's viewer) must hide it or run outside that context.
+- Two earlier attempts in this call were refused ("host blocked entry or
+  call inaccessible") before the owner admitted the third; repeated joins
+  by the same guest name in one meeting can be refused.
+- **Animation, owner's final word for now:** keep the still portrait with
+  blinking and the frame motion; the mouth is wanted if it can look
+  natural. An offline mesh warp of the lower face (lips part, the chin
+  follows, no overlay) is the candidate; stills sent to the owner.
