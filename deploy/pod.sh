@@ -34,8 +34,23 @@ up() {
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
   podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null
+  # Phase 3: writes only when the write key file exists (600) and RFACTORY_WRITES is not "off".
+  # Approvers must be named explicitly (intent: only the owner approves). To turn writes off,
+  # run with RFACTORY_WRITES=off; the scope file's writes_enabled must then be false as well.
+  write=()
+  if [ "${RFACTORY_WRITES:-}" = off ]; then
+    write=(-e RFACTORY_WRITES=off)
+  elif [ -f "$cfg/cfactory-write-key" ]; then
+    [ "$(stat -c %a "$cfg/cfactory-write-key")" = 600 ] || { echo "$cfg/cfactory-write-key must be mode 600" >&2; exit 2; }
+    approvers=${RFACTORY_APPROVERS:?set RFACTORY_APPROVERS (comma list of who may approve changes)}
+    podman volume exists rfactory-actions || podman volume create rfactory-actions >/dev/null
+    write=(-e RFACTORY_WRITES=on -e RFACTORY_APPROVERS="$approvers"
+      -v "$cfg/cfactory-write-key:/run/rfactory/cfactory-write-key:ro,Z"
+      -v rfactory-actions:/var/lib/rfactory/actions:U)
+  fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
+    "${write[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \

@@ -54,11 +54,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, client, clientFactory
     await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
     c = next;
   }
-  async function call(name, deadline = Date.now() + timeoutMs) {
+  async function call(name, deadline = Date.now() + timeoutMs, args = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = c;
       try {
-        const r = await within(current.callTool({ name, arguments: {} }), deadline);
+        const r = await within(current.callTool({ name, arguments: args }), deadline);
         const text = (r.content || []).map((x) => x.text || '').join('');
         if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
         const v = JSON.parse(text);
@@ -89,6 +89,13 @@ function createCfactorySource({ mcpUrl, key, repositoryId, client, clientFactory
       const items = (Array.isArray(cards) ? cards : []).filter((x) => x && repositoryOf(x, repos) === repositoryId).map(mapCard);
       const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
       return { items, fetched_at: new Date().toISOString(), newest_update };
+    },
+    // Fresh read for the action path; read key only. Timeouts reject; an error payload gives { error }.
+    async getCard(card_key) {
+      const deadline = Date.now() + timeoutMs;
+      const [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]);
+      if (card.error || !card.card_key) return { error: str(card.error) || 'unknown card' };
+      return { card, inRepository: repositoryOf(card, repos) === repositoryId };
     },
     close: () => (c && c.close ? c.close() : undefined),
   };
