@@ -187,6 +187,19 @@ reviewers:
     group or world bit; unsupported source/brain pairings exit 4; a CLI
     `standup` test for cfactory + claude-cli. `CARD_KEY` stays
     case-sensitive, as step 3 specifies.
+- **D8, the page looks like the Factory portals (owner, 2026-11-17).** The
+  owner asked for the UI to be "modern and slick and look as a part of the
+  Factory services". The page now uses the suite's theme from CFactory's
+  `apps/frontend-web/src/index.css`: Gruvbox dark by default (light tokens
+  on `:root.light`), Archivo / JetBrains Mono / Hanken Grotesk, the
+  topbar with the portal switcher, stat tiles and board columns, with
+  RFactory's own accent, gruvbox orange. The standup runs on page load,
+  the data age reads "As of 17:49 (just now) · newest card update …, 49
+  days ago" with a "stale data" pill after 7 days, as the intent asked.
+  The CSP widens only for the fonts: `style-src 'self'
+  https://fonts.googleapis.com; font-src https://fonts.gstatic.com`, plus
+  `object-src 'none'; base-uri 'none'; frame-ancestors 'none'`; scripts
+  stay `'self'` only, rendering stays `textContent`-only.
 
 ## Steps
 

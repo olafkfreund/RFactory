@@ -46,3 +46,17 @@ test('href only for https://github.com/ urls', () => {
   const links = byId.done.querySelector('ul').all().filter((n) => n.attrs.href);
   assert.deepEqual(links.map((n) => n.attrs.href), ['https://github.com/o/r/issues/1']);
 });
+
+test('data age reads as "as of …, N ago" and marks stale data', () => {
+  const { ago } = require('../public/app.js');
+  const now = Date.parse('2026-11-17T17:46:00Z');
+  assert.equal(ago('2026-11-17T17:45:40Z', now), 'just now');
+  assert.equal(ago('2026-11-17T17:43:00Z', now), '3 min ago');
+  assert.equal(ago('2026-11-17T12:46:00Z', now), '5 h ago');
+  assert.equal(ago('2026-09-29T14:58:41Z', now), '49 days ago');
+  assert.equal(ago('not a date', now), 'unknown');
+  const { doc, byId } = shim();
+  render(doc, { ...base, fetched_at: '2026-11-17T17:45:58Z', newest_update: '2026-09-29T14:58:41Z', items: [], unknown: [] }, now);
+  assert.match(byId.age.textContent, /^As of .+ \(just now\) · newest card update .+, 49 days ago$/);
+  assert.equal(byId.done.querySelector('ul').textContent, 'None');
+});

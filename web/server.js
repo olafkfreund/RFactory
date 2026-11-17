@@ -11,7 +11,8 @@ const STATIC = {
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
 };
 const HEADERS = {
-  'Content-Security-Policy': "default-src 'self'",
+  // Factory suite fonts come from Google Fonts (plan D8); scripts stay 'self' only
+  'Content-Security-Policy': "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 };
