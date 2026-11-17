@@ -85,9 +85,83 @@ async function run(doc) {
   button.disabled = false;
 }
 
+// Actions: one store per document, keyed by id so a replayed event and the first render cannot duplicate.
+const stores = new WeakMap();
+const storeOf = (doc) => { if (!stores.has(doc)) stores.set(doc, { items: new Map(), canApprove: false }); return stores.get(doc); };
+
+function renderAction(doc, a, store, now) {
+  const li = el(doc, 'li', undefined, 'card');
+  li.appendChild(el(doc, 'span', a.card_key || 'new card', 'card-key'));
+  li.appendChild(el(doc, 'span', a.description || `${a.action} ${a.card_key || ''}`.trim(), 'action-text'));
+  li.appendChild(el(doc, 'pre', JSON.stringify({ action: a.action, args: a.args, card_key: a.card_key }, null, 2), 'action-payload'));
+  li.appendChild(el(doc, 'div', `Effects: ${a.effects && a.effects.text ? a.effects.text : 'none'}`, 'evidence'));
+  li.appendChild(el(doc, 'div', `Proposed by ${a.proposed_by} (display name, not verified)`, 'evidence'));
+  if (a.state === 'pending') {
+    const left = Math.max(0, Math.round((Date.parse(a.expires_at) - now) / 60000));
+    li.appendChild(el(doc, 'div', `${left} min left`, 'evidence'));
+    if (store.canApprove) {
+      const row = el(doc, 'div', undefined, 'action-buttons');
+      for (const verb of ['approve', 'reject']) {
+        const b = el(doc, 'button', verb === 'approve' ? 'Approve' : 'Reject', 'btn');
+        b.setAttribute('type', 'button');
+        b.addEventListener('click', () => decide(doc, a, verb));
+        row.appendChild(b);
+      }
+      li.appendChild(row);
+    }
+  } else li.appendChild(el(doc, 'div', `${a.state}${a.detail ? `: ${a.detail}` : ''}`, 'evidence'));
+  return li;
+}
+
+function renderActions(doc, now = Date.now()) {
+  const store = storeOf(doc);
+  const all = [...store.items.values()];
+  const pending = all.filter((a) => a.state === 'pending');
+  const history = all.filter((a) => a.state !== 'pending').reverse();
+  for (const [id, list] of [['actions-pending', pending], ['actions-history', history]]) {
+    const ul = doc.getElementById(id);
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    for (const a of list) ul.appendChild(renderAction(doc, a, store, now));
+    if (!list.length) ul.appendChild(el(doc, 'li', 'None', 'none'));
+  }
+  doc.getElementById('actions-count').textContent = String(pending.length);
+  doc.getElementById('actions').hidden = !all.length && !pending.length;
+  doc.getElementById('history').hidden = !history.length;
+}
+
+function handleAction(doc, event, now) {
+  const a = event.action;
+  if (!a || typeof a.id !== 'string') return;
+  storeOf(doc).items.set(a.id, a);
+  renderActions(doc, now);
+}
+
+async function decide(doc, a, verb) {
+  const status = doc.getElementById('actions-status');
+  try {
+    const r = await fetch(`/api/actions/${encodeURIComponent(a.id)}/${verb}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify({ hash: a.hash }) });
+    const body = await r.json();
+    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+  } catch { status.textContent = 'Failed: network'; }
+}
+
+async function loadActions(doc) {
+  try {
+    const r = await fetch('/api/actions');
+    if (!r.ok) return; // 404 when changes are off: the panels stay hidden
+    const data = await r.json();
+    const store = storeOf(doc);
+    store.canApprove = !!data.can_approve;
+    for (const a of [...data.history, ...data.pending]) store.items.set(a.id, a);
+    renderActions(doc);
+  } catch { /* panels stay hidden */ }
+}
+
 // One call event at a time; every string lands via textContent.
 function handleCall(doc, event, now = Date.now()) {
   const set = (id, text) => { doc.getElementById(id).textContent = text; };
+  if (event.type === 'action-pending' || event.type === 'action-updated') return handleAction(doc, event, now);
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
@@ -131,7 +205,8 @@ function wireCall(doc) {
 
 if (typeof document !== 'undefined') {
   wireCall(document);
+  loadActions(document).then(() => setInterval(() => renderActions(document), 30000));
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
-if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall };
+if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions };

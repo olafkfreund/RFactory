@@ -20,9 +20,9 @@ function fixture() {
     brain: { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' },
     writes_enabled: false,
   };
-  const load = (secrets = []) => {
+  const load = (secrets = [], env = {}) => {
     fs.writeFileSync(file, JSON.stringify(scope));
-    return loadScope(file, {}, secrets);
+    return loadScope(file, env, secrets);
   };
   return { scope, keyFile, load, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
@@ -86,5 +86,53 @@ test('rejects readable key files and malformed keys', () => {
     assert.deepEqual(f.load(), f.scope);
     fs.writeFileSync(f.keyFile, 'cfk_short\n');
     assert.throws(() => f.load(), /invalid-key/);
+  } finally { f.cleanup(); }
+});
+
+test('write-enabled scope requires both switches and a write key file', () => {
+  const f = fixture();
+  try {
+    f.scope.writes_enabled = true;
+    assert.throws(() => f.load(), /writes-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'off' }), /writes-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /invalid-scope/);
+    f.scope.source.write_key_file = 'relative/write-key';
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /invalid-scope/);
+    f.scope.source.write_key_file = path.join(path.dirname(f.keyFile), 'missing-write-key');
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /ENOENT/);
+  } finally { f.cleanup(); }
+});
+
+test('write key must be a 600-mode file and loadScope never opens it', () => {
+  const f = fixture();
+  const readFileSync = fs.readFileSync;
+  try {
+    const writeFile = path.join(path.dirname(f.keyFile), 'write-key');
+    f.scope.writes_enabled = true;
+    f.scope.source.write_key_file = writeFile;
+    fs.writeFileSync(writeFile, 'not a key', { mode: 0o600 });
+    for (const mode of [0o644, 0o400, 0o700]) {
+      fs.chmodSync(writeFile, mode);
+      assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /write-key-file-mode/);
+    }
+    fs.chmodSync(writeFile, 0o600);
+    fs.readFileSync = (file, ...args) => {
+      if (file === writeFile) throw new Error('write key was opened');
+      return readFileSync(file, ...args);
+    };
+    assert.deepEqual(f.load([], { RFACTORY_WRITES: 'on' }), f.scope);
+  } finally {
+    fs.readFileSync = readFileSync;
+    f.cleanup();
+  }
+});
+
+test('write key settings are ignored when writes are disabled', () => {
+  const f = fixture();
+  try {
+    f.scope.source.write_key_file = path.join(path.dirname(f.keyFile), 'missing-write-key');
+    assert.deepEqual(f.load(), f.scope);
+    assert.deepEqual(f.load([], { RFACTORY_WRITES: 'off' }), f.scope);
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /writes-enabled-env/);
   } finally { f.cleanup(); }
 });
