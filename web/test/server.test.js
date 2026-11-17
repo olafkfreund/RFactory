@@ -197,3 +197,53 @@ test('call routes are absent without a manager', async (t) => {
   const get = await start(t, { source, brain: fakeBrain });
   assert.equal((await get('/api/call/events')).status, 404);
 });
+
+function fakeActions() {
+  const calls = [];
+  const a = { calls,
+    list: () => ({ pending: [], history: [] }),
+    approve: async (...args) => { calls.push(['approve', ...args]); return { status: 200, text: 'ok', action: { id: 'x' } }; },
+    reject: async (...args) => { calls.push(['reject', ...args]); return { status: 200, text: 'no' }; } };
+  return a;
+}
+
+async function startActions(t, opts) {
+  const server = createApp({ allowedEmails: [ME, 'other@example.com'], source, brain: fakeBrain, approvers: [ME], ...opts });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const host = `127.0.0.1:${server.address().port}`;
+  return (p, { method = 'POST', headers = {}, body = { hash: 'h' }, email = ME } = {}) => fetch(`http://${host}${p}`, { method,
+    headers: { 'X-Forwarded-Email': email, 'X-RFactory-Action': '1', Origin: `http://${host}`, ...headers },
+    body: method === 'POST' ? JSON.stringify(body) : undefined });
+}
+
+test('action routes are absent without writes (404)', async (t) => {
+  const get = await startActions(t, {});
+  assert.equal((await get('/api/actions', { method: 'GET' })).status, 404);
+  assert.equal((await get('/api/actions/x/approve')).status, 404);
+});
+
+test('approve route: missing header, foreign origin, non-approver and wrong hash are each refused', async (t) => {
+  const actions = fakeActions();
+  actions.approve = async (id, email, hash) => {
+    actions.calls.push(['approve', id, email, hash]);
+    if (!['owner@example.com'].includes(email)) return { status: 403, text: 'Forbidden.' };
+    return hash === 'good' ? { status: 200, text: 'ok' } : { status: 409, text: 'no longer pending' };
+  };
+  const get = await startActions(t, { actions });
+  const path = '/api/actions/abc-1/approve';
+  assert.equal((await get(path, { headers: { 'X-RFactory-Action': '0' } })).status, 403);
+  assert.equal((await get(path, { headers: { Origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await get(path, { headers: { Origin: '' } })).status, 403);
+  assert.deepEqual(actions.calls, []);
+  assert.equal((await get(path, { email: 'other@example.com', body: { hash: 'good' } })).status, 403);
+  assert.equal((await get(path, { body: { hash: 'bad' } })).status, 409);
+  assert.equal((await get(path, { body: {} })).status, 400);
+  assert.equal((await get(path, { body: { hash: 'good', action: 'delete_card' } })).status, 200);
+  assert.deepEqual(actions.calls.at(-1), ['approve', 'abc-1', ME, 'good']);
+  assert.equal((await get('/api/actions/abc-1/reject')).status, 200);
+  assert.equal(actions.calls.at(-1)[0], 'reject');
+  const list = await (await get('/api/actions', { method: 'GET' })).json();
+  assert.deepEqual(list, { pending: [], history: [], can_approve: true });
+  assert.equal((await (await get('/api/actions', { method: 'GET', email: 'other@example.com' })).json()).can_approve, false);
+});

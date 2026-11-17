@@ -4,6 +4,8 @@ const WAKE = /\b(?:r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ie
 // a leave command must START the utterance and end it or a clause ("leave; give a standup" leaves,
 // "why did the build stop?" and "should we leave FCT-1 blocked?" are questions)
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
+// a change request must START with a change verb (optionally "please" / "can you"); "run the standup" stays a standup
+const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
 
 function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
@@ -33,7 +35,7 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
         block.offset = block.text.length;
         block.answeredText = block.text;
         onAddressed({
-          kind: LEAVE.test(addressed) ? 'leave' : STANDUP.test(addressed) ? 'standup' : 'question',
+          kind: LEAVE.test(addressed) ? 'leave' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
           text: addressed, speaker: block.speaker, id,
         });
       }, quietMs);

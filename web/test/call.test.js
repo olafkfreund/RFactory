@@ -311,3 +311,83 @@ test('caption credentials are redacted for brain, events and logs; malformed and
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
 });
+
+function fakeActions() {
+  const a = { requests: [], started: [], ended: 0, subs: new Set() };
+  a.request = async (text, speaker) => { a.requests.push([text, speaker]); return { status: 202, text: 'Server sentence.' }; };
+  a.startCall = (g) => { a.started.push(g); };
+  a.endCall = async () => { a.ended++; };
+  a.subscribe = (fn) => { a.subs.add(fn); return () => a.subs.delete(fn); };
+  return a;
+}
+
+test('action utterances go to actions.request and the server sentence is spoken; events replay', async () => {
+  const actions = fakeActions();
+  const clock = fakeClock();
+  const children = [], spoken = [];
+  const original = process.kill; process.kill = () => {};
+  try {
+    const manager = createCallManager({ actions, source: { snapshot: async () => ({ items: [] }) },
+      brain: { turn: async () => { throw new Error('brain must not be asked'); } }, tts: { voice: 'v', say: async (s) => Buffer.from(s) },
+      redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'],
+      spawn: () => {
+        const c = new EventEmitter(); c.pid = 7; c.stdin = new EventEmitter(); c.stdin.write = (l) => { spoken.push(l); return true; };
+        c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {}; c.stderr = new EventEmitter();
+        children.push(c); return c;
+      } });
+    await manager.start('link');
+    assert.deepEqual(actions.started, [1]);
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'RFactory, create a card called Login', final: true })}\n`);
+    clock.tick(1500); await flush(); await flush();
+    assert.deepEqual(actions.requests, [['create a card called Login', 'Eve']]);
+    const wav = spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s)).find((m) => m.type === 'speak');
+    assert.equal(Buffer.from(wav.wav, 'base64').toString(), 'Server sentence.');
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'spoke', seq: wav.seq, result: 'done' })}\n`);
+    for (const fn of actions.subs) fn({ type: 'action-result', action: { generation: 1, text: 'FCT-9 changed and work started.' } });
+    await flush(); await flush();
+    assert.ok(spoken.some((line) => line.startsWith('{') && JSON.parse(line).type === 'speak' &&
+      Buffer.from(JSON.parse(line).wav, 'base64').toString() === 'F C T 9 changed and work started.'));
+    const event = { type: 'action-pending', action: { id: 'x', state: 'pending' } };
+    for (const fn of actions.subs) fn(event);
+    for (const fn of actions.subs) fn({ type: 'action-updated', action: { id: 'x', state: 'rejected' } });
+    assert.deepEqual(manager.current().filter((e) => e.type.startsWith('action-')), [{ type: 'action-updated', action: { id: 'x', state: 'rejected' } }]);
+    const stopping = manager.stop(); children[0].emit('close', 0); await stopping;
+    assert.equal(actions.ended, 1);
+    const count = spoken.length;
+    for (const fn of actions.subs) fn({ type: 'action-result', action: { generation: 1, text: 'Too late.' } });
+    await flush();
+    assert.equal(spoken.length, count);
+  } finally { process.kill = original; }
+});
+
+test('build status question with writes on falls back to the spoken question answer', async () => {
+  const actions = fakeActions();
+  actions.request = async () => ({ status: 200, question: true });
+  const clock = fakeClock();
+  const originalKill = process.kill;
+  process.kill = () => {};
+  try {
+    const children = [], spoken = [];
+    const manager = createCallManager({ actions, source: { snapshot: async () => ({ items: [{ id: 'FCT-3', title: 'Build', state: 'building' }] }) },
+      brain: { turn: async (_snap, opts) => { assert.equal(opts.question, 'build status of FCT-3?'); return { text: 'FCT-3 is building.' }; } },
+      tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), clock, quietMs: 1500,
+      spawn: () => { const c = new EventEmitter(); c.pid = 7; c.stdin = new EventEmitter(); c.stdin.write = (line) => { spoken.push(line); return true; };
+        c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {}; c.stderr = new EventEmitter(); children.push(c); return c; } });
+    await manager.start('link');
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'RFactory, build status of FCT-3?' })}\n`);
+    clock.tick(1500); await flush(); await flush();
+    assert.ok(spoken.some((line) => line.startsWith('{') && JSON.parse(line).type === 'speak' &&
+      Buffer.from(JSON.parse(line).wav, 'base64').toString() === 'F C T 3 is building.'));
+    const stopping = manager.stop(); children[0].emit('close', 0); await stopping;
+  } finally { process.kill = originalKill; }
+});
+
+test('without an actions manager an action utterance is an ordinary question', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    await f.heard(1, 'RFactory, create a card called Login');
+    assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});

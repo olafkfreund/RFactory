@@ -39,7 +39,7 @@ function readJson(req, limit = 4096) {
   });
 }
 
-function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null }) {
+function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null, actions = null, approvers = [] }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -75,6 +75,22 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = nu
       standup().then(([status, body]) => { if (status === 200) last = body; json(res, status, body); },
         () => json(res, 500, { error: 'internal' }))
         .finally(() => { busy = false; }); // brain.turn has returned by now, so no CLI outlives its request
+      return;
+    }
+    if (actions && req.method === 'GET' && url === '/api/actions') {
+      return json(res, 200, { ...actions.list(), can_approve: approvers.includes(String(email).toLowerCase()) });
+    }
+    const act = actions && req.method === 'POST' && /^\/api\/actions\/([\w-]{1,64})\/(approve|reject)$/.exec(url);
+    if (act) {
+      if (req.headers['x-rfactory-action'] !== '1') { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      let origin;
+      try { origin = new URL(req.headers.origin).host; } catch { origin = null; }
+      if (!origin || origin !== req.headers.host) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      readJson(req).then((body) => {
+        if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
+        return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
+          () => json(res, 500, { error: 'internal' }));
+      });
       return;
     }
     if (call && url === '/api/call') {
@@ -124,12 +140,25 @@ async function main() {
   await source.start();
   const brain = createClaudeBrain(scope, redactor);
   const allowedEmails = (process.env.RFACTORY_ALLOWED_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  let actions = null;
+  const approvers = (process.env.RFACTORY_APPROVERS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+  if (scope.writes_enabled) {
+    const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
+    const record = require('./actions-record.js').createRecord({
+      dir: process.env.RFACTORY_ACTIONS_DIR || '/var/lib/rfactory/actions', redactor });
+    const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
+    record.prune();
+    setInterval(() => record.prune(), 86400000).unref();
+    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor,
+      scope, approvers, enabled: true });
+    await actions.recover();
+  }
   let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
     const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
-    call = require('./call.js').createCallManager({ source, brain, tts, redactor });
+    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions });
   }
-  createApp({ source, brain, allowedEmails, call }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  createApp({ source, brain, allowedEmails, call, actions, approvers }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {
