@@ -22,7 +22,7 @@ dependencies").
 
 ## Gates
 
-- **G1, D5:** #1's share check passes on p620: with the owner's Meet link
+- **G1, D5:** (met by D5b, see D2) #1's share check passes on p620: with the owner's Meet link
   and OK, `SHARE_TEST=1 spike/run.sh '<meet link>'` (Chrome), and the owner
   sees the "RFactory share test" window in the call. Result recorded in
   `spike/RESULTS.md`. **If it fails:** stop and report; #3's spec needs a
@@ -119,6 +119,23 @@ dependencies").
   status "in that card's nearest column", which it does not define. The
   plan counts it in **backlog**'s `total` and `omitted` (never shown),
   so the counts stay complete and the rule is deterministic.
+
+- **D2, gate G1 met by D5b (2026-11-17).** D5 as written could not run:
+  the library's `startShare` is not built on the Playwright host. D5b
+  clicks Meet's own "Share screen" button with Chrome's
+  `--auto-select-desktop-capture-source=<title>`, and it passed three
+  times in the owner's Meet (a test page twice, a live web page once;
+  `spike/RESULTS.md` on branch `spike/d5b-camera`, commits `c45edb1`,
+  `0b7a687`, `ad2e545`). Two consequences for #3 step 11 and this plan:
+  - **Chrome shares a tab, not a window** (`displaySurface: "browser"`).
+    The share check accepts `browser` (or `window`) and stays bound to the
+    per-share title `RFactory share <nonce>`.
+  - **The library's "Bot's view" bar** is injected into every page of the
+    bot's browser context, the shared page included. The viewer page
+    (step 5) hides it: the share page is opened in a browser context
+    without the library's init script, or the viewer removes the bar's
+    element on load and on every DOM change; step 5's tests check that no
+    element outside the viewer's own is visible.
 
 ## Steps
 
