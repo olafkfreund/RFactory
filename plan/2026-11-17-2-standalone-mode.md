@@ -162,6 +162,20 @@ these calls:
   bearer pattern now runs before the key/value pattern. Found by Codex
   while implementing step 3; covered by a test.
 
+- **D8, found while building step 4** (recorded with the step 4 commit):
+  - In 1.14.0, `list_issues` takes `state` `OPEN` or `CLOSED` only;
+    omitting it returns both, so the adapter omits it instead of
+    `state: all`. `list_pull_requests` uses `page` with `state: 'all'`.
+  - The table's calls never return `closingIssuesReferences`, so the
+    adapter sends `[]` and PRs link to issues only through `Fixes`,
+    `Closes` or `Resolves #n` in the PR body. Step 10's fixture PR links
+    its issue that way.
+  - No `READ_TOOLS` call returns branch-protection data, so `required` is
+    not set and D6's over-reporting of `blocked` stands.
+  - The response shapes of the live server are assumed (JSON text
+    content) and only covered by the fake server. Step 10 confirms or
+    breaks them; a mismatch there is fixed before `RESULTS.md`.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
