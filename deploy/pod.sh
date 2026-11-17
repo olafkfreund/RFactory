@@ -23,6 +23,12 @@ up() {
     [ -f "$cfg/$f" ] || { echo "missing $cfg/$f" >&2; exit 2; }
     [ "$(stat -c %a "$cfg/$f")" = 600 ] || { echo "$cfg/$f must be mode 600" >&2; exit 2; }
   done
+  # oauth2-proxy uses these bytes as-is: a trailing newline makes Keycloak reject the client,
+  # and the cookie secret must be exactly 16, 24 or 32 bytes
+  for f in keycloak-client-secret oauth2-cookie-secret; do
+    [ "$(tail -c1 "$cfg/$f" | od -An -c | tr -d ' ')" != '\n' ] || { echo "$cfg/$f must not end with a newline" >&2; exit 2; }
+  done
+  case $(stat -c %s "$cfg/oauth2-cookie-secret") in 16|24|32) ;; *) echo "oauth2-cookie-secret must be 16, 24 or 32 bytes" >&2; exit 2;; esac
   [ -d "$claude_home" ] || { echo "missing $claude_home" >&2; exit 2; }
   podman build -q -f "$here/web/Containerfile" -t rfactory-web "$here" >/dev/null
   down
