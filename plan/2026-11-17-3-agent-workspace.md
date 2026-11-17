@@ -399,6 +399,13 @@ v1; Wayland in the guest.
       plus an ingress police filter; spares count toward the limit and only
       `RuntimeMaxSec` applies to them; `bootGraceMs` (default 0) delays the
       first heartbeat deadline. The mTLS handshake is untested until step 17.
+    - Step 6: mTLS port 8443; base table `inet rfactory_base` (priority
+      -10) allows DNS and IPv6 neighbour discovery from `rfd*` taps and
+      drops tap-to-tap forwarding; tap names match `^rfd[0-9a-z]{1,10}$`;
+      dnsmasq upstreams default to 1.1.1.1 and 9.9.9.9 with `nftset=`; the
+      runner path carries nftables (deviation 9); secrets arrive through
+      `LoadCredential` paths. The firewall also opens UDP/TCP 53 on `rfd+`
+      interfaces only, for the per-tap resolver.
 
 ## Prerequisites (named revisions)
 

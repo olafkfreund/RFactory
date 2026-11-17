@@ -26,5 +26,13 @@
       nixosConfigurations.desktop-guest = mk [ ];
       # Test-only: adds rfactory-probe. Used by steps 2 and 15, never shipped.
       nixosConfigurations.desktop-guest-probe = mk [ ./desktop/guest/probe.nix ];
+
+      # Host module for p620; the owner imports it (deploy is owner-gated).
+      nixosModules.desktop-runner = ./desktop/nixos/runner.nix;
+      # Evaluation only.
+      nixosConfigurations.desktop-runner-sample = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [ ./desktop/nixos/sample-host.nix ];
+      };
     };
 }
