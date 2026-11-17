@@ -1,0 +1,25 @@
+FROM docker.io/library/node:22-bookworm-slim
+ARG BROWSER=chrome
+ENV BROWSER=${BROWSER}
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends xvfb xauth fonts-liberation fonts-noto-color-emoji ca-certificates curl gnupg; \
+    if [ "$BROWSER" = chrome ]; then \
+      mkdir -p /etc/apt/keyrings; \
+      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg; \
+      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends google-chrome-stable; \
+    elif [ "$BROWSER" = chromium ]; then \
+      apt-get install -y --no-install-recommends chromium; \
+    else \
+      echo "unknown BROWSER=$BROWSER" >&2; exit 1; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY --chmod=0644 hello-call.js ./
+RUN mkdir -p /profile /out && chown node:node /profile /out
+USER node
+ENTRYPOINT ["xvfb-run","-a","-s","-screen 0 1280x800x24","node","hello-call.js"]
