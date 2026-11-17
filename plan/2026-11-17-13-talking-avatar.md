@@ -315,7 +315,10 @@ A); **C** = step 4 (after 3); then steps 7–11 (lead).
    builds with `--build-arg RFACTORY_COMMIT`, checks `curl -sfo /dev/null
    https://github.com/olafkfreund/RFactory/tree/<sha>` without a token;
    new `deploy/check-image.sh` lists the files in the built image and
-   verifies the portrait hashes there. Verify: `shellcheck deploy/*.sh`;
+   verifies the portrait hashes there.
+   Trap (step 5): `core/src/scope.js` and `web/call.js` load
+   `bot/avatars/manifest.json` at start, so an image without `bot/avatars/`
+   fails to start; never deploy step 5 without step 7. Verify: `shellcheck deploy/*.sh`;
    a dry run with a dirty tree is refused.
 8. **Deploy (lead; owner's OK; agent bus first).** Scope `avatar: "m01"`;
    rebuild the pod; run `deploy/check-image.sh`.

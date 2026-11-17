@@ -58,7 +58,7 @@ test('joining and lobby via onState, then in-call; options as planned', async ()
   assert.strictEqual(s.calls.joinOpts.name, 'RFactory Bot (AI)');
   assert.strictEqual(s.calls.joinOpts.timeoutMs, 300000);
   assert.ok(s.calls.hostOpts.userDataDir.endsWith('X'));
-  assert.deepStrictEqual(s.calls.chat, ["RFactory Bot (AI) is listening; say 'RFactory' and a question."]);
+  assert.deepStrictEqual(s.calls.chat, ["RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory"]);
   assert.deepStrictEqual(s.out.find((m) => m.type === 'mic'), { type: 'mic', muted: false });
   s.stdin.end(); await s.done;
 });

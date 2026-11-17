@@ -39,7 +39,7 @@ function readJson(req, limit = 4096) {
   });
 }
 
-function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null, actions = null, approvers = [] }) {
+function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null, actions = null, approvers = [], commit = '' }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -64,6 +64,7 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = nu
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!allowedEmails.includes(String(email).toLowerCase())) return json(res, 403, { error: 'forbidden' });
     const url = req.url.split('?')[0];
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit });
     if (req.method === 'GET' && Object.hasOwn(STATIC, url)) {
       const [file, type] = STATIC[url];
       return send(res, 200, type, fs.readFileSync(path.join(PUBLIC, file)));
@@ -155,10 +156,14 @@ async function main() {
   }
   let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
-    const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
-    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions });
+    const { createTts } = require('./tts.js');
+    const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
+    const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
+      ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions });
   }
-  createApp({ source, brain, allowedEmails, call, actions, approvers }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  createApp({ source, brain, allowedEmails, call, actions, approvers, commit: process.env.RFACTORY_COMMIT || '' })
+    .listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {

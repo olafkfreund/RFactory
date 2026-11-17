@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRedactor } = require('./redact.js');
+const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const DESTINATIONS = new Set(['third-party', 'rfactory-host', 'other-machine']);
 
@@ -9,6 +10,11 @@ function loadScope(file, env = process.env, secrets = []) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
+  if (Object.hasOwn(scope, 'avatar')) {
+    const validId = (id) => typeof id === 'string' && !!portraits[id]?.anchors;
+    if (!(scope.avatar === 'random' || validId(scope.avatar) ||
+      (Array.isArray(scope.avatar) && scope.avatar.length > 0 && scope.avatar.every(validId)))) throw new Error('invalid-avatar');
+  }
   if (scope.writes_enabled !== false && scope.writes_enabled !== true) throw new Error('writes-enabled');
   if (scope.writes_enabled === true && env.RFACTORY_WRITES !== 'on') throw new Error('writes-enabled');
   if (scope.writes_enabled === false && env.RFACTORY_WRITES && env.RFACTORY_WRITES !== 'off') throw new Error('writes-enabled-env');

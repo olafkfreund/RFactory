@@ -3,6 +3,15 @@
 const SECTIONS = ['done', 'in_progress', 'blocked', 'left'];
 const STALE_DAYS = 7;
 
+function renderFooter(doc, commit = '') {
+  const footer = doc.getElementById('source-footer');
+  footer.textContent = 'RFactory is free software (AGPL-3.0). Source: ';
+  const link = doc.createElement('a');
+  link.textContent = 'github.com/olafkfreund/RFactory';
+  link.setAttribute('href', `https://github.com/olafkfreund/RFactory${commit ? `/tree/${commit}` : ''}`);
+  footer.appendChild(link);
+}
+
 function el(doc, tag, text, className) {
   const node = doc.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -204,9 +213,11 @@ function wireCall(doc) {
 }
 
 if (typeof document !== 'undefined') {
+  renderFooter(document);
+  fetch('/api/config').then((res) => res.json()).then(({ commit }) => renderFooter(document, commit)).catch(() => {});
   wireCall(document);
   loadActions(document).then(() => setInterval(() => renderActions(document), 30000));
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
-if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions };
+if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter };

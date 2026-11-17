@@ -127,5 +127,7 @@ Licence field of `@vibeconferencing/calls` is taken from its package: pending ve
 - Piper text-to-speech (GPL-3.0): run as a separate process, not linked or
   copied into this repository. Pending verification of how it is installed.
 - LJSpeech voice: public domain. Pending verification of the exact voice model's terms.
+- Joe voice (`en_US-joe-medium`): CC0, from rhasspy/piper-voices commit
+  `4a409e3cbfd0a189930b38f127a38e107677e8ac`; dataset OHF-Voice/voice-datasets.
 - Google Chrome: proprietary, installed in the container image, not in the
   repository. Its terms are Google's.

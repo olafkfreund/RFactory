@@ -11,7 +11,7 @@ const MAX_IN = 4 * 1024 * 1024;
 const MAX_OUT = 64 * 1024;
 const LIMIT_MS = 60 * 60 * 1000;
 const BOT_NAME = 'RFactory Bot (AI)';
-const CHAT_LINE = "RFactory Bot (AI) is listening; say 'RFactory' and a question.";
+const CHAT_LINE = `RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${process.env.RFACTORY_COMMIT ? `/tree/${process.env.RFACTORY_COMMIT}` : ''}`;
 const TERMINAL = ['left', 'removed', 'error'];
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {

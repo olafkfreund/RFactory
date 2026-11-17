@@ -16,7 +16,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends "google-chrome-stable${CHROME_VERSION:+=$CHROME_VERSION}"; \
     rm -rf /var/lib/apt/lists/*
 
-# Piper (GPL-3.0, its own process) and the public-domain LJSpeech voice, pinned by commit and sha256.
+# Piper (GPL-3.0, its own process) and the public-domain LJSpeech and Joe voices, pinned by commit and sha256.
 RUN set -eux; \
     python3 -m venv /opt/piper; \
     /opt/piper/bin/pip install --no-cache-dir piper-tts==1.8.0; \
@@ -24,9 +24,14 @@ RUN set -eux; \
     base=https://huggingface.co/rhasspy/piper-voices/resolve/4a409e3cbfd0a189930b38f127a38e107677e8ac/en/en_US/ljspeech/medium; \
     curl -fsSLo en_US-ljspeech-medium.onnx "$base/en_US-ljspeech-medium.onnx"; \
     curl -fsSLo en_US-ljspeech-medium.onnx.json "$base/en_US-ljspeech-medium.onnx.json"; \
+    base=https://huggingface.co/rhasspy/piper-voices/resolve/4a409e3cbfd0a189930b38f127a38e107677e8ac/en/en_US/joe/medium; \
+    curl -fsSLo en_US-joe-medium.onnx "$base/en_US-joe-medium.onnx"; \
+    curl -fsSLo en_US-joe-medium.onnx.json "$base/en_US-joe-medium.onnx.json"; \
     printf '%s  %s\n' \
       6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22 en_US-ljspeech-medium.onnx \
       141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860 en_US-ljspeech-medium.onnx.json \
+      abf4b998e34045cbd00eaf050de2de620f81ded6eb8b85a24b022a1c2b3f08d2 en_US-joe-medium.onnx \
+      7b5f0293c0bf5bda8e377be1696da84af798befeef31038e43beefc01fe858da en_US-joe-medium.onnx.json \
       | sha256sum -c -
 
 # The brain runs `claude -p`; pinned to the version 1a checked (destination hash includes it).
@@ -51,5 +56,6 @@ USER node
 ENV PORT=8080 \
     PATH=/opt/piper/bin:$PATH \
     RFACTORY_VOICE=/opt/voices/en_US-ljspeech-medium.onnx \
+    RFACTORY_VOICE_MALE=/opt/voices/en_US-joe-medium.onnx \
     CHROME_PATH=/usr/bin/google-chrome-stable
 CMD ["node", "web/server.js"]
