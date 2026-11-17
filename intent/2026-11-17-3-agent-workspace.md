@@ -54,48 +54,70 @@ When the call ends, the desktop and everything on it is destroyed.
 
 ## Constraints
 
-- **One per call, nothing kept.** Each desktop is used by exactly one call
-  and is destroyed when the call ends or crashes. No state carries over,
-  except named, mounted volumes such as a signed-in Slack profile.
+- **One per call, nothing kept.**
+  - Each desktop is used by exactly one call and is destroyed when the call
+    ends, crashes, loses its controller, or reaches a maximum lifetime that
+    doesn't depend on call-end detection.
+  - If cleanup fails, it is retried and reported.
+  - Nothing carries over between calls or users, except a persistent
+    profile an admin has approved by name for one scope, such as a
+    signed-in Slack account.
+  - Such a profile counts as a credential. It holds cookies and session
+    tokens, and the admin who approved it can see and delete it.
+  - It has a set retention period, and it is never shared across scopes.
 - **Isolated.**
-  - A desktop can't reach the Factory hosts or RFactory's secrets.
-  - It gets only the network access it needs: the call platform, the
-    project's preview or app URL, and the RFactory control channel.
-- **Driving apps counts as acting.** Opening, clicking, typing in or
-  running anything on the desktop goes through the same allowlist and the
-  same web-UI approval as writes in #1 and #2. Showing an app the agent
-  already opened, read-only, may be allowed without approval per scope.
-  This is decided in the spec.
+  - A desktop can't reach the Factory hosts, RFactory's secrets, other
+    desktops, or the host's storage.
+  - Its only way back to RFactory is a narrow control channel, which gives
+    no general access to the host.
+  - Its other network access is limited to what the call needs: the call
+    platform, and the project's preview or app URL.
+- **Driving apps counts as acting.**
+  - Before the agent may open, click, type in or run anything on the
+    desktop, an approver for that scope hands control to it in the web UI.
+  - That handover covers a stated set of actions and a time limit.
+  - The approver can take control back at any time, and that takes effect
+    at once.
+  - Actions outside the handover go through the same allowlist and the
+    same per-action approval as writes in #1 and #2.
 - **Untrusted input.** Speech, chat, and what appears on the desktop (web
-  pages, app text) are untrusted. They can't widen what the agent is
-  allowed to do.
-- **No secrets.** Source or Factory credentials don't go onto the desktop
-  unless an admin approves a specific, scoped one for a specific purpose,
-  for example a preview login.
-- **Users can see what is shared.** Sharing shows only the chosen window,
-  never the whole desktop by default, and the web UI shows what is being
-  shared.
+  pages, app text) are untrusted. They can never widen what the agent is
+  allowed to do, and they can never count as approval.
+- **No secrets.** No credential goes onto the desktop (source, Factory,
+  call-platform logins, session cookies) unless an admin approves a
+  specific, scoped one for a specific purpose, for example a preview login
+  or the Slack profile above.
+- **Users control what is shared.**
+  - A share shows exactly one chosen window and never the whole desktop.
+  - Starting or changing a share needs an approver in the web UI.
+  - The web UI always shows what is being shared and has a stop button
+    that works at once.
+  - Only signed-in members of the scope can watch the desktop live in the
+    web UI.
 - **Bounded.**
-  - a limit on how many desktops run at once, and on RAM and CPU for each
-  - a timeout when the call ends or goes idle
-  - starting a desktop must not delay joining the call by more than a few
-    seconds
-- **Self-hosted.** No hosted VM or desktop service. Same rules as #1 for
-  p620.
+  - limits on how many desktops run at once, and on RAM, CPU, disk and
+    network for each
+  - when capacity is full, a new call is refused with a clear message
+    rather than slowing down the others
+  - an idle timeout
+  - joining the call should not be delayed by more than a few seconds.
+    Isolation wins over start-up time if they conflict.
+- **Self-hosted.** No third-party desktop or VM-as-a-service product. A
+  cloud VM that we manage ourselves is allowed, as in #1. The same rules as
+  #1 apply for p620.
 
 ## Open questions
 
-- MicroVM, pod, or cloud VM first? Proposal: a microVM on p620, because
-  it has the strongest isolation, a fast start and existing Nix work, with
-  a pod as the fallback.
-- What does the agent drive apps with? Options include Playwright for web
-  apps, an accessibility-tree tool like ai-mirror's, or screenshots and
-  clicks. Which ones does a project allow?
+- Which isolation boundary is required: a VM-level boundary, or is a
+  container acceptable? (The spec then picks microVM, pod or cloud VM.)
+- Who may hand control to the agent, approve a share, and watch the live
+  desktop: the same approvers as #1 and #2, or a separate role?
+- Which kinds of app control does a project allow: web apps only, or also
+  native apps and terminals?
 - Does the desktop run its own copy of the project (a preview build), or
   only open URLs that already exist?
 - Which actions on the desktop need approval, and which are free (for
   example scrolling a page that is already being shared)?
-- Does Phase 0's share check (#1, D5) settle the window-share approach, or
-  is the loopback from the library's design still needed?
+- Does Phase 0's share check (#1, D5) show that window sharing works?
 - How much RAM and CPU does one desktop need while it is in a call, and
   how many can p620 run at once?
