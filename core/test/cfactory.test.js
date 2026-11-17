@@ -104,3 +104,34 @@ test('a second failed call throws after one reconnect', async () => {
   await assert.rejects(s.snapshot(), /still down/);
   assert.equal(created, 2);
 });
+
+const cardReply = (card, extra = {}) => ({
+  calls: [],
+  async callTool(req) {
+    this.calls.push(req);
+    if (req.name === 'cfactory_get_card') return reply(card);
+    return reply(extra.repos || repos);
+  },
+});
+
+test('getCard returns the full card, in repository, with the card_key argument', async () => {
+  const full = { card_key: 'FCT-1', repository_id: 2, tier: 'low', status: 'ready', updated_at: '2026-11-12T00:00:00Z', correlation_key: null, stage_runs: {}, issue_ref: null };
+  const client = cardReply(full);
+  const r = await src(client).getCard('FCT-1');
+  assert.deepEqual(r, { card: full, inRepository: true });
+  assert.deepEqual(client.calls.find((c) => c.name === 'cfactory_get_card').arguments, { card_key: 'FCT-1' });
+});
+
+test('getCard flags a foreign-repository card', async () => {
+  const r = await src(cardReply({ card_key: 'FCT-9', repository_id: 1 })).getCard('FCT-9');
+  assert.equal(r.inRepository, false);
+  assert.equal(r.card.card_key, 'FCT-9');
+});
+
+test('getCard maps an error payload to { error }', async () => {
+  assert.deepEqual(await src(cardReply({ error: "no card 'X'" })).getCard('X'), { error: "no card 'X'" });
+});
+
+test('getCard rejects with source-timeout', async () => {
+  await assert.rejects(src({ callTool: () => new Promise(() => {}) }).getCard('FCT-1'), /source-timeout/);
+});
