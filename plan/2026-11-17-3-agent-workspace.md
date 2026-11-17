@@ -374,6 +374,12 @@ v1; Wayland in the guest.
    `nftables` 1.1.7 from nixpkgs for that run only. Step 6's runner module
    must add `pkgs.nftables` to the runner's path; nothing on the host
    changed.
+10. **Steps 3 and 4 start before fact 4 is recorded** (owner: "continue,
+    do not stop", 2026-11-17). Facts 1 to 3 passed on p620; fact 4 waits
+    for the owner's Meet link. Steps 3 (`net.js`) and 4 (`vsock.js`,
+    `protocol.js`) are pure libraries with no host effect, so building them
+    early wastes nothing if fact 4 fails. No step that builds, deploys or
+    runs on p620 starts before fact 4 passes.
 
 ## Prerequisites (named revisions)
 
