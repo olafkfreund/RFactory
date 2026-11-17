@@ -66,31 +66,68 @@ async function run(argv, env, deps = {}) {
       try {
         const img = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, 'avatar.webp')).toString('base64');
         await call._inner.page.evaluate((src) => {
+          // Measured on m01 (256 px source): lip line y 142, mouth centre x 101,
+          // jaw strip x 72..152 down to the chin at y 178; eyes at (78,99) and (126,95).
+          const A = { lip: 142, mx: 101, mw: 11, jx0: 72, jx1: 152, chin: 178, eyes: [[78, 99, 10], [126, 95, 11]] };
           const im = new Image(); im.src = src;
-          let mouth = 0;
-          window.__vibeconfMedia.setCameraRenderer((s) => ({ render() {
-            const { ctx, canvas } = s; const W = canvas.width, H = canvas.height;
+          let skin = null; // eyelid colour sampled just above each eye
+          im.onload = () => { const c = document.createElement('canvas'); c.width = 256; c.height = 256; const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+            skin = A.eyes.map(([ex, ey]) => { const d = g.getImageData(ex, ey - 7, 1, 1).data; return `rgb(${d[0]},${d[1]},${d[2]})`; }); };
+          let mouth = 0, nod = 0, nextBlink = performance.now() + 2500, blinkUntil = 0;
+          let errs = 0;
+          window.__vibeconfMedia.setCameraRenderer((s) => ({ render() { try { draw(s); } catch (e) {
+            if (errs++ < 3) console.log('[avatar] render error', e && e.message);
+            try { s.ctx.setTransform(1, 0, 0, 1, 0, 0); s.ctx.fillStyle = '#1d2021'; s.ctx.fillRect(0, 0, s.canvas.width, s.canvas.height); } catch {}
+          } } }));
+          function draw(s) {
+            const { ctx, canvas } = s; const W = canvas.width, H = canvas.height, now = performance.now(), sec = now / 1000;
             const lvl = window.__vibeconfMedia.speechLevel ? window.__vibeconfMedia.speechLevel() : 0;
-            mouth = lvl > 0.05 ? Math.min(1, lvl * 1.5) : Math.max(0, mouth - 0.25);
+            const target = lvl > 0.06 ? Math.min(1, (lvl - 0.06) * 2.2) : 0;
+            mouth += (target - mouth) * (target > mouth ? 0.6 : 0.35);  // fast open, quick close
+            nod += ((lvl > 0.06 ? lvl : 0) - nod) * 0.08;               // slow head motion with speech
+            if (now > nextBlink) { blinkUntil = now + 130; nextBlink = now + 2500 + Math.random() * 3500; }
             ctx.fillStyle = '#1d2021'; ctx.fillRect(0, 0, W, H);
-            const sz = Math.round(H * 0.6), x = (W - sz) / 2, y = (H - sz) / 2 - H * 0.04;
-            if (mouth > 0) { ctx.fillStyle = `rgba(254,128,25,${0.25 + 0.5 * mouth})`; ctx.beginPath(); ctx.arc(W / 2, y + sz / 2, sz / 2 + 18 + 10 * mouth, 0, 7); ctx.fill(); }
-            if (im.complete) ctx.drawImage(im, x, y, sz, sz);
-            const k = sz / 256; // mouth anchor for m01, measured roughly
-            if (mouth > 0) { ctx.fillStyle = '#3c1a12'; ctx.beginPath(); ctx.ellipse(x + 100 * k, y + 152 * k, 13 * k, 2 * k + 9 * k * mouth, 0, 0, 7); ctx.fill(); }
+            const sz = Math.round(H * 0.62), k = sz / 256;
+            const dx = Math.sin(sec * 0.7) * 2 + Math.sin(sec * 2.3) * nod * 3;
+            const dy = Math.sin(sec * 0.9) * 1.5 + Math.sin(sec * 5.1) * nod * 4;
+            const rot = (Math.sin(sec * 0.6) * 0.4 + Math.sin(sec * 3.7) * nod * 1.2) * Math.PI / 180;
+            ctx.save(); ctx.translate(W / 2 + dx, H / 2 - H * 0.03 + dy); ctx.rotate(rot); ctx.translate(-sz / 2, -sz / 2);
+            ctx.strokeStyle = `rgba(254,128,25,${0.25 + 0.55 * Math.min(1, nod * 3)})`; ctx.lineWidth = 6; ctx.strokeRect(-6, -6, sz + 12, sz + 12);
+            if (im.complete) {
+              ctx.drawImage(im, 0, 0, sz, sz);
+              if (mouth > 0.03) {
+                const drop = 4.5 * mouth;
+                ctx.fillStyle = '#2b100b';
+                ctx.beginPath(); ctx.ellipse(A.mx * k, (A.lip + drop / 2) * k, (A.mw - 2 + 2 * mouth) * k, (0.5 + drop / 2) * k, 0, 0, 7); ctx.fill();
+                ctx.fillStyle = '#e8ddd0'; // a hint of upper teeth when wide open
+                if (mouth > 0.5) { ctx.beginPath(); ctx.ellipse(A.mx * k, (A.lip + 0.8) * k, (A.mw - 4) * k, 0.8 * k, 0, 0, 7); ctx.fill(); }
+                ctx.drawImage(im, A.jx0, A.lip + 1, A.jx1 - A.jx0, A.chin - A.lip, A.jx0 * k, (A.lip + 1 + drop) * k, (A.jx1 - A.jx0) * k, (A.chin - A.lip) * k);
+              }
+              if (now < blinkUntil && skin) A.eyes.forEach(([ex, ey, ew], i) => {
+                ctx.fillStyle = skin[i]; ctx.beginPath(); ctx.ellipse(ex * k, ey * k, ew * k, 4 * k, 0, 0, 7); ctx.fill();
+                ctx.strokeStyle = '#2a1a14'; ctx.lineWidth = 1.2 * k; ctx.beginPath(); ctx.moveTo((ex - ew) * k, (ey + 1) * k); ctx.quadraticCurveTo(ex * k, (ey + 3) * k, (ex + ew) * k, (ey + 1) * k); ctx.stroke();
+              });
+            }
+            ctx.restore();
             ctx.fillStyle = '#fe8019'; ctx.fillRect(W - 120, 24, 96, 56); ctx.fillStyle = '#1d2021'; ctx.font = 'bold 40px sans-serif'; ctx.fillText('AI', W - 96, 66);
             ctx.fillStyle = '#ebdbb2'; ctx.font = '32px sans-serif'; ctx.fillText('RFactory Bot (AI)', 32, H - 32);
-          } }));
+          }
           console.log('[avatar] renderer set');
         }, img);
-        await call._inner.setCameraOn(true);
-        await d.sleep(3000);
+        const camOn = () => call._inner.page.evaluate(() => !!document.querySelector('button[aria-label="Turn off camera"]'));
+        for (let i = 1; i <= 3; i++) {
+          await call._inner.setCameraOn(true);
+          await d.sleep(3000);
+          const on = await camOn(); log(ts(), `camera attempt ${i}:`, on ? 'on' : 'off');
+          if (on) break;
+        }
         log(ts(), 'camera buttons:', JSON.stringify(await call._inner.page.evaluate(() =>
           [...document.querySelectorAll('button[aria-label*="camera" i]')].map((b) => b.getAttribute('aria-label')))));
       } catch (e) { log(ts(), 'camera: failed', e.message); }
     }
     log(ts(), 'speak: start');
     await (await call.speak(clip)).done;
+    if (env.CAMERA_TEST === '1') { await d.sleep(4000); await (await call.speak(clip)).done; await d.sleep(4000); await (await call.speak(clip)).done; }
     log(ts(), 'speak: done');
     try { fs.writeFileSync(path.join(out, 'after-speak.png'), await call.screenshot()); log(ts(), 'screenshot: after-speak.png'); } catch (e) { log(ts(), 'screenshot: failed', e.message); }
     try {

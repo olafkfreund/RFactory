@@ -89,3 +89,21 @@ Owner's Meet, owner present and admitting the bot.
 - **Ghost tile:** the first run's container was stopped by force (it was
   still holding), which left an extra "RFactory Bot (AI)" tile in Meet.
   Leave through `call.leave()`, never by killing the container.
+
+### Runs 2 and 3 (same call, same day)
+
+- **D5b again: pass** (run 2): the owner saw "RFactory share test" as the
+  bot's presentation (owner's screenshot). Two of two.
+- **Camera: Meet refuses the first turn-on.** Run 2 (one attempt): Meet
+  showed "camera might be blocked", the library closed the dialog, the
+  camera stayed off. Run 3 (up to three attempts, 3 s apart): attempt 1
+  off with the same dialog, **attempt 2 on**. The product must retry and
+  confirm the camera button reads "Turn off camera".
+- **Animation: owner decision.** The mouth (an overlay in run 1, a jaw
+  drop with a hint of teeth in run 3) looked unnatural on a low-poly
+  portrait. The owner chose **a still portrait** with the frame motion
+  (slow sway, small nods while speaking, the orange frame brightening with
+  the voice). No mouth or blink drawing.
+- The renderer is now guarded: a drawing error paints a plain frame and is
+  logged instead of failing Meet's camera request (the library does not
+  catch renderer errors).
