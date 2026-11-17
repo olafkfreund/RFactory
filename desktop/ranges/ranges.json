@@ -1,0 +1,17 @@
+{
+  "meet": "not found",
+  "zoom": {
+    "cidrs": [],
+    "udp": [],
+    "tcp": [],
+    "source": "https://assets.zoom.us/docs/ipranges/Zoom.txt",
+    "format": "cidr-lines"
+  },
+  "teams": "not found",
+  "slack": {
+    "cidrs": ["99.77.128.0/18"],
+    "udp": [3478, 22466],
+    "tcp": [443],
+    "source": "https://slack.com/help/articles/36284146785427"
+  }
+}

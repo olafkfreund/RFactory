@@ -418,6 +418,12 @@ v1; Wayland in the guest.
       default retention. The implementation first let the approving admin
       list, attach and delete a profile; the lead removed that, so only
       scope admins can (plan rule), with a test.
+    - Step 12: Slack's entry is the published range above. Meet and Teams
+      are pinned as `"not found"` and Zoom has its list URL with empty
+      ports, so `preflight.js` refuses those platforms until their ranges
+      and ports are recorded from the vendors' published lists. `refresh.js`
+      refuses CIDRs wider than /16 (IPv4) or /32 (IPv6) and empty lists, and
+      never edits ports. The workflow file only opens a PR.
 
 ## Prerequisites (named revisions)
 
