@@ -152,6 +152,16 @@ reviewers:
   and without `avatar`. Step 11: `gh pr create`. Traps: agent bus first;
   never while the owner is testing.
 
+- **D10, wave A results.** m01's anchors in `bot/avatars/manifest.json`
+  use the shape `bot/avatar/state.js` reads: `anchors.mesh.{points, move,
+  triangles}` (with `move` one number per point, the downward factor),
+  `eyes [{x, y, w}]`, `maxDrop`. The lead converted step 1's first shape
+  to this and added the provenance and changes sections to
+  `bot/avatars/NOTICE.md` (D7). `LICENSES/` names scoped packages with
+  `-` for `/`. The Codex review of wave A found two P2s in step 2 (a stale
+  close state blocks reopening from the level; the geometry tests used a
+  local copy of m01); they are fixed in the next commit.
+
 ## Steps
 
 Integration branch `feat/13-talking-avatar` (main with Phase 3 merged).

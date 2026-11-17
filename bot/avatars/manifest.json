@@ -1,0 +1,366 @@
+{
+  "source": {
+    "repo": "itsfutsy/OmegaStar",
+    "commit": "8304f225fc2f88f9baef6de622a0d229666e09f9",
+    "path": "src/assets/avatars/"
+  },
+  "portraits": {
+    "f01": {
+      "file": "f01.webp",
+      "sha256": "4184bb18e33e1c31d07ed9346ed027b2cecb8e4d05d4938220f492552e91943b",
+      "anchors": null
+    },
+    "f02": {
+      "file": "f02.webp",
+      "sha256": "a90e3377fcbbfe5f0a689113211d8d01131fcd74d3aabe6562143843cfe624bd",
+      "anchors": null
+    },
+    "f03": {
+      "file": "f03.webp",
+      "sha256": "2c1e3c6e0f106fc906e14498a67d019bf33f70c3af5c2a54a329db6e3ede8c25",
+      "anchors": null
+    },
+    "f04": {
+      "file": "f04.webp",
+      "sha256": "2c5359a01789f3aec0788fb7d4bb8c767e3b515b45784f3a5ede9299376f32ac",
+      "anchors": null
+    },
+    "f05": {
+      "file": "f05.webp",
+      "sha256": "63300f4a44b204a6e832ad3af9fbfffe2e49bba9979a8f1c6fb0699daa507d75",
+      "anchors": null
+    },
+    "f06": {
+      "file": "f06.webp",
+      "sha256": "af5ff104533381cdd2c8f2f1de323fdc82fa9ce61a77df74a68f3125a964fb29",
+      "anchors": null
+    },
+    "f07": {
+      "file": "f07.webp",
+      "sha256": "b88a7696baf287d3bb7a2b383ba8fd64c8c239d7a7840815d146242907170634",
+      "anchors": null
+    },
+    "f08": {
+      "file": "f08.webp",
+      "sha256": "1f2a08e92e3e68742cf14517ec0ec57ea2932ebac75e2366f4e7033f130071d3",
+      "anchors": null
+    },
+    "f09": {
+      "file": "f09.webp",
+      "sha256": "9b70c36fcb45838cf0fc213cfa14d2bbf231742950b28dceab08983c48a08962",
+      "anchors": null
+    },
+    "f10": {
+      "file": "f10.webp",
+      "sha256": "30d2777012d69148018fb7106ad00aae4bd149686b6cf3c872869f6ecf2c5e34",
+      "anchors": null
+    },
+    "f11": {
+      "file": "f11.webp",
+      "sha256": "f38e5ea3229e70373930f52a3a9d5f33ef69bf0d60cce0a4651b00682c886b41",
+      "anchors": null
+    },
+    "f12": {
+      "file": "f12.webp",
+      "sha256": "1569d585861a6d7a7fa06ce7542c9e845b09e6370f03c99403972baccc4269d5",
+      "anchors": null
+    },
+    "f13": {
+      "file": "f13.webp",
+      "sha256": "8f15b5a03642d61cbbbaacdb9a3306ed9a4d9ce39d8df8959ce18c2d3f14b40b",
+      "anchors": null
+    },
+    "f14": {
+      "file": "f14.webp",
+      "sha256": "fe0576935c3f0878bab41d5f49fc9b048a6c4304fc68449eb06a332ce9dea6d7",
+      "anchors": null
+    },
+    "f15": {
+      "file": "f15.webp",
+      "sha256": "0a68df12da78a0292731c1a97af3537dd3489edf9391dfb8e00d4ae54a01201a",
+      "anchors": null
+    },
+    "f16": {
+      "file": "f16.webp",
+      "sha256": "5bc5183b92a8975f67ae7f1e5cb4cbf0b75f9418d1a43eae4aefb3078a7d7f6b",
+      "anchors": null
+    },
+    "f17": {
+      "file": "f17.webp",
+      "sha256": "9d763d5213239f163ea3796a7401eac9bd355e28eaf97ce982e29ef3a802fbc8",
+      "anchors": null
+    },
+    "f18": {
+      "file": "f18.webp",
+      "sha256": "11ed16877cd9e64f0a1611cbd4b1d2020dcbadf8e46dfadd5df029ebbbe7664b",
+      "anchors": null
+    },
+    "f19": {
+      "file": "f19.webp",
+      "sha256": "0700e55798041cf1c51ad13d4b329a566abb4db943d146d4cc8a751216b0c9e5",
+      "anchors": null
+    },
+    "f20": {
+      "file": "f20.webp",
+      "sha256": "48d9fff99dd4c02218b2b68e038dfb5cb4b780f5a6049dbf317a4191f7f86ecc",
+      "anchors": null
+    },
+    "m01": {
+      "file": "m01.webp",
+      "sha256": "746cb2342d64aa0deea72ae3bf0919c9cc4d62e1e9075c94685edf6ad16d9d50",
+      "anchors": {
+        "mesh": {
+          "points": {
+            "OL": [
+              58,
+              150
+            ],
+            "OBL": [
+              74,
+              194
+            ],
+            "OB": [
+              116,
+              204
+            ],
+            "OBR": [
+              162,
+              188
+            ],
+            "OR": [
+              168,
+              146
+            ],
+            "UL": [
+              77,
+              141
+            ],
+            "UM": [
+              101,
+              137
+            ],
+            "UR": [
+              125,
+              134
+            ],
+            "LL": [
+              77,
+              141
+            ],
+            "LM": [
+              101,
+              138
+            ],
+            "LR": [
+              125,
+              134
+            ],
+            "LB": [
+              101,
+              153
+            ],
+            "JL": [
+              83,
+              166
+            ],
+            "C": [
+              113,
+              177
+            ],
+            "JR": [
+              148,
+              159
+            ]
+          },
+          "move": {
+            "LM": 1,
+            "LB": 0.9,
+            "JL": 0.55,
+            "C": 0.85,
+            "JR": 0.5
+          },
+          "triangles": [
+            [
+              "OL",
+              "LL",
+              "JL"
+            ],
+            [
+              "LL",
+              "LM",
+              "LB"
+            ],
+            [
+              "LM",
+              "LR",
+              "LB"
+            ],
+            [
+              "LL",
+              "LB",
+              "JL"
+            ],
+            [
+              "LB",
+              "C",
+              "JL"
+            ],
+            [
+              "LB",
+              "LR",
+              "C"
+            ],
+            [
+              "LR",
+              "JR",
+              "C"
+            ],
+            [
+              "LR",
+              "OR",
+              "JR"
+            ],
+            [
+              "OL",
+              "JL",
+              "OBL"
+            ],
+            [
+              "JL",
+              "C",
+              "OBL"
+            ],
+            [
+              "OBL",
+              "C",
+              "OB"
+            ],
+            [
+              "C",
+              "JR",
+              "OB"
+            ],
+            [
+              "JR",
+              "OBR",
+              "OB"
+            ],
+            [
+              "JR",
+              "OR",
+              "OBR"
+            ]
+          ]
+        },
+        "eyes": [
+          {
+            "x": 78,
+            "y": 99,
+            "w": 10
+          },
+          {
+            "x": 126,
+            "y": 95,
+            "w": 11
+          }
+        ],
+        "maxDrop": 13
+      }
+    },
+    "m02": {
+      "file": "m02.webp",
+      "sha256": "d1177389e549ede935cbf42876c77df857af32fa972a75cb4583bbca1e6c51a0",
+      "anchors": null
+    },
+    "m03": {
+      "file": "m03.webp",
+      "sha256": "2349c50bb7d85ad499770614da8a846571fd2f2c69b0c8f79c95f347ac59d391",
+      "anchors": null
+    },
+    "m04": {
+      "file": "m04.webp",
+      "sha256": "12e2d77903848d0162e850913baad445713ea4213b1fa24f6b70878440b25e26",
+      "anchors": null
+    },
+    "m05": {
+      "file": "m05.webp",
+      "sha256": "98f9de1b4d146e9b452eb8c7ab9e955604eececa757a30aee84fa2fbeb68aca2",
+      "anchors": null
+    },
+    "m06": {
+      "file": "m06.webp",
+      "sha256": "82b8ceeb02db01f304362fc2de45244505a6c27f3f21a915c1650692d8aa9fed",
+      "anchors": null
+    },
+    "m07": {
+      "file": "m07.webp",
+      "sha256": "348f86f38791a82be1c4b147818318cc5c1ab806ec0e232dedde0a27bfa659f5",
+      "anchors": null
+    },
+    "m08": {
+      "file": "m08.webp",
+      "sha256": "04f51dd84c84c22d54f693d49999211f064500096dc1e6c701852efcc60c88c4",
+      "anchors": null
+    },
+    "m09": {
+      "file": "m09.webp",
+      "sha256": "5de65697116796f070c655c8493fb31e753aea48b40826aa753ab6e2cd133647",
+      "anchors": null
+    },
+    "m10": {
+      "file": "m10.webp",
+      "sha256": "ec438da90b81e434dd58db4b7049ea4bcc9d4aa0eb3cabc9082e4c8dffa5186b",
+      "anchors": null
+    },
+    "m11": {
+      "file": "m11.webp",
+      "sha256": "83bdd33e9836d340253bc2c736b7a68193d03afab2c2586399e7bffc983ccd73",
+      "anchors": null
+    },
+    "m12": {
+      "file": "m12.webp",
+      "sha256": "53646870e40a18a36a48022bd762db66869d9652cb6efe7882caa0b288a7be7b",
+      "anchors": null
+    },
+    "m13": {
+      "file": "m13.webp",
+      "sha256": "fbc6e7dd3020ea0b56724c9ca8a1361934fb4db096232439c4a7bcff661f21d5",
+      "anchors": null
+    },
+    "m14": {
+      "file": "m14.webp",
+      "sha256": "b30c5cd7b4edb424fef56ca9b40e5d5df2b99aad58db1b853da14fea2fbeab76",
+      "anchors": null
+    },
+    "m15": {
+      "file": "m15.webp",
+      "sha256": "cc0f7581479dad6815546a5e89743351eb47c41df48394a12b0c6b0c9bb58356",
+      "anchors": null
+    },
+    "m16": {
+      "file": "m16.webp",
+      "sha256": "755cffe89d67f96a5680ac81f4851e433d022653a322c234f496a31a4069a552",
+      "anchors": null
+    },
+    "m17": {
+      "file": "m17.webp",
+      "sha256": "639fdf3e42ccc9b5678923ea0561cfd605d5a1d67edc317600b3fd3eeda7671f",
+      "anchors": null
+    },
+    "m18": {
+      "file": "m18.webp",
+      "sha256": "6c0e10420acf9ad8fe46f7e3684ee838d104cfe96a60adbffad3e05bfa473e3f",
+      "anchors": null
+    },
+    "m19": {
+      "file": "m19.webp",
+      "sha256": "05202b09136b53126bc88f1d00ed46c41b3dfd7acc2c7805760cfa526a8e8d37",
+      "anchors": null
+    },
+    "m20": {
+      "file": "m20.webp",
+      "sha256": "f3de36ad862342240ed7ec2cd274e65e2fc668e8caf78f9a63dcb41feedf7cc0",
+      "anchors": null
+    }
+  }
+}

@@ -1,6 +1,7 @@
 {
   "name": "rfactory-spike",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "dependencies": {
     "@vibeconferencing/calls": "0.1.0-alpha.3",
