@@ -467,6 +467,35 @@ v1; Wayland in the guest.
       may repackage. Bearer-token identity for the step 15 scripts is step
       13 wiring.
 
+13. **D5 result and step 11 on the tab share (owner preapproval,
+    2026-11-17; same finding as #12 plan D2).** The D5 check
+    (`spike/RESULTS.md` on `origin/spike/d5b-camera`, `ad2e545`) found the
+    library's `startShare` unsupported on the Playwright host (it returns
+    without running Meet's share code). **D5b passed, twice, live:** the bot
+    clicks Meet's own "Share screen" button; Chrome started with
+    `--auto-select-desktop-capture-source=<title>` picks the page with that
+    title and shares it as a **tab** (`displaySurface: "browser"`), not a
+    window; a real web page shared this way was sharp and readable. Step 11
+    changes accordingly:
+    - the share target is a **tab** in the call Chrome's context whose
+      locked `document.title` carries the nonce; the track check accepts
+      `displaySurface === 'browser'` only (`window` and `monitor` stop the
+      track) and binds the track to the nonce tab;
+    - the auto-select flag is fixed when Chrome starts, so the nonce is
+      **per call** (generated at launch), and at most one tab carries it at
+      any time; consent stays bound to the approved origin and URL as
+      before;
+    - the share starts by clicking Meet's own share button (D5b), not the
+      library's `startShare`; the `getDisplayMedia` hook still wraps the
+      library's override (`inject/page-inject.js:764`);
+    - if the tab capture track's `label` does not contain the page title
+      (to be checked in headless Chrome, evidence in the step's report),
+      the binding is: `displaySurface === 'browser'`, exactly one tab with
+      the nonce title at capture time, and that tab's target id; recorded
+      here with the step 11 commit;
+    - the shared tab hides the call library's injected "Bot's view" banner
+      (it shows to participants otherwise; spike run 4).
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |
