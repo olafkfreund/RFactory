@@ -13,8 +13,12 @@ const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, clock = globalThis,
   quietMs = 1500, botCmd = BOT_CMD }) {
   const listeners = new Set();
+  const current = new Map();
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
-  const emit = (event) => { for (const fn of listeners) fn(event); };
+  const emit = (event) => {
+    if (['state', 'mic', 'voice', 'greeting'].includes(event.type)) current.set(event.type, event);
+    for (const fn of listeners) fn(event);
+  };
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
 
@@ -51,6 +55,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
       clock.clearTimeout(force);
       if (call === c) call = null;
       emit({ type: 'state', state: 'stopped' });
+      current.clear();
     })();
     return c.stopping;
   }
@@ -71,7 +76,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     const sentences = toSpeech(text);
     if (!sentences.length) return;
     const synthesise = (sentence) => Promise.resolve().then(() => tts.say(sentence))
-      .then((wav) => ({ wav }), (error) => ({ error }));
+      .then((wav) => {
+        if (call === c && tts.voice !== c.voice) { c.voice = tts.voice; emit({ type: 'voice', voice: c.voice }); }
+        return { wav };
+      }, (error) => ({ error }));
     let next = synthesise(sentences[0]);
     for (let i = 0; i < sentences.length; i++) {
       const { wav, error } = await next;
@@ -146,7 +154,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
       for (const resolve of c.waiters.values()) resolve('cancelled');
       c.waiters.clear();
       c.speech = Promise.resolve();
-      queueSpeech(c, 'Leaving now.').finally(() => stop('asked'));
+      const timer = clock.setTimeout(() => stop('asked'), 5000);
+      queueSpeech(c, 'Leaving now.').finally(() => { clock.clearTimeout(timer); stop('asked'); });
     } else if (c.working && c.queue.length >= 2) log('dropped question: queue full');
     else { c.queue.push(question); drain(c); }
   }
@@ -178,7 +187,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
-      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0 };
+      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, voice: tts.voice };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);
@@ -204,11 +213,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
       }
       if (Buffer.byteLength(buffer) > MAX_IN) { buffer = ''; skipping = true; log('dropped oversize child line'); }
     });
-    emit({ type: 'voice', voice: tts.voice });
+    current.clear();
+    emit({ type: 'voice', voice: c.voice });
+    emit({ type: 'state', state: 'joining' });
     child.stdin.write(`${link}\n`);
   }
 
-  return { get running() { return !!call; }, start, stop,
+  return { get running() { return !!call; }, start, stop, current: () => [...current.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 

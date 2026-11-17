@@ -96,6 +96,7 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = nu
     if (call && req.method === 'GET' && url === '/api/call/events') {
       res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/event-stream' });
       res.write(': open\n\n');
+      for (const event of call.current()) res.write(`data: ${JSON.stringify(event)}\n\n`);
       const off = call.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
       const timer = setInterval(() => res.write(': keepalive\n\n'), 15000);
       req.on('close', () => { clearInterval(timer); off(); });

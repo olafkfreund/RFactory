@@ -28,7 +28,7 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot } = {}) {
+function setup({ brainTurn, ttsSay, sourceSnapshot, tts } = {}) {
   const clock = fakeClock();
   const children = [], events = [], kills = [], spoken = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
@@ -48,7 +48,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot } = {}) {
   process.kill = (pid, signal) => { kills.push([pid, signal]); };
   const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
-    tts: { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
+    tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
     redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'] });
   manager.subscribe((event) => events.push(event));
   const restore = () => { process.kill = originalKill; };
@@ -80,6 +80,40 @@ test('start, greeting, voice, mic and stopped state', async () => {
     f.children[0].close(); await stopping;
     assert.equal(f.manager.running, false);
     assert.equal(f.events.at(-1).state, 'stopped');
+  } finally { f.restore(); }
+});
+
+test('current replays the latest call indicators and clears them after stop', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'state'), { type: 'state', state: 'joining' });
+    f.children[0].output({ type: 'state', state: 'lobby' });
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.children[0].output({ type: 'mic', muted: false });
+    await flush();
+    f.children[0].output({ type: 'spoke', seq: 0, result: 'done' });
+    assert.deepEqual(f.manager.current(), [
+      { type: 'voice', voice: 'espeak-ng' }, { type: 'state', state: 'in-call' },
+      { type: 'mic', muted: false }, { type: 'greeting', result: 'done' },
+    ]);
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+    assert.deepEqual(f.manager.current(), []);
+  } finally { f.restore(); }
+});
+
+test('Piper fallback reports the new voice to current and live subscribers', async () => {
+  const tts = { voice: 'piper:test', say: async (s) => { tts.voice = 'espeak-ng'; return Buffer.from(s); } };
+  const f = setup({ tts });
+  try {
+    await f.manager.start('link');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await flush();
+    assert.deepEqual(f.events.filter((e) => e.type === 'voice'), [
+      { type: 'voice', voice: 'piper:test' }, { type: 'voice', voice: 'espeak-ng' },
+    ]);
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'voice'), { type: 'voice', voice: 'espeak-ng' });
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
 });
 
@@ -159,6 +193,37 @@ test('leave bypasses two waiting questions, cancels speech and leaves after spea
     await flush();
     assert.equal(f.messages().at(-1).type, 'leave');
     f.children[0].close(); await f.manager.stop();
+  } finally { f.restore(); }
+});
+
+test('leave stops within five seconds when the child never acknowledges speech', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, leave.');
+    await flush();
+    assert.ok(f.messages().some((m) => m.type === 'speak'));
+    f.clock.tick(4999); await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'leave').length, 0);
+    f.clock.tick(1); await flush();
+    assert.equal(f.messages().at(-1).type, 'leave');
+    f.children[0].close(); await f.manager.stop();
+    assert.equal(f.manager.running, false);
+  } finally { f.restore(); }
+});
+
+test('manager 60-minute limit sends leave and waits for child exit', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    f.clock.tick(60 * 60 * 1000 - 1);
+    assert.equal(f.messages().filter((m) => m.type === 'leave').length, 0);
+    f.clock.tick(1);
+    assert.equal(f.messages().at(-1).type, 'leave');
+    assert.equal(f.manager.running, true);
+    f.children[0].close(); await f.manager.stop();
+    assert.equal(f.manager.running, false);
+    assert.ok(f.events.some((e) => e.type === 'log' && e.message.includes('60-minute limit')));
   } finally { f.restore(); }
 });
 

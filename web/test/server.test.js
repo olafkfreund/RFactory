@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
 const { createApp } = require('../server.js');
+const { handleCall } = require('../public/app.js');
 const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
 const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
@@ -124,11 +125,13 @@ test('start is refused when a CFACTORY_*KEY* variable is set', () => {
 
 function fakeCall() {
   const subs = new Set();
+  const latest = new Map();
   const m = { running: false, started: [], stopped: [], subs,
     start: async (link) => { if (m.running) throw new Error('busy'); m.running = true; m.started.push(link); },
     stop: async (reason) => { m.running = false; m.stopped.push(reason); },
+    current: () => [...latest.values()],
     subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn); },
-    emit: (e) => subs.forEach((fn) => fn(e)) };
+    emit: (e) => { latest.set(e.type, e); subs.forEach((fn) => fn(e)); } };
   return m;
 }
 const post = (get, body) => get('/api/call', { method: 'POST', body: JSON.stringify(body) });
@@ -170,6 +173,24 @@ test('call events stream as SSE and unsubscribe on close', async (t) => {
   ctl.abort();
   for (let i = 0; i < 50 && call.subs.size; i++) await new Promise((r2) => setTimeout(r2, 20));
   assert.equal(call.subs.size, 0);
+});
+
+test('subscribing during a call replays state so the page enables Leave', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  call.running = true;
+  call.emit({ type: 'state', state: 'in-call' });
+  const ctl = new AbortController();
+  const r = await get('/api/call/events', { signal: ctl.signal });
+  const reader = r.body.getReader();
+  let body = '';
+  while (!body.includes('data: ')) body += new TextDecoder().decode((await reader.read()).value);
+  const event = JSON.parse(body.match(/data: ([^\n]+)/)[1]);
+  const nodes = Object.fromEntries(['call-state-text', 'call-join', 'call-leave'].map((id) => [id, { textContent: '', disabled: true }]));
+  handleCall({ getElementById: (id) => nodes[id] }, event);
+  assert.equal(nodes['call-state-text'].textContent, 'in-call');
+  assert.equal(nodes['call-leave'].disabled, false);
+  ctl.abort();
 });
 
 test('call routes are absent without a manager', async (t) => {

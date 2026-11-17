@@ -35,19 +35,25 @@ function createTts({ piperBin = 'piper', voicePath, espeakBin = 'espeak-ng', spa
       rate = Number(JSON.parse(fs.readFileSync(`${voicePath}.json`, 'utf8')).audio.sample_rate);
     }
   } catch { rate = 0; }
-  const piper = Number.isInteger(rate) && rate > 0;
-  const voice = piper ? `piper:${path.basename(voicePath, '.onnx')}` : 'espeak-ng';
+  let piper = Number.isInteger(rate) && rate > 0;
+  let first = true;
   const clean = (s) => String(s).replace(/\s+/g, ' ').trim(); // Piper reads one sentence per stdin line
   async function say(sentence) {
     const text = clean(sentence);
     if (piper) {
-      // --output-raw: Piper 1.8.0 streams raw int16 PCM to stdout, no temp file.
-      const pcm = await run(spawn, piperBin, ['-m', voicePath, '-c', `${voicePath}.json`, '--output-raw'], `${text}\n`, timeoutMs);
-      return Buffer.concat([wavHeader(rate, pcm.length - (pcm.length % 2)), pcm.subarray(0, pcm.length - (pcm.length % 2))]);
+      try {
+        // --output-raw: Piper 1.8.0 streams raw int16 PCM to stdout, no temp file.
+        const pcm = await run(spawn, piperBin, ['-m', voicePath, '-c', `${voicePath}.json`, '--output-raw'], `${text}\n`, timeoutMs);
+        first = false;
+        return Buffer.concat([wavHeader(rate, pcm.length - (pcm.length % 2)), pcm.subarray(0, pcm.length - (pcm.length % 2))]);
+      } catch (error) {
+        if (error.code !== 'ENOENT' && !(first && /^tts exit [1-9]/.test(error.message))) throw error;
+        piper = false;
+      }
     }
     return run(spawn, espeakBin, ['--stdout'], `${text}\n`, timeoutMs);
   }
-  return { voice, say };
+  return { get voice() { return piper ? `piper:${path.basename(voicePath, '.onnx')}` : 'espeak-ng'; }, say };
 }
 
 module.exports = { createTts };

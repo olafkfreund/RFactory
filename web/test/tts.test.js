@@ -56,6 +56,27 @@ test('fallback to espeak-ng when the voice is missing', async () => {
   assert.equal(out.toString(), 'RIFFwav');
 });
 
+test('missing Piper on PATH falls back for the rest of the call and reports espeak-ng', async (t) => {
+  const calls = [];
+  const spawn = (bin, args) => {
+    if (bin === 'piper-not-on-path') {
+      calls.push({ bin, args });
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough();
+      child.kill = () => {};
+      setImmediate(() => { const error = new Error('spawn ENOENT'); error.code = 'ENOENT'; child.emit('error', error); });
+      return child;
+    }
+    return fakeSpawn(calls, { pcm: Buffer.from('RIFFwav') })(bin, args);
+  };
+  const tts = createTts({ piperBin: 'piper-not-on-path', voicePath: voiceFixture(t), spawn });
+  assert.match(tts.voice, /^piper:/);
+  assert.equal((await tts.say('first')).toString(), 'RIFFwav');
+  assert.equal(tts.voice, 'espeak-ng');
+  assert.equal((await tts.say('second')).toString(), 'RIFFwav');
+  assert.deepEqual(calls.map((c) => c.bin), ['piper-not-on-path', 'espeak-ng', 'espeak-ng']);
+});
+
 test('fallback when the voice json is unreadable', () => {
   const p = voiceFixture({ after() {} });
   fs.writeFileSync(`${p}.json`, 'not json');
@@ -70,7 +91,13 @@ test('timeout kills the child and rejects', async (t) => {
   assert.equal(calls[0].child.killed, true);
 });
 
-test('non-zero exit rejects', async (t) => {
-  const tts = createTts({ voicePath: voiceFixture(t), spawn: fakeSpawn([], { code: 1 }) });
-  await assert.rejects(tts.say('hi'), /exit 1/);
+test('Piper first sentence non-zero exit falls back and reports espeak-ng', async (t) => {
+  const calls = [];
+  const piper = fakeSpawn(calls, { code: 1 });
+  const espeak = fakeSpawn(calls, { pcm: Buffer.from('RIFFwav') });
+  const tts = createTts({ voicePath: voiceFixture(t), spawn: (bin, args, opts) =>
+    bin === 'piper' ? piper(bin, args, opts) : espeak(bin, args, opts) });
+  assert.equal((await tts.say('hi')).toString(), 'RIFFwav');
+  assert.equal(tts.voice, 'espeak-ng');
+  assert.deepEqual(calls.map((c) => c.bin), ['piper', 'espeak-ng']);
 });
