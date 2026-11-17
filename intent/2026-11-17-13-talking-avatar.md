@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 13
 author: olafkfreund
 ---
@@ -96,3 +96,17 @@ question 1.
    accepts a generated camera track, run on p620 only with the owner's OK.
    If it fails, this intent goes back to the owner to be reframed (for
    example the face on the RFactory page only) before anything is built.
+
+## Decisions (owner, 2026-11-17)
+
+Approved with the recommendations:
+
+1. Provenance: accept the documented uncertainty; OmegaStar's licence is
+   the evidence of permission, and if a rights claim is ever raised the
+   portraits are replaced with cleared artwork.
+2. Licence: the whole repository becomes AGPL-3.0.
+3. Default face: one portrait the owner sets in the scope file; a picker
+   is a follow-up.
+4. Feasibility first: a short camera check in the pod's Chrome on p620,
+   run only with the owner's OK; if it fails, this intent returns to the
+   owner to be reframed before anything is built.
