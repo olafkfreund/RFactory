@@ -147,6 +147,13 @@ reviewers:
   to `bot/`. A Playwright launch that hangs cannot be aborted from inside
   the child; the parent's process-group stop covers it.
 
+- **D6, Piper's raw-PCM flag (step 5).** In piper-tts 1.8.0 it is
+  `--output-raw` (no value; mono 16-bit at the voice's sample rate),
+  with `-m/--model` and `-c/--config`; text comes on stdin one line per
+  utterance, so `tts.js` collapses newlines. Taken from upstream
+  `src/piper/__main__.py` at v1.8.0; step 8 confirms it with
+  `piper --help` in the image.
+
 ## Steps
 
 1. **`core/src/brains/claude-cli.js`** (additive),
