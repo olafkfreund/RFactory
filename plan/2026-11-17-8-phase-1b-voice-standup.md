@@ -166,6 +166,13 @@ reviewers:
   `checkFacts`, and enforces the 60-minute limit itself. The page shows
   the latest spoken answer in the Summary card.
 
+- **D8, step 8 results.** Chrome is pinned to `157.0.8103.78-1` (the
+  version the first build installed). In the built image `piper --help`
+  shows `--output-raw` (D6 confirmed); Piper with the LJSpeech voice
+  produced a 22 050 Hz WAV of the greeting (163 KB, about 3.7 s) in 1.0 s,
+  and espeak-ng in 28 ms; `web/call.js` loads and `bot/run.js` exits 0 on
+  empty stdin. Both voice files passed `sha256sum -c` in the build.
+
 ## Steps
 
 1. **`core/src/brains/claude-cli.js`** (additive),
