@@ -195,6 +195,18 @@ these calls:
   sends the configured key to the endpoint being approved, with redirects
   still refused so the key never follows one.
 
+- **D11, step 10 isolation is scoped to the run (owner approved, 2026-11-17).**
+  Step 10's nft rule drops output to p620's Factory ports for the whole
+  host, which on the shared p620 cuts every other agent's Factory access
+  for the run. Instead the run executes in a transient scope,
+  `systemd-run --user --scope --unit=rfactory-e2e …`, and the rule matches
+  only that cgroup:
+  `socket cgroupv2 level 3 "user.slice/user-1000.slice/user@1000.service/app.slice/rfactory-e2e.scope" ip daddr <p620-ip> tcp dport {3101,3103,3110,3111,3114} drop`
+  (level and path checked with `systemctl --user show -p ControlGroup`
+  before the run). The before/after checks run inside the same scope.
+  The PAT is a fine-grained, read-only token for the fixture repo only,
+  created by the owner in GitHub's UI (it cannot be minted by API).
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
