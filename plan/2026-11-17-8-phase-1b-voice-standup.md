@@ -154,6 +154,18 @@ reviewers:
   `src/piper/__main__.py` at v1.8.0; step 8 confirms it with
   `piper --help` in the image.
 
+- **D7, wave 2 details (steps 6 and 7) for step 8 to honour.** The call
+  routes exist only when `RFACTORY_CALLS=1` (404 otherwise, so the 1a
+  deployment is unchanged until step 8 turns them on). `POST /api/call`
+  answers 202 on start, 400 `bad-link` for a bad link or body (over
+  4 KiB, missing, or a URL whose parsed form differs from the input), 409
+  when a call runs. The manager defaults to Node's `spawn`, the real
+  clock and `xvfb-run -a node bot/run.js`; TTS takes `piper` and
+  `espeak-ng` from `PATH` and the voice from `RFACTORY_VOICE`. The call
+  manager also redacts the brain's answer with `toModel` before
+  `checkFacts`, and enforces the 60-minute limit itself. The page shows
+  the latest spoken answer in the Summary card.
+
 ## Steps
 
 1. **`core/src/brains/claude-cli.js`** (additive),

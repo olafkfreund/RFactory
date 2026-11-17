@@ -121,3 +121,58 @@ test('start is refused when a CFACTORY_*KEY* variable is set', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /key-in-environment/);
 });
+
+function fakeCall() {
+  const subs = new Set();
+  const m = { running: false, started: [], stopped: [], subs,
+    start: async (link) => { if (m.running) throw new Error('busy'); m.running = true; m.started.push(link); },
+    stop: async (reason) => { m.running = false; m.stopped.push(reason); },
+    subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn); },
+    emit: (e) => subs.forEach((fn) => fn(e)) };
+  return m;
+}
+const post = (get, body) => get('/api/call', { method: 'POST', body: JSON.stringify(body) });
+
+test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  assert.equal((await get('/api/call', { method: 'POST' }, null)).status, 401);
+  assert.equal((await get('/api/call/events', {}, 'x@example.com')).status, 403);
+  for (const link of ['http://meet.google.com/abc-defg-hij', 'https://evil.example/abc-defg-hij',
+    'https://meet.google.com:444/abc-defg-hij', 'https://u@meet.google.com/abc-defg-hij',
+    'https://meet.google.com/abc-defg-hij/x', 'https://meet.google.com/abc-defg-hij?a=1',
+    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5]) {
+    assert.equal((await post(get, { link })).status, 400, String(link));
+  }
+  assert.deepEqual(call.started, []);
+  assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 202);
+  assert.deepEqual(call.started, ['https://meet.google.com/abc-defg-hij']);
+  assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
+  assert.equal((await get('/api/call', { method: 'DELETE' })).status, 200);
+  assert.deepEqual(call.stopped, ['requested']);
+});
+
+test('call events stream as SSE and unsubscribe on close', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const ctl = new AbortController();
+  const r = await get('/api/call/events', { signal: ctl.signal });
+  assert.equal(r.headers.get('content-type'), 'text/event-stream');
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.match(r.headers.get('content-security-policy'), /default-src 'self'/);
+  const reader = r.body.getReader();
+  await reader.read(); // ': open'
+  call.emit({ type: 'state', state: 'lobby' });
+  const { value } = await reader.read();
+  assert.equal(new TextDecoder().decode(value), 'data: {"type":"state","state":"lobby"}\n\n');
+  assert.equal(call.subs.size, 1);
+  ctl.abort();
+  for (let i = 0; i < 50 && call.subs.size; i++) await new Promise((r2) => setTimeout(r2, 20));
+  assert.equal(call.subs.size, 0);
+});
+
+test('call routes are absent without a manager', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain });
+  assert.equal((await get('/api/call/events')).status, 404);
+});

@@ -110,3 +110,12 @@ a.card-title:hover { text-decoration: underline; text-decoration-color: var(--c,
   .board { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content { padding: 1rem; } .page-head h1 { font-size: 1.7rem; }
 }
+
+/* ── Call panel ─────────────────────────────────────────── */
+.call-form { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .6rem; }
+.call-input { flex: 1 1 18rem; font: 500 .78rem var(--font-mono); color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: .45rem .7rem; }
+.call-log { list-style: none; margin: .6rem 0 0; padding: 0; max-height: 18rem; overflow-y: auto; }
+.call-log li { padding: .35rem 0; border-top: 1px solid var(--border-soft); font-size: .85rem; overflow-wrap: anywhere; }
+.call-log .who { color: var(--muted); font: 500 .72rem var(--font-mono); }
+.call-log .answer { color: var(--accent); }
