@@ -11,7 +11,7 @@ async function server(handler) {
   const instance = http.createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
-    requests.push({ url: req.url, body });
+    requests.push({ url: req.url, body, authorization: req.headers.authorization });
     handler(req, res, requests);
   });
   await new Promise((resolve) => instance.listen(0, '127.0.0.1', resolve));
@@ -60,6 +60,27 @@ test('approval refuses a 302 without contacting its target', async () => {
   } finally { await first.close(); await target.close(); }
 });
 
+test('approval authenticates a protected destination without following a redirect or exposing the key', async () => {
+  const key = 'test-approval-key';
+  const target = await server((req, res) => json(res, { role: 'assistant', content: 'target' }));
+  const protectedServer = await server((req, res) => {
+    if (req.headers.authorization !== `Bearer ${key}`) { res.writeHead(401); res.end(); return; }
+    res.writeHead(200); res.end('{}');
+  });
+  const redirect = await server((req, res) => {
+    assert.equal(req.headers.authorization, `Bearer ${key}`);
+    res.writeHead(302, { location: `${target.url}/${key}` }); res.end();
+  });
+  try {
+    const config = { kind: 'openai-compat', base_url: protectedServer.url, model: 'test', api_key_env: 'MODEL_KEY' };
+    assert.deepEqual(await resolveDestination(config, { MODEL_KEY: key }), { hash: destinationHash(config) });
+    assert.equal(protectedServer.requests[0].authorization, `Bearer ${key}`);
+    await assert.rejects(resolveDestination({ ...config, base_url: redirect.url }, { MODEL_KEY: key }), (error) =>
+      error.message.startsWith('destination-redirect:') && !error.message.includes(key));
+    assert.equal(target.requests.length, 0);
+  } finally { await protectedServer.close(); await redirect.close(); await target.close(); }
+});
+
 test('approval hashes the configured destination and a new snapshot is requested each turn', async () => {
   const fake = await server((req, res) => req.url === '/v1/models'
     ? (res.writeHead(200), res.end('{}'))
@@ -71,6 +92,19 @@ test('approval hashes the configured destination and a new snapshot is requested
     await ask(s);
     assert.deepEqual(s.calls, ['standup_snapshot', 'standup_snapshot']);
     assert.deepEqual(fake.requests.map((x) => x.url), ['/v1/models', '/v1/chat/completions', '/v1/chat/completions']);
+  } finally { await fake.close(); }
+});
+
+test('first completion receives trusted scope and redacted snapshot before the question', async () => {
+  const fake = await server((req, res) => json(res, { role: 'assistant', content: 'ok' }));
+  try {
+    const s = setup(fake.url, { async call() { return { items: [{ id: 'o/r#1', content: { untrusted: true, text: 'planted-secret-value' } }], fetched_at: 'now' }; } });
+    await ask(s);
+    const messages = JSON.parse(fake.requests[0].body).messages;
+    assert.match(messages[0].content, /trusted scope is local/);
+    assert.equal(messages[1].role, 'user');
+    assert.equal(JSON.parse(messages[1].content).items[0].content.text, '[redacted]');
+    assert.equal(messages[2].content, 'standup');
   } finally { await fake.close(); }
 });
 

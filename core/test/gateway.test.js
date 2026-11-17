@@ -134,14 +134,33 @@ test('planted token in issue body is redacted before result leaves gateway', asy
   assert.ok(result.items[0].content.text.includes('[redacted]'));
 });
 
-test('issue activity and uppercase getItem state stay inside the gateway result', async () => {
+test('get_item uses snapshot state and adds detail inside untrusted content', async () => {
   const source = fake();
   source.getItem = async () => ({ repo: 'o/r', issue: { number: 1, title: 'Issue', body: 'private note', state: 'CLOSED' }, fetched_at: '2026-11-17T00:00:00Z' });
   const g = gateway(copy(), source);
+  const snapshot = await g.call('standup_snapshot', { scope: 'local' });
   const detail = await g.call('get_item', { scope: 'local', id: 'o/r#1' });
-  assert.equal(detail.item.state, 'done');
+  assert.equal(detail.item.state, snapshot.items[0].state);
+  assert.equal(detail.item.rule, snapshot.items[0].rule);
   assert.equal(detail.item.content.text.includes('private note'), true);
   assert.equal(detail.item.body, undefined);
   const activity = await g.call('item_activity', { scope: 'local', id: 'o/r#1' });
   assert.deepEqual(activity.activity, [{ content: { untrusted: true, text: 'Comment' } }]);
+});
+
+test('get_item keeps linked PR and board precedence from the current snapshot', async () => {
+  const scope = copy();
+  scope.mapping = { board: { Review: 'in_progress' } };
+  const source = fake();
+  source.fetchScope = async () => ({ repo: 'o/r', issues: [{ number: 1, title: 'Issue', state: 'closed' }],
+    pulls: [{ number: 2, title: 'PR', state: 'open', body: 'Fixes #1' }], checks: {}, projectStatus: { 1: 'Review' }, fetched_at: '2026-11-17T00:00:00Z' });
+  source.getItem = async () => ({ repo: 'o/r', issue: { number: 1, title: 'Issue', body: 'detail body', state: 'closed' }, fetched_at: '2026-11-17T00:00:01Z' });
+  const g = gateway(scope, source);
+  const snapshot = await g.call('standup_snapshot', { scope: 'local' });
+  const detail = await g.call('get_item', { scope: 'local', id: '#1' });
+  const mapped = snapshot.items.find((x) => x.id === 'o/r#1');
+  assert.deepEqual([detail.item.state, detail.item.rule, detail.item.basis, detail.item.evidence],
+    [mapped.state, mapped.rule, mapped.basis, mapped.evidence]);
+  assert.match(detail.item.content.text, /linked PR #2/);
+  assert.match(detail.item.content.text, /detail body/);
 });

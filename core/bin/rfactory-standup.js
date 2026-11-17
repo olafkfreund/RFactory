@@ -112,7 +112,7 @@ async function main(argv, env, write, { spawn = nodeSpawn } = {}) {
     out(destinationLine(ctx.scope));
     if (command === 'approve-destination') {
       const hash = ctx.scope.brain.kind === 'claude-cli'
-        ? await approveClaude(ctx.scope.brain, spawn) : (await resolveDestination(ctx.scope.brain)).hash;
+        ? await approveClaude(ctx.scope.brain, spawn) : (await resolveDestination(ctx.scope.brain, env)).hash;
       out(`approved_hash: ${hash}`);
       return 0;
     }

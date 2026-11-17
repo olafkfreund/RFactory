@@ -72,6 +72,7 @@ function createGateway({ scope, source, redactor }) {
         truncated: !!raw.truncated,
       };
     } else if (name === 'get_item') {
+      const mapped = (await snapshot()).items.find((x) => x.id === `${scope.source.owner}/${scope.source.repo}#${numberFrom(args.id)}`);
       const raw = await source.getItem(scope, numberFrom(args.id));
       const sourceRaw = {
         repo: raw.repo,
@@ -79,8 +80,7 @@ function createGateway({ scope, source, redactor }) {
         pulls: raw.pr ? [{ ...raw.pr, state: String(raw.pr.state).toLowerCase() }] : [],
         checks: raw.pr ? { [raw.pr.number]: raw.checks || [] } : {},
       };
-      const items = mapGithub(sourceRaw, scope.mapping);
-      result = { item: items[0] && item(items[0], sourceRaw), fetched_at: raw.fetched_at, truncated: false };
+      result = { item: mapped && item(mapped, sourceRaw), fetched_at: raw.fetched_at, truncated: false };
     } else {
       const number = numberFrom(args.id);
       const match = (await snapshot()).items.find((x) => x.id === `${scope.source.owner}/${scope.source.repo}#${number}`);

@@ -187,6 +187,14 @@ these calls:
     the Opus review); anything unclassified exits 1. `approve-destination`
     needs no token and never starts the GitHub source.
 
+- **D10, step 9 review fixes** (recorded with the fix commit): the Opus
+  and Codex reviews' findings are fixed with a test each. One changes a
+  planned call: PR activity uses `pull_request_read` `get_commits` (present
+  in the recorded 1.14.0 inventory) instead of `list_commits` at the PR
+  head, which listed base-branch history too. `approve-destination` now
+  sends the configured key to the endpoint being approved, with redirects
+  still refused so the key never follows one.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).

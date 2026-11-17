@@ -48,8 +48,14 @@ test('every state phrase maps to its snapshot state', () => {
   for (const phrase of ['done', 'finished', 'merged', 'closed', 'shipped']) assert.equal(checked(`#1 is ${phrase}.`), `#1 is ${phrase}.`);
   for (const phrase of ['blocked', 'stuck', 'failing']) assert.equal(checked(`#3 is ${phrase}.`), `#3 is ${phrase}.`);
   for (const phrase of ['in progress', 'being worked on', 'open PR']) assert.equal(checked(`#6 is ${phrase}.`), `#6 is ${phrase}.`);
-  for (const phrase of ['left', 'to do', 'not started', 'open']) assert.equal(checked(`#7 is ${phrase}.`), `#7 is ${phrase}.`);
+  for (const phrase of ['left', 'to do', 'open']) assert.equal(checked(`#7 is ${phrase}.`), `#7 is ${phrase}.`);
   for (const phrase of ['unknown', 'unclear']) assert.equal(checked(`#8 is ${phrase}.`), `#8 is ${phrase}.`);
+});
+
+test('negated state claims are conservatively replaced', () => {
+  for (const text of ['#1 is not done.', "#1 isn't done.", '#1 is no longer done.', '#1 was never done.', '#7 is not started.']) {
+    assert.equal(checked(text), refused, text);
+  }
 });
 
 test('sentences without an ID or count survive and sentence boundaries stay intact', () => {

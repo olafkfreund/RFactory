@@ -3,7 +3,7 @@ const { execFileSync } = require('node:child_process');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const RECORDED = new Set(require('../../test/fixtures/github-tools-1.14.0.json').map((t) => t.name));
-const READ_TOOLS = ['list_issues', 'list_pull_requests', 'pull_request_read', 'issue_read', 'list_commits', 'projects_list'];
+const READ_TOOLS = ['list_issues', 'list_pull_requests', 'pull_request_read', 'issue_read', 'projects_list'];
 const VERSION = '1.14.0';
 const CAP = 1000;
 const PER_PAGE = 100;
@@ -80,6 +80,9 @@ async function connect({ bin, token, logSafe = () => {} }) {
       });
       projTruncated = r.truncated;
       for (const it of r.items) {
+        const itemRepo = it.content?.repository?.nameWithOwner || it.content?.repository?.full_name ||
+          (it.content?.url || it.content?.html_url)?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+/)?.[1];
+        if (itemRepo?.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) continue;
         const n = it.content?.number ?? it.number;
         const st = (it.fields || []).find((f) => f.name === 'Status');
         if (n != null && st) projectStatus[n] = st.value ?? st.text ?? st.name_value;
@@ -101,11 +104,10 @@ async function connect({ bin, token, logSafe = () => {} }) {
     const { owner, repo } = scope.source;
     const fetched_at = new Date().toISOString();
     if (!isPr) return { comments: await call('issue_read', { method: 'get_comments', owner, repo, issue_number: number }), fetched_at };
-    const pr = await call('pull_request_read', { method: 'get', owner, repo, pullNumber: number });
     return {
       comments: await call('pull_request_read', { method: 'get_comments', owner, repo, pullNumber: number }),
       reviews: await call('pull_request_read', { method: 'get_reviews', owner, repo, pullNumber: number }),
-      commits: await call('list_commits', { owner, repo, sha: pr.head?.sha }),
+      commits: await call('pull_request_read', { method: 'get_commits', owner, repo, pullNumber: number }),
       fetched_at,
     };
   }

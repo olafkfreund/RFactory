@@ -27,6 +27,14 @@ test('rule 3b failing check on linked open PR', () => {
   const r = run([iss(1)], { pulls: [{ number: 5, state: 'open', closingIssuesReferences: [1] }], checks: { 5: [{ name: 'ci', conclusion: 'failure' }] } });
   expectRule(one(r, 1), 'blocked', '3b', 'inferred');
 });
+test('rule 3b checks every linked open PR before rule 4', () => {
+  const r = run([iss(1)], { pulls: [
+    { number: 5, state: 'open', closingIssuesReferences: [1] },
+    { number: 6, state: 'open', closingIssuesReferences: [1] },
+  ], checks: { 5: [{ name: 'ok', conclusion: 'success' }], 6: [{ name: 'ci', conclusion: 'failure' }] } });
+  expectRule(one(r, 1), 'blocked', '3b', 'inferred');
+  assert.ok(one(r, 1).evidence.includes('check failing on #6: ci'));
+});
 test('rule 4 linked open PR', () => {
   const r = run([iss(1)], { pulls: [{ number: 5, state: 'open', closingIssuesReferences: [1] }] });
   expectRule(one(r, 1), 'in_progress', '4', 'inferred');

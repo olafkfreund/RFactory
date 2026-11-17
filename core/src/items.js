@@ -51,7 +51,7 @@ function mapGithub(raw, mapping = {}) {
       [state, rule, basis] = ['done', '2', 'observed'];
     } else if (labelNames(x).includes('blocked')) {
       [state, rule, basis] = ['blocked', '3a', 'observed'];
-    } else if (openPr && failing(raw.checks && raw.checks[openPr.number]).length) {
+    } else if (openPr && prs.some(({ pr }) => pr.state === 'open' && !pr.merged && !pr.merged_at && failing(raw.checks && raw.checks[pr.number]).length)) {
       [state, rule, basis] = ['blocked', '3b', 'inferred'];
     } else if (openPr) {
       [state, rule, basis] = ['in_progress', '4', 'inferred'];
