@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 8
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
@@ -108,3 +108,19 @@ them:
    including guests, and speaker names can be spoofed. May a person who
    starts the bot expose the configured project's status to every
    attendee? May any attendee ask questions, or only some?
+
+## Decisions at approval (owner, 2026-11-17)
+
+The owner approved with the recommended answers:
+
+1. The bot answers only when addressed by name (robust to mis-captioning).
+2. A natural-sounding voice, if one runs locally without a paid service.
+3. A short spoken headline (two or three sentences); the detail stays on
+   the web page.
+4. Voice only; typed Meet chat questions are not answered in 1b.
+5. The 1a allowlist may start the bot and see the transcript.
+6. Yes: what is said to the bot goes to Claude through the subscription
+   CLI, as card data already does (required by the approved outcome).
+7. Call content is kept in memory for the call only, then discarded.
+8. The bot joins as an anonymous guest first, as proven in Phase 0.
+9. Everyone in the call may hear the answers and may ask questions.
