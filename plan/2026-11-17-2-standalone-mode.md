@@ -156,6 +156,12 @@ these calls:
     Step 4 must supply it, and PRs carry `closingIssuesReferences` as a
     list of issue numbers.
 
+- **D7, redaction order (step 3).** With the patterns in the listed order,
+  `authorization: Bearer <token>` matched the key/value pattern first,
+  which redacted only the word `Bearer` and left the token visible. The
+  bearer pattern now runs before the key/value pattern. Found by Codex
+  while implementing step 3; covered by a test.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
