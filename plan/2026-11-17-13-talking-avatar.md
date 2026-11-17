@@ -200,6 +200,16 @@ reviewers:
   in step 7 (builds on p620 need the owner's OK); `check-image.sh` first
   runs in step 8. Lead review of step 4: the camera is confirmed 3 s after
   each turn-on, and `cancel` does not wait for the idle call.
+- **D14, step 9 review fixes (Codex and Opus reviews).** After a stop
+  event the mouth stays closed while the level falls and reopens only when
+  it rises or after it drops below 0.06 (leftover decay reopened it for
+  ~400 ms after every reply); `idle()` keeps the blink schedule; a failed
+  `setOn(true)` waits 3 s before the next attempt; the source guard
+  accepts only `origin` branches; `pod.sh` checks the public source page
+  before `podman build` (spec said after; earlier fails before tagging an
+  image) and re-runs the guard after the build, requiring the same commit;
+  the renderer steps the pose once per frame across surfaces and keeps at
+  most 2; the chat line takes the commit from the bot's `env`.
 
 ## Steps
 

@@ -4,6 +4,8 @@ function stateFactory() {
     let closingAt = null;
     let closingOpen = 0;
     let forcedIdle = false;
+    let waitingForRise = false;
+    let previousLevel = 0;
     let wasIdle = true;
     let nextBlink = now + 3000 + random() * 3000;
 
@@ -12,14 +14,18 @@ function stateFactory() {
         speaking = true;
         closingAt = null;
         forcedIdle = false;
+        waitingForRise = false;
       } else if (speakingEvent === false) {
         closingOpen = Math.max(0, Math.min(1, level));
         closingAt = time;
         speaking = false;
+        waitingForRise = true;
       }
 
+      if (speakingEvent !== false && waitingForRise && (level > previousLevel || level < 0.06)) waitingForRise = false;
+      previousLevel = level;
       if (level < 0.06 && closingAt !== null) closingAt = null;
-      const active = !forcedIdle && closingAt === null && (speaking || level >= 0.06);
+      const active = !forcedIdle && !waitingForRise && closingAt === null && (speaking || level >= 0.06);
       const open = forcedIdle ? 0 : closingAt === null
         ? (active ? Math.max(0, Math.min(1, level)) : 0)
         : closingOpen * Math.max(0, 1 - (time - closingAt) / 150);
@@ -37,7 +43,7 @@ function stateFactory() {
       speaking = false;
       closingAt = null;
       forcedIdle = true;
-      wasIdle = true;
+      wasIdle = false;
       nextBlink = Infinity;
       return { open: 0, nod: 0, blink: false };
     }

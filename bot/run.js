@@ -14,10 +14,10 @@ const MAX_IN = 4 * 1024 * 1024;
 const MAX_OUT = 64 * 1024;
 const LIMIT_MS = 60 * 60 * 1000;
 const BOT_NAME = 'RFactory Bot (AI)';
-const CHAT_LINE = `RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${process.env.RFACTORY_COMMIT ? `/tree/${process.env.RFACTORY_COMMIT}` : ''}`;
 const TERMINAL = ['left', 'removed', 'error'];
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {
+  const chatLine = `RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
   const d = {
     clock: { setTimeout, clearTimeout },
     mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
@@ -105,7 +105,10 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
             pollTimer = d.clock.setTimeout(poll, 5000);
             return;
           }
-        } catch (e) { if (stopping) return; }
+        } catch (e) {
+          if (stopping) return;
+          if (attempt < 2) await waitRetry();
+        }
       }
       throw new Error('camera refused');
     } catch (e) {
@@ -158,7 +161,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   }
 
   async function afterJoin() {
-    try { await call.chat.send(CHAT_LINE); } catch (e) { log(`chat line failed: ${e.message}`); }
+    try { await call.chat.send(chatLine); } catch (e) { log(`chat line failed: ${e.message}`); }
     if (stopping) return;
     if (env.RFACTORY_AVATAR) startAvatar();
     try {

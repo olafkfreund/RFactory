@@ -7,12 +7,15 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
   const surfaces = new Set();
   const portraits = new Map();
   let speakingEvent;
+  let lastStepAt = -Infinity;
+  let lastPose;
   let consecutiveErrors = 0;
   let loggedErrors = 0;
   const avatar = window.__rfAvatar = {
     errors: 0,
     idle() {
       state.idle();
+      lastStepAt = -Infinity;
       speakingEvent = undefined;
       for (const surface of surfaces) draw(surface, { open: 0, nod: 0, blink: false }, performance.now());
     },
@@ -146,13 +149,16 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
     });
     media.setCameraRenderer((surface) => {
       surfaces.add(surface);
+      if (surfaces.size > 2) surfaces.delete(surfaces.values().next().value);
       return { render() {
         try {
           const now = performance.now();
-          const level = media.speechLevel();
-          const pose = state.step(now, { level, speakingEvent });
-          speakingEvent = undefined;
-          draw(surface, pose, now);
+          if (now - lastStepAt >= 8) {
+            lastPose = state.step(now, { level: media.speechLevel(), speakingEvent });
+            lastStepAt = now;
+            speakingEvent = undefined;
+          }
+          draw(surface, lastPose, now);
           consecutiveErrors = 0;
           if (avatar.errors < 30) avatar.errors = 0;
         } catch (error) {

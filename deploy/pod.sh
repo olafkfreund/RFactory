@@ -32,8 +32,10 @@ up() {
   [ -d "$claude_home" ] || { echo "missing $claude_home" >&2; exit 2; }
   # AGPL §13 (#13): the image carries the clean, pushed commit it was built from
   commit=$("$here/deploy/source-guard.sh" "$here")
-  podman build -q -f "$here/web/Containerfile" --build-arg RFACTORY_COMMIT="$commit" -t rfactory-web "$here" >/dev/null
   "$here/deploy/source-guard.sh" --check-public "$commit"
+  podman build -q -f "$here/web/Containerfile" --build-arg RFACTORY_COMMIT="$commit" -t rfactory-web "$here" >/dev/null
+  rebuilt=$("$here/deploy/source-guard.sh" "$here")
+  [ "$rebuilt" = "$commit" ] || { echo "refusing to deploy: source changed during build" >&2; exit 2; }
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
   podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null

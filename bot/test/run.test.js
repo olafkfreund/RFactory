@@ -69,7 +69,7 @@ test('joining and lobby via onState, then in-call; options as planned', async ()
 function avatarPage(calls, confirmations = [true], errors = 0) {
   return { evaluate: async (fn, arg) => {
     const source = fn.toString();
-    if (arg) { calls.order.push('inject'); return; }
+    if (arg) { calls.order.push('inject'); calls.scripts?.push(arg); return; }
     if (source.includes('__rfAvatar?.idle')) { calls.order.push('idle'); return; }
     if (source.includes('__rfAvatar?.errors')) return errors;
     if (source.includes('Turn off camera')) return confirmations.shift() ?? false;
@@ -132,6 +132,31 @@ test('three camera refusals turn it off; injection failure is logged without end
   }
 });
 
+test('failed camera commands wait three seconds before another attempt', async () => {
+  let failures = 0;
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order: [] }),
+    setOn: (on) => { if (on && failures++ < 2) throw new Error('refused'); } });
+  try {
+    assert.deepStrictEqual(s.calls.camera, [true]);
+    for (let i = 0; i < 3; i++) {
+      const timer = s.timers.filter((t) => t.ms === 3000)[i];
+      assert.ok(timer, `missing retry delay ${i}`);
+      timer.fn(); await tick();
+      assert.deepStrictEqual(s.calls.camera, i === 2 ? [true, true, true] : Array(i + 2).fill(true));
+    }
+    assert.ok(s.timers.some((t) => t.ms === 5000), 'camera was confirmed');
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('the injected commit appears in both chat and the avatar source line', async () => {
+  const calls = { order: [], scripts: [] };
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01', RFACTORY_COMMIT: 'abc' }, page: avatarPage(calls) });
+  try {
+    assert.ok(s.calls.chat[0].includes('/tree/abc'));
+    assert.ok(calls.scripts[0].includes('github.com/olafkfreund/RFactory/tree/abc'));
+  } finally { s.stdin.end(); await s.done; }
+});
+
 test('stop idles before cancel and leave, including cancel and a late speak handle', async () => {
   const order = [];
   const page = avatarPage({ order });
@@ -146,6 +171,24 @@ test('stop idles before cancel and leave, including cancel and a late speak hand
   const stopping = s.done;
   s.msg({ type: 'leave' }); await stopping;
   assert.ok(order.lastIndexOf('idle') < order.indexOf('leave'));
+});
+
+test('leave idles again before its own playback cancellation and leave', async () => {
+  const order = [];
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order }), order,
+    speak: async () => {
+      let resolve;
+      const done = new Promise((r) => { resolve = r; });
+      return { done, cancel: async () => { order.push('cancel handle'); resolve({ cancelled: true }); } };
+    } });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  s.msg({ type: 'cancel' }); await tick();
+  s.msg({ type: 'speak', seq: 2, wav: 'AAAA' }); await tick();
+  const beforeLeave = order.length;
+  s.msg({ type: 'leave' }); await s.done;
+  const leaveEvents = order.slice(beforeLeave);
+  assert.ok(leaveEvents.indexOf('idle') < leaveEvents.indexOf('cancel handle'));
+  assert.ok(leaveEvents.indexOf('cancel handle') < leaveEvents.indexOf('leave'));
 });
 
 test('cancel starts idle but cancels playback without waiting for it', async () => {

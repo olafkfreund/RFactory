@@ -52,6 +52,29 @@ test('a modified file, an untracked file and an unpushed commit are each refused
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('a commit pushed only to backup is not accepted as on origin', () => {
+  const { root, work } = repo();
+  const backup = path.join(root, 'backup.git');
+  git(root, 'init', '-q', '--bare', backup);
+  git(work, 'remote', 'add', 'backup', backup);
+  fs.writeFileSync(path.join(work, 'a'), 'backup only');
+  git(work, 'commit', '-qam', 'backup only');
+  git(work, 'push', '-q', 'backup', 'HEAD');
+  const result = run([work]);
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /not on origin/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('pod checks public source before build and rechecks the same clean commit after', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', '..', 'deploy', 'pod.sh'), 'utf8');
+  const publicCheck = script.indexOf('source-guard.sh" --check-public "$commit"');
+  const build = script.indexOf('podman build');
+  const recheck = script.indexOf('source-guard.sh" "$here"', build);
+  assert.ok(publicCheck > 0 && publicCheck < build && recheck > build);
+  assert.match(script.slice(recheck, script.indexOf('  down', recheck)), /"\$commit"/);
+});
+
 test('the public check asks for the commit page anonymously and fails when it is missing', () => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-curl-'));
   const log = path.join(bin, 'log');

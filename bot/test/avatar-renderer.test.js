@@ -21,7 +21,8 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
       page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
       await page.goto('about:blank');
       await page.evaluate(() => {
-        performance.now = () => 0;
+        window.now = 0;
+        performance.now = () => window.now;
         Math.random = () => 0;
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 512;
@@ -56,10 +57,12 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
         const frames = [];
         const render = () => { labels.length = 0; renderer.render(); frames.push({ labels: [...labels], mouth: mouth(), image: frame() }); };
         render();
+        now = 20;
         level = 0.8;
         __vibeconfMedia.emit(true);
         for (let i = 0; i < 6; i++) renderer.render();
         render();
+        now = 0;
         const originalDrawImage = surface.ctx.drawImage.bind(surface.ctx);
         let drawImages = 0;
         surface.ctx.drawImage = (...args) => {
@@ -70,14 +73,18 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
           return originalDrawImage(...args);
         };
         render();
+        now = 40;
         throwLevel = true;
         render();
+        __rfAvatar.idle();
+        const speechIdleFrame = frame();
         for (let i = 0; i < 28; i++) renderer.render();
         const failed = __rfAvatar.errors;
         throwLevel = false;
         level = 0.8;
+        now = 0;
         __rfAvatar.idle();
-        return { frames, failed, idleFrame: frame(), drawImages };
+        return { frames, failed, idleFrame: frame(), speechIdleFrame, drawImages };
       });
       const [idle, open, triangleFailure, levelFailure] = result.frames;
       for (const frame of result.frames) {
@@ -86,7 +93,7 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
       const changed = (a, b) => a.reduce((count, value, i) => count + (value !== b[i]), 0);
       assert.ok(changed(idle.mouth, open.mouth) > 100, 'mouth region should change when speaking');
       assert.equal(result.drawImages, 3, 'exception should occur during a mesh triangle');
-      const closedFrames = await page.evaluate(async (urls) => {
+      const closedFrames = await page.evaluate(async (pairs) => {
         const pixels = async (url) => {
           const image = new Image();
           image.src = url;
@@ -97,19 +104,21 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
           ctx.drawImage(image, 0, 0);
           return ctx.getImageData(0, 0, 512, 512).data;
         };
-        const [idle, ...others] = await Promise.all(urls.map(pixels));
         const regions = { mouth: [205, 245, 55, 55], frame: [84, 68, 344, 344], ai: [392, 24, 96, 56], disclosure: [0, 412, 512, 100] };
-        return others.map((other) => Object.fromEntries(Object.entries(regions).map(([name, [x, y, width, height]]) => {
-          let changed = 0, maxDelta = 0;
-          for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
-            const i = (row * 512 + col) * 4;
-            const delta = Math.max(...[0, 1, 2, 3].map((channel) => Math.abs(other[i + channel] - idle[i + channel])));
-            if (delta > 2) changed++;
-            maxDelta = Math.max(maxDelta, delta);
-          }
-          return [name, { changed, maxDelta }];
-        })));
-      }, [idle.image, triangleFailure.image, levelFailure.image, result.idleFrame]);
+        return Promise.all(pairs.map(async ([baseline, candidate]) => {
+          const [idle, other] = await Promise.all([pixels(baseline), pixels(candidate)]);
+          return Object.fromEntries(Object.entries(regions).map(([name, [x, y, width, height]]) => {
+            let changed = 0, maxDelta = 0;
+            for (let row = y; row < y + height; row++) for (let col = x; col < x + width; col++) {
+              const i = (row * 512 + col) * 4;
+              const delta = Math.max(...[0, 1, 2, 3].map((channel) => Math.abs(other[i + channel] - idle[i + channel])));
+              if (delta > 2) changed++;
+              maxDelta = Math.max(maxDelta, delta);
+            }
+            return [name, { changed, maxDelta }];
+          }));
+        }));
+      }, [[idle.image, triangleFailure.image], [result.speechIdleFrame, levelFailure.image], [idle.image, result.idleFrame]]);
       for (const [index, name] of ['triangle fallback', 'speech fallback', 'idle()'].entries()) {
         for (const [region, diff] of Object.entries(closedFrames[index])) {
           assert.ok(diff.changed <= 4, `${name} changed ${diff.changed} pixels in ${region} (max channel delta ${diff.maxDelta})`);
@@ -163,4 +172,54 @@ test('a still face renders speaking frames without errors',
     } finally {
       await browser.close();
     }
+  });
+
+test('two surfaces share one pose per frame and a third evicts the oldest',
+  { skip: !chrome || !fs.existsSync(chrome) }, async () => {
+    const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto('about:blank');
+      await page.evaluate(() => {
+        window.now = 0;
+        performance.now = () => window.now;
+        window.levelReads = 0;
+        window.__vibeconfMedia = {
+          on() {},
+          setCameraRenderer(factory) { window.factory = factory; },
+          speechLevel() { window.levelReads++; return 0.8; },
+        };
+      });
+      const portraitDataUrl = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, '../avatars/m01.webp')).toString('base64');
+      await page.evaluate((script) => eval(script), buildRendererSource({ portraitDataUrl, anchors }));
+      const result = await page.evaluate(() => {
+        const surface = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 512;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          let draws = 0;
+          const fillText = ctx.fillText.bind(ctx);
+          ctx.fillText = (value, ...args) => { if (value === 'AI') draws++; fillText(value, ...args); };
+          return { canvas, ctx, get draws() { return draws; } };
+        };
+        const first = surface(), second = surface();
+        const one = factory(first), two = factory(second);
+        one.render(); two.render();
+        const sameFrameReads = levelReads;
+        now = 20;
+        one.render(); two.render();
+        const nextFrameReads = levelReads;
+        const third = surface();
+        factory(third);
+        const beforeIdle = [first.draws, second.draws, third.draws];
+        __rfAvatar.idle();
+        two.render();
+        return { sameFrameReads, nextFrameReads, afterIdleReads: levelReads,
+          idleDraws: [first.draws, second.draws, third.draws].map((n, i) => n - beforeIdle[i]) };
+      });
+      assert.equal(result.sameFrameReads, 1);
+      assert.equal(result.nextFrameReads, 2);
+      assert.equal(result.afterIdleReads, 3);
+      assert.deepEqual(result.idleDraws, [0, 2, 1]);
+    } finally { await browser.close(); }
   });

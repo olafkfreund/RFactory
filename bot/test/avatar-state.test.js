@@ -55,6 +55,33 @@ test('level rise reopens the mouth after a completed close without a start event
   assert.equal(state.step(200, { level: 0.9 }).open, 0.9);
 });
 
+test('decaying speech level stays closed and still after the close deadline', () => {
+  const state = createState({ now: 0, random: () => 0 });
+  state.step(0, { level: 0.9, speakingEvent: true });
+  let level = 0.9 * 0.86;
+  state.step(10, { level, speakingEvent: false });
+  for (let frame = 1; frame <= 30; frame++) {
+    level *= 0.86;
+    const time = 10 + frame * 33;
+    const pose = state.step(time, { level });
+    if (time >= 160) assert.equal(pose.open, 0, `open at ${time} ms`);
+    if (time >= 160) assert.equal(pose.nod, 0, `nod at ${time} ms`);
+  }
+});
+
+test('idle keeps the mouth shut and resumes blinking during silence', () => {
+  const state = createState({ now: 0, random: () => 0 });
+  state.step(0, { level: 0.8, speakingEvent: true });
+  state.idle();
+  let blinked = false;
+  for (let time = 100; time <= 10000; time += 100) {
+    const pose = state.step(time, { level: 0 });
+    assert.equal(pose.open, 0);
+    blinked ||= pose.blink;
+  }
+  assert.equal(blinked, true);
+});
+
 test('below 0.06 without an event is closed; idle closes immediately', () => {
   const state = createState({ now: 0, random: () => 0 });
   assert.equal(state.step(100, { level: 0.059 }).open, 0);
