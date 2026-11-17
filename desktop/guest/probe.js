@@ -6,6 +6,9 @@ const dgram = require('dgram');
 const fs = require('fs');
 const { execFile } = require('child_process');
 
+const MEET_RE = /^https:\/\/meet\.google\.com\/[a-z0-9-]+$/;
+const GATE_UID = 1000; // users.gate in probe.nix; Chrome refuses its sandbox as root
+
 const MAX = 64 * 1024;
 const send = (o) => {
   const b = Buffer.from(JSON.stringify(o));
@@ -52,6 +55,15 @@ async function handle(m) {
     // fixed command, no caller input: proves Chrome starts and can reach Meet's landing page
     return new Promise((resolve) => execFile(process.env.CHROME, ['--no-sandbox', '--headless=new', '--disable-gpu', '--dump-dom', 'https://meet.google.com/'],
       { timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => resolve({ type: 'chrome-result', ok: !err, bytes: (out || '').length, meet: /meet/i.test(out || ''), error: err && String(err.code || err.signal) })));
+  }
+  if (m.type === 'meet') {
+    // runs #1's Phase 0 spike as the unprivileged gate user; BOT_NAME is fixed, only the link comes from the caller
+    if (typeof m.link !== 'string' || !MEET_RE.test(m.link)) return { type: 'error', error: 'bad link' };
+    for (const d of ['/tmp/out', '/tmp/profile', '/tmp/home']) { fs.mkdirSync(d, { recursive: true }); fs.chownSync(d, GATE_UID, GATE_UID); }
+    const env = { PATH: process.env.PATH, HOME: '/tmp/home', DISPLAY: ':0', CHROME_PATH: process.env.CHROME, BOT_NAME: 'RFactory Gate (AI)', OUT_DIR: '/tmp/out', PROFILE: '/tmp/profile' };
+    return new Promise((resolve) => execFile(process.env.NODE, [process.env.SPIKE + '/hello-call.js', m.link],
+      { env, cwd: process.env.SPIKE, uid: GATE_UID, gid: GATE_UID, timeout: 600000, maxBuffer: 8 * 1024 * 1024 },
+      (err, out, errout) => resolve({ type: 'meet-result', exit: err ? (err.code === undefined ? String(err.signal) : err.code) : 0, log: `${out}${errout}`.slice(-48 * 1024) })));
   }
   return { type: 'error', error: 'unknown type' };
 }

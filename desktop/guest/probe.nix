@@ -1,6 +1,21 @@
 # Test-only additions for desktop-guest-probe (steps 2 and 15). Never in the production image.
 { pkgs, lib, ... }:
+let
+  # #1's Phase 0 spike, from its lockfile; probe image only
+  spike = pkgs.buildNpmPackage {
+    pname = "rfactory-spike";
+    version = "0";
+    src = lib.cleanSourceWith {
+      src = ../../spike;
+      filter = n: _: !(builtins.elem (baseNameOf n) [ "node_modules" "out" ]);
+    };
+    npmDepsHash = "sha256-w/8+hvYX4mg2OG5JPZLoLFWuhbNedwNJexWg1yL1Tgc=";
+    dontNpmBuild = true;
+  };
+in
 {
+  users.users.gate = { isNormalUser = true; uid = 1000; };
+
   # one tap, addressed statically; the host side is set up by desktop/gate/net.sh
   microvm.interfaces = [{ type = "tap"; id = "rfgate0"; mac = "02:00:00:00:00:02"; }];
   networking.useDHCP = false;
@@ -16,7 +31,11 @@
   systemd.services.vsock-control.enable = lib.mkForce false;
   systemd.services.rfactory-probe = {
     wantedBy = [ "multi-user.target" ];
-    environment.CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable";
+    environment = {
+      CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable";
+      NODE = "${pkgs.nodejs_22}/bin/node";
+      SPIKE = "${spike}/lib/node_modules/rfactory-spike";
+    };
     serviceConfig.ExecStart = "${pkgs.socat}/bin/socat VSOCK-LISTEN:5000,fork EXEC:${pkgs.writeShellScript "probe" "exec ${pkgs.nodejs_22}/bin/node ${./probe.js}"}";
   };
 }
