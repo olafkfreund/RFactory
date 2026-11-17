@@ -2,6 +2,7 @@
 const { summarise } = require('./items.js');
 
 const REFERENCE = /https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)|\b([\w.-]+)\/([\w.-]+)#(\d+)|#(\d+)|\b(?:issue|PR|pull request)\s+#?(\d+)\b/gi;
+const CARD_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 const STATE = /\b(?:being worked on|in progress|not started|open PR|finished|blocked|failing|shipped|unknown|unclear|merged|closed|stuck|to do|done|left|open)\b/gi;
 const WORDS = 'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty'.split(' ');
 const COUNT = new RegExp(`\\b(\\d+|${WORDS.join('|')})\\s+(?:items?\\s+)?(${STATE.source})`, 'gi');
@@ -17,6 +18,7 @@ function checkFacts(text, snapshot) {
   const items = snapshot.items || [];
   const counts = summarise(items);
   const byNumber = new Map(items.map((item) => [Number(item.id.slice(item.id.lastIndexOf('#') + 1)), item]));
+  const byKey = new Map(items.map((item) => [item.id, item]));
   const repo = items[0]?.id.slice(0, items[0].id.lastIndexOf('#')).toLowerCase();
 
   return text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
@@ -27,13 +29,16 @@ function checkFacts(text, snapshot) {
         : match[4] ? `${match[4]}/${match[5]}`.toLowerCase() : null,
       start: match.index, end: match.index + match[0].length,
     }));
+    references.push(...[...sentence.matchAll(CARD_KEY)].map((match) => ({
+      key: match[0], start: match.index, end: match.index + match[0].length,
+    })));
     const states = [...sentence.matchAll(STATE)].map((match) => ({
       state: CLAIM[match[0].toLowerCase()], start: match.index, end: match.index + match[0].length,
     }));
     const countClaims = [...sentence.matchAll(COUNT)].filter((match) =>
       !references.some((ref) => match.index < ref.end && match.index + match[1].length > ref.start));
     const invalid = ((references.length || countClaims.length) && states.length && /\b(?:not|isn't|isn’t|no longer|never)\b/i.test(sentence)) || references.some((ref) => {
-      const item = byNumber.get(ref.number);
+      const item = ref.key ? byKey.get(ref.key) : byNumber.get(ref.number);
       if ((ref.repo && ref.repo !== repo) || !item) return true;
       if (!states.length) return false;
       const nearest = states.reduce((best, state) => {
@@ -47,7 +52,7 @@ function checkFacts(text, snapshot) {
     }) || (references.length > 0 && states.some((state) =>
       // every state word outside a count must belong to some named item ("#3 is blocked and done")
       !countClaims.some((c) => state.start >= c.index && state.start < c.index + c[0].length) &&
-      !references.some((ref) => byNumber.get(ref.number)?.state === state.state)));
+      !references.some((ref) => (ref.key ? byKey.get(ref.key) : byNumber.get(ref.number))?.state === state.state)));
     return invalid ? "I couldn't confirm that." : sentence;
   }).join('');
 }

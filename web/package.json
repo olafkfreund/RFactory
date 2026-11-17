@@ -1,0 +1,8 @@
+{
+  "name": "@rfactory/web",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "dependencies": { "@rfactory/core": "file:../core" },
+  "scripts": { "test": "node --test" }
+}

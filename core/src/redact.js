@@ -6,6 +6,7 @@ const PATTERNS = [
   /sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/g,
   /xox[abprs]-[A-Za-z0-9-]{10,}/g,
   /AKIA[0-9A-Z]{16}/g,
+  /\b(acw|cfk)_[A-Za-z0-9]{16,}/g,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
 ];
 const KEY_VALUE = /(authorization|x-api-key|api[_-]?key|token|password)(\s*[:=]\s*)("[^"]+"|'[^']+'|\S+)/gi;

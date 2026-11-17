@@ -63,10 +63,29 @@ test('sentences without an ID or count survive and sentence boundaries stay inta
   assert.equal(checked('No status was reported.'), 'No status was reported.');
 });
 
+test('card keys require an exact item and matching state', () => {
+  const cards = { items: Array.from({ length: 4 }, (_, n) => ({ id: `FCT-${n + 1}`, state: 'blocked' })) };
+  const check = (text) => checkFacts(text, cards);
+  assert.equal(check('FCT-99 is done.'), refused);
+  assert.equal(check('FCT-99 needs a look.'), refused);
+  assert.equal(check('FCT-1 is done.'), refused);
+  assert.equal(check('FCT-1 is blocked.'), 'FCT-1 is blocked.');
+  assert.equal(check('4 blocked.'), '4 blocked.');
+  assert.equal(check('3 blocked.'), refused);
+  assert.equal(check('The format is UTF-8.'), refused);
+});
+
 test('a second, wrong state word next to a correct one is replaced (step 10 review)', () => {
   const snap = { items: [{ id: 'o/r#3', state: 'blocked' }, { id: 'o/r#4', state: 'done' }] };
   assert.equal(checkFacts('#3 is blocked and done.', snap), "I couldn't confirm that.");
   assert.equal(checkFacts('#3 is blocked.', snap), '#3 is blocked.');
   assert.equal(checkFacts('#3 is blocked and #4 is done.', snap), '#3 is blocked and #4 is done.');
   assert.equal(checkFacts('1 blocked: #3 is blocked.', snap), '1 blocked: #3 is blocked.');
+});
+
+test('card keys go through the every-state-word rule too (1a + #2 merge)', () => {
+  const snap = { items: [{ id: 'FCT-1', state: 'blocked' }, { id: 'FCT-5', state: 'done' }] };
+  assert.equal(checkFacts('FCT-1 is blocked.', snap), 'FCT-1 is blocked.');
+  assert.equal(checkFacts('FCT-1 is blocked and FCT-5 is done.', snap), 'FCT-1 is blocked and FCT-5 is done.');
+  assert.equal(checkFacts('FCT-1 is blocked and done.', snap), "I couldn't confirm that.");
 });

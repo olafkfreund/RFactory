@@ -6,7 +6,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
-const { destinationHash } = require('../src/brains/destination.js');
+const { destinationHash, claudeHash } = require('../src/brains/destination.js');
 const recorded = require('./fixtures/github-tools-1.14.0.json');
 
 const CLI = path.join(__dirname, '..', 'bin', 'rfactory-standup.js');
@@ -79,4 +79,96 @@ test('standup prints destination line, data age and checked text', async () => {
     assert.match(r.stdout, /Item #1 is done\. I couldn't confirm that\. 1 done\./);
     assert.ok(requests.length >= 1);
   } finally { srv.close(); }
+});
+
+// approve-destination for claude-cli, with an injected fake spawn (never the real CLI).
+const { EventEmitter } = require('node:events');
+const { PassThrough, Writable } = require('node:stream');
+const { main } = require('../bin/rfactory-standup.js');
+
+function claudeScope(name) {
+  const home = fs.mkdtempSync(path.join(dir, 'home-'));
+  const keyFile = path.join(dir, `${name}.key`);
+  fs.writeFileSync(keyFile, 'cfk_' + 'a'.repeat(20), { mode: 0o600 });
+  const f = path.join(dir, `${name}.json`);
+  fs.writeFileSync(f, JSON.stringify({ name: 'demo', source: { kind: 'cfactory', mcp_url: 'https://example.org/mcp', repository_id: 2, key_file: keyFile },
+    brain: { kind: 'claude-cli', home, approved_hash: '', destination: 'third-party' }, writes_enabled: false }));
+  return f;
+}
+
+function fakeSpawn(init, result) {
+  const calls = [];
+  const spawn = (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new Writable({ write(c, e, done) { done(); }, final(done) {
+      setImmediate(() => {
+        child.stdout.end(args[0] === '--version' ? '1.0.0\n' : JSON.stringify(result || { type: 'system', subtype: 'init', ...init }) + '\n');
+        child.emit('close', 0);
+      });
+      done();
+    } });
+    child.kill = () => {};
+    calls.push(args);
+    return child;
+  };
+  return { spawn, calls };
+}
+
+test('approve-destination (claude-cli) exits 3 when the init event lists a tool', async () => {
+  const f = fakeSpawn({ tools: ['Bash'], mcp_servers: [] });
+  const lines = [];
+  const code = await main(['approve-destination', '--scope', claudeScope('tools')], {}, (s) => lines.push(s), { spawn: f.spawn });
+  assert.equal(code, 3);
+  assert.match(lines.join('\n'), /destination-tools-present.*Bash/);
+  assert.ok(f.calls[1].includes('stream-json') && f.calls[1].includes('--verbose'));
+});
+
+test('approve-destination (claude-cli) prints a 64-hex hash for empty tools and servers', async () => {
+  const f = fakeSpawn({ tools: [], mcp_servers: [] });
+  const lines = [];
+  const code = await main(['approve-destination', '--scope', claudeScope('empty')], {}, (s) => lines.push(s), { spawn: f.spawn });
+  assert.equal(code, 0, lines.join('\n'));
+  assert.match(lines.join('\n'), /approved_hash: [0-9a-f]{64}/);
+});
+
+test('unsupported source and brain pairings exit 4', async () => {
+  const cfactory = claudeScope('wrong-cfactory');
+  const scope = JSON.parse(fs.readFileSync(cfactory, 'utf8'));
+  scope.brain.kind = 'ollama';
+  fs.writeFileSync(cfactory, JSON.stringify(scope));
+  const github = scopeFile('wrong-github', { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' });
+  for (const file of [cfactory, github]) {
+    const r = await run(['standup', '--scope', file], env);
+    assert.equal(r.code, 4, r.stdout + r.stderr);
+    assert.match(r.stdout, /unsupported-scope/);
+  }
+});
+
+test('CFactory standup prints destination, data age, counts, and checked summary', async () => {
+  const file = claudeScope('standup');
+  const scope = JSON.parse(fs.readFileSync(file, 'utf8'));
+  scope.brain.approved_hash = claudeHash({ version: '1.0.0', home: scope.brain.home });
+  fs.writeFileSync(file, JSON.stringify(scope));
+  const fake = fakeSpawn({}, { result: 'FCT-1 is done. FCT-99 is done.' });
+  const calls = [];
+  const sourceFactory = () => ({
+    async start() { calls.push('start'); },
+    async snapshot() { calls.push('snapshot'); return { fetched_at: new Date().toISOString(), items: [
+      { id: 'FCT-1', kind: 'card', state: 'done', rule: 'board', basis: 'observed', title: 'Done card', evidence: [] },
+    ] }; },
+    async close() { calls.push('close'); },
+  });
+  const lines = [];
+  const code = await main(['standup', '--scope', file], {}, (line) => lines.push(line), { spawn: fake.spawn, sourceFactory });
+  assert.equal(code, 0, lines.join('\n'));
+  assert.equal(lines[0], 'brain: claude-cli (third-party)');
+  assert.match(lines.join('\n'), /data age: \d+s/);
+  assert.match(lines.join('\n'), /done\s+1/);
+  assert.match(lines.join('\n'), /blocked\s+0/);
+  assert.match(lines.join('\n'), /FCT-1 card done/);
+  assert.match(lines.join('\n'), /FCT-1 is done\. I couldn't confirm that\./);
+  assert.deepEqual(calls, ['start', 'snapshot', 'close']);
+  assert.equal(fake.calls.length, 2);
 });
