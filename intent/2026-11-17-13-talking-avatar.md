@@ -11,71 +11,88 @@ Related: #1 (call bot, 1b voice standup), #12 (screen share; separate).
 ## Problem
 
 In a Meet standup the bot is a blank tile with initials. People talk to an
-empty square, and nothing shows **when** the bot is speaking or that it is
-about to answer. The owner wants the standup to have a face: one that
-moves as if talking while the bot speaks and rests while it listens.
+empty square and cannot see whether the bot is speaking or listening. The
+owner wants the standup to have a face that moves as if talking while the
+bot speaks and rests while it listens.
 
-## Proposed outcome
+## Proposed outcome (first slice)
 
-- The bot's camera tile in Meet shows an **avatar portrait**. While the bot
-  speaks, the avatar visibly "talks" (for example mouth, glow or a small
-  movement in time with its voice); while it listens it is idle (blinks,
-  slight movement), so people can see at a glance whether it is speaking.
-- The same avatar appears in the **Call panel** of the RFactory page.
-- The owner can choose which avatar the bot uses.
+- The bot's **camera tile in Meet** shows one avatar portrait, chosen by
+  the owner.
+- The face visibly "talks" **only while the bot's speech is actually
+  playing**, and rests (idle, blinking) the rest of the time, so people
+  can tell at a glance whether the bot is speaking.
+- Not in this slice: the face on the RFactory page, a picker, one face per
+  project, and a "thinking / about to answer" cue (follow-ups).
 
 ## Source of the portraits
 
 The owner chose OmegaStar's 40 bundled portraits
 (`itsfutsy/OmegaStar`, `src/assets/avatars/{f,m}01-20.webp`, 256×256
-stylised low-poly illustrations), licensed **AGPL-3.0**, copyright Abram
-Industries Pty Ltd, and **accepted AGPL-3.0 for RFactory** (decision,
-2026-11-17). The repository does not say where the portraits themselves
-come from.
+stylised low-poly illustrations). OmegaStar is licensed **AGPL-3.0**,
+copyright Abram Industries Pty Ltd. The owner **accepted AGPL-3.0 for
+RFactory** (decision, 2026-11-17).
+
+OmegaStar states the project's licence; it does not document who made the
+portraits. Pinning them by commit and SHA-256 records which bytes were
+copied, not that they may be used. How that uncertainty is handled is open
+question 1.
 
 ## Affected users and systems
 
 - **People:** call participants (they see the face), the owner (chooses it).
-- **RFactory:** the call bot (`bot/run.js`, its Chrome in the pod) gains a
-  camera track; the web page and the speech path (1b's TTS queue) drive
-  the animation; the image gains the portrait files.
-- **The repository:** a licence (AGPL-3.0) and attribution are added.
-- **Host:** p620, the `rfactory` pod. Same rules as #1 for p620.
+- **RFactory:** the call bot (`bot/run.js`, Chrome in the pod) gains a
+  camera track driven by 1b's speech playback; the image gains the
+  portrait files.
+- **The repository:** a licence, attribution and notices are added.
+- **Host:** p620, the `rfactory` pod. No build or deploy on p620 without
+  the owner's OK (parent intent).
 
 ## Constraints
 
-- **Licence kept correctly.** The portraits keep their copyright notice and
-  AGPL-3.0 terms, with attribution and a link to the source; the files are
-  pinned by commit and SHA-256, as the Piper voice is. Because the page is
-  served over a network, AGPL's source offer applies: the page links to
-  RFactory's public source.
-- **Still plainly an AI.** The bot keeps its "(AI)" name, and the face
-  never claims to be a person: no photographs, no likeness of a real
-  participant, and an "AI" mark on the avatar.
-- **Driven only by the bot's own voice.** The animation follows RFactory's
-  own speech (the TTS output or its timing), never participants' audio or
-  video. No host camera or microphone is used.
-- **No new runtime fetch.** Portraits are built into the image; nothing is
-  downloaded during a call.
-- **Doesn't get in the way.** It must not delay joining, speech or 1b's
-  stop and interrupt behaviour, and must stay light on CPU in the pod. If
-  the camera cannot start, the bot still joins and speaks without it.
-- **Speech and safety unchanged.** No change to what the bot says, who can
-  approve anything (#10), or the redaction of its words.
+- **AGPL obligations met in full.**
+  - A copy of the AGPL-3.0 text, OmegaStar's copyright notice, its warranty
+    disclaimer and a link to the source, kept with the portraits; a notice
+    of any change we make to them (for example conversion or cropping),
+    with the date.
+  - **Source offer to every remote user (§13):** the page and the bot's
+    presence in a call offer, prominently and free, the Corresponding
+    Source **of the deployed version** (code, build scripts and assets).
+    Meet participants who never open the page are reached too (for
+    example in the bot's join message).
+  - Existing third-party notices stay intact (the parent's MIT
+    requirement and Piper's voice terms).
+- **Still plainly an AI.** The bot keeps its "(AI)" name and its spoken
+  listening announcement (`bot/run.js:13-14`); the face carries an "AI"
+  mark, is never a photograph and never resembles a participant.
+- **Driven only by the bot's own speech.** The animation follows
+  RFactory's own speech playback, never participants' audio or video. No
+  host camera or microphone, and no new recording, retention or external
+  processing of anything.
+- **No new runtime fetch.** Portraits are built into the image.
+- **Fails safe at any time.** If the camera cannot start, the bot joins and
+  speaks without it. If it fails mid-call, the bot carries on without it.
+  The face stops talking when speech ends, is cancelled or fails, and when
+  the bot leaves; it never freezes in a talking pose. CPU and memory stay
+  bounded for the whole call (numbers in the spec).
+- **Nothing else changes:** joining, speech, 1b's stop and interrupt, what
+  the bot says, redaction, and who approves actions (#10).
 
 ## Open questions
 
-1. **Licence scope:** license the **whole repository** AGPL-3.0
-   (recommended: one clear licence, and the page already serves the code
-   that shows the portraits), or only the portrait files and the page that
-   serves them?
-2. **Animation level:** loudness-driven (mouth or glow moves with the
-   voice's volume, plus idle blinks; recommended for a first slice), or
-   real lip-sync from the speech's phonemes?
-3. **Choosing the avatar:** one fixed default the owner sets in the scope
-   file, a picker on the RFactory page, or one per project?
-4. **Where:** the Meet camera and the RFactory page (recommended), or Meet
-   only?
-5. **Feasibility:** Phase 0 proved the bot's microphone in Meet, not a
-   camera. Can the pod's Chrome send a generated camera track Meet
-   accepts? A short check like Phase 0's decides this before building.
+1. **Portrait provenance:** accept the documented uncertainty (the source
+   project's licence is the only evidence of permission; if a rights claim
+   is ever raised, the portraits are replaced with cleared artwork), or ask
+   Abram Industries to confirm first, or use cleared artwork from the
+   start? Recommended: accept, with that replacement rule.
+2. **Licence scope:** license the whole repository AGPL-3.0 (recommended:
+   one clear licence for one combined work), or keep the code under
+   another licence and only the portraits under AGPL? The spec checks the
+   copyleft boundary for the choice.
+3. **Which face by default:** one portrait the owner sets in the scope
+   file (recommended), with a picker later.
+4. **Feasibility first:** a short Phase 0-style check in the pod's Chrome
+   (Chrome, not Chromium, as `spike/RESULTS.md:47` found) that Meet
+   accepts a generated camera track, run on p620 only with the owner's OK.
+   If it fails, this intent goes back to the owner to be reframed (for
+   example the face on the RFactory page only) before anything is built.
