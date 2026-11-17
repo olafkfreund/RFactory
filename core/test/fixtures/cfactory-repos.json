@@ -1,0 +1,4 @@
+{"repositories":[
+{"id":1,"connection_id":1,"tenant_id":"t1","project":"example/other","intake_project":null,"aifactory_project_id":null,"default_labels":[],"is_default":true,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+{"id":2,"connection_id":1,"tenant_id":"t1","project":"example/demo","intake_project":null,"aifactory_project_id":null,"default_labels":["cf"],"is_default":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+],"default_repository_id":1}

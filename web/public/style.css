@@ -1,0 +1,112 @@
+/* Factory suite theme (Gruvbox dark + light), taken from CFactory's apps/frontend-web/src/index.css.
+   Each portal has its own accent; RFactory's is gruvbox orange (the others: CFactory blue/aqua,
+   PFactory purple, AIFactory yellow, TFactory green). */
+:root {
+  --bg: #282828; --sidebar: #1d2021; --panel: #32302f; --panel-2: #3c3836;
+  --border: #504945; --border-soft: #3c3836;
+  --text: #ebdbb2; --muted: #a89984; --faint: #7c6f64;
+  --accent: #fe8019; --brand: linear-gradient(135deg, #fe8019, #fabd2f);
+  --cfactory: #83a598; --plan: #d3869b; --code: #fabd2f; --test: #b8bb26;
+  --green: #b8bb26; --red: #fb4934; --amber: #fabd2f; --blue: #83a598; --violet: #d3869b;
+  --font-display: "Archivo", "Hanken Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-ui: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+/* Light palette, as CFactory: on :root.light (the portals default to dark, light is opt-in). */
+:root.light {
+  --bg: #fbf1c7; --sidebar: #f2e5bc; --panel: #f9f5d7; --panel-2: #ebdbb2;
+  --border: #d5c4a1; --border-soft: #ebdbb2;
+  --text: #3c3836; --muted: #665c54; --faint: #7c6f64;
+  --accent: #af3a03; --brand: linear-gradient(135deg, #af3a03, #b57614);
+  --cfactory: #427b58; --plan: #8f3f71; --code: #b57614; --test: #79740e;
+  --green: #79740e; --red: #9d0006; --amber: #b57614; --blue: #076678; --violet: #8f3f71;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; font-family: var(--font-ui); background: var(--bg); color: var(--text);
+  -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ── Topbar ─────────────────────────────────────────────── */
+.topbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: .6rem 1rem; padding: .6rem 1.4rem; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(6px); }
+.brand { display: flex; align-items: center; gap: .6rem; }
+.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
+  background: var(--brand); color: #1d2021; font: 900 1rem var(--font-display); font-stretch: 125%;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent); }
+.brand-name { font-family: var(--font-display); font-stretch: 125%; font-weight: 900; font-size: 1.08rem;
+  letter-spacing: .02em; text-transform: uppercase; }
+.portal-switch { display: inline-flex; flex-wrap: wrap; gap: .2rem; padding: .2rem; border: 1px solid var(--border);
+  border-radius: 9px; background: var(--panel); }
+.portal-opt { display: inline-flex; align-items: center; gap: .4rem; text-decoration: none; padding: .28rem .6rem;
+  border-radius: 6px; font: 600 .72rem var(--font-mono); color: var(--muted); }
+.portal-opt:hover { color: var(--text); background: var(--panel-2); }
+.portal-opt.on { color: var(--text); background: var(--panel-2); }
+.portal-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 6px currentColor; }
+.dot-c { background: var(--cfactory); color: var(--cfactory); } .dot-p { background: var(--plan); color: var(--plan); }
+.dot-ai { background: var(--code); color: var(--code); } .dot-t { background: var(--test); color: var(--test); }
+.dot-r { background: var(--accent); color: var(--accent); }
+
+/* ── Page ───────────────────────────────────────────────── */
+.content { max-width: 78rem; margin: 0 auto; padding: 1.6rem 1.6rem 3rem; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.2rem; }
+.page-head h1 { margin: 0 0 .3rem; font-family: var(--font-display); font-stretch: 125%; font-size: 2.15rem;
+  font-weight: 850; line-height: 1.04; letter-spacing: .015em; text-transform: uppercase; }
+.page-head p { margin: 0; color: var(--muted); font: 500 .8rem var(--font-mono); }
+.head-actions { display: flex; align-items: center; gap: .6rem; }
+.status-line { min-height: 1.2rem; margin: 0 0 .8rem; color: var(--muted); font: 500 .78rem var(--font-mono); }
+
+.btn { font: 600 .78rem var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: .45rem .95rem; cursor: pointer;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 30%, transparent), color-mix(in srgb, var(--amber) 18%, transparent)); }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .55; cursor: progress; }
+
+.status-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .6rem; border-radius: 999px;
+  border: 1px solid var(--border); font: 600 .74rem var(--font-mono); }
+.status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.status-pill.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+[hidden] { display: none !important; }
+
+/* ── Stats ──────────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-bottom: 1rem; }
+.stat { display: flex; flex-direction: column; gap: .2rem; padding: .85rem 1rem; border-radius: 12px; background: var(--panel);
+  border: 1px solid var(--border); border-top: 2px solid var(--c); }
+.stat-label { font: 700 .7rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.stat-value { font-family: var(--font-display); font-stretch: 125%; font-weight: 850; font-size: 1.9rem; line-height: 1; color: var(--c); }
+.stat--blocked, .col--blocked { --c: var(--red); } .stat--in_progress, .col--in_progress { --c: var(--blue); }
+.stat--left, .col--left { --c: var(--amber); } .stat--done, .col--done { --c: var(--green); }
+.panel--unknown { --c: var(--violet); }
+
+/* ── Panels and board ───────────────────────────────────── */
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 1rem; }
+.panel-title { display: flex; align-items: center; gap: .5rem; margin: 0 0 .7rem; font: 700 .78rem var(--font-mono);
+  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+#summary-card { border-left: 3px solid var(--accent); }
+.summary { margin: 0 0 .6rem; font-size: 1rem; line-height: 1.6; }
+.fine { margin: 0; color: var(--faint); font: 500 .72rem var(--font-mono); }
+.board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-bottom: 1rem; align-items: start; }
+.col { background: var(--sidebar); border: 1px solid var(--border); border-top: 2px solid var(--c); border-radius: 12px; padding: .8rem; min-height: 6rem; }
+.col .panel-title { color: var(--c); }
+.count { min-width: 1.5rem; padding: 0 .45rem; border-radius: 999px; text-align: center; font-size: .72rem;
+  color: var(--bg); background: var(--c, var(--muted)); }
+
+ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; padding: .65rem .8rem; font-size: .85rem; }
+.card:hover { border-color: color-mix(in srgb, var(--c, var(--accent)) 55%, var(--border)); }
+.card-key { display: block; margin-bottom: .2rem; font: 600 .72rem var(--font-mono); color: var(--c, var(--accent)); }
+.card-title { display: block; font-weight: 600; line-height: 1.35; text-decoration: none; }
+a.card-title:hover { text-decoration: underline; text-decoration-color: var(--c, var(--accent)); }
+.evidence { margin-top: .4rem; padding-top: .4rem; border-top: 1px solid var(--border-soft); color: var(--muted);
+  font: 500 .72rem/1.45 var(--font-mono); }
+.none { color: var(--faint); font: 500 .75rem var(--font-mono); padding: .2rem .1rem; }
+
+@media (max-width: 960px) { .board, .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) {
+  .board { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .content { padding: 1rem; } .page-head h1 { font-size: 1.7rem; }
+}
