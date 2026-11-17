@@ -414,6 +414,10 @@ v1; Wayland in the guest.
       `resolveLogin`. Playwright's `serviceWorkers: 'block'` did not stop
       registration in Chromium, so `control.js` also blocks
       `navigator.serviceWorker.register` with an init script.
+    - Step 10: the profile image is a 4 GiB sparse LUKS file with a 30-day
+      default retention. The implementation first let the approving admin
+      list, attach and delete a profile; the lead removed that, so only
+      scope admins can (plan rule), with a test.
 
 ## Prerequisites (named revisions)
 
