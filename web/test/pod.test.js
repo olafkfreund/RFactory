@@ -31,7 +31,7 @@ test('pod.sh forwards approvers with writes off', () => {
 });
 
 test('pod.sh forwards approvers and admins without a write key', () => {
-  const r = run({ RFACTORY_APPROVERS: 'a@example.com', RFACTORY_ADMINS: 'b@example.com' });
+  const r = run({ RFACTORY_APPROVERS: 'a@example.com', RFACTORY_ADMINS: 'b@example.com', RFACTORY_ALLOWED_EMAILS: 'a@example.com,b@example.com' });
   assert.equal(r.status, 0);
   assert.match(r.web, /-e RFACTORY_APPROVERS=a@example\.com/);
   assert.match(r.web, /-e RFACTORY_ADMINS=b@example\.com/);
