@@ -133,6 +133,12 @@ reviewers:
   an approve without the action header gets 403; the write key appears
   in no container log. The agenix seed still lacks both new keys (owner
   follow-up).
+- **D9, step 10 deferred by the owner.** The live Meet run is skipped
+  for this PR at the owner's request ("skip the test for now"). Live
+  evidence so far: three proposals (create, move FCT-9, code FCT-6) were
+  made correctly from speech and expired unsent when the pod restarted;
+  no write has reached CFactory yet. The write path is proven by tests
+  only until the live run is done.
 
 ## Waves
 
