@@ -158,6 +158,20 @@ reviewers:
   the record files keep everything. The race tests hold the first
   approval at the record write while the second is attempted.
 
+- **D7, wave 4 details (step 7).** The call manager gives
+  `actions.startCall` its own increasing counter, not the call's internal
+  `generation` (which restarts at 0 per call, so a late request from an
+  old call could have matched a new one). The `action` kind is anchored
+  at the start of the utterance (optional "please" / "can you") and
+  excludes "run/start the standup", which stays a standup. With writes
+  off, an `action` utterance is answered as a question. `GET
+  /api/actions` adds `can_approve` so the page hides Approve/Reject for
+  non-approvers; the server still enforces approvers. `main()` builds the
+  action manager whenever `writes_enabled` is true, runs `prune()` at
+  start and daily, then `recover()`, before it listens. The Origin check
+  compares the Origin's host with the Host header, which oauth2-proxy
+  passes through.
+
 ## Steps
 
 0. **`core/src/sources/cfactory.js`** (additive), **`core/test/cfactory.test.js`** (extend).

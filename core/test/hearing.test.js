@@ -146,3 +146,22 @@ test('leave only when the utterance starts with a leave command', () => {
   assert.deepEqual(kinds('RFactory, should we leave FCT-1 blocked?'), ['question']);
   assert.deepEqual(kinds('RFactory, stop talking about FCT-2 and give the standup'), ['standup']);
 });
+
+test('routing order: leave, action, standup, question', () => {
+  const kinds = {
+    'stop': 'leave',
+    'create a card called Login': 'action',
+    'please move FCT-1 to ready': 'action',
+    'can you run FCT-2': 'action',
+    'run the standup': 'standup',
+    'give a stand up': 'standup',
+    'why did the build stop?': 'question',
+    'what should we plan next?': 'question',
+  };
+  for (const [text, kind] of Object.entries(kinds)) {
+    const { clock, addressed, heard } = setup();
+    heard('a', `RFactory, ${text}`);
+    clock.tick(1500);
+    assert.equal(addressed[0].kind, kind, text);
+  }
+});

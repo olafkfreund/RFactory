@@ -11,14 +11,18 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, clock = globalThis,
-  quietMs = 1500, botCmd = BOT_CMD }) {
+  quietMs = 1500, botCmd = BOT_CMD, actions = null }) {
   const listeners = new Set();
   const current = new Map();
+  const actionEvents = new Map(); // latest event per action id, replayed on reload
+  let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
     if (['state', 'mic', 'voice', 'greeting'].includes(event.type)) current.set(event.type, event);
+    if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     for (const fn of listeners) fn(event);
   };
+  if (actions) actions.subscribe(emit);
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
 
@@ -47,6 +51,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     c.waiters.clear();
     c.stopping = (async () => {
       log(`stopping: ${reason}`);
+      if (actions) await Promise.resolve().then(() => actions.endCall()).catch((error) => log(`actions end failed: ${error.message}`));
       send(c, { type: 'leave' });
       let timer = clock.setTimeout(() => killGroup(c, 'SIGTERM'), 10000);
       let force = clock.setTimeout(() => killGroup(c, 'SIGKILL'), 15000);
@@ -132,12 +137,23 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     await queueSpeech(c, text, generation);
   }
 
+  async function requestAction(c, item, generation) {
+    let text;
+    try { text = (await actions.request(item.text, item.speaker)).text; }
+    catch (error) {
+      if (c.generation === generation && !c.stopping) log(`action failed: ${error.message}`);
+      text = "Sorry, I can't do that right now.";
+    }
+    if (c.generation !== generation || c.stopping) return;
+    await queueSpeech(c, text, generation);
+  }
+
   function drain(c) {
     if (c.working || !c.queue.length || c.stopping) return;
     c.working = true;
     const question = c.queue.shift();
     const generation = c.generation;
-    answer(c, question, generation).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
+    (question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
       c.working = false;
       drain(c);
     });
@@ -146,6 +162,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
+    if (question.kind === 'action' && !actions) question.kind = 'question'; // no write path here: 1b behaviour
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
     if (question.kind === 'leave') {
       c.generation++;
@@ -214,12 +231,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
       if (Buffer.byteLength(buffer) > MAX_IN) { buffer = ''; skipping = true; log('dropped oversize child line'); }
     });
     current.clear();
+    actionEvents.clear();
+    // startCall sets its generation synchronously; the returned promise only expires old pending items
+    if (actions) Promise.resolve(actions.startCall(++callCount)).catch((error) => log(`actions start failed: ${error.message}`));
     emit({ type: 'voice', voice: c.voice });
     emit({ type: 'state', state: 'joining' });
     child.stdin.write(`${link}\n`);
   }
 
-  return { get running() { return !!call; }, start, stop, current: () => [...current.values()],
+  return { get running() { return !!call; }, start, stop, current: () => [...current.values(), ...actionEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 

@@ -76,3 +76,24 @@ test('call events: hostile caption and answer are text; answer re-renders the bo
   assert.ok(byId.done.textContent.includes('on board'));
   assert.equal(byId.summary.textContent, 'AF-1 is done');
 });
+
+test('action events render as text only, deduplicated by id, with the hash in the buttons', () => {
+  const { doc, byId } = shim();
+  for (const id of ['actions-pending', 'actions-history']) byId[id] = new Node('ul');
+  for (const id of ['actions-count']) byId[id] = new Node('span');
+  for (const id of ['actions', 'history']) byId[id] = new Node('section');
+  const hostile = '<img src=x onerror=alert(1)>';
+  const action = { id: 'a1', action: 'create_card', args: { title: hostile }, card_key: null, effects: { text: hostile },
+    proposed_by: hostile, expires_at: new Date(Date.now() + 600000).toISOString(), state: 'pending', hash: 'h', description: hostile };
+  handleCall(doc, { type: 'action-pending', action });
+  handleCall(doc, { type: 'action-pending', action }); // replay
+  const pending = byId['actions-pending'];
+  assert.equal(pending.children.length, 1);
+  assert.ok(!pending.all().some((n) => ['img', 'script'].includes(n.tag)));
+  assert.ok(pending.textContent.includes(hostile));
+  assert.equal(byId['actions-count'].textContent, '1');
+  handleCall(doc, { type: 'action-updated', action: { ...action, state: 'rejected' } });
+  assert.equal(byId['actions-pending'].textContent, 'None');
+  assert.ok(byId['actions-history'].textContent.includes('rejected'));
+  assert.ok(!byId['actions-history'].all().some((n) => n.tag === 'img'));
+});
