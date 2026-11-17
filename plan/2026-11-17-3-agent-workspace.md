@@ -495,6 +495,16 @@ v1; Wayland in the guest.
       here with the step 11 commit;
     - the shared tab hides the call library's injected "Bot's view" banner
       (it shows to participants otherwise; spike run 4).
+    - **Step 11 result:** the tab-capture label could not be checked
+      locally (headless Chrome refused a tab video source with
+      `NotReadableError`; a fake device gave a monitor track labelled
+      `screen:-3:0`), so the fallback binding above is used: tab surface,
+      one tab with the per-call title, its target id; a label naming a
+      different RFactory share tab is refused. The capture check is
+      installed on every Meet document (init script, after the library's
+      override at `DOMContentLoaded`, never twice), so a reload keeps it.
+      `share.js` exports `callLaunchArgs(nonce)` for step 13 to pass to the
+      call Chrome. The label is checked live in step 17.
 
 ## Prerequisites (named revisions)
 

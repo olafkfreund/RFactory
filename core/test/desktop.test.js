@@ -37,6 +37,20 @@ test('grant requires approver and expires within 30 minutes', () => {
   assert.equal(s.sessions.grant('approver', grant()).desktop_id, 'desk');
 });
 
+test('share approval records exact URL and origin and only an approver may replace it', () => {
+  const s = setup();
+  s.sessions.grant('approver', grant());
+  const value = { share_id: 'share-1', nonce: 'fixed-call-nonce', url: 'https://preview.test/path' };
+  assert.throws(() => s.sessions.approveShare('member', 'desk', value), /approver-required/);
+  assert.throws(() => s.sessions.approveShare('approver', 'desk', { ...value, url: 'https://other.test/path' }), /invalid-share/);
+  assert.deepEqual(s.sessions.approveShare('approver', 'desk', value), { ...value, origin: 'https://preview.test' });
+  assert.throws(() => s.sessions.approveShare('approver', 'desk', value), /invalid-share/);
+  s.sessions.stopShare('desk', 'wrong');
+  assert.ok(s.sessions.get('desk').share);
+  s.sessions.stopShare('desk', 'share-1');
+  assert.equal(s.sessions.get('desk').share, null);
+});
+
 test('each failed session check queues an otherwise allowed tool', async () => {
   const s = setup();
   const args = { scope: 'team', url: 'https://preview.test/x' };

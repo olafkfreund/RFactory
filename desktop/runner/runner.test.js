@@ -103,6 +103,17 @@ test('destroy is idempotent', async () => {
   assert.equal(lc.list().length, 0);
 });
 
+test('sharing destroys the VM after five seconds without its control channel', async () => {
+  const { lc, clock, calls } = setup();
+  const { desktop_id } = await lc.create({ call_id: 'a', scope: 's' });
+  lc.sharing(desktop_id, true);
+  await clock.advance(4000);
+  assert.equal(lc.list().length, 1);
+  await clock.advance(1000);
+  assert.equal(lc.list().length, 0);
+  assert.ok(calls.some((c) => c.argv[0] === 'systemctl' && c.argv[1] === 'stop'));
+});
+
 async function withWorker() {
   const { encode } = require('./protocol');
   const { EventEmitter } = require('node:events');

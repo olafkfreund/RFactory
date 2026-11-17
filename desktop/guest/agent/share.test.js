@@ -1,0 +1,132 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const { test } = require('node:test');
+const { createShare, titleFor, callLaunchArgs, installCaptureGuard } = require('./share');
+
+let chromium;
+try { ({ chromium } = require('playwright-core')); } catch { /* browser unavailable */ }
+const chrome = process.env.RF_TEST_CHROME || '/etc/profiles/per-user/olafkfreund/bin/google-chrome-stable';
+const browser = { skip: !chromium && 'playwright-core unavailable' };
+
+test('one nonce fixes the Chrome capture source at call launch', () => {
+  assert.deepEqual(callLaunchArgs('once'), ['--auto-select-desktop-capture-source=RFactory share once']);
+});
+
+async function fixture(t) {
+  const serve = (handler) => new Promise((resolve) => {
+    const server = http.createServer(handler).listen(0, '127.0.0.1', () => resolve(server));
+  });
+  let other;
+  other = await serve((_, res) => res.end('other'));
+  const otherOrigin = `http://127.0.0.1:${other.address().port}`;
+  const server = await serve((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`<title>site title</title><div id="vibeconf-status-bar">Bot's view</div><a id="away" href="${otherOrigin}/other">away</a><p>${req.url}</p>`);
+  });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const context = await chromium.launchPersistentContext('', { executablePath: chrome, headless: true, args: ['--no-sandbox'] });
+  const callPage = await context.newPage();
+  await callPage.goto(`${origin}/call`);
+  const fakeDisplayMedia = () => {
+    MediaDevices.prototype.getDisplayMedia = async function fakeDisplayMedia() {
+      const video = { label: window.testLabel, getSettings: () => ({ displaySurface: window.testSurface }), stop: () => { window.testStopped = true; } };
+      return { getVideoTracks: () => [video], getTracks: () => [video] };
+    };
+  };
+  await callPage.addInitScript(fakeDisplayMedia);
+  await callPage.evaluate(fakeDisplayMedia);
+  t.after(async () => { await context.close(); server.close(); other.close(); });
+  return { context, callPage, origin, otherOrigin };
+}
+
+const waitFor = async (predicate) => {
+  for (let i = 0; i < 50; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail('share did not stop');
+};
+
+test('tab binding refuses wrong label, window and monitor before returning a track', browser, async (t) => {
+  const f = await fixture(t);
+  const events = [];
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, send: (m) => events.push(m) });
+  const started = await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
+  assert.equal(started.window_title, titleFor('once'));
+  assert.ok(started.target_id);
+  assert.equal(await share.active.page.title(), titleFor('once'));
+  assert.equal(await share.active.page.locator('#vibeconf-status-bar').evaluate((el) => getComputedStyle(el).display), 'none');
+  await share.active.page.evaluate(() => { document.title = 'attacker title'; });
+  assert.equal(await share.active.page.title(), titleFor('once'));
+  for (const [label, surface] of [['RFactory share wrong', 'browser'], [titleFor('once'), 'window'], [titleFor('once'), 'monitor']]) {
+    const result = await f.callPage.evaluate(async ([name, kind]) => {
+      window.testLabel = name; window.testSurface = kind; window.testStopped = false;
+      try { await navigator.mediaDevices.getDisplayMedia({ video: true }); return { ok: true, stopped: window.testStopped }; }
+      catch { return { ok: false, stopped: window.testStopped }; }
+    }, [label, surface]);
+    assert.deepEqual(result, { ok: false, stopped: true });
+  }
+  const accepted = await f.callPage.evaluate(async () => {
+    window.testLabel = 'tab:opaque-id'; window.testSurface = 'browser'; window.testStopped = false;
+    await navigator.mediaDevices.getDisplayMedia({ video: true });
+    return window.testStopped;
+  });
+  assert.equal(accepted, false);
+  assert.deepEqual(events, []);
+
+  await f.callPage.reload();
+  const guard = await f.callPage.evaluate(() => {
+    const wrapped = MediaDevices.prototype.getDisplayMedia;
+    return { installed: wrapped.__rfShareGuard, source: wrapped.__rfShareSource?.name, nested: !!wrapped.__rfShareSource?.__rfShareGuard };
+  });
+  assert.deepEqual(guard, { installed: true, source: 'fakeDisplayMedia', nested: false });
+  await f.callPage.evaluate(installCaptureGuard);
+  assert.equal(await f.callPage.evaluate(() => MediaDevices.prototype.getDisplayMedia.__rfShareSource?.name), 'fakeDisplayMedia');
+  for (const [label, surface] of [[titleFor('once'), 'monitor'], ['RFactory share wrong', 'browser']]) {
+    const result = await f.callPage.evaluate(async ([name, kind]) => {
+      window.testLabel = name; window.testSurface = kind; window.testStopped = false;
+      try { await navigator.mediaDevices.getDisplayMedia({ video: true }); return { ok: true, stopped: window.testStopped }; }
+      catch { return { ok: false, stopped: window.testStopped }; }
+    }, [label, surface]);
+    assert.deepEqual(result, { ok: false, stopped: true });
+  }
+});
+
+test('stop closes the tab even when stopShare fails', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, stopShare: async () => { throw new Error('failed'); } });
+  await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
+  const page = share.active.page;
+  await share.stop();
+  assert.equal(page.isClosed(), true);
+  assert.equal(share.active, null);
+});
+
+test('desktop click refuses a shared tab', async () => {
+  const { createControl } = require('./control');
+  const shared = { __rfShare: true, isClosed: () => false, on: () => {}, click: () => assert.fail('shared tab was clicked') };
+  const context = { pages: () => [shared], addInitScript: async () => {}, route: async () => {}, on: () => {} };
+  const control = createControl({ chromium: { launchPersistentContext: async () => context } });
+  await assert.rejects(control.click('#away'), /shared page cannot be driven/);
+});
+
+test('same-origin navigation, cross-origin link and popup each stop and report target change', browser, async (t) => {
+  const f = await fixture(t);
+  const events = [];
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, send: (m) => events.push(m) });
+  const start = () => share.start({ share_id: `s${events.length + 1}`, url: `${f.origin}/start`, hosts: [f.origin, f.otherOrigin] });
+  await start();
+  await share.active.page.evaluate(() => { location.href = '/other-path'; });
+  await waitFor(() => events.length === 1);
+  assert.deepEqual(events.pop(), { type: 'share-target-changed', share_id: 's1' });
+  await start();
+  await share.active.page.locator('#away').click();
+  await waitFor(() => events.length === 1);
+  assert.deepEqual(events.pop(), { type: 'share-target-changed', share_id: 's1' });
+  await start();
+  await share.active.page.evaluate(() => { window.open('/popup'); });
+  await waitFor(() => events.length === 1);
+  assert.deepEqual(events.pop(), { type: 'share-target-changed', share_id: 's1' });
+});

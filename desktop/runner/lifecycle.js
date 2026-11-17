@@ -80,10 +80,19 @@ function createLifecycle(config, deps) {
     const sock = vm.sock;
     await fs.mkdir(n.dir, { recursive: true });
     vm.server = listen(sock, (conn) => {
+      vm.controlConn = conn;
+      vm.controlConnected = true;
+      vm.controlLostAt = null;
       const decoder = createDecoder((m) => onMessage(vm, m));
       conn.on('data', (c) => decoder.write(c));
-      conn.on('end', () => decoder.end());
-      conn.on('error', () => {});
+      const lost = () => {
+        if (vm.controlConn !== conn) return;
+        vm.controlConnected = false;
+        if (vm.sharing) vm.controlLostAt = clock.now();
+      };
+      conn.on('end', () => { decoder.end(); lost(); });
+      conn.on('error', lost);
+      conn.on('close', lost);
     });
     const other = [...vms.values()].filter((v) => v !== vm).map((v) => names(v.id).tap);
     const rules = buildRules({
@@ -155,12 +164,20 @@ function createLifecycle(config, deps) {
 
   function activity(id) { const vm = vms.get(id); if (vm) vm.lastActivity = clock.now(); }
 
+  function sharing(id, active) {
+    const vm = vms.get(id);
+    if (!vm || vm.destroying) throw new Error('desktop not running');
+    vm.sharing = !!active;
+    vm.controlLostAt = vm.sharing && !vm.controlConnected ? clock.now() : null;
+  }
+
   async function check() {
     const now = clock.now();
     for (const vm of [...vms.values()]) {
       if (vm.destroying) continue;
       let reason = null;
       if (now - vm.created >= config.runtimeMaxSec * 1000) reason = 'runtime-max';
+      else if (vm.sharing && vm.controlLostAt !== null && now - vm.controlLostAt >= 5000) reason = 'share-control-down';
       else if (!vm.spare && now - vm.lastWorker >= config.workerBeatTimeoutMs) reason = 'worker-heartbeat';
       else if (!vm.spare && now - vm.lastServer >= config.serverBeatTimeoutMs) reason = 'server-heartbeat';
       else if (!vm.spare && now - vm.lastActivity >= config.idleMs) reason = 'idle';
@@ -195,7 +212,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, destroy, list, heartbeat, activity, check, reconcile, clear, run, stop,
+  return { create, createSpare, destroy, list, heartbeat, activity, sharing, check, reconcile, clear, run, stop,
     status: () => ({ ...state, count: vms.size }) };
 }
 

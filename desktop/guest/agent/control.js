@@ -65,7 +65,11 @@ function createControl({ chromium, launchOptions = {} }) {
 
   async function page() {
     const ctx = await start();
-    return ctx.pages().find((p) => !p.isClosed()) || ctx.newPage();
+    const pages = ctx.pages().filter((p) => !p.isClosed());
+    const ordinary = pages.find((p) => !p.__rfShare);
+    if (ordinary) return ordinary;
+    if (pages.length) throw new Error('shared page cannot be driven');
+    return ctx.newPage();
   }
 
   return {

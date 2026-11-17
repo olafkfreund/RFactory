@@ -24,6 +24,19 @@ function createSessions({ isApprover, cancel, destroy, clock = Date.now }) {
     return session;
   }
   function get(desktopId) { return active.get(desktopId); }
+  function approveShare(user, desktopId, value) {
+    const session = get(desktopId);
+    if (!session || session.revoked || clock() >= session.until) throw new Error('no-session');
+    if (!isApprover(user, session.scope)) throw new Error('approver-required');
+    if (!value || !['share_id', 'nonce', 'url'].every((key) => typeof value[key] === 'string' && value[key]) ||
+        !session.hosts.includes(origin(value.url)) || session.share) throw new Error('invalid-share');
+    session.share = { share_id: value.share_id, nonce: value.nonce, url: value.url, origin: origin(value.url) };
+    return session.share;
+  }
+  function stopShare(desktopId, shareId) {
+    const session = get(desktopId);
+    if (session?.share?.share_id === shareId) session.share = null;
+  }
   function check(session, running, name, args) {
     if (!session || session.revoked) return 'no-session';
     if (clock() >= session.until) return 'expired-session';
@@ -52,7 +65,7 @@ function createSessions({ isApprover, cancel, destroy, clock = Date.now }) {
       if (completed && active.get(desktopId) === session) active.delete(desktopId);
     }
   }
-  return { grant, get, check, revoke };
+  return { grant, get, check, approveShare, stopShare, revoke };
 }
 
 module.exports = { createSessions, origin };
