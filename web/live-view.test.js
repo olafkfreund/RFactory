@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { createApp } = require('./server.js');
+const { loadRoles } = require('@rfactory/core/src/roles.js');
 const { openVnc } = require('../desktop/runner/vnc.js');
 
 const ME = 'member@example.com';
@@ -27,7 +28,7 @@ function fakeRfb(t) {
 async function start(t, { members = { d1: [ME] }, fake } = {}) {
   const timers = [];
   const opened = [];
-  const server = createApp({ allowedEmails: [ME, OTHER], source: {}, brain: {},
+  const server = createApp({ roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: `${ME},${OTHER}` }), source: {}, brain: {},
     live: {
       isMember: async (email, id) => (members[id] || []).includes(email),
       openVnc: async (id) => { opened.push(id); return net.connect(fake.port, '127.0.0.1'); },
@@ -54,7 +55,7 @@ test('no identity, non-member and other-scope member are refused', async (t) => 
   const fake = await fakeRfb(t);
   const s = await start(t, { fake, members: { d1: [ME], d2: [OTHER] } });
   assert.equal(await client(s.url('d1'), null).ready, false);
-  assert.equal(await client(s.url('d1'), 'stranger@example.com').ready, false); // not on allowedEmails
+  assert.equal(await client(s.url('d1'), 'stranger@example.com').ready, false); // not a member
   assert.equal(await client(s.url('d1'), OTHER).ready, false); // allowed user, other scope
   assert.equal(await client(s.url('d1'), ME.toUpperCase()).ready, true);
   assert.deepEqual(s.opened, ['d1']);

@@ -8,18 +8,21 @@ const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
 const { createApp } = require('../server.js');
+const { handleCall } = require('../public/app.js');
 const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
 const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const ME = 'owner@example.com';
+const { loadRoles } = require('@rfactory/core/src/roles.js');
+const rolesFor = (members, approvers = '', admins = '') => loadRoles({ RFACTORY_ALLOWED_EMAILS: members, RFACTORY_APPROVERS: approvers, RFACTORY_ADMINS: admins });
 const items = [{ id: 'AF-1', kind: 'card', title: 'a', state: 'done', evidence: [] },
   { id: 'AF-2', kind: 'card', title: 'b', state: 'unknown', evidence: [] }];
 const source = { snapshot: async () => ({ items, fetched_at: 'F', newest_update: 'N' }) };
 const fakeBrain = { label: () => 'fake', turn: async () => ({ text: 'ok' }) };
 
 async function start(t, opts) {
-  const server = createApp({ allowedEmails: [ME], ...opts });
+  const server = createApp({ roles: rolesFor(ME), ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -120,4 +123,141 @@ test('start is refused when a CFACTORY_*KEY* variable is set', () => {
     { env: { PATH: process.env.PATH, CFACTORY_READ_KEY: 'x' }, encoding: 'utf8', timeout: 10000 });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /key-in-environment/);
+});
+
+function fakeCall() {
+  const subs = new Set();
+  const latest = new Map();
+  const m = { running: false, started: [], stopped: [], subs,
+    start: async (link) => { if (m.running) throw new Error('busy'); m.running = true; m.started.push(link); },
+    stop: async (reason) => { m.running = false; m.stopped.push(reason); },
+    current: () => [...latest.values()],
+    subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn); },
+    emit: (e) => { latest.set(e.type, e); subs.forEach((fn) => fn(e)); } };
+  return m;
+}
+const post = (get, body) => get('/api/call', { method: 'POST', body: JSON.stringify(body) });
+
+test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  assert.equal((await get('/api/call', { method: 'POST' }, null)).status, 401);
+  assert.equal((await get('/api/call/events', {}, 'x@example.com')).status, 403);
+  for (const link of ['http://meet.google.com/abc-defg-hij', 'https://evil.example/abc-defg-hij',
+    'https://meet.google.com:444/abc-defg-hij', 'https://u@meet.google.com/abc-defg-hij',
+    'https://meet.google.com/abc-defg-hij/x', 'https://meet.google.com/abc-defg-hij?a=1',
+    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5]) {
+    assert.equal((await post(get, { link })).status, 400, String(link));
+  }
+  assert.deepEqual(call.started, []);
+  assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 202);
+  assert.deepEqual(call.started, ['https://meet.google.com/abc-defg-hij']);
+  assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
+  assert.equal((await get('/api/call', { method: 'DELETE' })).status, 200);
+  assert.deepEqual(call.stopped, ['requested']);
+});
+
+test('call events stream as SSE and unsubscribe on close', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const ctl = new AbortController();
+  const r = await get('/api/call/events', { signal: ctl.signal });
+  assert.equal(r.headers.get('content-type'), 'text/event-stream');
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.match(r.headers.get('content-security-policy'), /default-src 'self'/);
+  const reader = r.body.getReader();
+  await reader.read(); // ': open'
+  call.emit({ type: 'state', state: 'lobby' });
+  const { value } = await reader.read();
+  assert.equal(new TextDecoder().decode(value), 'data: {"type":"state","state":"lobby"}\n\n');
+  assert.equal(call.subs.size, 1);
+  ctl.abort();
+  for (let i = 0; i < 50 && call.subs.size; i++) await new Promise((r2) => setTimeout(r2, 20));
+  assert.equal(call.subs.size, 0);
+});
+
+test('subscribing during a call replays state so the page enables Leave', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  call.running = true;
+  call.emit({ type: 'state', state: 'in-call' });
+  const ctl = new AbortController();
+  const r = await get('/api/call/events', { signal: ctl.signal });
+  const reader = r.body.getReader();
+  let body = '';
+  while (!body.includes('data: ')) body += new TextDecoder().decode((await reader.read()).value);
+  const event = JSON.parse(body.match(/data: ([^\n]+)/)[1]);
+  const nodes = Object.fromEntries(['call-state-text', 'call-join', 'call-leave'].map((id) => [id, { textContent: '', disabled: true }]));
+  handleCall({ getElementById: (id) => nodes[id] }, event);
+  assert.equal(nodes['call-state-text'].textContent, 'in-call');
+  assert.equal(nodes['call-leave'].disabled, false);
+  ctl.abort();
+});
+
+test('call routes are absent without a manager', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain });
+  assert.equal((await get('/api/call/events')).status, 404);
+});
+
+function fakeActions() {
+  const calls = [];
+  const a = { calls,
+    list: () => ({ pending: [], history: [] }),
+    approve: async (...args) => { calls.push(['approve', ...args]); return { status: 200, text: 'ok', action: { id: 'x' } }; },
+    reject: async (...args) => { calls.push(['reject', ...args]); return { status: 200, text: 'no' }; } };
+  return a;
+}
+
+async function startActions(t, opts) {
+  const server = createApp({ roles: rolesFor(`${ME},other@example.com`, ME), source, brain: fakeBrain, ...opts });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const host = `127.0.0.1:${server.address().port}`;
+  return (p, { method = 'POST', headers = {}, body = { hash: 'h' }, email = ME } = {}) => fetch(`http://${host}${p}`, { method,
+    headers: { 'X-Forwarded-Email': email, 'X-RFactory-Action': '1', Origin: `http://${host}`, ...headers },
+    body: method === 'POST' ? JSON.stringify(body) : undefined });
+}
+
+test('action routes are absent without writes (404)', async (t) => {
+  const get = await startActions(t, {});
+  assert.equal((await get('/api/actions', { method: 'GET' })).status, 404);
+  assert.equal((await get('/api/actions/x/approve')).status, 404);
+});
+
+test('approve route: missing header, foreign origin, non-approver and wrong hash are each refused', async (t) => {
+  const actions = fakeActions();
+  actions.approve = async (id, email, hash) => {
+    actions.calls.push(['approve', id, email, hash]);
+    if (!['owner@example.com'].includes(email)) return { status: 403, text: 'Forbidden.' };
+    return hash === 'good' ? { status: 200, text: 'ok' } : { status: 409, text: 'no longer pending' };
+  };
+  const get = await startActions(t, { actions });
+  const path = '/api/actions/abc-1/approve';
+  assert.equal((await get(path, { headers: { 'X-RFactory-Action': '0' } })).status, 403);
+  assert.equal((await get(path, { headers: { Origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await get(path, { headers: { Origin: '' } })).status, 403);
+  assert.deepEqual(actions.calls, []);
+  assert.equal((await get(path, { email: 'other@example.com', body: { hash: 'good' } })).status, 403);
+  assert.equal((await get(path, { body: { hash: 'bad' } })).status, 409);
+  assert.equal((await get(path, { body: {} })).status, 400);
+  assert.equal((await get(path, { body: { hash: 'good', action: 'delete_card' } })).status, 200);
+  assert.deepEqual(actions.calls.at(-1), ['approve', 'abc-1', ME, 'good']);
+  assert.equal((await get('/api/actions/abc-1/reject')).status, 200);
+  assert.equal(actions.calls.at(-1)[0], 'reject');
+  const list = await (await get('/api/actions', { method: 'GET' })).json();
+  assert.deepEqual(list, { pending: [], history: [], can_approve: true });
+  assert.equal((await (await get('/api/actions', { method: 'GET', email: 'other@example.com' })).json()).can_approve, false);
+});
+
+test('an admin who is not an approver gets can_approve: false', async (t) => {
+  const get = await startActions(t, { actions: fakeActions(), roles: rolesFor(`${ME},admin@example.com`, ME, 'admin@example.com') });
+  assert.equal((await (await get('/api/actions', { method: 'GET', email: 'admin@example.com' })).json()).can_approve, false);
+});
+
+test('main() throws roles-not-members before listening when an approver is not a member', async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { RFACTORY_ALLOWED_EMAILS: ME, RFACTORY_APPROVERS: 'x@example.com' });
+  try { await assert.rejects(require('../server.js').main(), /roles-not-members/); }
+  finally { for (const k of ['RFACTORY_ALLOWED_EMAILS', 'RFACTORY_APPROVERS']) { if (k in saved) process.env[k] = saved[k]; else delete process.env[k]; } }
 });

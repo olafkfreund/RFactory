@@ -7,6 +7,8 @@ const { claudeHash, checkClaudeHome } = require('./destination.js');
 const { checkFacts } = require('../facts.js');
 
 const SYSTEM_PROMPT = path.join(__dirname, 'claude-system-prompt.txt');
+const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
+const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
 const ARGV = ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
   '--no-session-persistence', '--output-format', 'json', '--system-prompt-file', SYSTEM_PROMPT];
 
@@ -38,7 +40,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     });
   }
 
-  async function turn(snapshot, { deadline = clock() + 55000 } = {}) {
+  async function turn(snapshot, { deadline = clock() + 55000, question } = {}) {
     checkClaudeHome(home);
     const versionTime = Math.min(5000, deadline - clock());
     if (versionTime <= 0) throw new Error('brain-timeout');
@@ -56,10 +58,11 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       const safe = redactor.toModel(snapshot);
       const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
         ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
-      })) });
+      })), ...(question === undefined ? {} : { question: { content: { untrusted: true, text: redactor.toModel(question) } } }) });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
-      const { stdout, stderr } = await run(ARGV, { cwd, input: prompt, timeout });
+      const { stdout, stderr } = await run(question === undefined ? ARGV : [...ARGV.slice(0, -1), QA_SYSTEM_PROMPT],
+        { cwd, input: prompt, timeout });
       let response;
       try { response = JSON.parse(stdout); }
       catch { throw new Error('brain-error'); }
@@ -68,11 +71,51 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
+  async function propose(snapshot, { deadline = clock() + 55000, request } = {}) {
+    checkClaudeHome(home);
+    const versionTime = Math.min(5000, deadline - clock());
+    if (versionTime <= 0) throw new Error('brain-timeout');
+    let version;
+    try { version = (await run(['--version'], { timeout: versionTime })).stdout.trim(); }
+    catch (error) {
+      if (error.message === 'brain-timeout') throw error;
+      throw new Error('destination-changed');
+    }
+    if (!scope.brain.approved_hash) throw new Error('destination-missing');
+    if (claudeHash({ version, home }) !== scope.brain.approved_hash) throw new Error('destination-changed');
+
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
+    try {
+      const safe = redactor.toModel(snapshot);
+      const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
+        ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
+      })), request: { content: { untrusted: true, text: redactor.toModel(request) } } });
+      const timeout = Math.min(40000, deadline - clock() - 2000);
+      if (timeout <= 0) throw new Error('brain-timeout');
+      const { stdout, stderr } = await run([...ARGV.slice(0, -1), ACTION_SYSTEM_PROMPT],
+        { cwd, input: prompt, timeout });
+      let response;
+      try { response = JSON.parse(stdout); }
+      catch { throw new Error('brain-error'); }
+      if (response.is_error || typeof response.result !== 'string') throw new Error(`brain-error: ${redactor.logSafe(stderr)}`);
+      try {
+        const proposal = JSON.parse(response.result);
+        if (proposal && !Array.isArray(proposal) && typeof proposal === 'object' &&
+          proposal.action === 'none' && Object.keys(proposal).length === 1) return { action: 'none' };
+        if (proposal && !Array.isArray(proposal) && typeof proposal === 'object' &&
+          typeof proposal.action === 'string' && proposal.action &&
+          proposal.args && !Array.isArray(proposal.args) && typeof proposal.args === 'object' &&
+          Object.keys(proposal).length === 2) return { action: proposal.action, args: proposal.args };
+      } catch { /* A non-JSON result is not a proposal. */ }
+      return { action: 'none' };
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  }
+
   function label() {
     return `claude-cli (${destination}), approval ${scope.brain.approved_hash ? 'ok' : 'missing'}`;
   }
 
-  return { turn, label };
+  return { turn, propose, label };
 }
 
 module.exports = { createClaudeBrain, ARGV };

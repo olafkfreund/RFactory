@@ -42,7 +42,7 @@ function wsReader(onBinary, onPing, onClose) {
 }
 
 // isMember(email, desktop_id) -> boolean: scope membership of that desktop's scope. openVnc(desktop_id) -> duplex to the runner's VNC.
-function attachLiveView(server, { allowedEmails, isMember, openVnc, intervalMs = 5000, setIntervalFn = setInterval, clearIntervalFn = clearInterval }) {
+function attachLiveView(server, { roles, isMember, openVnc, intervalMs = 5000, setIntervalFn = setInterval, clearIntervalFn = clearInterval }) {
   const refuse = (socket, status, text) => { socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
   server.on('upgrade', async (req, socket) => {
     socket.on('error', () => {});
@@ -50,7 +50,7 @@ function attachLiveView(server, { allowedEmails, isMember, openVnc, intervalMs =
       // same oauth2-proxy trust rule as the HTTP handler in server.js
       const email = req.headers['x-forwarded-email'];
       if (!email) return refuse(socket, 401, 'Unauthorized');
-      if (!allowedEmails.includes(String(email).toLowerCase())) return refuse(socket, 403, 'Forbidden');
+      if (!roles.has(email, 'member')) return refuse(socket, 403, 'Forbidden');
       const match = PATH.exec(req.url.split('?')[0]);
       const key = req.headers['sec-websocket-key'];
       if (!match || !key || String(req.headers.upgrade).toLowerCase() !== 'websocket') return refuse(socket, 404, 'Not Found');

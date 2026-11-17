@@ -50,6 +50,30 @@
     <p id="destination" class="fine"></p>
   </section>
 
+  <section id="call" class="panel">
+    <h2 class="panel-title">Call <span id="call-state" class="status-pill"><span class="dot"></span><span id="call-state-text">idle</span></span></h2>
+    <div class="call-form">
+      <input id="call-link" class="call-input" type="text" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" aria-label="Meet link">
+      <button id="call-join" class="btn" type="button">Join</button>
+      <button id="call-leave" class="btn" type="button" disabled>Leave</button>
+    </div>
+    <p id="call-mic" class="fine"></p>
+    <p id="call-voice" class="fine"></p>
+    <p id="call-error" class="status-line" role="status" aria-live="polite"></p>
+    <ul id="call-log" class="call-log"></ul>
+  </section>
+
+  <section id="actions" class="panel" hidden>
+    <h2 class="panel-title">Pending actions <span id="actions-count" class="count">0</span></h2>
+    <p id="actions-status" class="status-line" role="status" aria-live="polite"></p>
+    <ul id="actions-pending"></ul>
+  </section>
+
+  <section id="history" class="panel" hidden>
+    <h2 class="panel-title">History</h2>
+    <ul id="actions-history"></ul>
+  </section>
+
   <div class="board">
     <section id="blocked" class="col col--blocked"><h2 class="panel-title">Blocked</h2><ul></ul></section>
     <section id="in_progress" class="col col--in_progress"><h2 class="panel-title">In progress</h2><ul></ul></section>
