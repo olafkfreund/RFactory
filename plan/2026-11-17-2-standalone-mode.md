@@ -195,6 +195,40 @@ these calls:
   sends the configured key to the endpoint being approved, with redirects
   still refused so the key never follows one.
 
+- **D11, step 10 isolation is scoped to the run (owner approved, 2026-11-17).**
+  Step 10's nft rule drops output to p620's Factory ports for the whole
+  host, which on the shared p620 cuts every other agent's Factory access
+  for the run. Instead the run executes in a transient scope,
+  `systemd-run --user --scope --unit=rfactory-e2e …`, and the rule matches
+  only that cgroup:
+  `socket cgroupv2 level 3 "user.slice/user-1000.slice/user@1000.service/app.slice/rfactory-e2e.scope" ip daddr <p620-ip> tcp dport {3101,3103,3110,3111,3114} drop`
+  (level and path checked with `systemctl --user show -p ControlGroup`
+  before the run). The before/after checks run inside the same scope.
+  The PAT is a fine-grained, read-only token for the fixture repo only,
+  created by the owner in GitHub's UI (it cannot be minted by API).
+
+- **D12, step 10 uses the existing agenix GitHub token (owner, 2026-11-17).**
+  The owner chose `/run/agenix/api-github-token` over a fine-grained,
+  read-only PAT for the end-to-end run. That token is not read-only, so
+  for this run the read-only guarantee rests on `github-mcp-server
+  --read-only` plus the start-up inventory check (every listed tool is in
+  the recorded 27 and has `readOnlyHint: true`). The token is read from
+  agenix into the run's environment only (`token_env`), never copied to a
+  file or a scope. A fine-grained read-only PAT remains the production
+  requirement (spec).
+
+- **D13, step 10's expected table and isolation target, corrected by the
+  run.** By the precedence rules (step 2) the fixture gives done 3,
+  in_progress 1, blocked 3, left 2, unknown 1: the failing open PR is its
+  own `blocked` item (3b), and the mapped board item is `in_progress`.
+  The plan's table (blocked 2, no in_progress row) omitted both. Isolation
+  also blocks the Factories' current public hostnames (`cfactory`,
+  `cfactory-mcp`, `pfactory`, `aifactory`, `tfactory` on
+  `freundcloud.org.uk`, TCP 80/443, both families) for the run's cgroup:
+  p620's LAN ports 3101-3114 no longer answer even outside the scope, so
+  blocking only them proved nothing. The control check outside the scope
+  must show those hosts answering.
+
 ## Steps
 
 1. **`core/package.json`**, **`core/.gitignore`** (new).
