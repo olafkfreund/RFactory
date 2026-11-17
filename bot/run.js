@@ -5,7 +5,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { makeRedactor } = require('../core/src/redact');
+const { buildRendererSource } = require('./avatar/renderer.js');
+const portraits = require('./avatars/manifest.json').portraits;
 
 const MAX_IN = 4 * 1024 * 1024;
 const MAX_OUT = 64 * 1024;
@@ -19,6 +22,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     clock: { setTimeout, clearTimeout },
     mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
     rm: (p) => fs.promises.rm(p, { recursive: true, force: true }),
+    readFile: (p) => fs.promises.readFile(p),
     ...deps,
   };
   const { logSafe } = makeRedactor([]);
@@ -35,7 +39,8 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
 
   const ac = new AbortController();
   const handles = new Set();
-  let call = null, host = null, dir = null, timer = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
+  let call = null, host = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
+  let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
   const finished = new Promise((r) => { finish = r; });
 
@@ -44,22 +49,92 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     for (const h of [...handles]) { try { await h.cancel(); } catch (e) { log(`cancel failed: ${e.message}`); } }
   };
 
+  async function idleAvatar() {
+    const page = env.RFACTORY_AVATAR && call?._inner?.page;
+    if (!page) return;
+    let timeout;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => page.evaluate(() => window.__rfAvatar?.idle())).catch(() => {}),
+        new Promise((resolve) => { timeout = d.clock.setTimeout(resolve, 200); }),
+      ]);
+    } finally { if (timeout) d.clock.clearTimeout(timeout); }
+  }
+
+  function waitRetry() {
+    return new Promise((resolve) => {
+      retryResolve = resolve;
+      retryTimer = d.clock.setTimeout(() => { retryResolve = retryTimer = null; resolve(); }, 3000);
+    });
+  }
+
+  async function startAvatar() {
+    try {
+      const id = env.RFACTORY_AVATAR;
+      const portrait = Object.hasOwn(portraits, id) && portraits[id];
+      if (!portrait?.anchors) throw new Error('unknown portrait');
+      const bytes = await d.readFile(path.join(__dirname, 'avatars', portrait.file));
+      if (stopping) return;
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== portrait.sha256) throw new Error('portrait hash');
+      const page = call._inner.page;
+      const sourceLine = `Source: github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
+      const script = buildRendererSource({ portraitDataUrl: `data:image/webp;base64,${bytes.toString('base64')}`,
+        anchors: portrait.anchors, sourceLine });
+      // shortcut: private field of an alpha lib, replace when it exposes a renderer option.
+      await page.evaluate((source) => eval(source), script);
+      if (stopping) return;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (stopping) return;
+        try {
+          await call.camera.setOn(true);
+          if (stopping) { try { await call.camera.setOn(false); } catch {} return; }
+          await waitRetry(); // Meet updates the button after a moment; the spike confirmed after 3 s
+          if (stopping) { try { await call.camera.setOn(false); } catch {} return; }
+          if (await page.evaluate(() => !!document.querySelector('button[aria-label="Turn off camera"]'))) {
+            if (stopping) return;
+            const poll = async () => {
+              if (stopping) return;
+              try {
+                if (await page.evaluate(() => window.__rfAvatar?.errors ?? 0) >= 30) {
+                  if (!stopping) { log('avatar failed: render'); await call.camera.setOn(false); }
+                  return;
+                }
+              } catch (e) { if (!stopping) log(`avatar failed: ${e.message}`); return; }
+              if (!stopping) pollTimer = d.clock.setTimeout(poll, 5000);
+            };
+            pollTimer = d.clock.setTimeout(poll, 5000);
+            return;
+          }
+        } catch (e) { if (stopping) return; }
+      }
+      throw new Error('camera refused');
+    } catch (e) {
+      if (!stopping) {
+        log(`avatar failed: ${e.message}`);
+        try { await call.camera.setOn(false); } catch { /* best effort */ }
+      }
+    }
+  }
+
   // The one stop path: abort join, clear timers, cancel playback, leave, close host, remove profile.
   function stop(reason, code = 0) {
     if (stopping) return stopping;
-    if (code) exitCode = code;
-    stopping = (async () => {
+    stopping = Promise.resolve().then(async () => {
+      if (code) exitCode = code;
       log(`stopping: ${reason}`);
       ac.abort();
       if (timer) d.clock.clearTimeout(timer);
+      if (pollTimer) d.clock.clearTimeout(pollTimer);
+      if (retryTimer) { d.clock.clearTimeout(retryTimer); retryTimer = null; retryResolve(); retryResolve = null; }
       if (starting) await starting;
+      await idleAvatar();
       await cancelAll();
       if (call) { try { await call.leave(); } catch (e) { log(`leave failed: ${e.message}`); } }
       if (host) { try { await host.close(); } catch (e) { log(`host close failed: ${e.message}`); } }
       if (dir) { try { await d.rm(dir); } catch (e) { log(`profile removal failed: ${e.message}`); } }
       if (!TERMINAL.includes(state)) sendState('left');
       finish(exitCode);
-    })();
+    });
     return stopping;
   }
 
@@ -70,7 +145,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       if (!call) throw new Error('not in a call');
       h = await call.speak(Buffer.from(msg.wav, 'base64'));
       handles.add(h);
-      if (myGen !== playGen) await h.cancel();
+      if (myGen !== playGen) { await idleAvatar(); await h.cancel(); }
       const r = await h.done;
       result = r && r.cancelled ? 'cancelled' : 'done';
     } catch (e) {
@@ -84,6 +159,8 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
 
   async function afterJoin() {
     try { await call.chat.send(CHAT_LINE); } catch (e) { log(`chat line failed: ${e.message}`); }
+    if (stopping) return;
+    if (env.RFACTORY_AVATAR) startAvatar();
     try {
       // shortcut: private field of an alpha lib, replace when Call exposes the mic state.
       const muted = await call._inner.page.evaluate(() => {
@@ -127,7 +204,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     try { msg = JSON.parse(line); } catch { log(`dropped malformed line (${line.length} chars)`); return true; }
     if (!msg || typeof msg !== 'object') { log('dropped malformed line'); return true; }
     if (msg.type === 'speak' && Number.isInteger(msg.seq) && typeof msg.wav === 'string') play(msg);
-    else if (msg.type === 'cancel') cancelAll();
+    else if (msg.type === 'cancel') { idleAvatar(); cancelAll(); }
     else if (msg.type === 'leave') stop('leave');
     else log('dropped unknown message');
     return true;
