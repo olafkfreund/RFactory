@@ -56,3 +56,15 @@ test('sentences without an ID or count survive and sentence boundaries stay inta
   assert.equal(checked('The update is done. #3 is done. #3 is blocked.'), `The update is done. ${refused} #3 is blocked.`);
   assert.equal(checked('No status was reported.'), 'No status was reported.');
 });
+
+test('card keys require an exact item and matching state', () => {
+  const cards = { items: Array.from({ length: 4 }, (_, n) => ({ id: `FCT-${n + 1}`, state: 'blocked' })) };
+  const check = (text) => checkFacts(text, cards);
+  assert.equal(check('FCT-99 is done.'), refused);
+  assert.equal(check('FCT-99 needs a look.'), refused);
+  assert.equal(check('FCT-1 is done.'), refused);
+  assert.equal(check('FCT-1 is blocked.'), 'FCT-1 is blocked.');
+  assert.equal(check('4 blocked.'), '4 blocked.');
+  assert.equal(check('3 blocked.'), refused);
+  assert.equal(check('The format is UTF-8.'), refused);
+});
