@@ -22,7 +22,24 @@ const codeOf = (error, allowed, fallback) => {
   return allowed ? (allowed.has(code) ? code : fallback) : (/^[a-z]+(-[a-z]+)+$/.test(code) ? code : fallback);
 };
 
-function createApp({ source, brain, allowedEmails, deadlineMs = 55000 }) {
+function validLink(link) {
+  if (typeof link !== 'string') return false;
+  let u;
+  try { u = new URL(link); } catch { return false; }
+  return u.protocol === 'https:' && u.host === 'meet.google.com' && !u.port && !u.username && !u.password
+    && !u.search && !u.hash && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname) && link === u.href;
+}
+
+function readJson(req, limit = 4096) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > limit) { resolve(null); req.destroy(); } });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+    req.on('error', () => resolve(null));
+  });
+}
+
+function createApp({ source, brain, allowedEmails, deadlineMs = 55000, call = null }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -60,6 +77,31 @@ function createApp({ source, brain, allowedEmails, deadlineMs = 55000 }) {
         .finally(() => { busy = false; }); // brain.turn has returned by now, so no CLI outlives its request
       return;
     }
+    if (call && url === '/api/call') {
+      if (req.method === 'POST') {
+        readJson(req).then((body) => {
+          if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
+          if (call.running) return json(res, 409, { error: 'busy' });
+          return call.start(body.link).then(() => json(res, 202, { ok: true }),
+            (error) => (error && error.message === 'busy' ? json(res, 409, { error: 'busy' }) : json(res, 500, { error: 'call-error' })));
+        });
+        return;
+      }
+      if (req.method === 'DELETE') {
+        req.resume();
+        call.stop('requested').then(() => json(res, 200, { ok: true }), () => json(res, 500, { error: 'call-error' }));
+        return;
+      }
+    }
+    if (call && req.method === 'GET' && url === '/api/call/events') {
+      res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/event-stream' });
+      res.write(': open\n\n');
+      for (const event of call.current()) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      const off = call.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
+      const timer = setInterval(() => res.write(': keepalive\n\n'), 15000);
+      req.on('close', () => { clearInterval(timer); off(); });
+      return;
+    }
     json(res, 404, { error: 'not-found' });
   });
 }
@@ -82,7 +124,12 @@ async function main() {
   await source.start();
   const brain = createClaudeBrain(scope, redactor);
   const allowedEmails = (process.env.RFACTORY_ALLOWED_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  createApp({ source, brain, allowedEmails }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  let call = null;
+  if (process.env.RFACTORY_CALLS === '1') {
+    const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
+    call = require('./call.js').createCallManager({ source, brain, tts, redactor });
+  }
+  createApp({ source, brain, allowedEmails, call }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {

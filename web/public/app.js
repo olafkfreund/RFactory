@@ -85,8 +85,53 @@ async function run(doc) {
   button.disabled = false;
 }
 
+// One call event at a time; every string lands via textContent.
+function handleCall(doc, event, now = Date.now()) {
+  const set = (id, text) => { doc.getElementById(id).textContent = text; };
+  if (event.type === 'state') {
+    set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
+    const live = ['joining', 'lobby', 'in-call'].includes(event.state);
+    doc.getElementById('call-join').disabled = live;
+    doc.getElementById('call-leave').disabled = !live;
+  } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
+  else if (event.type === 'voice') set('call-voice', `voice: ${event.voice}`);
+  else if (event.type === 'greeting') set('call-error', event.result === 'done' ? 'greeting played (not confirmed heard)' : `greeting ${event.result}; the bot may not be heard`);
+  else if (['question', 'answer', 'log'].includes(event.type)) {
+    const li = el(doc, 'li');
+    if (event.type === 'question') {
+      li.appendChild(el(doc, 'div', `${event.speaker} (display name, not verified) asked, ${event.kind}:`, 'who'));
+      li.appendChild(el(doc, 'div', event.text));
+    } else if (event.type === 'answer') {
+      li.appendChild(el(doc, 'div', 'RFactory answered:', 'who'));
+      li.appendChild(el(doc, 'div', event.text, 'answer'));
+      const s = event.snapshot;
+      if (s) render(doc, { items: s.items, unknown: s.unknown, fetched_at: s.fetched_at, newest_update: s.newest_update,
+        summary: event.text, destination: 'the call' }, now);
+    } else li.appendChild(el(doc, 'div', event.message, 'who'));
+    const log = doc.getElementById('call-log');
+    log.appendChild(li);
+    while (log.children.length > 200) log.removeChild(log.firstChild);
+  }
+}
+
+function wireCall(doc) {
+  const error = doc.getElementById('call-error');
+  doc.getElementById('call-join').addEventListener('click', async () => {
+    error.textContent = '';
+    try {
+      const r = await fetch('/api/call', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: doc.getElementById('call-link').value.trim() }) });
+      if (!r.ok) error.textContent = `Failed: ${(await r.json()).error}`;
+    } catch { error.textContent = 'Failed: network'; }
+  });
+  doc.getElementById('call-leave').addEventListener('click', () => fetch('/api/call', { method: 'DELETE' }).catch(() => {}));
+  const es = new EventSource('/api/call/events');
+  es.onmessage = (m) => { try { handleCall(doc, JSON.parse(m.data)); } catch { /* drop a malformed event */ } };
+}
+
 if (typeof document !== 'undefined') {
+  wireCall(document);
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
-if (typeof module !== 'undefined') module.exports = { render, renderItem, ago };
+if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall };

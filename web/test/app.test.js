@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { render } = require('../public/app.js');
+const { render, handleCall } = require('../public/app.js');
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.text = ''; }
@@ -59,4 +59,20 @@ test('data age reads as "as of …, N ago" and marks stale data', () => {
   render(doc, { ...base, fetched_at: '2026-11-17T17:45:58Z', newest_update: '2026-09-29T14:58:41Z', items: [], unknown: [] }, now);
   assert.match(byId.age.textContent, /^As of .+ \(just now\) · newest card update .+, 49 days ago$/);
   assert.equal(byId.done.querySelector('ul').textContent, 'None');
+});
+
+test('call events: hostile caption and answer are text; answer re-renders the board', () => {
+  const { doc, byId } = shim();
+  for (const id of ['call-state-text', 'call-mic', 'call-voice', 'call-error', 'call-log', 'call-join', 'call-leave', 'stale', 'summary-card']) byId[id] = new Node('x');
+  handleCall(doc, { type: 'state', state: 'in-call' });
+  assert.equal(byId['call-state-text'].textContent, 'in-call');
+  assert.equal(byId['call-leave'].disabled, false);
+  handleCall(doc, { type: 'question', id: '1', speaker: '<b>Eve</b>', text: '<img src=x onerror=1>', kind: 'question' });
+  const log = byId['call-log'];
+  assert.ok(!log.all().some((n) => n.tag === 'img' || n.tag === 'b'));
+  assert.ok(log.textContent.includes('display name, not verified') && log.textContent.includes('<img src=x onerror=1>'));
+  const snapshot = { items: [card({ title: 'on board' })], counts: {}, unknown: [], fetched_at: 'now', newest_update: null };
+  handleCall(doc, { type: 'answer', text: 'AF-1 is done', snapshot });
+  assert.ok(byId.done.textContent.includes('on board'));
+  assert.equal(byId.summary.textContent, 'AF-1 is done');
 });

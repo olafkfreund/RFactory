@@ -34,7 +34,9 @@ up() {
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
   podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null
-  podman run -d --pod "$pod" --name rfactory-web \
+  # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
+  podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
+    -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \
     -v "$cfg/scope.json:/etc/rfactory/scope.json:ro,Z" \
