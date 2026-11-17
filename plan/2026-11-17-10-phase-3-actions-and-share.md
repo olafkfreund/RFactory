@@ -139,6 +139,15 @@ reviewers:
   each entry gets an `at` timestamp, and step 6 must write the state in a
   `state` field, which `unfinished()` reads.
 
+- **D5, wave 2 details (steps 2 and 4).** `propose()` repeats `turn()`'s
+  pre-flight checks (version, hash, home) instead of sharing them, so 1b's
+  `turn()` stays untouched. The writer adds the write key to the shared
+  redactor by wrapping its `toModel`/`logSafe` in place, so every log,
+  event and record line masks it (`redact.js` has no add-secret API). It
+  sends the key as `Authorization: Bearer`, as the read key does. Only a
+  parsed `{ error }` payload counts as a refusal (`failed`); any other
+  error reply, including `isError` with prose, is `uncertain`.
+
 ## Steps
 
 0. **`core/src/sources/cfactory.js`** (additive), **`core/test/cfactory.test.js`** (extend).
