@@ -525,6 +525,26 @@ and 27) and the scripts. This plan is self-contained.
       never re-resolved (test).
     - Guard image rebuilt (`guard:cmqinz9…@sha256:e8ca9bb9…`), imported
       into both nodes with its digest ref and pinned.
+27. **k10b second run: 12 pass; the guard was not the first to block
+    (lead).**
+    - The protected, same-node and startup checks got `refused`, not
+      `timeout`. k3s's NetworkPolicy controller (kube-router) answers with
+      an icmp-port-unreachable REJECT in iptables filter (priority 0, and
+      `br_netfilter` at -1 on the bridge path) before the guard's drop.
+      So traffic was blocked, but not provably by the guard.
+    - The guard's bridge forward chain now runs at priority -200, and its
+      inet forward and input chains at -10: after DNAT, before filter.
+      Tests assert the priorities.
+    - The runner refused every create with `runner Lease is missing`:
+      ArgoCD's default resource exclusions skip
+      `coordination.k8s.io/Lease`. Like the namespace, `lease.yaml` is
+      applied once by hand (k11-prep).
+    - The anti-spoofing checks read node state with `podman`, but the k3d
+      nodes are docker: `VERIFY_NODE_CLI=docker`.
+    - `net-antispoof-mac` also reported a spoofed MAC connecting.
+      `net.sh` now prints the probe's bridge table when that happens, to
+      settle it on the next run.
+    - Guard image `guard:p238hmn…@sha256:d83e2315…`.
 
 
 ## Steps

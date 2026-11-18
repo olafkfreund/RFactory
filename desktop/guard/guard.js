@@ -46,7 +46,7 @@ function renderTables(pod, entry, veth) {
   const v4 = ips.filter(ip => net.isIP(ip) === 4);
   const v6 = ips.filter(ip => net.isIP(ip) === 6);
   const bridge = [`table bridge ${name} {`, '  chain prerouting { type filter hook prerouting priority -300; policy accept;', `    iifname "${veth}" jump source`, '  }',
-    '  chain forward { type filter hook forward priority 0; policy accept;', `    iifname "${veth}" ether type { ip, ip6 } drop`, `    oifname "${veth}" ether type { ip, ip6 } drop`, '  }',
+    '  chain forward { type filter hook forward priority -200; policy accept;', `    iifname "${veth}" ether type { ip, ip6 } drop`, `    oifname "${veth}" ether type { ip, ip6 } drop`, '  }',
     '  chain source {', ...(mac ? [`    ether saddr != ${mac} drop`] : []),
     ...(v4.length ? [`    ether type ip ip saddr != { ${v4.join(', ')} } drop`, `    ether type arp arp saddr ip != { ${v4.join(', ')} } drop`] : ['    ether type ip drop', '    ether type arp drop']),
     ...(v6.length ? [`    ether type ip6 ip6 saddr != { ${v6.join(', ')} } drop`] : ['    ether type ip6 drop']),
@@ -57,13 +57,14 @@ function renderTables(pod, entry, veth) {
     const type = family === '4' ? 'ipv4_addr' : 'ipv6_addr';
     for (const set of ['alive', 'deadline']) inet.push(`  set ${set}${family} { type ${type}; flags timeout; elements = { ${values.map(ip => `${ip} timeout ${set === 'alive' ? '60s' : '3h'}`).join(', ')} }; }`);
   }
-  inet.push('  chain forward { type filter hook forward priority 0; policy accept;');
+  // before iptables filter (0) and br_netfilter (-1): kube-router's NetworkPolicy REJECT must not answer first, the guard drops silently
+  inet.push('  chain forward { type filter hook forward priority -10; policy accept;');
   for (const [family, values] of [['4', v4], ['6', v6]]) {
     const ip = family === '4' ? 'ip' : 'ip6';
     if (!values.length) continue;
     for (const addr of values) inet.push(`    ${ip} saddr ${addr} jump egress${family}`, `    ${ip} daddr ${addr} jump ingress${family}`);
   }
-  inet.push('  }', '  chain input { type filter hook input priority 0; policy accept;');
+  inet.push('  }', '  chain input { type filter hook input priority -10; policy accept;');
   for (const addr of v4) inet.push(`    ip saddr ${addr} drop`);
   for (const addr of v6) inet.push(`    ip6 saddr ${addr} drop`);
   inet.push('  }');

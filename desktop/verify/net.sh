@@ -107,6 +107,7 @@ back=$(preach "$p" tcp "$PROXYIP" "$PROXYPORT")
 fdb=$(node_exec "$AGT" bridge fdb show br cni0 2>/dev/null) || fdb=unreadable
 if [ "$sm" = timeout ] && answered "$back" && [ "$fdb" != unreadable ] && ! grep -qi '02:00:00:00:00:99' <<<"$fdb"; then pass net-antispoof-mac
 else fail net-antispoof-mac "spoofed MAC '$sm', real MAC again '$back', fdb on $AGT: $(grep -ci '02:00:00:00:00:99' <<<"$fdb" || true) entries for the spoofed MAC (want 0; unreadable: $([ "$fdb" = unreadable ] && echo yes || echo no))"; fi
+[ "$sm" = timeout ] || gnft "$AGT" list table bridge "rfdesk_${PUID[A1]}" >&2 || true # diagnostic: the bridge rules that let the frame through
 
 # a pinned media range and the proxy with its token are reachable
 hit=

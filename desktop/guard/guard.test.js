@@ -62,6 +62,8 @@ test('bridge and inet rules follow the final packet path for IPv4 and IPv6', () 
   assert.match(inet, /counter egress \{ \}/);
   assert.match(inet, /quota traffic \{ over 1073741824 bytes \}/);
   assert.match(inet, /ip saddr 10\.42\.1\.7 drop/);
+  // ahead of kube-router: its NetworkPolicy REJECT would otherwise answer before the guard's silent drop
+  assert.match(bridge, /hook forward priority -200;/); assert.match(inet, /hook forward priority -10;/); assert.match(inet, /hook input priority -10;/);
   assert.throws(() => renderTables(pod, { ...entry, allowDestinations: [{ cidr: '1.2.3.0/24; accept', except: [], ports: [] }] }, 'veth123'), /invalid range/);
 });
 
