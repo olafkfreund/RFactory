@@ -64,6 +64,9 @@ in
 
   # DHCP on the masquerade NIC; the lease's DNS is ignored.
   networking.useNetworkd = true;
+  # useNetworkd turns resolved on, and nss asks it first: it ignores rfactory-resolver's /etc/resolv.conf and tries its public
+  # fallbacks, which egress blocks (k14: no desktop could resolve meet.google.com). Off, glibc reads /etc/resolv.conf: the proxy.
+  services.resolved.enable = false;
   systemd.network.networks."10-nic" = {
     matchConfig.Name = "en* eth*";
     networkConfig = { DHCP = "ipv4"; IPv6AcceptRA = false; LinkLocalAddressing = "no"; };
