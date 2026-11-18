@@ -3,11 +3,11 @@ status: draft
 issue: 3
 spec: spec/2026-11-18-3-agent-workspace-k3d.md
 coders:
-  k2: coder    # Nix guest conversion: kernel boot, erofs disk, DHCP, outbound channels
-  k3: codex    # small tricky logic: paused-start ordering, identity by pod UID, Lease
+  k2: coder    # Nix guest conversion: kernel boot, erofs disk, DHCP, outbound channels, proxy auth
+  k3: codex    # small tricky logic: paused-start ordering, identity by pod UID, Lease, reverse VNC
   k4: codex    # small tricky logic: policy generation, contained excepts, protected ranges
-  k5: codex    # small tricky logic: per-veth nft bridge rules with kernel timeouts, quota
-  k6: codex    # small tricky logic: CONNECT/SNI, resolve-check-connect, UID binding
+  k5: codex    # small tricky logic: bridge mark plus inet rules, kernel timeouts, shared quota
+  k6: codex    # small tricky logic: CONNECT/SNI, resolve-check-connect, per-desktop token
   k7: coder    # reaper: list, compare, delete
   k8: coder    # Kubernetes manifests and Kyverno policies, declarative
   k9: coder    # profiles on PVCs, guarded first-time format
@@ -24,103 +24,114 @@ namespace `rfactory-desktops`. A runner Deployment is the only thing that
 creates them, and a guard per node enforces each VM's network. Everything
 the approved #3 plan built above the host layer stays: the guest agent,
 the call worker, handover and the approval queue, the share, profiles, the
-live view, the web routes, Teams (deviation 26) and the scripts. This plan
-is self-contained.
+stored preview login, the live view, the web routes, Teams (deviations 26
+and 27) and the scripts. This plan is self-contained.
 
 ## Decisions carried over from the approved spec revision
 
 - **Shape:**
-  - KubeVirt, pinned, installed by ArgoCD from `factory-gitops`, with KVM
-    only (never `useEmulation`).
-  - A runner Deployment with the existing HTTP API and mTLS.
+  - KubeVirt installed by ArgoCD from `factory-gitops`, with KVM only
+    (never `useEmulation`).
+  - A runner Deployment keeping the existing HTTP API and mTLS.
   - The guest is our NixOS system, booted with `kernelBoot` and a
     read-only erofs `containerDisk`. All writes go to tmpfs in guest
     memory, 4 GiB in total.
   - Images are imported with `k3d image import` and pinned by digest.
-- **Desktop guard** DaemonSet (`hostNetwork`, `NET_ADMIN`) in
-  `rfactory-desktops`. It touches only desktop pods' traffic and does
-  anti-spoofing, the startup gate, bandwidth (20 Mbit/s), the 1 GiB
-  quota and the runner-loss cut. Kyverno allows `hostNetwork` for it
-  alone.
+- **Desktop guard** DaemonSet (`hostNetwork`, `NET_ADMIN`). It touches
+  only desktop pods' traffic and does anti-spoofing, the startup gate,
+  20 Mbit/s, the 1 GiB quota and the runner-loss cut. Kyverno allows
+  `hostNetwork` for it alone.
 - **Network:**
-  - NetworkPolicy default deny in the namespace, with one policy per
-    desktop.
+  - NetworkPolicy default deny, with one policy per desktop.
   - Web traffic goes only through an egress proxy (CONNECT with matching
-    SNI, resolve once, check, connect to the checked address; its own
+    SNI, resolve once, check, connect to the checked address, its own
     egress policy).
   - Media goes direct to the pinned Meet, Zoom, Teams and Slack ranges.
-  - Generated `except` blocks only where contained, and every manifest is
-    server-side dry-run validated.
+  - `except` blocks only where contained; server-side dry-run validation.
 - **Lifecycle:**
-  - Policy and proxy entry are created first, then the VMI paused; it is
-    unpaused only after the guard's gate.
-  - A separate reaper deletes desktops on a stale runner Lease (60 s) or
-    past the runtime limit (3 h).
-  - The runner deletes unknown labelled VMIs at start.
-  - A ResourceQuota caps the namespace at `maxDesktops`.
-- **Profiles:** a filesystem PVC holding one raw `disk.img`, with LUKS
-  opened in the guest using a per-profile key, metadata in a ConfigMap,
-  and one VMI per profile.
-- **Exposure:** a NodePort Service, plus `k3d node edit
-  k3d-factory-serverlb --port-add 127.0.0.1:<port>:<nodeport>`, mTLS
-  only, bound on loopback.
+  - A paused start, unpaused only after the guard's gate.
+  - A separate reaper acts on a stale runner Lease (60 s) or the runtime
+    limit (3 h).
+  - Reconcile at runner start; a ResourceQuota caps the namespace at
+    `maxDesktops`.
+- **Profiles:** a filesystem PVC with one raw `disk.img`, LUKS opened in
+  the guest with a per-profile key, metadata in a ConfigMap, and one VMI
+  per profile.
+- **Exposure:** a NodePort plus `k3d node edit k3d-factory-serverlb
+  --port-add 127.0.0.1:<port>:<nodeport>`, mTLS only.
 - **Kyverno**, in `rfactory-desktops` with `failurePolicy: Fail`: no
-  NetworkPolicy may allow a protected range; no `hostNetwork` or
-  `privileged` except the guard; signatures or pinned digests for the
-  runner, proxy, guard, reaper and guest images.
-- **Removed:** the NixOS runner module and sample host, vsock bridges and
-  the CID oneshot, per-VM `microvm-run` copies, and the p620 NixOS change.
+  NetworkPolicy may allow a protected range; `hostNetwork` or
+  `privileged` only for the guard; signatures or pinned digests for every
+  image there.
+- **Removed:** the NixOS runner module and sample host, vsock and the CID
+  oneshot, per-VM `microvm-run` copies, and the p620 NixOS change.
 
-## Deviations from the spec revision (Codex re-check, for approval with this plan)
+## Deviations from the spec revision (Codex re-check and plan review, for approval with this plan)
 
-1. **Channels are guest-initiated; the guest has no listeners.** The spec
-   had the guest listening on 5000 and 5900, but masquerade preserves the
-   runner's pod IP inbound, so a gateway-only firewall would block it.
-   Instead:
-   - The guest dials the runner's Service on a **fixed ClusterIP**
-     (`spec.clusterIP` pinned in the manifest, passed to the guest as a
-     `kernelBoot` kernel argument): 5000 control, 5001 heartbeat, and
-     5900 VNC through `x11vnc -connect` (reverse VNC).
+1. **Channels are guest-initiated; the guest has no listeners.**
+   - The guest dials the runner Service at a **fixed ClusterIP** (pinned
+     `spec.clusterIP`, passed as a `kernelBoot` kernel argument): 5000
+     control, 5001 heartbeat, and 5900 VNC with `x11vnc -connect
+     <ip>:5900 -rfbport 0`, so x11vnc opens no listening port.
    - The guest firewall drops all inbound traffic.
-   - The runner accepts a connection only from the source IP of a launcher
-     pod it created, and maps it to that pod's UID. The guard's
-     anti-spoofing makes the source IP trustworthy.
-   - The guard and the desktop's NetworkPolicy allow exactly that
-     ClusterIP and those ports, matched after kube-proxy's DNAT (the
-     destination is the runner pod).
-2. **The guard enforces the whole allowlist; there is no namespace
-   probe.** The spec had the guard prove connections from inside the
-   pod's network namespace, which needs `CAP_SYS_ADMIN` and `setns`, and a
-   protected-address canary could pass before kube-router acts. Instead,
-   per desktop the guard writes an nft **bridge-family** table on that
-   pod's veth:
-   - anti-spoofing;
-   - allow only the runner endpoints, the proxy, the desktop's media
-     ipBlocks and its approved previews;
-   - drop everything else.
+   - The runner accepts a connection only from a launcher pod IP it
+     created, and maps it to that pod's UID.
+2. **The guard: a bridge-family mark, then inet-family rules.** Native
+   bridge filtering sees the Service ClusterIP before kube-proxy's DNAT,
+   and routed traffic leaves the bridge layer. So per desktop the guard
+   writes two tables, named by pod UID:
+   - **bridge `rfdesk_<uid>`**, at `prerouting`, `iifname <veth>`:
+     - drop any frame whose source MAC or IPv4/IPv6 source is not the
+       pod's;
+     - ARP only for the pod's own IP;
+     - set `meta mark` to the desktop's mark.
+   - **inet `rfdesk_<uid>`:**
+     - `forward` at filter priority, after kube-proxy's NAT at
+       `prerouting -100`;
+     - `input`, for traffic to the bridge gateway or the node itself,
+       which drops everything for that mark.
+   - The inet rules match `meta mark` and are ordered:
+     1. drop unless the `alive` and `deadline` elements exist
+        (deviation 3);
+     2. the shared 1 GiB `quota` object, over the limit → drop;
+     3. the always-protected drop;
+     4. allow:
+        - `ct original ip daddr` equal to the runner's ClusterIP on 5000,
+          5001 or 5900;
+        - the proxy pod's port;
+        - the media ipBlocks;
+        - approved previews;
+     5. `ct state established,related` accept;
+     6. drop.
 
-   The veth is found without entering the pod's network namespace: the
-   pod IP's neighbour MAC on `cni0`, then the bridge fdb port. The startup
-   gate is "the guard read back its table for this pod UID". NetworkPolicy
-   is a second, independent layer, and the gate does not depend on it.
-3. **Permissions expire in the kernel, not in the guard process.** Every
-   allow rule matches a per-desktop nft set element `alive`. That element
-   carries a kernel **timeout**: 60 s, or 5 s while a share is active. The
-   runner's heartbeat to the guard refreshes it (every 10 s, or every 2 s
-   while sharing). A second element, `deadline`, has a 3 h timeout set
-   once at creation. If the guard crashes or hangs, or the API is
-   partitioned, the elements expire and the desktop's table drops
-   everything. On start, the guard removes tables for pod UIDs that are
-   not live desktops.
-4. **A profile disk is formatted only when it is provably new.** Formatting
-   happens only when all three hold:
-   - the profile's ConfigMap says `initialized: false`;
-   - the disk serial equals the profile id;
-   - the first 16 MiB are all zero.
-
-   After a format the runner sets `initialized: true`. An initialized
-   profile without a LUKS header fails closed and is never formatted.
-5. **Explicit RBAC**, all in `rfactory-desktops`:
+     Return traffic is matched by the conntrack zone of the same mark.
+   - The veth is found from the pod IP's neighbour MAC on `cni0`, then
+     the bridge fdb port. The guard retries five times, 1 s apart. A
+     missing or ambiguous match keeps the VMI paused and reports
+     `guard-no-veth`.
+   - The startup gate is "the guard read back both tables for this pod
+     UID". NetworkPolicy is a second, independent layer. The k10b gate
+     proves on the live cluster that the mark survives from the bridge
+     to the IP layer with `br_netfilter` off (`cni0` reports
+     `nf_call_iptables 0`).
+3. **Permissions expire in the kernel.**
+   - The `alive` element of a per-desktop set has a timeout: 60 s, or
+     5 s while a share is active.
+   - The runner's heartbeat to the guard refreshes it with `nft delete
+     element` plus `add element … timeout`, since a duplicate `add` does
+     not reset the expiry. It runs every 10 s, or every 2 s while
+     sharing.
+   - `deadline` (3 h) is added once.
+   - On start the guard keeps existing tables (it never re-adds
+     `deadline`) and removes tables for UIDs that are not live desktops.
+   - A crashed or hung guard, runner or API lets the elements expire,
+     and rule 1 then drops everything, established flows included.
+4. **A profile disk is formatted only when it is provably new:** its
+   ConfigMap says `initialized: false`, the disk serial equals the
+   profile id, and the first 16 MiB are zero. After a format the runner
+   sets `initialized: true`. An initialized profile without a LUKS header
+   fails closed and is never formatted.
+5. **RBAC**, all in `rfactory-desktops`:
    - **runner:**
      - `kubevirt.io/virtualmachineinstances`: create, get, list, watch,
        delete;
@@ -130,216 +141,245 @@ is self-contained.
      - core `persistentvolumeclaims`: create, get, list, delete;
      - core `configmaps`: create, get, list, update, delete;
      - core `pods`: get, list, watch;
-     - `coordination.k8s.io/leases`: get, create, update, on
-       `resourceNames: [rfactory-runner]`.
+     - `coordination.k8s.io/leases`: get, update, on `resourceNames:
+       [rfactory-runner]`. The Lease is created by the manifests.
    - **reaper:**
-     - leases: get;
-     - VMIs: list, delete;
-     - networkpolicies and configmaps: list, delete.
+     - leases: get, on `resourceNames: [rfactory-runner]`;
+     - VMIs: list, delete.
+
+     Owned objects are garbage-collected (deviation 7).
    - **guard:**
      - pods: list, watch;
      - configmaps: get, list, watch.
-6. **KubeVirt creates the blank `disk.img`.** `local-path` is
-   `WaitForFirstConsumer`, so the runner cannot write into a new PVC.
-   KubeVirt creates the image at first attach (filesystem PVC, size
-   given), and deviation 4 governs the first format.
-7. **Cleanup on every path; identity by pod UID.**
-   - Each desktop's NetworkPolicy, proxy-entry ConfigMap and guard-entry
-     ConfigMap carry an `ownerReference` to its VMI, so deleting the VMI
-     by any path (runner, reaper or manual) garbage-collects them.
-   - The proxy and the guard key entries by launcher pod UID, and resolve
-     a source IP to a UID through a pod watch. A reused IP with another
-     UID gets nothing.
+   - **proxy:**
+     - pods: get, list, watch;
+     - configmaps: get, list, watch.
+6. **KubeVirt creates the blank `disk.img`** in a filesystem PVC
+   (`local-path` is `WaitForFirstConsumer`). Deviation 4 governs the first
+   format.
+7. **One creation order, ownership, and identity:**
+   1. create the VMI with `startStrategy: Paused`;
+   2. read its UID; wait for its launcher pod (UID, IP);
+   3. create the NetworkPolicy, the proxy-entry ConfigMap and the
+      guard-entry ConfigMap, each with an `ownerReference` to the VMI;
+   4. wait for the guard's ready;
+   5. unpause.
+
+   Any failure deletes the VMI, which garbage-collects the rest.
+   Deleting the VMI by any path (runner, reaper or manual) removes all of
+   it.
+
+   **The proxy needs a per-desktop credential.** The runner generates a
+   random token at step 3, stores it in the proxy-entry ConfigMap and
+   sends it to the guest in `call-config`. Both guest Chromes use it as
+   proxy credentials (`--proxy-server` plus Playwright's `proxy` option).
+   The proxy accepts a connection only with a token whose entry's pod UID
+   and IP match the source. A stale watch cannot grant anything, because
+   a new pod at a reused IP does not hold the old token.
 8. **Two kinds of protected ranges.**
-   - **Always protected**, never allowed:
+   - **Always protected:**
      - the node network `172.18.0.0/16`;
      - the pod CIDR `10.42.0.0/16` and service CIDR `10.43.0.0/16`,
-       except the runner and proxy endpoints;
+       except the runner ClusterIP and proxy endpoints;
      - p620's LAN and Tailscale addresses;
      - the Factory hosts;
      - `169.254.169.254`;
      - every other desktop.
    - **Private by default:** RFC1918 outside those, CGNAT, ULA and
-     link-local. Here an admin-approved exact `ip:port` for one scope may
-     be allowed, in the policy, the guard and the proxy.
+     link-local. An admin-approved exact `ip:port` for one scope may be
+     allowed there.
+9. **Profiles survive a rollback.**
+   - The namespace is created outside the ArgoCD Application, with
+     `argocd.argoproj.io/sync-options: Delete=false`, so deleting the app
+     never deletes the namespace.
+   - Profile PVCs use a StorageClass `rfactory-profiles` (the `local-path`
+     provisioner, `reclaimPolicy: Retain`).
+   - Profile ConfigMaps carry `argocd.argoproj.io/compare-options:
+     IgnoreExtraneous` and are never in Git, so ArgoCD never prunes them.
+10. **The KubeVirt release must support Kubernetes 1.31.** k1a pins the
+    newest KubeVirt release whose published support matrix includes
+    Kubernetes 1.31.5, recorded with the matrix link and image digests.
+    A cluster upgrade is out of scope.
 
 ## Steps
 
-All live steps (k1, k10, k11, k14) are mine and owner-gated on p620, with
-an agent-bus notice first. Coders never run `kubectl apply`, `k3d`,
-`podman`, `nix build` or ArgoCD syncs.
+The live steps (k1a, k10, k10b, k11, k14) are mine and owner-gated on
+p620, each with an agent-bus notice first. Coders never run `kubectl
+apply`, `k3d`, `podman`, `nix build` or ArgoCD syncs.
 
-1. **k1. Gate (mine, owner OK).** Add `apps/kubevirt` to `factory-gitops`,
-   as a PR the owner merges: the KubeVirt operator and CR at the newest
-   stable release, pinned by version and image digest, with no
-   `useEmulation`.
-   - Build the guest's kernel-boot container and erofs `containerDisk`
-     (k2's outputs) and `k3d image import` them.
-   - Boot one probe VMI paused, apply a hand-written guard table (k5's
-     rule builder output), and unpause.
-   - → verify:
-     - `kubectl get kubevirt` reports Deployed;
-     - the launcher has `/dev/kvm` and the domain uses KVM;
-     - from the probe, every always-protected range fails over TCP and
-       UDP;
-     - a spoofed source is dropped (the counter rises);
-     - Meet's range and the proxy port are reachable;
-     - a guest file marker is absent from the node after a forced delete.
+1. **k1a. Hardware gate (mine, owner OK; nothing else needed).**
+   - Pick the KubeVirt release per deviation 10.
+   - Add `apps/kubevirt` to `factory-gitops` as a PR the owner merges.
+   - Boot KubeVirt's own demo `containerDisk` VMI in a scratch namespace,
+     then delete it and the namespace.
 
-   Any failure stops this revision, and the owner is told.
-   Traps: never touch other namespaces' resources; KubeVirt's namespace
-   is `kubevirt`.
-2. **k2. Guest for KubeVirt.** Create `desktop/guest/kubevirt.nix`, which
-   imports `default.nix`. Outputs: a kernel-and-initrd container image
-   and an erofs root `containerDisk`, both exported from `flake.nix`.
+   → verify: `kubectl get kubevirt` reports Deployed; the launcher has
+   `/dev/kvm`; `virsh dumpxml` in the launcher shows `type='kvm'`; the
+   VMI reaches Running.
+   A failure stops this revision, and the owner is told.
+2. **k2. Guest for KubeVirt.** `desktop/guest/kubevirt.nix` imports
+   `default.nix` and outputs a kernel-and-initrd container image and an
+   erofs root `containerDisk` (`flake.nix` exports).
    - Guest settings:
      - DHCP on the masquerade NIC;
-     - DNS only at the proxy's resolver (a kernel argument);
+     - DNS only at the proxy's resolver;
      - inbound firewall drops everything;
-     - the agent dials `<runner ClusterIP>:5000` and the heartbeat dials
-       `:5001` (a kernel argument replaces vsock);
-     - x11vnc reverse-connects to `:5900`;
-     - tmpfs for every writable path, 4 GiB in total;
-     - root read-only.
-   - The agent's transport (`desktop/guest/agent/index.js`, `hostLink`)
-     becomes TCP to the runner, keeping framing and protocol.
-   - → verify: `nix eval` of both outputs' drvPaths; the agent tests pass
-     with a TCP fake runner.
+     - the agent dials `<runner ClusterIP>:5000`, and the heartbeat dials
+       `:5001`;
+     - x11vnc per deviation 1, under a systemd unit with
+       `Restart=always`, so it reconnects after each viewer;
+     - tmpfs for every writable path (4 GiB);
+     - root read-only;
+     - both Chromes get the proxy and the token from `call-config`.
+   - `desktop/guest/agent/index.js` `hostLink` and the control transport
+     become TCP, with the same framing and protocol.
 
-   Traps: no secret in the image; keep one call worker per VM (deviation
-   24).
-3. **k3. Runner Kubernetes backend.** Create `desktop/runner/k8s.js`, a
-   minimal client using the in-cluster ServiceAccount token over fetch.
-   It covers VMIs, unpause, NetworkPolicies, ConfigMaps, PVCs, pods and
-   the Lease.
-   - `lifecycle.js` swaps the systemd, tap and vsock backend for it,
-     keeping its rules:
-     - create order: policy, proxy entry, guard entry, VMI paused, wait
-       for the guard's ready, unpause;
-     - identity by launcher pod UID;
-     - channels accepted on 5000, 5001 and 5900 only from known launcher
-       IPs;
+   → verify: `nix eval` of both outputs; agent tests with a TCP fake
+   runner.
+   Traps: no secret in the image; one call worker per VM.
+3. **k3. Runner Kubernetes backend.** `desktop/runner/k8s.js` is a minimal
+   in-cluster client over fetch: VMIs, unpause, NetworkPolicies,
+   ConfigMaps, PVCs, pods and the Lease.
+   - **`lifecycle.js`:**
+     - the deviation 7 order, with cleanup on failure;
+     - identity by pod UID;
+     - accepts on 5000, 5001 and 5900 only from known launcher IPs;
      - the Lease renewed every 10 s;
-     - the guard heartbeat sent per desktop, every 2 s while sharing;
+     - the guard heartbeat;
      - reconcile at start.
-   - `runner.js` `main()` reads in-cluster config.
-   - → verify: `(cd desktop && node --test)` with a fake API server; the
-     existing lifecycle tests are kept, plus paused-start ordering, an
-     unknown source IP refused, a reused IP with a new UID refused, and
-     reconcile.
+   - **Reverse VNC** (`desktop/runner/vnc.js`, `runner.js`
+     `createUpgrade`):
+     - the runner keeps the desktop's latest accepted 5900 socket;
+     - `/vnc/<id>` bridges one viewer to it, and a second viewer gets
+       409;
+     - on viewer close the runner closes the reverse socket and x11vnc
+       reconnects;
+     - the existing view-only RFB filter stays on the path.
 
-   Traps: never trust a guest-supplied id; argv-free.
-4. **k4. Policy generator.** Create `desktop/runner/k8s-policy.js`. It
-   builds the desktop NetworkPolicy:
-   - egress to the runner and proxy pods, the platform media ipBlocks and
-     approved previews;
+   → verify: `(cd desktop && node --test)` with a fake API server. The
+   existing lifecycle tests are kept, plus:
+   - the creation order and cleanup at each failure;
+   - an unknown source IP refused;
+   - a reused IP with a new UID refused;
+   - reconcile;
+   - a reverse VNC bridge with the view-only filter, and reconnect.
+4. **k4. Policy generator.** `desktop/runner/k8s-policy.js` builds the
+   NetworkPolicy, the proxy entry and the guard entry from one input:
    - an `except` only when contained;
-   - an always-protected preview refused.
+   - an always-protected preview refused;
+   - IPv4 and IPv6.
 
-   The proxy and guard ConfigMap bodies come from the same inputs.
-   → verify: unit tests, including a schema check of every generated
-   manifest against the NetworkPolicy shape; k1 runs a server-side dry
-   run.
-   Traps: IPv6 and IPv4 both; never emit a rule allowing an
-   always-protected range.
-5. **k5. Desktop guard.** Create `desktop/guard/guard.js`, the DaemonSet
-   program. Its pieces:
-   - **Find each desktop pod's veth:** watch the pods with the desktop
-     label on this node; read the guard ConfigMap by owner pod UID; find
-     the veth from the neighbour MAC on `cni0` and the bridge fdb.
-   - **Write one nft bridge table per pod UID:** anti-spoofing; allow
-     rules gated on the `alive` and `deadline` set elements with kernel
-     timeouts (deviation 3); the always-protected drop; drop by default;
-     counters.
-   - **Apply limits:** `tc` at 20 Mbit/s; cut at 1 GiB, reported to the
-     runner.
-   - **Serve the runner:** an HTTP endpoint (mTLS, runner only) for
-     heartbeats and ready.
-   - **On start:** remove stale tables.
+   → verify: unit tests, including a schema check of every manifest.
+5. **k5. Desktop guard.** `desktop/guard/guard.js` writes deviation 2's
+   tables:
+   - the veth lookup with retries;
+   - `alive` and `deadline` per deviation 3;
+   - the shared `quota` object;
+   - `tc` at 20 Mbit/s;
+   - counters for reporting;
+   - an mTLS endpoint for the runner (heartbeat, sharing on/off, ready);
+   - start-up reconcile.
 
-   → verify: unit tests of the rule text and the veth lookup with fake
-   `ip`, `bridge` and `nft` output.
-   Traps: argv arrays; touch only tables named `rfdesk_<uid>`; never
-   flush other tables.
-6. **k6. Egress proxy.** Create `desktop/proxy/proxy.js`:
-   - CONNECT only, with the SNI read from the ClientHello and required to
-     equal the CONNECT host;
+   → verify: unit tests of the rule text and order (the timeout check is
+   before the established accept), the refresh as delete plus add, the
+   veth lookup on ambiguity, and that reconcile keeps `deadline`.
+   Traps: argv arrays; only tables named `rfdesk_<uid>`; never flush
+   others.
+6. **k6. Egress proxy.** `desktop/proxy/proxy.js` handles:
+   - CONNECT with a token (deviation 7);
+   - the SNI from the ClientHello equal to the CONNECT host;
    - plain HTTP only for an approved private preview;
-   - allowlist per source pod UID;
-   - resolve once, check every address against the protected ranges,
-     connect to the checked address;
-   - a DNS responder that answers only allowlisted names.
+   - resolve once, check, connect to the checked address;
+   - a DNS responder that answers allowlisted names only.
 
    → verify: unit tests for SNI mismatch, a name resolving into a
-   protected range, a reused IP with a new UID, and an unknown source.
-   Traps: no external dependency for TLS parsing beyond reading the SNI.
-7. **k7. Reaper.** Create `desktop/reaper/reaper.js`. Every 10 s it
-   deletes labelled VMIs when the runner Lease is older than 60 s, or when
-   the VMI is older than 3 h.
+   protected range, a token used from another pod's IP, a reused IP
+   without the token, and an unknown source.
+7. **k7. Reaper.** `desktop/reaper/reaper.js` deletes labelled VMIs when
+   the Lease is older than 60 s or the VMI is older than 3 h.
    → verify: unit tests with a fake API.
-8. **k8. Manifests.** Create `deploy/k8s/rfactory-desktops/`:
-   - the namespace;
-   - RBAC per deviation 5;
+8. **k8. Manifests.** `deploy/k8s/rfactory-desktops/`:
+   - the namespace (deviation 9) and the `rfactory-profiles`
+     StorageClass;
+   - RBAC per deviation 5 and the `rfactory-runner` Lease;
    - the runner, proxy and reaper Deployments and the guard DaemonSet,
-     with digest-pinned images, `runAsNonRoot` except the guard, and
-     resource limits;
-   - the runner Service: fixed ClusterIP, NodePort;
-   - the default-deny NetworkPolicies and the ResourceQuota;
-   - the Kyverno ClusterPolicies scoped to the namespace;
-   - an ArgoCD Application for `factory-gitops` pointing at this path
-     (the owner merges it).
+     digest-pinned, `runAsNonRoot` except the guard, with limits;
+   - the runner Service (fixed ClusterIP, NodePort);
+   - default deny and the ResourceQuota;
+   - the Kyverno policies, scoped to this namespace;
+   - the ArgoCD Application for `factory-gitops`, which the owner merges.
 
-   → verify: `kubectl apply --dry-run=client -f` for every file (no
-   cluster contact), and a test that the Kyverno policies name only this
-   namespace.
+   → verify: `kubectl apply --dry-run=client` per file; a test that the
+   Kyverno policies name only this namespace.
 9. **k9. Profiles on PVCs.**
-   - `desktop/runner/profiles.js` creates a PVC and a ConfigMap
-     (`initialized: false`), attaches the PVC as a disk with serial
-     `<profile id>`, and keeps the lock and expiry.
-   - `desktop/guest/agent/profile.js` formats only under deviation 4.
+   - `desktop/runner/profiles.js` creates the PVC
+     (`rfactory-profiles`) and a ConfigMap (`initialized: false`),
+     attaches the disk with serial `<profile id>`, and keeps the lock and
+     expiry.
+   - `desktop/guest/agent/profile.js` formats only per deviation 4.
 
    → verify: unit tests, including an initialized profile without a
    header failing closed and a second attach refused.
-10. **k10. Images (mine).** Build the runner, guard, proxy, reaper and
-    guest images on p620 with the owner's OK, `k3d image import`, and
-    record the digests in the manifests.
-11. **k11. Deploy and exposure (mine, owner OK, agent bus first).**
-    - ArgoCD syncs `rfactory-desktops`.
+10. **k10. Images (mine, owner OK).** Build the runner, guard, proxy,
+    reaper, kernel-boot and `containerDisk` images on p620, `k3d image
+    import` them, and record the digests in the manifests.
+11. **k10b. Isolation gate (mine, owner OK, after k2 to k10).** Sync
+    `rfactory-desktops` and run `desktop/verify/net.sh` from a probe VMI
+    on each node. Every line must PASS, or the revision stops:
+    - startup: traffic sent the moment the VMI is unpaused is filtered;
+    - the mark survives from the bridge to the IP layer;
+    - every always-protected range fails over TCP and UDP, same-node and
+      cross-node;
+    - a spoofed IP and a spoofed MAC are dropped;
+    - a pinned media range and the proxy (with its token) are reachable;
+    - the guard is killed: an established flow is cut within 60 s;
+    - while sharing, the runner is stopped: egress is cut within 5 s;
+    - the guard restarts and `deadline` is not reset;
+    - the proxy refuses a protected resolution, an SNI mismatch and a
+      missing token;
+    - after a forced delete, no node file holds a guest marker.
+12. **k11. Deploy and exposure (mine, owner OK, agent bus first).**
     - `k3d node edit k3d-factory-serverlb --port-add
       127.0.0.1:<port>:<nodeport>`.
-    - Put the runner's client cert, key and CA in
+    - Put the runner client cert, key and CA in
       `~/.config/rfactory/desktop-runner/` (generated, never printed).
     - `deploy/pod.sh up` with `RFACTORY_DESKTOP=1` and the runner URL.
 
-    → verify: `ss -ltn` shows the port on `127.0.0.1` only; `GET /list`
-    over mTLS answers.
-12. **k12. Scripts.** Re-point `desktop/verify/*.sh`:
-    - `net.sh` runs from a probe VMI and includes the startup, spoofing,
-      guard-loss (kill the guard: egress cut within 60 s) and proxy
-      checks;
-    - `lifecycle.sh` adds runner loss and the reaper;
-    - `profiles.sh` uses PVCs;
+    → verify: `ss -ltn` shows the port on `127.0.0.1` only; `list` over
+    mTLS answers.
+13. **k12. Scripts.** Re-point `desktop/verify/*.sh` to the checks in k14:
+    - `net.sh` is k10b;
+    - `lifecycle.sh` and `profiles.sh` per the table;
     - `capacity.sh` uses the quota.
 
     → verify: `shellcheck`, `bash -n`, and every check name appearing
     once.
-13. **k13. Remove the host layer** after k3 to k5 pass:
+14. **k13. Remove the host layer** after k3 to k5 pass:
     - `desktop/nixos/` and its flake exports;
-    - the vsock code (`vsock.js`, the CID oneshot);
-    - `net.js`'s host-only parts (the rule builder moves into the guard);
-    - the per-VM `microvm-run` rewriting;
+    - `vsock.js` and the CID oneshot;
+    - `net.js`'s host parts;
+    - the `microvm-run` rewriting;
     - `desktop/gate/`, which stays in git history.
 
-    → verify: all suites pass; `grep -rn vsock desktop/` finds only
-    history notes.
-14. **k14. Review and live (mine).**
-    - A fresh Opus review and a Codex review of the diff against this
-      plan.
-    - Then step 17's checklist on p620 with the owner present, including
-      a Meet call and a Teams call from a desktop VMI, handover, an
-      approved share and Stop.
-    - Measure CPU, RAM and start-up time.
-    - Write `desktop/RESULTS.md`.
+    → verify: all suites pass; `grep -rn vsock desktop/` finds only notes.
+15. **k14. Review and live (mine, owner present).** A fresh Opus review
+    and a Codex review of the diff, then on p620 every line below must
+    PASS:
+
+    | Script | Checks |
+    |---|---|
+    | `net.sh` | all of k10b |
+    | `lifecycle.sh` | `list` is empty and no VMI, policy, proxy entry or guard table remains after each path: normal call end; worker heartbeat loss; server heartbeat loss; idle expiry; the runtime limit; the runner pod killed (the reaper deletes within 60 s, egress already cut); the runner restarted with a live call; the reaper alone; a manual `kubectl delete vmi` |
+    | `capacity.sh` | a 4th create returns `capacity`; two simultaneous creates with one slot give one success; the 20 Mbit/s limit holds; the 1 GiB cutoff ends the call; start-up time printed |
+    | `handover.sh` | the existing handover and browser-boundary checks, unchanged |
+    | `secrets.sh` | no credentials in the guest besides the attached profile; a stored login is filled and never reaches the brain, page or logs |
+    | `share.sh` | the existing share checks on a VMI that joined a real call, plus the 5 s share cutoff on runner loss |
+    | `profiles.sh` | first attach formats; a second attach refused; another scope refused; an initialized profile with a wiped header fails closed and is not formatted; deleting or expiring an attached profile destroys the desktop first; after a rollback rehearsal (apps deleted, namespace kept) the PVC and its ConfigMap remain |
+    | `liveview.sh` | non-member and other-scope refused; revoking a member closes their stream within 5 s; a real noVNC page receives a frame over the reverse VNC; a KeyEvent closes the stream and the screen is unchanged; a second viewer gets 409 |
+    | `e2e.sh` (owner watches) | a Meet call and a Teams call from a desktop VMI; handover of one preview origin; the agent opens it; an approved share shows only that window; Stop ends it; the call ends and nothing of the VM is left |
+
+    Then measure CPU, RAM and start-up time, and write
+    `desktop/RESULTS.md`.
 
 ## Tests
 
@@ -353,15 +393,15 @@ for f in deploy/k8s/rfactory-desktops/*.yaml; do kubectl apply --dry-run=client 
 ! grep -rn innerHTML web/public --include=*.js --exclude-dir=vendor
 ```
 
-All pass with 0 skipped. Then k1's gate and k14's checklist on p620.
+All pass with 0 skipped. Then k1a, k10b and k14 on p620.
 
 ## Rollback
 
 - Delete the ArgoCD Applications `rfactory-desktops` and `kubevirt`
-  (KubeVirt's CR first, so its operator removes its pods), and remove the
-  serverlb port with `k3d node edit --port-delete`.
+  (KubeVirt's CR first). The namespace and the profile PVCs and
+  ConfigMaps stay (deviation 9).
+- Remove the serverlb port with `k3d node edit --port-delete`.
 - Deploy the pod without `RFACTORY_DESKTOP`.
-- Nothing on p620's NixOS config changes, so there is nothing to roll
-  back there.
-- The host-layer code remains in git history if the host design is needed
-  again.
+- To remove profiles as well, the owner deletes the namespace and the
+  retained PVs explicitly.
+- Nothing on p620's NixOS config changes.
