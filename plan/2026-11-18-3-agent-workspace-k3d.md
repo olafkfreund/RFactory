@@ -247,6 +247,18 @@ and 27) and the scripts. This plan is self-contained.
     - k10b adds one check: a desktop cannot reach a pod on its own node
       by pod IP.
 
+12. **The cluster is upgraded first (owner decision, 2026-11-18); this
+    replaces deviation 10.**
+    - KubeVirt's support matrix lists only 1.7–1.9 as maintained, for
+      Kubernetes 1.34–1.36. The cluster's k3s 1.31.5 is end of life; the
+      only KubeVirt tested on it is 1.6, which no longer gets fixes.
+    - The owner chose to upgrade the cluster first, as
+      olafkfreund/nixos_config#3071 through that repo's own artifact
+      workflow.
+    - **k1a waits for it.** k1a then pins the newest maintained KubeVirt
+      that supports the upgraded Kubernetes.
+    - The offline steps (k2–k9, k12, k13) go ahead meanwhile.
+
 ## Steps
 
 The live steps (k1a, k10, k10b, k11, k14) are mine and owner-gated on
