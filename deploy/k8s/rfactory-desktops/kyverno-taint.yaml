@@ -1,5 +1,7 @@
 # Node k3d-factory-agent-0 is reserved for desktops. The lead applies the taint once (k11), by hand:
-#   kubectl taint node k3d-factory-agent-0 rfactory.io/desktops=true:NoSchedule rfactory.io/desktops=true:NoExecute
+#   kubectl taint node k3d-factory-agent-0 rfactory.io/desktops=true:NoSchedule
+# NoSchedule only (owner decision, k3d plan deviation 31): nothing running there is evicted; the node drains
+# as other pods are rescheduled. NoExecute would also evict ArgoCD, Kyverno and the factory apps at once.
 # Only desktop VMIs carry the matching toleration (the runner sets it in the VMI spec; KubeVirt copies it
 # to the launcher pod). The guard tolerates everything (operator Exists). KubeVirt's own agent-0 pods
 # (virt-handler) need a toleration too: give them `operator: Exists` in the KubeVirt CR placement, NOT this

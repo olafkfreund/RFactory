@@ -41,7 +41,13 @@ up() {
   [ "$rebuilt" = "$commit" ] || { echo "refusing to deploy: source changed during build" >&2; exit 2; }
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
-  podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null
+  # a runner on the host's loopback (the k3d load balancer, #3) is reached through pasta's loopback forward:
+  # the pod's 127.0.0.1:<port> is the host's, so the runner certificate's 127.0.0.1 name still matches
+  net=()
+  if [ "${RFACTORY_DESKTOP:-}" = 1 ] && [[ ${RFACTORY_RUNNER_URL:-} =~ ^https://127\.0\.0\.1:([0-9]+)$ ]]; then
+    net=(--network "pasta:-T,${BASH_REMATCH[1]}")
+  fi
+  podman pod create --name "$pod" --userns=keep-id "${net[@]}" -p 127.0.0.1:4180:4180 >/dev/null
   # Phase 3: writes only when the write key file exists (600) and RFACTORY_WRITES is not "off".
   # Approvers must be named explicitly (intent: only the owner approves). To turn writes off,
   # run with RFACTORY_WRITES=off; the scope file's writes_enabled must then be false as well.

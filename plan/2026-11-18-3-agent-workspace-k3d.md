@@ -612,6 +612,28 @@ and 27) and the scripts. This plan is self-contained.
       answers 409.
     - Fix: `lifecycle.js` polls the VMI (same UID) for the condition
       `Paused=True`, up to 60 s, then unpauses. A test covers it.
+31. **k11: agent-0 is tainted NoSchedule only (owner decision,
+    2026-11-18); exposure through pasta.**
+    - 24 pods ran on agent-0, among them ArgoCD's application controller,
+      Kyverno, KEDA, the factory apps and KubeVirt's virt-handler.
+      NoExecute (deviation 21) would have evicted all of them at once,
+      and virt-handler with them, which ends desktops on that node.
+    - The owner chose NoSchedule: nothing is evicted, and the node drains
+      as other pods are rescheduled. Until then, the guard's per-pod
+      binding and anti-spoofing (deviation 29) still hold on every desktop
+      veth.
+    - virt-handler tolerates every taint through the KubeVirt CR
+      (`spec.workloads.nodePlacement`, a blanket `operator: Exists`,
+      factory-gitops#391), not the rfactory key, which Kyverno admits only
+      on launchers.
+    - **Exposure:** the k3d load balancer publishes
+      `127.0.0.1:18443` → NodePort 31843 (8443 is the gate's
+      port-forward).
+      - `deploy/pod.sh` gives the pod `--network pasta:-T,<port>` when the
+        runner URL is `https://127.0.0.1:<port>`, so the pod's loopback
+        port is the host's and the runner certificate's `127.0.0.1` name
+        still matches.
+      - `RFACTORY_RUNNER_URL=https://127.0.0.1:18443`.
 
 
 ## Steps
