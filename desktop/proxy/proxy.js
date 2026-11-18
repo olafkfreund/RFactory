@@ -10,7 +10,7 @@ const dgram = require('node:dgram');
 const UID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const BASE_PROTECTED = ['172.18.0.0/16', '10.42.0.0/16', '10.43.0.0/16', '169.254.169.254/32'];
 const PRIVATE = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
-  '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/4', '::/128', '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8'];
+  '172.16.0.0/12', '192.0.0.0/24', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4', '::/128', '64:ff9b::/96', '2002::/16', '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8'];
 
 function addressBits(address) {
   const family = net.isIP(address);
@@ -283,6 +283,7 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
     req.pipe(upstream);
   }
   async function handleConnect(req, client, head) {
+    client.on('error', () => client.destroy()); // a client reset must not crash the shared proxy
     const ip = sourceIp(client);
     if (!allow(ip)) { client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
     let entry;

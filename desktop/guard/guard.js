@@ -295,8 +295,11 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
   }
   async function counters(uid) {
     if (!(await status(uid)).ready) throw new Error('guard-not-ready');
-    const output = JSON.parse(await run('nft', ['-j', 'list', 'counter', 'inet', tableName(uid), 'egress']));
-    return { bytes: output.nftables.find(item => item.counter)?.counter.bytes || 0 };
+    // the quota's own use, not the counter after it: the packet that crosses 1 GiB is dropped before the counter sees it
+    const output = JSON.parse(await run('nft', ['-j', 'list', 'quota', 'inet', tableName(uid), 'traffic']));
+    const used = output.nftables.find(item => item.quota)?.quota.used;
+    if (!Number.isInteger(used)) throw new Error('quota unreadable');
+    return { bytes: used };
   }
   function server(tls) {
     const app = https.createServer({ ...tls, requestCert: true, rejectUnauthorized: true }, async (req, res) => {

@@ -41,7 +41,7 @@ function fake() {
       return '';
     }
     if (file === 'nft' && argv[0] === 'delete' && argv[1] === 'table') { installed.delete(`${argv[2]} ${argv[3]}`); return ''; }
-    if (file === 'nft' && argv[1] === 'list' && argv[2] === 'counter') return JSON.stringify({ nftables: [{ counter: { bytes: 123 } }] });
+    if (file === 'nft' && argv[1] === 'list' && argv[2] === 'quota') return JSON.stringify({ nftables: [{ quota: { name: 'traffic', bytes: 1073741824, used: 123, inv: true } }] });
     return '';
   };
   const api = { pods: async () => ({ items: [pod] }), entry: async () => ({ data: { entry: JSON.stringify(entry) } }) };

@@ -737,6 +737,26 @@ and 27) and the scripts. This plan is self-contained.
       (serverlb port to NodePort 31843); the mTLS `/list` call answers.
     - The web pod restarted with `RFACTORY_DESKTOP=1` and
       `RFACTORY_RUNNER_URL=https://127.0.0.1:18443`; both nodes Ready.
+36. **k14 reviews (Codex gpt-6.1-sol and a fresh Opus): fixes (lead).**
+    - Share stop and `share-target-changed` renew the guard at once: the
+      5 s sharing permission lapsed before the next 10 s beat (Codex P1).
+    - The proxy handles errors on the CONNECT client socket: a client
+      reset crashed the shared proxy (Codex P1).
+    - `create` gets 180 s in the web's runner client (both reviews).
+    - The guard reports the quota's own use: the packet that crosses
+      1 GiB is dropped before the counter, so the runner's `egress-quota`
+      destroy could never fire (Opus high).
+    - A destroy during boot deletes the VMI and stops: boot no longer
+      unpauses or tracks a VMI the runner has dropped (Opus).
+    - Desktops without a profile get `terminationGracePeriodSeconds: 0`,
+      so egress ends with the delete; profile desktops keep the default
+      so LUKS closes (Opus).
+    - A namespace-quota 403 on create answers `capacity` (Opus).
+    - The proxy's private list adds 192.0.0.0/24, 198.18.0.0/15,
+      240.0.0.0/4, 64:ff9b::/96 and 2002::/16 (Opus).
+    - Not changed: the guard heartbeat's API read (fails closed), the
+      Kyverno guard exemption (only cluster admins can create pods
+      there).
 
 
 ## Steps

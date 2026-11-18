@@ -76,7 +76,7 @@ test('client: long runner operations get their own timeout; others keep the defa
     };
     const client = createRunnerClient({ url: 'https://localhost:1', key: k.f('client.key'), cert: k.f('client.crt'), ca: k.f('ca.crt'), request });
     for (const route of ['create', 'profile-attach', 'action', 'login', 'share-start']) await client.call(route, {});
-    assert.deepEqual(seen, { create: 30000, 'profile-attach': 150000, action: 45000, login: 45000, 'share-start': 45000 });
+    assert.deepEqual(seen, { create: 180000, 'profile-attach': 150000, action: 45000, login: 45000, 'share-start': 45000 });
     const short = createRunnerClient({ url: 'https://localhost:1', key: k.f('client.key'), cert: k.f('client.crt'), ca: k.f('ca.crt'), request, timeoutMs: 200000 });
     await short.call('action', {});
     assert.equal(seen.action, 200000);

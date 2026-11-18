@@ -52,7 +52,7 @@ function createLifecycle(config, deps) {
     vm.lastActivity = clock.now();
     if (tagged.type === 'cancel-ack') { if (vm.cancelAck) vm.cancelAck(); } else if (tagged.type === 'call-end') destroy(vm.id, 'call-end');
     else {
-      if (tagged.type === 'share-target-changed') { vm.sharing = false; vm.controlLostAt = null; } // the guest ended that capture
+      if (tagged.type === 'share-target-changed') { vm.sharing = false; vm.controlLostAt = null; vm.lastGuard = 0; } // the guest ended that capture
       if (deps.onGuestMessage) deps.onGuestMessage(tagged);
     }
   }
@@ -240,7 +240,8 @@ function createLifecycle(config, deps) {
       'rfactory.io/call': crypto.createHash('sha256').update(vm.call_id || '').digest('hex').slice(0, 16),
       'rfactory.io/scope': crypto.createHash('sha256').update(vm.scope || '').digest('hex').slice(0, 16) };
     const vmi = { apiVersion: 'kubevirt.io/v1', kind: 'VirtualMachineInstance', metadata: { name: vmiName, labels },
-      spec: { startStrategy: 'Paused', nodeSelector: { 'kubernetes.io/hostname': 'k3d-factory-agent-0' },
+      // a destroyed desktop stops at once (egress ends with it); a profile desktop keeps KubeVirt's default so LUKS closes cleanly
+      spec: { startStrategy: 'Paused', ...(profile ? {} : { terminationGracePeriodSeconds: 0 }), nodeSelector: { 'kubernetes.io/hostname': 'k3d-factory-agent-0' },
         // Desktops own k3d-factory-agent-0 (taint rfactory.io/desktops=true, NoSchedule and NoExecute).
         tolerations: [{ key: 'rfactory.io/desktops', operator: 'Equal', value: 'true' }],
         domain: { cpu: { cores: k.vcpu || 2 }, memory: { guest: k.memory || '6Gi' },
@@ -253,8 +254,11 @@ function createLifecycle(config, deps) {
             interfaces: [{ name: 'default', masquerade: {} }], logSerialConsole: true } },
         networks: [{ name: 'default', pod: {} }],
         volumes: [{ name: 'root', containerDisk: { image: k.diskImage, imagePullPolicy: 'Never' } }, ...(profile ? [profile.volume] : [])] } };
+    // a destroy that lands while boot awaits removes the map entry; boot must then delete what it created and stop
+    const live = async () => { if (vms.get(vm.id) !== vm || vm.destroying) { await deps.k8s.deleteVmi(vmiName); throw new Error('destroyed during boot'); } };
     await deps.k8s.createVmi(vmi);
     vm.vmiCreated = true;
+    await live();
     const created = await deps.k8s.getVmi(vmiName);
     if (!created?.metadata?.uid) throw new Error('VMI has no UID');
     let pod;
@@ -277,6 +281,7 @@ function createLifecycle(config, deps) {
     await deps.k8s.createPolicy(generated.networkPolicy);
     await deps.k8s.createConfigMap(generated.proxyEntry);
     await deps.k8s.createConfigMap(generated.guardEntry);
+    await live();
     if (vm.call_id) owners.set(vm.sock, { call_id: vm.call_id, scope: vm.scope, desktop_id: vm.id });
     for (let attempt = 0; attempt < 45; attempt++) {
       const status = await deps.guard(vm, 'ready');
@@ -292,6 +297,7 @@ function createLifecycle(config, deps) {
       if (attempt === 59) throw new Error('VMI did not reach Paused');
       await clock.sleep(1000);
     }
+    await live();
     await deps.k8s.unpauseVmi(vmiName);
   }
   async function start(call_id, scope, diskSpec, platform) {
@@ -306,6 +312,7 @@ function createLifecycle(config, deps) {
     vms.set(id, vm);
     try { await boot(vm, platform); } catch (error) {
       await destroy(id, 'boot-failed');
+      if (/exceeded quota|: 403$/.test(error.message) && !vm.vmiCreated) return { error: 'capacity', message: 'no desktop slot is free' };
       return { error: 'boot-failed', message: error.message };
     }
     return { desktop_id: id, ...(vm.nonce ? { nonce: vm.nonce } : {}) };
@@ -349,6 +356,7 @@ function createLifecycle(config, deps) {
     if (!vm || vm.destroying) throw new Error('desktop not running');
     vm.sharing = !!active;
     vm.controlLostAt = vm.sharing && !vm.agent ? clock.now() : null;
+    vm.lastGuard = 0; // the next check renews the guard at the new interval: a 5 s sharing permission must not lapse before a 10 s beat
   }
 
   async function check() {

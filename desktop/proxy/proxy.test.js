@@ -143,6 +143,15 @@ test('plain HTTP is forwarded only to an approved preview ip:port, with the toke
   assert.equal(calls.length, 1);
 });
 
+test('a client reset on an open tunnel closes it and does not crash the proxy', async () => {
+  const proxy = createProxy({ api: api(), connect: () => new Socket() });
+  const client = new Socket();
+  await proxy.handleConnect(request('10.50.0.7:8443'), client, Buffer.alloc(0));
+  assert.match(client.text(), /^HTTP\/1\.1 200/);
+  client.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+  assert.equal(client.destroyed, true);
+});
+
 test('one desktop cannot exceed its connection cap and a close releases its slot', async () => {
   const proxy = createProxy({ api: api(), maxConnections: 1, connect: () => new Socket() });
   const first = new Socket();

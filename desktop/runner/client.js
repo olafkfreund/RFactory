@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const MAX_REPLY = 1 << 20;
 
 // Routes that wait on a guest (the control wait is 60 s, then the action's 30 s) outlast the default timeout.
-const ROUTE_TIMEOUT_MS = { 'profile-attach': 150000, action: 45000, login: 45000, 'share-start': 45000, 'share-stop': 45000 };
+const ROUTE_TIMEOUT_MS = { create: 180000, 'profile-attach': 150000, action: 45000, login: 45000, 'share-start': 45000, 'share-stop': 45000 };
 
 function createRunnerClient({ url, key, cert, ca, timeoutMs = 30000, request = https.request }) {
   const base = new URL(url);

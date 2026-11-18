@@ -111,6 +111,35 @@ test('each creation failure deletes the VMI before returning boot-failed', async
   }
 });
 
+test('a destroy that lands during boot deletes the VMI and never unpauses or tracks it', async () => {
+  const ctx = setup();
+  let land;
+  const inFlight = new Promise(resolve => { land = resolve; });
+  ctx.k8s.createVmi = async () => { ctx.calls.push('createVmi'); await inFlight; return { metadata: { uid: vmiUID } }; };
+  const created = ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
+  while (!ctx.calls.includes('createVmi')) await new Promise(resolve => setImmediate(resolve));
+  const [{ desktop_id }] = ctx.lc.list();
+  await ctx.lc.destroy(desktop_id); // the DELETE races the in-flight create and finds nothing
+  land();
+  assert.equal((await created).error, 'boot-failed');
+  assert.ok(!ctx.calls.includes('unpauseVmi'));
+  assert.ok(ctx.calls.filter(x => x === 'deleteVmi').length >= 2);
+  assert.deepEqual(ctx.lc.list(), []);
+});
+
+test('the namespace quota refusing a VMI is a capacity answer', async () => {
+  const ctx = setup();
+  ctx.k8s.createVmi = async () => { throw new Error('Kubernetes POST /apis/kubevirt.io/v1/namespaces/rfactory-desktops/virtualmachineinstances: 403'); };
+  assert.equal((await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' })).error, 'capacity');
+});
+
+test('a desktop without a profile stops at once on delete; a profile desktop keeps the default grace', async () => {
+  const ctx = setup();
+  await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
+  assert.equal(ctx.manifests[0].spec.terminationGracePeriodSeconds, 0);
+  await ctx.lc.stop();
+});
+
 test('an attached profile PVC is present in the paused VMI before unpause', async () => {
   const ctx = setup();
   const diskSpec = { disk: { name: 'profile', serial: 'profile-1', disk: { bus: 'virtio' } },
@@ -167,6 +196,11 @@ test('guard heartbeat changes from ten seconds to two while sharing and Lease re
   ctx.advance(2000); await ctx.lc.check();
   assert.equal(ctx.beats.filter(x => x.action === 'heartbeat').length, 2);
   assert.deepEqual(ctx.beats.filter(x => x.action === 'heartbeat').at(-1).body, { pod_uid: podUID, sharing: true });
+  // a stop renews at once with the long permission: the 5 s sharing one must not lapse before the next 10 s beat
+  ctx.lc.sharing(desktop_id, false);
+  ctx.advance(1000); await ctx.lc.check();
+  assert.equal(ctx.beats.filter(x => x.action === 'heartbeat').length, 3);
+  assert.deepEqual(ctx.beats.filter(x => x.action === 'heartbeat').at(-1).body, { pod_uid: podUID, sharing: false });
   await ctx.lc.stop();
 });
 
