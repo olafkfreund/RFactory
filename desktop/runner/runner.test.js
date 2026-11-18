@@ -339,6 +339,19 @@ test('runner routes: action, share-start, share-stop map to the lifecycle; a bad
   } finally { server.closeAllConnections(); server.close(); }
 });
 
+test('call stream: works on a socket that refuses setEncoding (the HTTP server\'s upgraded socket) and keeps a split UTF-8 character whole', async () => {
+  const { PassThrough } = require('node:stream');
+  const ctx = await agentSetup();
+  const sock = new PassThrough();
+  sock.setEncoding = () => { const e = new Error('Changing the socket encoding is not allowed'); e.code = 'ERR_HTTP_SOCKET_ENCODING'; throw e; };
+  assert.equal(ctx.lc.callAttach(ctx.id, sock), true);
+  const line = Buffer.from('Grüße\n');
+  sock.write(line.subarray(0, 3)); // ends inside ü
+  sock.write(line.subarray(3));
+  await tick();
+  assert.equal(ctx.conn.out.filter((m) => m.type === 'call-in').map((m) => m.chunk).join(''), 'Grüße');
+});
+
 test('call stream: lines from the socket become call-in pieces; call-out pieces become lines; one stream per VM', async () => {
   const { PassThrough } = require('node:stream');
   const ctx = await agentSetup();

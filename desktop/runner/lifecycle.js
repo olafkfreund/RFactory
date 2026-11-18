@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const { createDecoder, tag, encode } = require('./protocol');
 const { nonce: newNonce } = require('../guest/agent/share');
 const { buildPolicy } = require('./k8s-policy');
@@ -208,8 +209,10 @@ function createLifecycle(config, deps) {
     const piece = (chunk, end) => {
       try { vm.agent.write(encode({ type: 'call-in', chunk, end })); } catch { socket.destroy(); }
     };
-    socket.setEncoding('utf8');
-    socket.on('data', (text) => {
+    // a decoder, not socket.setEncoding: the HTTP server's upgraded socket throws ERR_HTTP_SOCKET_ENCODING (and took the runner down)
+    const utf8 = new StringDecoder('utf8');
+    socket.on('data', (chunk) => {
+      const text = typeof chunk === 'string' ? chunk : utf8.write(chunk);
       vm.lastActivity = clock.now();
       const parts = text.split('\n');
       parts.forEach((part, i) => {
