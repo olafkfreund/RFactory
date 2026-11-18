@@ -378,6 +378,26 @@ and 27) and the scripts. This plan is self-contained.
     - The runner verifies the guard by CA and CN `rfactory-guard`, not by
       IP, because node IPs can change when the cluster is recreated
       (#3071); otherwise the guard certificate is re-issued from the CA.
+18. **k3 results (Codex, lead verified).**
+    - `desktop/runner/k8s.js`, and a Kubernetes lifecycle path: a paused
+      VMI, then the owned policy and entries, the guard's ready, unpause.
+    - Channels are bound to the live pod UID.
+    - The Lease and the guard heartbeat are renewed (every 2 s while
+      sharing).
+    - Reconcile runs at start.
+    - Reverse VNC goes through the existing view-only filter (`vnc.js`
+      unchanged).
+    - `call-config` gains `proxy {addr, token}`.
+    - `serve()` wires the k9 Profiles.
+    - **Cold spare:** a spare reserves capacity, and its VMI is created
+      when it is claimed. The platform and scope policy cannot be fixed
+      before the claim, so a warm VMI would need a policy rewrite.
+    - **Open for the manifests (k8 follow-up):**
+      - digest images;
+      - `RF_ALWAYS_PROTECTED` (p620 LAN, Tailscale, Factory hosts);
+      - `NODE_EXTRA_CA_CERTS`;
+      - a runner egress allowance for the pinned media preflight probes.
+
 
 ## Steps
 

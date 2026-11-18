@@ -756,13 +756,14 @@ test('serve wires Profiles (admin check, adapters, onDestroyed, hourly expiry), 
   const { server, lifecycle, profiles } = await serve(config, { exec, clock, fs: { mkdir: async () => {}, rm: async () => {}, readdir: async () => [] }, listen: () => ({ close() {} }) });
   t.after(() => { server.close(); });
   assert.ok(profiles instanceof Profiles);
-  assert.equal(profiles.vmUser, 'vmu');
+  assert.equal(profiles.keyPath, path.join(dir, 'master'));
   assert.equal(profiles.isAdmin({ id: 'a', admin_scopes: ['s'] }, 's'), true);
   assert.equal(profiles.isAdmin({ id: 'a', admin_scopes: ['t'] }, 's'), false);
   assert.equal(profiles.isAdmin({ id: 'a' }, 's'), false);
   // startDesktop -> lifecycle.create with the disk args; an error result throws
-  const started = await profiles.startDesktop({ call_id: 'c1', scope: 's' }, ['--disk', 'path=/img']);
-  assert.deepEqual(seen.at(-1), ['--disk', 'path=/img']);
+  const diskSpec = { disk: { name: 'profile' }, volume: { name: 'profile' } };
+  const started = await profiles.startDesktop({ call_id: 'c1', scope: 's' }, diskSpec);
+  assert.deepEqual(seen.at(-1), diskSpec);
   assert.equal(lifecycle.list().length, 1);
   // onDestroyed -> profiles.release, destroyDesktop -> lifecycle.destroy
   const released = []; profiles.release = (id) => released.push(id);

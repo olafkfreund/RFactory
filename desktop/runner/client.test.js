@@ -50,8 +50,9 @@ test('client: mTLS call, VNC upgrade; a certificate from another CA is refused',
   const vnc = await client.openVnc('ab12');
   const first = await new Promise((r) => vnc.once('data', r));
   assert.equal(first.toString(), 'RFB 003.008\n');
-  vnc.write('hello');
-  assert.equal((await new Promise((r) => echo.once('data', r))).toString(), 'hello');
+  const echoed = new Promise((r) => echo.once('data', r));
+  vnc.write('RFB 003.008\n');
+  assert.equal((await echoed).toString(), 'RFB 003.008\n');
   vnc.destroy();
   await assert.rejects(client.openVnc('ffff'), /vnc-refused-404/);
   await assert.rejects(client.openVnc('../x'), /bad-desktop-id/);

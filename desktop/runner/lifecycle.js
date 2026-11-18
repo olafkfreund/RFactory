@@ -1,11 +1,13 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const net = require('node:net');
 const path = require('node:path');
 const { buildRules, buildDnsConf } = require('./net');
 const { createDecoder, tag, encode } = require('./protocol');
 const { nonce: newNonce } = require('../guest/agent/share');
 const { listenGuest } = require('./vsock');
+const { buildPolicy } = require('./k8s-policy');
 
 const UNIT = 'rfactory-vm-';
 const REQUIRED = ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatTimeoutMs', 'idleMs', 'rateMbit',
@@ -15,7 +17,9 @@ const REQUIRED = ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatT
 // fs {mkdir, rm, readdir, readFile}, hasKvm(), listen(sock, handler) (defaults to vsock.listenGuest).
 // connectGuest(sock, port) -> duplex (optional; without it there is no host -> guest channel: action, share-* and call-config fail closed).
 function createLifecycle(config, deps) {
-  for (const key of REQUIRED) if (config[key] === undefined) throw new Error(`missing config: ${key}`);
+  for (const key of deps.k8s ? ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatTimeoutMs', 'idleMs', 'k8s'] : REQUIRED) {
+    if (config[key] === undefined) throw new Error(`missing config: ${key}`);
+  }
   const { exec, clock, fs } = deps;
   const listen = deps.listen || listenGuest;
   const vms = new Map(); // id -> vm
@@ -23,6 +27,10 @@ function createLifecycle(config, deps) {
   const state = { blocked: false, alert: null };
   let nextCid = 3;
   let timer = null;
+  let leaseTimer = null;
+  let leaseError = null;
+  let leaseBusy = false;
+  const tcpServers = [];
   const MAX_CID = 16000; // the default address plan holds a /30 per cid in 10.77.0.0/16
   function allocCid() {
     for (;;) {
@@ -47,6 +55,10 @@ function createLifecycle(config, deps) {
   }
 
   async function cleanup(id) {
+    if (deps.k8s) {
+      try { await deps.k8s.deleteVmi(`rfdesk-${id}`); return true; }
+      catch (error) { state.blocked = true; state.alert = `cleanup of ${id} failed: ${error.message}`; return false; }
+    }
     const n = names(id);
     const steps = [
       () => exec(['systemctl', 'stop', n.unit]).catch(absentOk),
@@ -74,6 +86,7 @@ function createLifecycle(config, deps) {
       owners.delete(vm.sock);
       if (vm.server) vm.server.close();
       if (vm.agent) vm.agent.destroy();
+      if (vm.reverseVnc) vm.reverseVnc.destroy();
       endCall(vm);
       failPending(vm, 'destroyed');
       const ok = await cleanup(id);
@@ -95,7 +108,7 @@ function createLifecycle(config, deps) {
     }
   }
 
-  // Host -> guest control channel (vsock 5000, duplex): call-config goes first, then actions; replies are matched by action_id.
+  // The control channel is guest-initiated on Kubernetes; call-config is still the first frame.
   const MAX_CONTENT = 4 * 1024 * 1024;
   const MAX_CHUNKS = 1024;
   function endCall(vm) { if (vm.callSock) vm.callSock.destroy(); vm.callSock = null; } // no worker behind it: let web/vm-call.js see the close
@@ -124,30 +137,34 @@ function createLifecycle(config, deps) {
     }
     onMessage(vm, m);
   }
+  function attachAgent(vm, conn) {
+      vm.agent = conn;
+      if (!vm.sharing) vm.controlLostAt = null;
+      const decoder = createDecoder((m) => onAgentMessage(vm, m));
+      const closed = () => {
+        if (vm.agent !== conn) return;
+        vm.agent = null; endCall(vm); failPending(vm, 'control-closed');
+        if (vm.sharing) vm.controlLostAt = clock.now();
+        if (!deps.k8s) clock.sleep(1000).then(() => { if (vms.get(vm.id) === vm && !vm.destroying) return connectAgent(vm); }).catch(() => {});
+      };
+      conn.on('data', (c) => decoder.write(c));
+      conn.on('end', closed); conn.on('error', closed); conn.on('close', closed);
+      sendCallConfig(vm);
+  }
   async function connectAgent(vm) {
     while (vms.get(vm.id) === vm && !vm.destroying) {
       let conn;
       try { conn = await deps.connectGuest(vm.sock, 5000); } catch { await clock.sleep(1000); continue; }
       if (vms.get(vm.id) !== vm || vm.destroying) return conn.destroy();
-      vm.agent = conn;
-      if (!vm.sharing) vm.controlLostAt = null; // a share that lost 5000 stays armed: the fresh guest agent has no worker to stop it; only a landed share-stop disarms
-      const decoder = createDecoder((m) => onAgentMessage(vm, m));
-      const closed = () => {
-        if (vm.agent !== conn) return;
-        vm.agent = null; endCall(vm); failPending(vm, 'control-closed');
-        if (vm.sharing) vm.controlLostAt = clock.now(); // the share watchdog follows this channel (5000), not the 5001 heartbeat link
-        clock.sleep(1000).then(() => { if (vms.get(vm.id) === vm && !vm.destroying) return connectAgent(vm); }).catch(() => {}); // the stop must be able to land again
-      };
-      conn.on('data', (c) => decoder.write(c));
-      conn.on('end', closed); conn.on('error', closed); conn.on('close', closed);
-      sendCallConfig(vm);
+      attachAgent(vm, conn);
       return;
     }
   }
   function sendCallConfig(vm) {
     if (!vm.nonce || !vm.agent) return;
     vm.configSent = true; // first message on every control connection; the guest keeps one worker and ignores repeats
-    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}) }));
+    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.proxy ? { proxy: vm.proxy } : {}),
+      ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}) }));
   }
   const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
   async function toGuest(id, message, timeoutMs = 30000, corrupt = false) {
@@ -268,7 +285,7 @@ function createLifecycle(config, deps) {
     socket.on('close', () => { if (vm.callSock === socket) vm.callSock = null; });
     return true;
   }
-  const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? vm.sock : null; };
+  const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? (deps.k8s ? vm.reverseVnc || null : vm.sock) : null; };
 
   // Previews and extra DNS names belong to the VM's scope; a spare (scope null) has none until claimed.
   function scoped(scope) {
@@ -288,6 +305,57 @@ function createLifecycle(config, deps) {
     });
     const dns = config.net.dns ? buildDnsConf({ table: n.table, listen: [resolver4, resolver6], domains: extra.domains, upstreams: config.net.dns.upstreams || [] }) : null;
     return { rules, dns, extra };
+  }
+  async function bootK8(vm, platform) {
+    const k = config.k8s;
+    const vmiName = `rfdesk-${vm.id}`;
+    const profile = vm.extraArgv && !Array.isArray(vm.extraArgv) ? vm.extraArgv : null;
+    const labels = { 'rfactory.io/desktop': 'true', 'rfactory.io/role': 'desktop', 'rfactory.io/desktop-id': vm.id,
+      'rfactory.io/call': crypto.createHash('sha256').update(vm.call_id || '').digest('hex').slice(0, 16),
+      'rfactory.io/scope': crypto.createHash('sha256').update(vm.scope || '').digest('hex').slice(0, 16) };
+    const vmi = { apiVersion: 'kubevirt.io/v1', kind: 'VirtualMachineInstance', metadata: { name: vmiName, labels },
+      spec: { startStrategy: 'Paused', nodeSelector: { 'kubernetes.io/hostname': 'k3d-factory-agent-0' },
+        domain: { cpu: { cores: k.vcpu || 2 }, memory: { guest: k.memory || '6Gi' },
+          resources: { requests: { cpu: String(k.vcpu || 2), memory: k.memory || '6Gi' },
+            limits: { cpu: String(k.vcpu || 2), memory: k.memory || '6Gi' } },
+          firmware: { kernelBoot: { container: { image: k.bootImage, imagePullPolicy: 'Never', kernelPath: '/boot/kernel', initrdPath: '/boot/initrd' },
+            kernelArgs: `rf.runner=${k.runnerIP} rf.proxy=${k.proxyIP}:${k.proxyPort}` } },
+          devices: { disks: [{ name: 'root', disk: { bus: 'virtio', readonly: true } }, ...(profile ? [profile.disk] : [])],
+            interfaces: [{ name: 'default', masquerade: {} }] } },
+        networks: [{ name: 'default', pod: {} }],
+        volumes: [{ name: 'root', containerDisk: { image: k.diskImage, imagePullPolicy: 'Never' } }, ...(profile ? [profile.volume] : [])] } };
+    await deps.k8s.createVmi(vmi);
+    vm.vmiCreated = true;
+    const created = await deps.k8s.getVmi(vmiName);
+    if (!created?.metadata?.uid) throw new Error('VMI has no UID');
+    let pod;
+    for (let attempt = 0; attempt < 45; attempt++) {
+      const matches = await deps.k8s.listPods(`kubevirt.io/created-by=${created.metadata.uid}`);
+      pod = matches.find(item => item.metadata?.uid && item.status?.podIP && item.status?.hostIP && item.metadata?.labels?.['rfactory.io/role'] === 'desktop');
+      if (pod) break;
+      await clock.sleep(1000);
+    }
+    if (!pod) throw new Error('launcher pod did not become ready');
+    vm.podUID = pod.metadata.uid; vm.podIP = pod.status.podIP; vm.hostIP = pod.status.hostIP; vm.sock = vm.podUID;
+    const scopedEntry = scoped(vm.scope);
+    const generated = buildPolicy({ vmiName, vmiUID: created.metadata.uid, podUID: vm.podUID, podIP: vm.podIP,
+      scope: vm.scope, platform, runnerIP: k.runnerIP, runnerSelector: { 'app.kubernetes.io/name': 'rfactory-runner' },
+      proxyIP: k.proxyIP, proxySelector: { 'app.kubernetes.io/name': 'rfactory-proxy' }, proxyPort: k.proxyPort,
+      previews: scopedEntry.previews, names: scopedEntry.domains, alwaysProtected: k.alwaysProtected, mark: 1 });
+    vm.proxy = { addr: `${k.proxyIP}:${k.proxyPort}`, token: crypto.randomBytes(32).toString('hex') };
+    const proxyData = JSON.parse(generated.proxyEntry.data.entry); proxyData.token = vm.proxy.token;
+    generated.proxyEntry.data.entry = JSON.stringify(proxyData);
+    await deps.k8s.createPolicy(generated.networkPolicy);
+    await deps.k8s.createConfigMap(generated.proxyEntry);
+    await deps.k8s.createConfigMap(generated.guardEntry);
+    if (vm.call_id) owners.set(vm.sock, { call_id: vm.call_id, scope: vm.scope, desktop_id: vm.id });
+    for (let attempt = 0; attempt < 45; attempt++) {
+      const status = await deps.guard(vm, 'ready');
+      if (status?.ready) break;
+      if (attempt === 44) throw new Error(status?.reason || 'guard not ready');
+      await clock.sleep(1000);
+    }
+    await deps.k8s.unpauseVmi(vmiName);
   }
   // A claimed spare takes its scope's previews and names: one atomic nft transaction, then the VM's own resolver restarts.
   async function rescope(vm) {
@@ -340,23 +408,23 @@ function createLifecycle(config, deps) {
       '-p', 'User=rfactory-vm', ...config.vmArgv({ id: vm.id, cid: vm.cid, tap: n.tap, sock, dir: n.dir, extraArgv: vm.extraArgv })]);
   }
 
-  async function start(call_id, scope, extraArgv = []) {
+  async function start(call_id, scope, extraArgv = [], platform) {
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
-    if (deps.hasKvm && !deps.hasKvm()) return { error: 'no-kvm', message: 'this host has no /dev/kvm' };
+    if (!deps.k8s && deps.hasKvm && !deps.hasKvm()) return { error: 'no-kvm', message: 'this host has no /dev/kvm' };
     // Reserve the slot synchronously (no await before vms.set): two concurrent creates cannot both pass.
     if (vms.size >= config.maxVms) return { error: 'capacity', message: 'no desktop slot is free' };
     const id = crypto.randomBytes(4).toString('hex');
     const now = clock.now();
-    const vm = { id, cid: allocCid(), sock: path.join(config.runDir, id, 'vsock.sock'), created: now,
+    const vm = { id, cid: deps.k8s ? null : allocCid(), sock: deps.k8s ? id : path.join(config.runDir, id, 'vsock.sock'), created: now,
       lastWorker: now + (config.bootGraceMs || 0), lastServer: now + (config.bootGraceMs || 0), lastActivity: now, call_id, scope,
       pending: new Map(), nonce: call_id ? newNonce() : null, extraArgv };
     vms.set(id, vm);
-    if (call_id) owners.set(vm.sock, { call_id, scope, desktop_id: id });
-    try { await boot(vm); } catch (error) {
+    if (call_id && !deps.k8s) owners.set(vm.sock, { call_id, scope, desktop_id: id });
+    try { if (deps.k8s) await bootK8(vm, platform); else await boot(vm); } catch (error) {
       await destroy(id, 'boot-failed');
       return { error: 'boot-failed', message: error.message };
     }
-    if (deps.connectGuest) connectAgent(vm).catch(() => {});
+    if (!deps.k8s && deps.connectGuest) connectAgent(vm).catch(() => {});
     return { desktop_id: id, cid: vm.cid, sock: vm.sock, ...(vm.nonce ? { nonce: vm.nonce } : {}) };
   }
 
@@ -367,6 +435,11 @@ function createLifecycle(config, deps) {
     if (deps.preflight) { // the pinned media ranges must answer before any call joins: a clear refusal, never an unusable call
       if (typeof platform !== 'string' || !platform) return { error: 'bad-request', message: 'platform is required' };
       try { await deps.preflight(platform); } catch (error) { return { error: 'preflight-failed', message: error.message }; }
+    }
+    if (deps.k8s) {
+      const cold = [...vms.values()].find(v => v.spare && v.cold);
+      if (cold) vms.delete(cold.id);
+      return start(call_id, scope, extraArgv, platform);
     }
     const spare = extraArgv.length ? null : [...vms.values()].find((v) => v.spare && !v.destroying && v.booted);
     if (spare) { // claim: bind once to one call_id
@@ -379,10 +452,17 @@ function createLifecycle(config, deps) {
       sendCallConfig(spare);
       return { desktop_id: spare.id, cid: spare.cid, sock: spare.sock, nonce: spare.nonce };
     }
-    return start(call_id, scope, extraArgv);
+    return start(call_id, scope, extraArgv, platform);
   }
 
   async function createSpare() {
+    if (deps.k8s) {
+      if ([...vms.values()].some(v => v.spare)) return { error: 'spare-exists' };
+      if (vms.size >= config.maxVms) return { error: 'capacity' };
+      const id = crypto.randomBytes(4).toString('hex');
+      vms.set(id, { id, spare: true, cold: true });
+      return { desktop_id: id };
+    }
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     if ([...vms.values()].some((v) => v.spare)) return { error: 'spare-exists' };
     const result = await start(null, null);
@@ -418,7 +498,11 @@ function createLifecycle(config, deps) {
       else if (!vm.spare && now - vm.lastWorker >= config.workerBeatTimeoutMs) reason = 'worker-heartbeat';
       else if (!vm.spare && now - vm.lastServer >= config.serverBeatTimeoutMs) reason = 'server-heartbeat';
       else if (!vm.spare && !vm.sharing && now - vm.lastActivity >= config.idleMs) reason = 'idle';
-      else if (deps.readFile && !vm.spare) {
+      if (!reason && deps.k8s && vm.podUID && now - (vm.lastGuard || 0) >= (vm.sharing ? 2000 : 10000)) {
+        vm.lastGuard = now;
+        deps.guard(vm, 'heartbeat', { pod_uid: vm.podUID, sharing: !!vm.sharing }).catch(() => {});
+      }
+      if (!reason && deps.readFile && !deps.k8s && !vm.spare) {
         try { // bytes the guest sent = rx on the tap
           const bytes = Number(await deps.readFile(`/sys/class/net/${names(vm.id).tap}/statistics/rx_bytes`));
           if (bytes >= config.egressQuotaBytes) {
@@ -427,12 +511,24 @@ function createLifecycle(config, deps) {
           }
         } catch { /* tap not readable yet */ }
       }
+      else if (!reason && deps.k8s && !vm.spare && vm.podUID && deps.guard) {
+        try { if ((await deps.guard(vm, 'counters')).bytes >= (config.egressQuotaBytes || 1073741824)) reason = 'egress-quota'; }
+        catch { /* the kernel guard expires its own permission; the runner does not widen it */ }
+      }
       if (reason) { destroy(vm.id, reason); }
     }
   }
 
   // Recovery: a desktop never survives a runner restart.
   async function reconcile() {
+    if (deps.k8s) {
+      for (const vmi of await deps.k8s.listVmis()) {
+        if (vmi.metadata?.labels?.['rfactory.io/desktop'] === 'true' && ![...vms.values()].some(vm => `rfdesk-${vm.id}` === vmi.metadata.name)) {
+          await deps.k8s.deleteVmi(vmi.metadata.name);
+        }
+      }
+      return;
+    }
     const ids = new Set();
     const out = await exec(['systemctl', 'list-units', `${UNIT}*`, '--all', '--plain', '--no-legend', '--no-pager']);
     for (const m of String(out || '').matchAll(new RegExp(`${UNIT}([0-9a-f]+)\\.service`, 'g'))) ids.add(m[1]);
@@ -442,10 +538,56 @@ function createLifecycle(config, deps) {
 
   function clear() { state.blocked = false; state.alert = null; }
 
-  function run() { timer = clock.setInterval(check, config.checkMs || 1000); }
+  async function accept(port, conn) {
+    const ip = conn.remoteAddress?.startsWith('::ffff:') ? conn.remoteAddress.slice(7) : conn.remoteAddress;
+    let pods;
+    try { pods = await deps.k8s.listPods('rfactory.io/desktop=true'); } catch { conn.destroy(); return; }
+    const matches = pods.filter(p => p.status?.podIP === ip);
+    const vm = matches.length === 1 && [...vms.values()].find(v => v.podUID === matches[0].metadata?.uid && v.podIP === ip && !v.destroying);
+    if (!vm) { conn.destroy(); return; }
+    if (port === 5000) { if (vm.agent) vm.agent.destroy(); attachAgent(vm, conn); }
+    else if (port === 5001) {
+      const decoder = createDecoder(m => onMessage(vm, m));
+      conn.on('data', data => decoder.write(data)); conn.on('end', () => decoder.end()); conn.on('error', () => {});
+    } else {
+      if (vm.reverseVnc) vm.reverseVnc.destroy();
+      vm.reverseVnc = conn;
+      conn.on('close', () => { if (vm.reverseVnc === conn) vm.reverseVnc = null; });
+      conn.on('error', () => {});
+    }
+  }
+  async function renewLease() {
+    const lease = await deps.k8s.getLease();
+    if (!lease) throw new Error('runner Lease is missing');
+    await deps.k8s.updateLease({ ...lease, spec: { ...lease.spec, renewTime: new Date(clock.now()).toISOString() } });
+  }
+  async function leaseTick() {
+    if (leaseBusy) return;
+    leaseBusy = true;
+    try {
+      await renewLease();
+      if (leaseError && state.alert === leaseError) { state.blocked = false; state.alert = null; }
+      leaseError = null;
+    } catch (error) { leaseError = `runner Lease: ${error.message}`; state.blocked = true; state.alert = leaseError; }
+    finally { leaseBusy = false; }
+  }
+  function run() {
+    timer = clock.setInterval(check, config.checkMs || 1000);
+    if (deps.k8s) {
+      for (const port of [5000, 5001, 5900]) {
+        const server = deps.listenTcp ? deps.listenTcp(port, conn => accept(port, conn)) : net.createServer(conn => accept(port, conn));
+        if (!deps.listenTcp) server.listen(port, '::');
+        tcpServers.push(server);
+      }
+      leaseTick();
+      leaseTimer = clock.setInterval(leaseTick, 10000);
+    }
+  }
 
   async function stop() {
     if (timer) clock.clearInterval(timer);
+    if (leaseTimer) clock.clearInterval(leaseTimer);
+    for (const server of tcpServers) server.close();
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 

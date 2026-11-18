@@ -9,6 +9,8 @@ const { preflight } = require('./preflight');
 const { createLifecycle } = require('./lifecycle');
 const { connectGuest } = require('./vsock');
 const { openVnc: openGuestVnc } = require('./vnc');
+const { bridgeViewOnly } = require('./vnc');
+const { createK8s } = require('./k8s');
 const { Profiles } = require('./profiles');
 
 const MAX_BODY = 16 * 1024;
@@ -33,7 +35,7 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     // Profile admin: the web server (mTLS) names the actor, { id, admin_scopes }; Profiles does the scope-admin checks.
     ...(profiles ? {
       'profile-create': (b) => profiles.create(b.actor, b),
-      'profile-list': async (b) => ({ profiles: profiles.list(b.actor, String(b.scope)) }),
+      'profile-list': async (b) => ({ profiles: await profiles.list(b.actor, String(b.scope)) }),
       'profile-attach': async (b, ctx) => {
         const r = await profiles.attach(b.actor, String(b.profile_id), String(b.scope), { call_id: b.call_id, platform: b.platform });
         // The web client gave up (its timeout or a closed connection): nobody will heartbeat or use this desktop, so end it now.
@@ -77,6 +79,7 @@ function clientStatus(error) {
 // GET /vnc/<desktop_id> with Upgrade: rfactory-vnc: a raw byte bridge to the guest's VNC (vsock 5900). mTLS identity only.
 // GET /call/<desktop_id> with Upgrade: rfactory-call: the call worker's stdin/stdout lines over the guest channel (plan 13c).
 function createUpgrade(lifecycle, { openVnc = openGuestVnc } = {}) {
+  const viewers = new Set();
   return async (req, socket) => {
     const refuse = (code, text) => socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.on('error', () => {});
@@ -89,13 +92,15 @@ function createUpgrade(lifecycle, { openVnc = openGuestVnc } = {}) {
     }
     const sock = lifecycle.vncSock(m[2]);
     if (!sock) return refuse(404, 'Not Found');
+    if (viewers.has(m[2])) return refuse(409, 'Conflict');
+    viewers.add(m[2]);
     let guest;
-    try { guest = await openVnc(sock); } catch { return refuse(502, 'Bad Gateway'); }
-    if (socket.destroyed) return guest.destroy();
+    try { guest = typeof sock === 'string' ? await openVnc(sock) : sock; } catch { viewers.delete(m[2]); return refuse(502, 'Bad Gateway'); }
+    if (socket.destroyed) { viewers.delete(m[2]); return guest.destroy(); }
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: rfactory-vnc\r\nConnection: Upgrade\r\n\r\n');
-    guest.pipe(socket); socket.pipe(guest);
-    guest.on('error', () => socket.destroy()); guest.on('close', () => socket.destroy());
-    socket.on('close', () => guest.destroy());
+    const view = bridgeViewOnly(guest, { toClient: chunk => socket.write(chunk), onClose: () => socket.destroy() });
+    socket.on('data', chunk => view.fromClient(chunk));
+    socket.on('close', () => { viewers.delete(m[2]); view.close(); });
   };
 }
 
@@ -206,7 +211,25 @@ function realDeps(config) {
       return entry && typeof entry === 'object' ? entry : null;
     } catch { return null; }
   };
-  return { exec, clock, resolveLogin, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
+  const k8s = config.k8s ? createK8s() : undefined;
+  const guard = config.k8s ? async (vm, action, body) => {
+    const tls = { cert: fs.readFileSync('/etc/rfactory/tls/client.crt'), key: fs.readFileSync('/etc/rfactory/tls/client.key'),
+      ca: fs.readFileSync('/etc/rfactory/tls/ca.crt') };
+    return new Promise((resolve, reject) => {
+      const req = https.request({ host: vm.hostIP, port: 9443, path: action === 'heartbeat' ? '/heartbeat' : `/${action}?pod_uid=${vm.podUID}`,
+        method: action === 'heartbeat' ? 'POST' : 'GET', ...tls,
+        checkServerIdentity: (_host, cert) => cert.subject?.CN === 'rfactory-guard' ? undefined : new Error('wrong guard identity'),
+        timeout: 3000 }, res => {
+        let text = '';
+        res.on('data', chunk => { text += chunk; if (text.length > 4096) req.destroy(new Error('guard response too large')); });
+        res.on('end', () => { if (res.statusCode !== 200) return reject(new Error(`guard ${res.statusCode}`));
+          try { resolve(JSON.parse(text)); } catch { reject(new Error('invalid guard response')); } });
+      });
+      req.on('timeout', () => req.destroy(new Error('guard timeout'))); req.on('error', reject);
+      req.end(body && JSON.stringify(body));
+    });
+  } : undefined;
+  return { exec, clock, k8s, guard, resolveLogin, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
     preflight: (platform) => preflight(platform, config.ranges, tcpConnect) };
 }
 
@@ -219,10 +242,10 @@ async function serve(config, deps) {
   let expiry = null;
   if (config.profiles) {
     profiles = new Profiles({
-      ...config.profiles,
+      k8s: deps.k8s, keyPath: config.profiles.keyPath,
       isAdmin: (actor, scope) => Array.isArray(actor?.admin_scopes) && actor.admin_scopes.includes(scope),
-      startDesktop: async (call, extraArgv) => {
-        const r = await lifecycle.create(call, extraArgv);
+      startDesktop: async (call, diskSpec) => {
+        const r = await lifecycle.create(call, diskSpec);
         if (r.error) throw new Error(`${r.error}: ${r.message || ''}`);
         return r;
       },
@@ -246,11 +269,36 @@ async function serve(config, deps) {
   return { server, lifecycle, profiles };
 }
 
+function inClusterConfig(env) {
+  const bootImage = env.RF_GUEST_BOOT_IMAGE, diskImage = env.RF_GUEST_DISK_IMAGE;
+  if (![bootImage, diskImage].every(image => /@sha256:[a-f0-9]{64}$/.test(image || ''))) throw new Error('digest-pinned guest images are required');
+  const protectedRanges = JSON.parse(env.RF_ALWAYS_PROTECTED || 'null');
+  if (!Array.isArray(protectedRanges) || !protectedRanges.length) throw new Error('RF_ALWAYS_PROTECTED is required');
+  const scopePreviews = JSON.parse(env.RF_SCOPE_PREVIEWS || '{}');
+  const scopeDomains = JSON.parse(env.RF_SCOPE_DOMAINS || '{}');
+  const platformNames = JSON.parse(env.RF_PLATFORM_NAMES || JSON.stringify([
+    'meet.google.com', 'google.com', 'gstatic.com', 'googleapis.com', 'slack.com', 'slack-edge.com', 'zoom.us',
+    'teams.microsoft.com', 'teams.live.com', 'teams.cloud.microsoft', 'lync.com', 'skype.com', 'office.net',
+    'microsoftonline.com', 'login.live.com', 'msauth.net', 'msftauth.net',
+  ]));
+  return {
+    port: 8443, host: '0.0.0.0', tls: { cert: '/etc/rfactory/tls/tls.crt', key: '/etc/rfactory/tls/tls.key', ca: '/etc/rfactory/tls/ca.crt' },
+    profiles: { keyPath: '/etc/rfactory/tls/profile-key' }, maxVms: 3, runtimeMaxSec: 10800,
+    workerBeatTimeoutMs: 30000, serverBeatTimeoutMs: 60000, idleMs: 600000, bootGraceMs: 45000,
+    egressQuotaBytes: 1073741824, runDir: '/tmp/rfactory', verifyHooks: env.RF_VERIFY_HOOKS === '1',
+    loginsPath: env.RF_PREVIEW_LOGINS_PATH || null,
+    ranges: require('../ranges/ranges.json'),
+    net: { previews: scopePreviews, dns: { platform: platformNames, scopes: scopeDomains } },
+    k8s: { bootImage, diskImage, runnerIP: '10.43.250.10', proxyIP: '10.43.250.11', proxyPort: Number(env.RF_PROXY_PORT || 3128),
+      alwaysProtected: protectedRanges },
+  };
+}
+
 // `node runner.js --config <json>`: translate, serve, and tear every VM down on SIGTERM or SIGINT.
 async function main(argv = process.argv.slice(2), env = process.env) {
   const at = argv.indexOf('--config');
-  if (at < 0 || !argv[at + 1]) throw new Error('usage: runner.js --config <file>');
-  const config = translateConfig(JSON.parse(fs.readFileSync(argv[at + 1], 'utf8')), env);
+  if (at < 0 && !env.KUBERNETES_SERVICE_HOST) throw new Error('usage: runner.js --config <file>');
+  const config = at >= 0 ? translateConfig(JSON.parse(fs.readFileSync(argv[at + 1], 'utf8')), env) : inClusterConfig(env);
   const { server, lifecycle } = await serve(config, realDeps(config));
   let stopping = false;
   const stop = async () => {
@@ -267,4 +315,4 @@ async function main(argv = process.argv.slice(2), env = process.env) {
 
 if (require.main === module) main().catch((error) => { console.error(`rfactory-runner: ${error.message}`); process.exit(1); });
 
-module.exports = { createHandler, createUpgrade, serve, main, translateConfig, addrFor, seconds, realDeps, withExtraArgs };
+module.exports = { createHandler, createUpgrade, serve, main, translateConfig, inClusterConfig, addrFor, seconds, realDeps, withExtraArgs };

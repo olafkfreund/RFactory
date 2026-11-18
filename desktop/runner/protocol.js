@@ -23,14 +23,15 @@ const schemas = Object.freeze({
   'action-result': { action_id: string, ok: boolean, content: optional(string) },
   'action-content': { action_id: string, index: number, chunk: string },
   'share-target-changed': { share_id: string },
-  'profile-attach': { key: string, action_id: optional(string) },
+  'profile-attach': { key: string, profile_id: optional(string), initialized: optional(boolean), action_id: optional(string) },
   desktop_open: { url: string, action_id: optional(string), hosts: optional(hosts) },
   desktop_click: { target: string, action_id: optional(string), hosts: optional(hosts) },
   desktop_type: { target: string, text: string, action_id: optional(string), hosts: optional(hosts) },
   desktop_scroll: { dy: number, action_id: optional(string), hosts: optional(hosts) },
   desktop_screenshot: { action_id: optional(string), hosts: optional(hosts) },
   desktop_login: { profile: string, action_id: optional(string), hosts: optional(hosts), login: optional(login) },
-  'call-config': { nonce: string, auto_select_screen: optional(boolean) }, // the flag is the verify hook's (deviation 22)
+  'call-config': { nonce: string, proxy: optional(v => !!v && typeof v === 'object' && string(v.addr) && string(v.token) && v.token.length > 0 &&
+    Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean) },
   // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
   'call-in': { chunk: string, end: boolean },
   'call-out': { chunk: string, end: boolean },
