@@ -651,6 +651,35 @@ and 27) and the scripts. This plan is self-contained.
       90 GB reclaimable) is the owner's and was not touched.
     - `import-images.sh` now removes the older versions of each image it
       imports.
+33. **k10b runs 9 to 11 (lead).**
+    - **Run 9** failed under host load (load average 25–30: re-pulls
+      after the prune, plus other sessions' nix work). k3s answered
+      `database is locked`, and the desktop took about 90 s. It was rerun
+      once the load average fell below 10.
+    - **Run 10:** 32 pass. The desktop was created, started and unpaused
+      within 9 s, but `control` answered `no-control`.
+    - **Cause:** the guard's second reconcile failed, `tc filter replace`
+      of the matchall police answering `File exists` (exit 2). Since
+      deviation 29 that error is no longer forgiven, so the pod went not
+      ready with the reason `"2"`, heartbeats failed, and its alive set
+      expired, cutting the agent's runner connections.
+    - **Fix:** the guard reads `tc filter show` and adds the filter only
+      when it is missing or different. A test covers a repeated
+      reconcile. A numeric exit code is no longer used as the not-ready
+      reason; the message is.
+    - **A mistake during debugging:** a `tc` test ran on another pod's veth
+      (`veth213a66ea`). It added, then deleted, a `clsact` qdisc there.
+      Neither k3s nor the guard sets one on ordinary pods, so the likely
+      effect is none.
+    - A pin slip: the first commit kept the old guard pin, because the
+      script's progress lines matched the pin grep. A follow-up commit
+      fixed it (`grep "^image-guard "`).
+    - **Serial console:** desktop VMIs set `logSerialConsole: true`, so
+      the guest's serial console is the launcher's `guest-console-log`
+      container. It showed a clean boot and `rfactory-agent.service`
+      running. A hand-made desktop held its three runner connections until
+      the runner ended it, which happens with no worker heartbeat after
+      30 s.
 
 
 ## Steps
