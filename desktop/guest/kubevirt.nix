@@ -51,6 +51,8 @@ in
 
   boot.loader.grub.enable = false;
   boot.kernelParams = [ "console=ttyS0" ];
+  # warnings and worse reach the serial console, which the launcher keeps as its guest-console-log container (logSerialConsole)
+  services.journald.settings.Journal = { ForwardToConsole = true; MaxLevelConsole = "warning"; TTYPath = "/dev/ttyS0"; };
   boot.initrd.availableKernelModules = [ "virtio_pci" "virtio_blk" "erofs" ];
   # Root is tmpfs: every writable path, /tmp included, lives in these 3 GiB (4 GiB with /dev/shm and /run). Only the store comes from the disk, read-only.
   fileSystems."/" = { device = "none"; fsType = "tmpfs"; options = [ "mode=755" "size=3G" ]; };

@@ -71,7 +71,9 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       const mine = epoch;
       // An answer that cannot be encoded fails this action only; the chain never stays rejected.
       const answer = (ok, content) => { try { result(id, ok, content); } catch { if (ok) answer(false); } };
-      chain = chain.then(() => { if (epoch !== mine) throw new Error('cancelled'); return run(m); }).then((content) => answer(true, content), () => answer(false)).catch(() => {});
+      // the reason goes to the journal (warning, forwarded to the serial console), never to the runner: type and message only, no arguments
+      const failed = (error) => { console.error(`<4>rfactory-agent: action ${String(m.type).slice(0, 40)} failed: ${String(error?.message || error).split('\n')[0].slice(0, 300)}`); answer(false); };
+      chain = chain.then(() => { if (epoch !== mine) throw new Error('cancelled'); return run(m); }).then((content) => answer(true, content), failed).catch(() => {});
       return chain;
     },
     // Shutdown: Chrome, unmount, cryptsetup close, in that order.

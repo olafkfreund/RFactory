@@ -106,18 +106,38 @@ test('veth lookup: the CNI cache entry of this pod UID only; retries five times,
   assert.throws(() => renderTables(pod, entry, undefined), /invalid veth/);
 });
 
-test('tables of another rules version are never trusted or repaired: the pod stays not ready (guard-stale-rules)', async () => {
+test('stale tables (another version, binding or half a pair) are quarantined on the current port, once, and never made ready', async () => {
   const f = fake();
   for (const t of [`bridge rfdesk_${uid}`, `inet rfdesk_${uid}`]) { f.installed.add(t); f.old.add(t); }
   const guard = createGuard({ api: f.api, run: f.run, readResults: f.readResults, sleep: async () => {}, nodeName: 'n' });
   await guard.reconcile();
   assert.deepEqual(await guard.status(uid), { ready: false, reason: 'guard-stale-rules' });
-  assert.ok(!f.calls.some(c => c.file === 'nft' && c.argv.join(' ') === '-f -'));
+  const writes = f.calls.filter(c => c.file === 'nft' && c.argv.join(' ') === '-f -');
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].stdin, new RegExp(`^delete table (bridge|inet) rfdesk_${uid}\\ndelete table (bridge|inet) rfdesk_${uid}\\ntable bridge`)); // one transaction
+  assert.match(writes[0].stdin, /comment "rfdesk-v3 veth123 52:54:00:00:00:07 10\.42\.1\.7,fd50::7 quarantined";/);
+  assert.match(writes[0].stdin, /iifname "veth123" jump source/); // anti-spoofing on the current port
+  assert.match(writes[0].stdin, /set alive4 \{ type ipv4_addr; flags timeout; \}/); // no egress at all
+  f.old.clear(); // the fake now lists what was written
+  await guard.reconcile();
+  assert.equal(f.calls.filter(c => c.file === 'nft' && c.argv.join(' ') === '-f -').length, 1, 'quarantine is written once');
   await assert.rejects(guard.heartbeat(uid, false), /guard-not-ready/);
-  const half = fake(); half.installed.add(`inet rfdesk_${uid}`); // half a pair counts as stale too
-  const g2 = createGuard({ api: half.api, run: half.run, readResults: half.readResults, sleep: async () => {}, nodeName: 'n' });
-  await g2.reconcile();
-  assert.equal((await g2.status(uid)).reason, 'guard-stale-rules');
+  const restarted = createGuard({ api: f.api, run: f.run, readResults: f.readResults, sleep: async () => {}, nodeName: 'n' });
+  await restarted.reconcile();
+  assert.equal((await restarted.status(uid)).reason, 'guard-stale-rules', 'a restarted guard keeps the quarantine');
+});
+
+test('an API error keeps a live pod ready only while its binding still holds (Codex P1)', async () => {
+  const f = fake(); const guard = createGuard({ api: f.api, run: f.run, readResults: f.readResults, sleep: async () => {}, nodeName: 'n' });
+  await guard.reconcile();
+  const log = console.error; console.error = () => {};
+  try {
+    f.api.entry = async () => { throw new Error('api down'); };
+    f.setCniResult(cniResult({ veth: 'veth456', mac: '52:54:00:00:00:09' }));
+    await guard.reconcile();
+  } finally { console.error = log; }
+  assert.equal((await guard.status(uid)).ready, false);
+  await assert.rejects(guard.heartbeat(uid, false), /guard-not-ready/);
 });
 
 test('heartbeat refuses a pod IP that is not an address: nothing unvalidated reaches nft -f', async () => {

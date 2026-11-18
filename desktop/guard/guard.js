@@ -43,13 +43,14 @@ function identity(pod, entry) {
   return { uid, ips, mac };
 }
 
-function renderTables(pod, entry, veth) {
+// quarantine: the same tables for the pod's current port, with an empty alive set (no egress at all) and a comment that never matches
+function renderTables(pod, entry, veth, { quarantine = false } = {}) {
   const { uid, ips, mac } = identity(pod, entry);
   if (typeof veth !== 'string' || !NAME.test(veth)) throw new Error('invalid veth');
   const name = `${PREFIX}${uid}`;
   const v4 = ips.filter(ip => net.isIP(ip) === 4);
   const v6 = ips.filter(ip => net.isIP(ip) === 6);
-  const bound = binding(veth, mac, ips);
+  const bound = binding(veth, mac, ips) + (quarantine ? ' quarantined' : '');
   const bridge = [`table bridge ${name} {`, `  comment "${bound}";`, '  chain prerouting { type filter hook prerouting priority -300; policy accept;', `    iifname "${veth}" jump source`, '  }',
     '  chain forward { type filter hook forward priority -200; policy accept;', `    iifname "${veth}" ether type { ip, ip6 } drop`, `    oifname "${veth}" ether type { ip, ip6 } drop`, '  }',
     '  chain source {', ...(mac ? [`    ether saddr != ${mac} drop`] : []),
@@ -60,7 +61,10 @@ function renderTables(pod, entry, veth) {
   for (const [family, values] of [['4', v4], ['6', v6]]) {
     if (!values.length) continue;
     const type = family === '4' ? 'ipv4_addr' : 'ipv6_addr';
-    for (const set of ['alive', 'deadline']) inet.push(`  set ${set}${family} { type ${type}; flags timeout; elements = { ${values.map(ip => `${ip} timeout ${set === 'alive' ? '60s' : '3h'}`).join(', ')} }; }`);
+    for (const set of ['alive', 'deadline']) {
+      if (set === 'alive' && quarantine) { inet.push(`  set alive${family} { type ${type}; flags timeout; }`); continue; }
+      inet.push(`  set ${set}${family} { type ${type}; flags timeout; elements = { ${values.map(ip => `${ip} timeout ${set === 'alive' ? '60s' : '3h'}`).join(', ')} }; }`);
+    }
   }
   // before iptables filter (0) and br_netfilter (-1): kube-router's NetworkPolicy REJECT must not answer first, the guard drops silently
   inet.push('  chain forward { type filter hook forward priority -10; policy accept;');
@@ -182,6 +186,7 @@ function createApi({ fetcher = fetch, host = process.env.KUBERNETES_SERVICE_HOST
 function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory-runner', readResults = readCniResults }) {
   if (!api || !nodeName) throw new Error('guard needs API and node name');
   const ready = new Map();
+  const bound = new Map(); // uid -> the binding its tables were made ready with
   const tableName = uid => { if (!UID.test(uid)) throw new Error('invalid pod UID'); return `${PREFIX}${uid}`; };
   // true: both tables, written for `expect` (or, without it, by this rules version); 'stale': anything else present; false: none
   async function tables(uid, expect) {
@@ -204,7 +209,16 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
     const expect = binding(found.veth, found.mac, ips);
     const state = await tables(uid, expect);
     // tables of another rules version or binding (or half a pair) are never repaired in place: fail closed, the alive set expires
-    if (state === 'stale') { const error = new Error('guard-stale-rules'); error.code = 'guard-stale-rules'; throw error; }
+    if (state === 'stale') {
+      // quarantine the CURRENT port at once (anti-spoofing on it, no egress), in one transaction; never ready again, also after a restart
+      if ((await tables(uid, `${expect} quarantined`)) !== true) {
+        const name = tableName(uid), q = renderTables(pod, details, found.veth, { quarantine: true });
+        const present = JSON.parse(await run('nft', ['-j', 'list', 'tables'])).nftables.filter(i => i.table?.name === name).map(i => `delete table ${i.table.family} ${name}`);
+        await run('nft', ['-f', '-'], `${present.join('\n')}${present.length ? '\n' : ''}${q.bridge}\n${q.inet}`);
+      }
+      bound.delete(uid);
+      const error = new Error('guard-stale-rules'); error.code = 'guard-stale-rules'; throw error;
+    }
     if (!state) {
       const rules = renderTables(pod, details, found.veth);
       await run('nft', ['-f', '-'], `${rules.bridge}\n${rules.inet}`);
@@ -218,6 +232,7 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
         'action', 'police', 'rate', '20mbit', 'burst', '64k', 'drop']);
     }
     if ((await tables(uid, expect)) !== true) throw new Error('guard table read-back failed');
+    bound.set(uid, expect);
     ready.set(uid, true);
   }
   async function reconcileOnce() {
@@ -238,10 +253,20 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
         await apply(pod, entry);
       } catch (error) {
         // only a Kubernetes API error is forgiven for a live pod whose tables read back; identity, veth, MAC or binding errors cut it
-        if (error.transient && ready.get(uid) === true && (await tables(uid).catch(() => false)) === true) console.error(`guard reconcile ${uid}: ${error.message}`);
-        else ready.set(uid, typeof error.code === 'string' ? error.code : String(error.message).slice(0, 200)); // a command's exit code alone says nothing
+        if (error.transient && ready.get(uid) === true && await stillBound(pod)) console.error(`guard reconcile ${uid}: ${error.message}`);
+        else { bound.delete(uid); ready.set(uid, typeof error.code === 'string' ? error.code : String(error.message).slice(0, 200)); } // a command's exit code alone says nothing
       }
     }
+  }
+  // a live pod survives an API error only while its tables and the CNI cache still name the binding it was made ready with
+  async function stillBound(pod) {
+    const uid = pod.metadata.uid, want = bound.get(uid);
+    if (!want) return false;
+    try {
+      const found = await findVeth(pod, { readResults, run, sleep: async () => {} });
+      const ips = [...new Set((pod.status?.podIPs || [{ ip: pod.status?.podIP }]).map(item => item.ip))];
+      return ips.every(ip => net.isIP(ip)) && binding(found.veth, found.mac, ips) === want && (await tables(uid, want)) === true;
+    } catch { return false; }
   }
   let reconciling;
   function reconcile() {
@@ -250,7 +275,7 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
     return reconciling;
   }
   async function heartbeat(uid, sharing) {
-    if (ready.get(uid) !== true || (await tables(uid)) !== true) throw new Error('guard-not-ready');
+    if (ready.get(uid) !== true || !bound.get(uid) || (await tables(uid, bound.get(uid))) !== true) throw new Error('guard-not-ready');
     const name = tableName(uid);
     const pods = (await api.pods(nodeName)).items;
     const pod = pods.find(p => p.metadata?.uid === uid);

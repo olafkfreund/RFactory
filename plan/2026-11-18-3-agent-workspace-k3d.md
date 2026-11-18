@@ -680,6 +680,24 @@ and 27) and the scripts. This plan is self-contained.
       running. A hand-made desktop held its three runner connections until
       the runner ended it, which happens with no worker heartbeat after
       30 s.
+    - **Run 11:** 32 pass. The marker check failed: `desktop_open` answered
+      `{"ok":false}` for 240 s, and the proxy logged no CONNECT at all.
+      The agent throws the reason away by design.
+      - The agent now logs a failed action's type and message (never its
+        arguments) at warning level.
+      - The guest's journald forwards warnings to the serial console
+        (`services.journald.settings.Journal`).
+      - The guest images were rebuilt; `RF_GUEST_CMDLINE` changed with the
+        system.
+    - **Codex review (two P1s, both fixed):**
+      - A stale binding now quarantines the current port at once, in one
+        transaction: anti-spoofing on it, an empty alive set (so no
+        egress), and a `… quarantined` comment that is never ready, also
+        after a guard restart.
+      - An API error keeps a live pod ready only while its tables and the
+        CNI cache still name the binding it was made ready with.
+        Heartbeat checks that binding too.
+      - Both rulesets were checked with `nft -c` in the guard pod.
 
 
 ## Steps
