@@ -145,3 +145,7 @@ test('a same-origin redirect away from the approved URL is refused', browser, as
   await assert.rejects(share.start({ share_id: 'r', url: `${origin}/approved`, hosts: [origin] }));
   assert.equal(share.active, null);
 });
+
+test('callLaunchArgs: the verify hook points auto-select at the whole screen', () => {
+  assert.deepEqual(callLaunchArgs('once', true), ['--auto-select-desktop-capture-source=Entire screen']);
+});

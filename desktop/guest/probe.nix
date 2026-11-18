@@ -30,28 +30,7 @@ in
     uid = 1000;
   };
 
-  # one tap, addressed statically; the host side is set up by desktop/gate/net.sh
-  microvm.interfaces = [
-    {
-      type = "tap";
-      id = "rfgate0";
-      mac = "02:00:00:00:00:02";
-    }
-  ];
-  networking.useDHCP = false;
-  networking.nameservers = [ "1.1.1.1" ];
-  systemd.network.enable = true;
-  systemd.network.networks."10-gate" = {
-    matchConfig.MACAddress = "02:00:00:00:00:02";
-    address = [
-      "10.77.0.2/30"
-      "fd77::2/64"
-    ];
-    routes = [
-      { Gateway = "10.77.0.1"; }
-      { Gateway = "fd77::1"; }
-    ];
-  };
+  # network identity: default.nix (the runner's per-VM cid and tap, the guest's address from its cid), the same as production
 
   # the probe owns vsock 5000 here; step 7's agent bridge would clash with it
   systemd.services.vsock-control.enable = lib.mkForce false;

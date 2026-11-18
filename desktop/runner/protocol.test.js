@@ -122,3 +122,20 @@ test('listenGuest binds only the heartbeat suffix', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('every desktop_* action accepts hosts (and refuses a bad origin)', () => {
+  const h = ['https://example.test'];
+  const all = [{ type: 'desktop_click', target: 'a' }, { type: 'desktop_type', target: 'a', text: 'b' }, { type: 'desktop_scroll', dy: 3 },
+    { type: 'desktop_screenshot' }, { type: 'desktop_login', profile: 'p' }];
+  for (const m of all) {
+    const out = [];
+    createDecoder((x) => out.push(x)).write(encode({ ...m, hosts: h }));
+    assert.deepEqual(out[0].hosts, h, m.type);
+    assert.throws(() => encode({ ...m, hosts: ['file:///x'] }), /invalid protocol/, m.type);
+    encode(m); // hosts stay optional here; the guest fails closed without them
+  }
+});
+
+test('profile-attach carries an action_id like every message the runner sends', () => {
+  assert.doesNotThrow(() => encode({ type: 'profile-attach', key: 'a2V5', action_id: 'x1' }));
+});

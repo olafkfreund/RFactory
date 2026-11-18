@@ -14,7 +14,7 @@ let
   # Limits live in config, not in runner code (step 5 trap).
   runnerConfig = pkgs.writeText "rfactory-runner.json" (builtins.toJSON {
     inherit (cfg) mtlsPort maxDesktops vcpu memMiB overlayGiB rateMbit egressBytes runtimeMaxSec
-      guestRunner bootGraceMs protectedRanges dnsAllowlist scopeDomains scopePreviews upstreamResolvers;
+      guestRunner bootGraceMs protectedRanges dnsAllowlist scopeDomains scopePreviews upstreamResolvers verifyHooks;
     stateDir = "/var/lib/rfactory-desktop";
     runDir = "/run/rfactory-desktop";
     vmUser = "rfactory-vm";
@@ -77,6 +77,7 @@ in
       description = "The repo's desktop/ directory (holds runner/runner.js).";
     };
     tapHelper = mkOption { type = types.package; default = tapHelper; internal = true; };
+    verifyHooks = mkOption { type = types.bool; default = false; description = "Step 17 verify hooks (deviation 22). Only on the test host, never in production."; };
     mtlsPort = mkOption { type = types.port; default = 8443; description = "The only host port opened (TCP)."; };
     # Runtime paths as strings so secrets are never copied to the store.
     tlsCertFile = mkOption { type = types.str; description = "Runner server certificate (runtime path)."; };

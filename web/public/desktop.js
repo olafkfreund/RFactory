@@ -22,6 +22,8 @@ function clear(node) { while (node.firstChild) node.removeChild(node.firstChild)
 function render(doc, state, handlers, now = Date.now()) {
   const approver = state.can_approve === true;
   doc.getElementById('controls').hidden = !approver;
+  doc.getElementById('request-panel').hidden = !approver;
+  doc.getElementById('profiles-panel').hidden = state.can_admin !== true;
   const h = state.handover;
   doc.getElementById('handover').textContent = h
     ? `Handed over: ${h.actions.join(', ')} on ${h.hosts.join(', ') || 'no hosts'}` : 'No handover.';
@@ -62,6 +64,20 @@ function render(doc, state, handlers, now = Date.now()) {
   }
 }
 
+function renderProfiles(doc, list, handlers) {
+  const ul = doc.getElementById('profiles');
+  clear(ul);
+  for (const p of list) {
+    const li = el(doc, 'li');
+    li.appendChild(el(doc, 'div', `${p.purpose || ''} ${p.id}`));
+    const a = el(doc, 'button', 'Attach', 'btn'); a.setAttribute('type', 'button'); a.addEventListener('click', () => handlers.attach(p));
+    const d = el(doc, 'button', 'Delete', 'btn'); d.setAttribute('type', 'button'); d.addEventListener('click', () => handlers.remove(p));
+    li.appendChild(a); li.appendChild(d);
+    ul.appendChild(li);
+  }
+  if (!list.length) ul.appendChild(el(doc, 'li', 'No profiles.'));
+}
+
 async function post(doc, id, path, body) {
   const status = doc.getElementById('status');
   try {
@@ -73,7 +89,7 @@ async function post(doc, id, path, body) {
 
 function wire(doc, id, setTimer = setInterval) {
   const csv = (v) => String(v).split(',').map((x) => x.trim()).filter(Boolean);
-  let state = null;
+  let state = null, profilesLoaded = false;
   const after = (p) => p.then(() => poll());
   const handlers = {
     approve: (q) => after(post(doc, id, q.name === 'propose_share' ? `/share/${q.id}/approve` : `/actions/${q.id}/approve`, { hash: q.hash })),
@@ -85,6 +101,7 @@ function wire(doc, id, setTimer = setInterval) {
       if (!r.ok) { doc.getElementById('status').textContent = `Failed: ${r.status}`; return; }
       state = await r.json();
       render(doc, state, handlers);
+      if (state.can_admin && !profilesLoaded) { profilesLoaded = true; loadProfiles(); }
     } catch { doc.getElementById('status').textContent = 'Failed: network'; }
   }
   doc.getElementById('share-stop').addEventListener('click', () => after(post(doc, id, '/share/stop')));
@@ -92,6 +109,28 @@ function wire(doc, id, setTimer = setInterval) {
   doc.getElementById('grant').addEventListener('click', () => after(post(doc, id, '/handover', {
     actions: csv(doc.getElementById('actions').value), hosts: csv(doc.getElementById('hosts').value),
     minutes: Number(doc.getElementById('minutes').value) })));
+  doc.getElementById('request-send').addEventListener('click', async () => {
+    const box = doc.getElementById('request-text');
+    const text = box.value.trim();
+    if (!text) return;
+    const r = await fetch(`${API(id)}/request`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-rfactory-action': '1' }, body: JSON.stringify({ text }) }).catch(() => null);
+    const body = r && r.ok ? await r.json().catch(() => ({})) : {};
+    doc.getElementById('status').textContent = r && r.ok ? String(body.text || 'Done.') : `Failed: ${r ? r.status : 'network'}`;
+    box.value = '';
+    return poll();
+  });
+  // profile admin: the server refuses non-admins again, hiding the panel is convenience
+  const api = async (method, path, body) => {
+    const r = await fetch(`/api/profiles${path}`, { method, ...(method === 'GET' ? {} : { headers: { 'Content-Type': 'application/json', 'x-rfactory-action': '1' }, body: JSON.stringify(body || {}) }) }).catch(() => null);
+    if (!r || !r.ok) { doc.getElementById('status').textContent = `Failed: ${r ? r.status : 'network'}`; return null; }
+    return r.json().catch(() => ({}));
+  };
+  const loadProfiles = async () => { if (!(state && state.can_admin)) return; const b = await api('GET', ''); if (b) renderProfiles(doc, b.profiles || [], profileHandlers); };
+  const profileHandlers = {
+    attach: async (p) => { await api('POST', `/${p.id}/attach`, { call_id: doc.getElementById('profile-call').value.trim(), platform: doc.getElementById('profile-platform').value.trim() }); return loadProfiles(); },
+    remove: async (p) => { await api('DELETE', `/${p.id}`); return loadProfiles(); },
+  };
+  doc.getElementById('profile-create').addEventListener('click', async () => { await api('POST', '', { name: doc.getElementById('profile-name').value.trim() }); return loadProfiles(); });
   setTimer(poll, 2000);
   setTimer(() => { // the countdown ticks every second between polls
     const h = state && state.handover;

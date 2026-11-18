@@ -1,55 +1,82 @@
 #!/usr/bin/env bash
 # Step 17 share checks (#3 "Share"). Run only after D5 passed and step 11 exists; the owner confirms what reaches Meet.
-# Runs against the PRODUCTION image. Routes used (all exist), over the runner's mTLS API: create, list,
-# share-start {desktop_id,share_id,url,hosts}, share-stop {desktop_id,share_id}, destroy.
-# The proposal and approval (web POST /api/desktop/:id/share/:proposal/approve) need a queued propose_share, which only the agent's gateway
-# can make, so this script starts the share on the runner directly: it tests the guest's share, not the approval (web/test/desktop-routes.test.js).
-# The runner and the web server expose no share status and no test hooks, so what is not visible to a script is asked of the owner.
-# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_FIXTURE_URL (fixture.js; /retitle and /away are the share pages), VERIFY_FIXTURE_CTL
-# (the same server as this script sees it). The owner watches a call that is already up and answers on the terminal.
+# Runs against the PRODUCTION image, through the product's own routes:
+#   web:    POST /api/desktop/:id/handover, POST /api/desktop/:id/request (the brain proposes the share), GET /api/desktop/:id/state,
+#           POST /api/desktop/:id/share/<proposal>/approve {hash}, POST /api/desktop/:id/share/stop (all as the approver)
+#   runner: create, destroy, list (mTLS), and the verify hooks POST /verify/{fail-share-stop,auto-select-screen,drop-control} {desktop_id}
+#           (the step 17 test runner has verifyHooks: true; without it they are 404 and the checks FAIL).
+# The runner and the web server expose no share status, so what a script cannot see is asked of the owner.
+# auto-select-screen only works between create and the guest's connect, so that desktop gets the hook right after create.
+# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE, VERIFY_FIXTURE_URL (fixture.js; /retitle and
+# /away are the share pages; an approved preview), VERIFY_FIXTURE_CTL (the same server as this script sees it). The owner watches a call
+# that is already up and answers on the terminal.
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
 need_cmds curl jq
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL
 
-SCOPE=verify-scope CALL=share-call
-new_desktop "$CALL" "$SCOPE" || die "create: $DERR"; D=$DID
-sleep 30
-
-# start_share <path>: sets SHARE; the share-start reply must be ok
-start_share() {
-  local r; SHARE=$(cat /proc/sys/kernel/random/uuid)
-  r=$(api share-start "$(jq -nc --arg d "$D" --arg i "$SHARE" --arg u "$VERIFY_FIXTURE_URL$1" --arg h "$VERIFY_FIXTURE_URL" '{desktop_id:$d,share_id:$i,url:$u,hosts:[$h]}')")
-  [ "$(jq -r '.ok // false' <<<"$r")" = true ] || die "share-start failed: $r"
-  sleep 5
+SHARE_ACTIONS='["desktop_open","desktop_screenshot","propose_share"]'
+# ready <id>: wait for the guest, then a grant that allows a share of the fixture origin
+ready() {
+  local g; sleep 30
+  g=$(grant "$1" 30 "$SHARE_ACTIONS")
+  [ "$(jq -r '.ok // false' <<<"$g")" = true ] || die "grant failed: $g"
 }
-stop_share() { api share-stop "$(jq -nc --arg d "$D" --arg i "$SHARE" '{desktop_id:$d,share_id:$i}')"; }
+# web_stop <id>: the server's Stop button
+web_stop() { approver POST "/api/desktop/$1/share/stop"; }
+
+# auto-select pointed at the whole screen: the guest's share guard refuses it
+new_desktop share-auto-call verify-scope || die "create: $DERR"; A=$DID
+ah=$(hook auto-select-screen "$A")
+ready "$A"
+if [ "$(jq -r '.ok // false' <<<"$ah")" = true ]; then
+  if start_shared "$A" "$VERIFY_FIXTURE_URL/"; then res="the share started"; else res="the share was refused: $SHAREERR"; fi
+  sleep 5
+  owner_confirm share-auto-select-screen "Chrome was told to pick 'Entire screen' ($res). Is NOTHING shared in the Meet (the track was stopped)?"
+else fail share-auto-select-screen "hook reply: $ah"; fi
+api destroy "$(jq -nc --arg d "$A" '{desktop_id:$d}')" >/dev/null || true
+wait_gone "$A" 60 || die "$A did not go"
+
+new_desktop share-call verify-scope || die "create: $DERR"; D=$DID
+ready "$D"
 
 # the approved nonce window is what is shared, as a window: the guest started it; the owner reads the Meet's tile
-start_share /retitle
+start_shared "$D" "$VERIFY_FIXTURE_URL/retitle" || die "share did not start: $SHAREERR"
+sleep 5
 owner_confirm share-nonce-window "Does the Meet show ONE shared window titled 'RFactory share <nonce>' (the page 'shared page'), and nothing else?"
 
 # /retitle changes document.title after 1 s; the locked title and the match must not change
-sleep 3
 if [ "$(curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits" | jq -r .retitled)" = true ]; then
   owner_confirm share-title-change "The page changed its title. Is the same window still shared, still titled 'RFactory share <nonce>'?"
 else fail share-title-change "the fixture never saw the page change its title"; fi
 
-# a plain stop to end this share (the stop-with-a-failing-stopShare case is the next check)
-stop_share >/dev/null || true
-# the failing stopShare case (the server clears its record even when the runner call fails) needs a fault in the server: web/test/desktop-routes.test.js
-undriven share-stop-fails "no route makes the runner's share-stop fail on demand"
-
-# auto-select pointed at the whole screen: no hook forces the surface
-undriven share-auto-select-screen "no route forces the share's surface to the whole screen"
+# Stop with the guest's stop frame dropped: the first Stop fails and the record stays (so does its Stop button), the next one lands
+fh=$(hook fail-share-stop "$D")
+r1=$(web_stop "$D") || true
+kept=$(state_of "$D" | jq -r '.share.share_id // empty' 2>/dev/null || true)
+r2=$(web_stop "$D") || true
+left=$(state_of "$D" | jq -r '.share // "none"' 2>/dev/null || true)
+if [ "$(jq -r '.ok // false' <<<"$fh")" = true ] && [ "$(jq -r '.error // empty' <<<"$r1")" = stop-failed ] && [ "$kept" = "$SHARE" ] \
+  && [ "$(jq -r '.ok // false' <<<"$r2")" = true ] && [ "$left" = none ]; then pass share-stop-fails
+else fail share-stop-fails "hook: $fh; first stop: $r1; record kept: ${kept:-no}; second stop: $r2; record after: $left"; fi
 
 # the shared page navigates away after 3 s: the guest sends share-target-changed and the share stops
-start_share /away; sleep 6
-owner_confirm share-navigation-stops "The shared page navigated away 3 s after the share began. Did the share stop (nothing shared in the Meet)?"
-stop_share >/dev/null || true
+if start_shared "$D" "$VERIFY_FIXTURE_URL/away"; then
+  sleep 6
+  owner_confirm share-navigation-stops "The shared page navigated away 3 s after the share began. Did the share stop (nothing shared in the Meet)?"
+else fail share-navigation-stops "share did not start: $SHAREERR"; fi
+web_stop "$D" >/dev/null || true
 
-# control channel down for 5 s: the runner destroys the VM
-undriven share-control-down "no route drops the control channel while a share is active"
+# control channel down while a share is active: the runner destroys the VM after 5 s (a second desktop, the first one is done with)
+new_desktop share-down-call verify-scope || die "create: $DERR"; E=$DID
+ready "$E"
+if ! start_shared "$E" "$VERIFY_FIXTURE_URL/"; then fail share-control-down "share did not start: $SHAREERR"
+else
+  dh=$(hook drop-control "$E"); t0=$SECONDS
+  if [ "$(jq -r '.ok // false' <<<"$dh")" != true ]; then fail share-control-down "hook reply: $dh"
+  elif wait_gone "$E" 40; then pass "share-control-down ($((SECONDS - t0)) s after the channel was dropped)"
+  else fail share-control-down "$E still present 40 s after the control channel was dropped"; fi
+fi
 finish

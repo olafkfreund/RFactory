@@ -170,3 +170,14 @@ test('release frees the profile when its desktop ends; a starting profile cannot
   finish();
   await pending;
 });
+
+test('the expiry sweep survives one corrupt record, logs it, and still removes the expired ones', async (t) => {
+  const { profiles, setNow } = fixture(t);
+  const old = await profiles.create(admin, { scope: 'alpha', purpose: 'old', retention_days: 1 });
+  fs.writeFileSync(path.join(profiles.dir, '11111111-1111-1111-1111-111111111111.json'), '{ not json');
+  setNow('2026-11-20T00:00:00Z');
+  const logged = []; t.mock.method(console, 'error', (m) => logged.push(m));
+  await profiles.expire();
+  assert.ok(!fs.existsSync(profiles.recordPath(old.id)));
+  assert.match(logged.join('\n'), /11111111-1111-1111-1111-111111111111\.json unreadable/);
+});

@@ -4,6 +4,25 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { randomUUID } = require('node:crypto');
 
+// meet.google.com, *.zoom.us, *.slack.com; anything else is refused before a VM exists
+function platformOf(link) {
+  let u;
+  try { u = new URL(link); } catch { return null; }
+  if (u.protocol !== 'https:') return null;
+  const h = u.hostname;
+  return h === 'meet.google.com' ? 'meet' : /(^|\.)zoom\.us$/.test(h) ? 'zoom' : /(^|\.)slack\.com$/.test(h) ? 'slack' : null;
+}
+
+// The first stdin line is the call link (call.js writes it first); data after it stays buffered for the guest.
+function firstLine(stream) {
+  return new Promise((resolve) => {
+    let buf = '';
+    const done = () => { stream.removeListener('readable', onReadable); stream.unshift(Buffer.from(buf)); resolve(buf.split('\n')[0]); };
+    const onReadable = () => { let c; while ((c = stream.read()) !== null) { buf += c; if (buf.includes('\n')) return done(); } };
+    stream.on('readable', onReadable);
+  });
+}
+
 // A spawn() for call.js whose "child process" is the call worker in a desktop VM (plan 13c):
 // stdin/stdout are the worker's lines over the runner's call stream, so call.js drives it as it drives a pod child.
 // `kill` ends the VM (call.js uses it where a pod child gets a signal). runner: the mTLS client.
@@ -23,7 +42,10 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
     };
     child.kill = () => close();
     (async () => {
-      const made = await runner.create({ call_id: randomUUID(), scope });
+      const platform = platformOf(await firstLine(child.stdin));
+      if (closed) return;
+      if (!platform) throw new Error('unsupported call link');
+      const made = await runner.create({ call_id: randomUUID(), scope, platform });
       if (made.status !== 200) throw new Error(`runner refused: ${made.body && made.body.error}`);
       id = made.body.desktop_id;
       child.desktop_id = id;

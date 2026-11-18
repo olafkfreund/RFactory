@@ -38,6 +38,18 @@ function validLink(link) {
     && !u.search && !u.hash && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname) && link === u.href;
 }
 
+function sameOrigin(req) {
+  if (req.headers['x-rfactory-action'] !== '1') return false;
+  try { return new URL(req.headers.origin).host === req.headers.host; } catch { return false; }
+}
+
+// verify only (RFACTORY_BRAIN_RECORD): one JSON line per brain input, redacted as it is sent; a failed write never breaks the brain
+function recordBrain(brain, redactor, file) {
+  const add = (input) => { try { fs.appendFileSync(file, `${JSON.stringify(redactor.toModel(input))}\n`); } catch { /* verify aid only */ } };
+  return { ...brain, turn: (snapshot, o) => { add({ snapshot, question: o && o.question }); return brain.turn(snapshot, o); },
+    propose: (snapshot, o) => { add({ snapshot, request: o && o.request }); return brain.propose(snapshot, o); } };
+}
+
 function readJson(req, limit = 4096) {
   return new Promise((resolve) => {
     let body = '';
@@ -47,7 +59,13 @@ function readJson(req, limit = 4096) {
   });
 }
 
-function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null }) {
+// A profile desktop has no call worker; the runner reaps a VM with no server heartbeat (60 s), so web beats until the runner refuses (VM gone).
+function keepAlive(desktop_id, runner, ms) {
+  const t = setInterval(() => runner.call('heartbeat', { desktop_id }).then((r) => { if (r.status !== 200 || (r.body && r.body.ok === false)) clearInterval(t); }, () => {}), ms);
+  t.unref();
+}
+
+function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null, profiles = null, heartbeatMs = 10000 }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -100,6 +118,26 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
       });
+      return;
+    }
+    const prof = profiles && /^\/api\/profiles(?:\/([0-9a-f-]{36})(\/attach)?)?$/.exec(url);
+    if (prof) {
+      const [, pid, attach] = prof;
+      const route = req.method === 'GET' && !pid ? 'profile-list' : req.method === 'POST' && !pid ? 'profile-create'
+        : req.method === 'POST' && attach ? 'profile-attach' : req.method === 'DELETE' && pid && !attach ? 'profile-delete' : null;
+      if (!route) { req.resume(); return json(res, 405, { error: 'method' }); }
+      if (!roles.has(email, 'admin')) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      if (route !== 'profile-list' && !sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      const actor = { id: email, admin_scopes: [profiles.scope] };
+      readJson(req).then(async (b) => {
+        b = b || {};
+        const body = { profile_id: pid, ...(route === 'profile-create' ? { purpose: b.name } : route === 'profile-attach' ? { call_id: b.call_id, platform: b.platform } : {}), actor, scope: profiles.scope };
+        if (route === 'profile-create' && (typeof b.name !== 'string' || !b.name || b.name.length > 100)) return json(res, 400, { error: 'bad-request' });
+        if (route === 'profile-attach' && !(typeof b.call_id === 'string' && /^[\w-]{1,64}$/.test(b.call_id) && ['meet', 'zoom', 'slack'].includes(b.platform))) return json(res, 400, { error: 'bad-request' });
+        const r = await profiles.runner.call(route, body);
+        if (route === 'profile-attach' && r.status === 200 && r.body && r.body.desktop_id) keepAlive(r.body.desktop_id, profiles.runner, heartbeatMs);
+        return r.status === 200 ? json(res, 200, r.body) : json(res, r.status >= 400 && r.status < 500 ? r.status : 502, { error: 'runner-refused' });
+      }).catch(() => json(res, 502, { error: 'runner-error' }));
       return;
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
@@ -156,7 +194,8 @@ async function main() {
   const redactor = makeRedactor(secrets);
   const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id });
   await source.start();
-  const brain = createClaudeBrain(scope, redactor);
+  const realBrain = createClaudeBrain(scope, redactor);
+  const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
   let actions = null;
   if (scope.writes_enabled) {
     const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
@@ -180,8 +219,10 @@ async function main() {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
       isAllowed: async () => true, // no per-scope action allowlist exists yet: the approver's handover hosts and the runner's network allowlist bound what can run
-      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
-      run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, ...(name === 'desktop_open' ? { hosts: ctx.hosts } : {}) } }),
+      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, snapshot: async () => { const raw = await source.snapshot();
+        return { items: raw.items, counts: summarise(raw.items), unknown: raw.items.filter((i) => i.state === 'unknown'), fetched_at: raw.fetched_at, newest_update: raw.newest_update }; },
+      // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
+      run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, hosts: ctx.hosts } }),
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
@@ -191,11 +232,11 @@ async function main() {
     call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions, desktop,
       ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, brain, roles, call, actions, desktop }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  createApp({ source, brain, roles, call, actions, desktop, profiles: runner ? { runner, scope: scope.name } : null }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { createApp, refuseKeyEnv, main };
+module.exports = { createApp, refuseKeyEnv, main, recordBrain };

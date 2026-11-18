@@ -270,3 +270,12 @@ test('control: a replacement grant closes pages of the old hosts', browser, asyn
   assert.equal(await control.pageText(), 'x');
   assert.ok(await urls());
 });
+
+test('agent: call-config auto_select_screen reaches the launch, and only true does', async () => {
+  const seen = [];
+  const agent = createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (nonce, screen) => seen.push([nonce, screen]) });
+  await agent.handle({ type: 'call-config', nonce: 'n1', auto_select_screen: true });
+  const plain = createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (nonce, screen) => seen.push([nonce, screen]) });
+  await plain.handle({ type: 'call-config', nonce: 'n2' });
+  assert.deepEqual(seen, [['n1', true], ['n2', false]]);
+});

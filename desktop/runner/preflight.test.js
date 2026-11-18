@@ -33,3 +33,13 @@ test('"not found", empty and unknown platforms fail without probing', async () =
   await assert.rejects(preflight('empty', ranges, connect), /no pinned media ranges/);
   await assert.rejects(preflight('nope', ranges, connect), /unknown call platform/);
 });
+
+test('the pinned meet and zoom entries pass preflight (and probe 443)', async () => {
+  const pinned = require('../ranges/ranges.json');
+  for (const platform of ['meet', 'zoom']) {
+    const calls = [];
+    const ok = await preflight(platform, pinned, async (h, p) => { calls.push([h, p]); return true; });
+    assert.equal(ok.port, 443, platform);
+    assert.equal(calls.length, 1);
+  }
+});

@@ -11,6 +11,12 @@ test('ranges.json: each platform has a source or "not found"', () => {
     assert.match(entry.source, /^https:\/\//, name);
     assert.ok(Array.isArray(entry.cidrs) && Array.isArray(entry.udp) && Array.isArray(entry.tcp), name);
   }
+  for (const name of ['meet', 'zoom']) { // pinned from the providers' published pages, with an audit trail
+    assert.match(ranges[name].sha256, /^[0-9a-f]{64}$/, name);
+    assert.match(ranges[name].fetched, /^\d{4}-\d{2}-\d{2}$/, name);
+    assert.ok(ranges[name].cidrs.length && ranges[name].tcp[0] === 443, name);
+  }
+  assert.ok(ranges.meet.cidrs.includes('74.125.250.0/24') && ranges.zoom.cidrs.includes('170.114.0.0/16'));
   assert.deepEqual(ranges.slack, {
     cidrs: ['99.77.128.0/18'], udp: [3478, 22466], tcp: [443],
     source: 'https://slack.com/help/articles/36284146785427',
@@ -33,9 +39,10 @@ test('refresh only touches cidr-lines entries and reports changes', async () => 
   assert.deepEqual(seen, [ranges.zoom.source]);
   assert.deepEqual(changed, ['zoom']);
   assert.deepEqual(next.zoom.cidrs, ['3.7.35.0/25']);
+  assert.equal(next.zoom.sha256, require('node:crypto').createHash('sha256').update('3.7.35.0/25\n').digest('hex'));
   assert.deepEqual(next.slack, ranges.slack);
-  assert.equal(next.meet, 'not found');
-  assert.deepEqual(ranges.zoom.cidrs, [], 'input not mutated');
+  assert.deepEqual(next.meet, ranges.meet);
+  assert.ok(ranges.zoom.cidrs.length > 1, 'input not mutated');
   const again = await refresh(next, async () => '3.7.35.0/25');
   assert.deepEqual(again.changed, []);
 });

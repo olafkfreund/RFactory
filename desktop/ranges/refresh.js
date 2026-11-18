@@ -4,6 +4,7 @@
 // Only entries with format "cidr-lines" are fetched; ports are never edited.
 // The scheduled job opens a PR from the result; nothing here merges.
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
@@ -33,9 +34,12 @@ async function refresh(current, fetchText) {
   const changed = [];
   for (const [platform, entry] of Object.entries(next)) {
     if (typeof entry !== 'object' || entry.format !== 'cidr-lines') continue;
-    const cidrs = parseCidrs(await fetchText(entry.source));
+    const text = await fetchText(entry.source);
+    const cidrs = parseCidrs(text);
     if (JSON.stringify(cidrs) !== JSON.stringify(entry.cidrs)) {
       entry.cidrs = cidrs;
+      entry.sha256 = crypto.createHash('sha256').update(text).digest('hex'); // audit trail: the document these came from
+      entry.fetched = new Date().toISOString().slice(0, 10);
       changed.push(platform);
     }
   }

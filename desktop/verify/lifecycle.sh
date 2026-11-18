@@ -13,15 +13,6 @@ need_env VERIFY_CERT VERIFY_KEY VERIFY_CA
 MOUNTED=
 extra_cleanup() { if [ -n "$MOUNTED" ]; then umount "$MOUNTED" 2>/dev/null || true; MOUNTED=; fi; }
 
-# the runner refuses a create without a platform (media preflight); only slack has pinned ranges today
-new_desktop() {
-  local out; DID=; DERR=
-  out=$(api create "$(jq -nc --arg c "$1" --arg s "$2" --arg p "${VERIFY_PLATFORM:-slack}" '{call_id:$c,scope:$s,platform:$p}')") || { DERR=$out; return 1; }
-  DID=$(jq -r '.desktop_id // empty' <<<"$out")
-  [ -n "$DID" ] || { DERR=$out; return 1; }
-  CREATED+=("$DID")
-}
-
 HB=$(frame_b64 '{"type":"heartbeat"}')
 # hold <id> <seconds> <server 0|1> <worker 0|1>: keep the chosen heartbeats going until the desktop is gone or time runs out
 hold() {
@@ -71,7 +62,7 @@ if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-r
 fresh clean; id=$DID
 mount --bind "$RUN_DIR/$id" "$RUN_DIR/$id"; MOUNTED=$RUN_DIR/$id
 dres=$(api destroy "$(jq -nc --arg d "$id" '{desktop_id:$d}')" || true)
-cres=$(api create '{"call_id":"life-blocked","scope":"verify-scope","platform":"slack"}' || true)
+cres=$(api create "$(create_body life-blocked verify-scope)" || true)
 still=$(desk_ids | grep -cx "$id" || true)
 umount "$MOUNTED"; MOUNTED=
 api clear >/dev/null

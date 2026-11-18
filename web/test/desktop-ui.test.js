@@ -20,7 +20,7 @@ class Node {
 }
 function shim() {
   const byId = {};
-  for (const id of ['desktop-name', 'countdown', 'status', 'alert', 'handover', 'running', 'controls', 'share', 'share-stop', 'queued', 'actions', 'hosts', 'minutes', 'grant', 'revoke']) byId[id] = new Node(id === 'queued' ? 'ul' : 'div');
+  for (const id of ['desktop-name', 'countdown', 'status', 'alert', 'handover', 'running', 'controls', 'share', 'share-stop', 'queued', 'actions', 'hosts', 'minutes', 'grant', 'revoke', 'request-panel', 'profiles-panel', 'request-text', 'request-send', 'profiles', 'profile-name', 'profile-create', 'profile-call', 'profile-platform']) byId[id] = new Node(id === 'queued' || id === 'profiles' ? 'ul' : 'div');
   byId.actions.value = 'desktop_open'; byId.hosts.value = 'https://a.test, https://b.test'; byId.minutes.value = '12';
   return { doc: { createElement: (t) => new Node(t), getElementById: (id) => byId[id] }, byId };
 }
@@ -121,4 +121,21 @@ test('the page files are served only when desktop is enabled, with the CSP; no i
   const html = fs.readFileSync(path.join(pub, 'desktop.html'), 'utf8');
   assert.ok(!/<script(?![^>]*\ssrc=)/.test(html) && !/\son\w+=/.test(html));
   assert.ok(!/innerHTML/.test(fs.readFileSync(path.join(pub, 'desktop.js'), 'utf8')));
+});
+
+test('the request box and profile panel are for approvers and admins; the request is POSTed as text', async (t) => {
+  const a = shim();
+  render(a.doc, state({ can_approve: true, can_admin: true }), noop, NOW);
+  assert.deepEqual([a.byId['request-panel'].hidden, a.byId['profiles-panel'].hidden], [false, false]);
+  const b = shim();
+  render(b.doc, state(), noop, NOW);
+  assert.deepEqual([b.byId['request-panel'].hidden, b.byId['profiles-panel'].hidden], [true, true]);
+  const calls = fakeFetch(t, state({ can_approve: true }));
+  const { doc, byId } = shim();
+  await wire(doc, 'd1', () => {});
+  byId['request-text'].value = ' open <b>x</b> ';
+  await byId['request-send'].listeners.click();
+  const post = calls.find((c) => c.url === '/api/desktop/d1/request');
+  assert.deepEqual(JSON.parse(post.init.body), { text: 'open <b>x</b>' });
+  assert.equal(post.init.headers['x-rfactory-action'], '1');
 });

@@ -1,12 +1,16 @@
 # shellcheck shell=bash disable=SC2034
 # Shared by the step 15 verification scripts (#3). Source it, then `trap verify_exit EXIT`.
 # Owner-gated (step 17): needs root on p620 and a running runner. Do not run without the owner's OK.
+# The runner must be the step 17 test runner: config verifyHooks: true (enables POST /verify/{fail-share-stop,auto-select-screen,drop-control},
+# never set in production) and profiles enabled. The web server runs with scope verify-scope, RFACTORY_DESKTOP=1 and, for secrets.sh,
+# RFACTORY_BRAIN_RECORD=<file>. Every `create` sends a platform: VERIFY_PLATFORM (default meet).
 # Each check prints exactly one `PASS <name>` or `FAIL <name>: <evidence>` line;
 # `grep -c '^FAIL'` over the output is the result. A script that cannot start prints a FAIL line too.
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 FRAME=$ROOT/desktop/gate/frame.js
 RUNNER_URL=${RUNNER_URL:-https://127.0.0.1:8443}
 RUN_DIR=${RUN_DIR:-/run/rfactory-desktop}
+PLATFORM=${VERIFY_PLATFORM:-meet}
 SCRIPT=$(basename "${BASH_SOURCE[1]:-verify}" .sh)
 FAILS=0
 REPORTED=0
@@ -36,7 +40,7 @@ api() {
 # The cookie goes in on stdin, not in argv, and is never printed.
 web() {
   local base=${VERIFY_SERVER_URL%/} args
-  args=(-sS --max-time 60 -X "$1" -H 'content-type: application/json' -H 'x-rfactory-action: 1' -H "origin: $base")
+  args=(-sS --max-time "${WEB_MAX:-60}" -X "$1" -H 'content-type: application/json' -H 'x-rfactory-action: 1' -H "origin: $base")
   [ -z "${3:-}" ] || args+=(--data "$3")
   printf 'cookie: %s\n' "${WEB_COOKIE:-}" | curl "${args[@]}" -H @- "$base$2"
 }
@@ -45,14 +49,46 @@ approver() { WEB_COOKIE=$VERIFY_APPROVER_COOKIE web "$@"; }
 act() { api action "$(jq -nc --arg d "$1" --argjson m "$2" '{desktop_id:$d,message:$m}')"; }
 # state_of <id>: GET /api/desktop/<id>/state as the approver
 state_of() { approver GET "/api/desktop/$1/state"; }
-# undriven <name> <why>: a checklist item that no existing runner or web route can drive; always FAIL so a run cannot look green
-undriven() { fail "$1" "not drivable: $2"; }
+admin() { WEB_COOKIE=$VERIFY_ADMIN_COOKIE web "$@"; }
+# ask <id> <text>: the typed request route (approver), the same path as a spoken request; prints the reply ({text})
+ask() { approver POST "/api/desktop/$1/request" "$(jq -nc --arg t "$2" '{text:$t}')"; }
+# queued_of <id> <action>: "<proposal id> <hash>" of the newest queued entry with that action name, empty when none
+queued_of() { state_of "$1" | jq -r --arg n "$2" '[.queued[]? | select(.name == $n)] | last // empty | "\(.id) \(.hash)"' 2>/dev/null || true; }
+# grant <id> <minutes> <actions-json>: a handover for the fixture origin (VERIFY_FIXTURE_URL); prints the web reply
+grant() {
+  approver POST "/api/desktop/$1/handover" "$(jq -nc --argjson m "$2" --argjson a "$3" --arg h "$VERIFY_FIXTURE_URL" '{minutes:$m,actions:$a,hosts:[$h]}')"
+}
+# start_shared <id> <url>: asks for a share, approves the proposal as the approver; sets SHARE (the share id) on success, else SHAREERR and returns 1.
+# Needs a live grant with propose_share for the url's origin.
+start_shared() {
+  local r q pid hash; SHARE=; SHAREERR=
+  r=$(ask "$1" "Share the page $2 in the call") || true
+  q=$(queued_of "$1" propose_share)
+  [ -n "$q" ] || { SHAREERR="no share proposal after the request: $r"; return 1; }
+  read -r pid hash <<<"$q"
+  r=$(approver POST "/api/desktop/$1/share/$pid/approve" "$(jq -nc --arg h "$hash" '{hash:$h}')") || true
+  SHAREERR=$r
+  [ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" = true ] || return 1
+  SHARE=$(jq -r '.share_id // empty' <<<"$r")
+  [ -n "$SHARE" ]
+}
+# hook <name> <id>: a runner verify hook (needs verifyHooks: true); prints the reply
+hook() { api "verify/$1" "$(jq -nc --arg d "$2" '{desktop_id:$d}')"; }
+# as_pod_user <VAR=value...> <command...>: run as the user that owns the rfactory pod (VERIFY_POD_USER; rootless podman needs its HOME and runtime dir)
+as_pod_user() {
+  need_env VERIFY_POD_USER
+  local home; home=$(getent passwd "$VERIFY_POD_USER" | cut -d: -f6) || return 1
+  if [ "$(id -un)" = "$VERIFY_POD_USER" ]; then env "$@"; return; fi
+  runuser -u "$VERIFY_POD_USER" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$(id -u "$VERIFY_POD_USER")" "$@"
+}
 in_secs() { date -u -d "+$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
 
+# create_body <call_id> <scope>: the runner's create request; it refuses one without a platform
+create_body() { jq -nc --arg c "$1" --arg s "$2" --arg p "$PLATFORM" '{call_id:$c,scope:$s,platform:$p}'; }
 # new_desktop <call_id> <scope>: sets DID on success; on failure sets DERR to the runner's reply and returns 1
 new_desktop() {
   local out; DID=; DERR=
-  out=$(api create "$(jq -nc --arg c "$1" --arg s "$2" '{call_id:$c,scope:$s}')") || { DERR=$out; return 1; }
+  out=$(api create "$(create_body "$1" "$2")") || { DERR=$out; return 1; }
   DID=$(jq -r '.desktop_id // empty' <<<"$out")
   [ -n "$DID" ] || { DERR=$out; return 1; }
   CREATED+=("$DID")

@@ -59,7 +59,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       if (m.type === 'call-config') {
         if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
         configured = true;
-        return Promise.resolve(onCallConfig(m.nonce)).catch(() => {});
+        return Promise.resolve(onCallConfig(m.nonce, m.auto_select_screen === true)).catch(() => {});
       }
       if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
@@ -101,14 +101,15 @@ function main() {
     : { executablePath: process.env.CHROME, headless: false, args: ['--no-sandbox'] } });
   startHeartbeat(sendHost);
   const agents = [];
+  let worker = null, sendCurrent = () => {}; // one call worker per VM; a reconnected control channel finds it again
   process.on('SIGTERM', () => { try { sendHost({ type: 'call-end' }); } catch { /* host link down */ } Promise.all(agents.map((a) => a.shutdown())).finally(() => process.exit(0)); });
   // socat in the guest forwards vsock 5000 to this loopback port.
   net.createServer((socket) => {
     const send = (m) => socket.write(encode(m));
-    let worker = null;
+    sendCurrent = send;
     const agent = createAgent({ control, profile, send,
-      share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() },
-      onCallConfig: (nonce) => { worker = createCallWorker({ nonce, send, onExit: () => sendHost({ type: 'call-end' }) }); },
+      share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() }, // throws without a worker: the action answers ok:false
+      onCallConfig: (nonce, screen) => { if (!worker) worker = createCallWorker({ nonce, screen, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) }); },
       onCallIn: (m) => worker?.in(m) });
     agents.push(agent);
     const dec = createDecoder((m) => agent.handle(m));

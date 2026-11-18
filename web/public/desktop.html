@@ -48,6 +48,14 @@
     </div>
   </section>
 
+  <section class="panel" id="request-panel" hidden>
+    <h2 class="panel-title">Ask the agent</h2>
+    <label class="field">Request
+      <input id="request-text" class="call-input" type="text" maxlength="500" autocomplete="off">
+    </label>
+    <button id="request-send" class="btn" type="button">Send</button>
+  </section>
+
   <section class="panel">
     <h2 class="panel-title">Share</h2>
     <p id="share" class="fine">Not sharing.</p>
@@ -57,6 +65,20 @@
   <section class="panel">
     <h2 class="panel-title">Waiting for approval</h2>
     <ul id="queued" class="queue"></ul>
+  </section>
+  <section class="panel" id="profiles-panel" hidden>
+    <h2 class="panel-title">Profiles (admin)</h2>
+    <ul id="profiles" class="queue"></ul>
+    <label class="field">New profile name
+      <input id="profile-name" class="call-input" type="text" maxlength="100" autocomplete="off">
+    </label>
+    <button id="profile-create" class="btn" type="button">Create</button>
+    <label class="field">Attach: call id
+      <input id="profile-call" class="call-input" type="text" autocomplete="off">
+    </label>
+    <label class="field">Attach: platform (meet, zoom, slack)
+      <input id="profile-platform" class="call-input" type="text" value="meet" autocomplete="off">
+    </label>
   </section>
 </main>
 <script src="/desktop.js"></script>

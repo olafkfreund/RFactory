@@ -89,7 +89,10 @@ function createLifecycle(config, deps) {
     if (tagged.type === 'heartbeat') { vm.lastWorker = clock.now(); return; } // liveness, not activity (idle needs real use)
     vm.lastActivity = clock.now();
     if (tagged.type === 'cancel-ack') { if (vm.cancelAck) vm.cancelAck(); } else if (tagged.type === 'call-end') destroy(vm.id, 'call-end');
-    else if (deps.onGuestMessage) deps.onGuestMessage(tagged);
+    else {
+      if (tagged.type === 'share-target-changed') { vm.sharing = false; vm.controlLostAt = null; } // the guest ended that capture
+      if (deps.onGuestMessage) deps.onGuestMessage(tagged);
+    }
   }
 
   // Host -> guest control channel (vsock 5000, duplex): call-config goes first, then actions; replies are matched by action_id.
@@ -142,18 +145,23 @@ function createLifecycle(config, deps) {
     }
   }
   function sendCallConfig(vm) {
-    if (!vm.nonce || !vm.agent || vm.configSent) return;
-    vm.configSent = true; // first message on the channel; never twice
-    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce }));
+    if (!vm.nonce || !vm.agent) return;
+    vm.configSent = true; // first message on every control connection; the guest keeps one worker and ignores repeats
+    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}) }));
   }
   const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
-  async function toGuest(id, message, timeoutMs = 30000) {
+  async function toGuest(id, message, timeoutMs = 30000, corrupt = false) {
     const vm = vms.get(id);
     if (!vm || vm.destroying || vm.spare || !vm.agent || !vm.configSent) return { error: 'no-control' };
     const action_id = crypto.randomUUID();
     const { call_id, scope, desktop_id, ...rest } = message; // the runner sets identity; nothing the caller sends is trusted
     let frame;
     try { frame = encode({ ...rest, action_id }); } catch { return { error: 'bad-message' }; }
+    if (corrupt) { // verify hook: a frame the guest's decoder drops (no share_id), so the guest never answers
+      const body = Buffer.from(JSON.stringify({ type: rest.type, action_id }));
+      frame = Buffer.concat([Buffer.alloc(4), body]);
+      frame.writeUInt32BE(body.length);
+    }
     vm.lastActivity = clock.now();
     return new Promise((resolve) => {
       let timer;
@@ -175,9 +183,14 @@ function createLifecycle(config, deps) {
     return toGuest(id, message, timeoutMs);
   }
   // Revoke: the guest stops what it is doing and acknowledges; no ack in 2 s means the VM is destroyed (fail closed).
-  async function cancel(id) {
+  function cancel(id) {
     const vm = vms.get(id);
-    if (!vm || vm.destroying) return { ok: true, already: true };
+    if (!vm || vm.destroying) return Promise.resolve({ ok: true, already: true });
+    if (!vm.cancelling) vm.cancelling = cancelNow(vm).finally(() => { vm.cancelling = null; }); // two cancels share one ack waiter
+    return vm.cancelling;
+  }
+  async function cancelNow(vm) {
+    const id = vm.id;
     if (!vm.agent) return { ...(await destroy(id, 'cancel-no-control')), destroyed: true };
     const acked = await new Promise((resolve) => {
       const t = setTimeout(() => { vm.cancelAck = null; resolve(false); }, 2000);
@@ -193,9 +206,26 @@ function createLifecycle(config, deps) {
     return r.error || r.ok ? r : { ...r, error: 'share-failed' };
   }
   async function shareStop(id, { share_id }) {
-    const r = await toGuest(id, { type: 'share-stop', share_id });
+    const vm = vms.get(id);
+    const fail = !!(vm && vm.failShareStop);
+    if (fail) vm.failShareStop = false; // the next share-stop only
+    const r = await toGuest(id, { type: 'share-stop', share_id }, fail ? 3000 : undefined, fail);
     if (r.ok) sharing(id, false); // a stop that did not land keeps the control-channel rule armed
-    return r.error || r.ok ? r : { ...r, error: 'share-stop-failed' };
+    return r.ok ? r : { ...r, error: r.error && r.error !== 'timeout' ? r.error : 'share-stop-failed' };
+  }
+  // Verify hooks (deviation 22), reachable only when the runner is configured with verifyHooks.
+  function verifyHook(id, hook) {
+    const vm = vms.get(id);
+    if (!vm || vm.destroying || vm.spare) return { error: 'no-desktop' };
+    if (hook === 'fail-share-stop') vm.failShareStop = true;
+    else if (hook === 'auto-select-screen') {
+      if (vm.configSent) return { error: 'too-late', message: 'the call Chrome is already launched; call this right after create' };
+      vm.autoSelectScreen = true;
+    } else if (hook === 'drop-control') {
+      if (!vm.agent) return { error: 'no-control' };
+      vm.agent.destroy();
+    } else return { error: 'bad-message' };
+    return { ok: true };
   }
   // The call worker's line stream (plan 13c): raw lines on `socket` <-> call-in / call-out pieces on the guest channel.
   const CALL_PIECE = 16 * 1024;
@@ -404,7 +434,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
+  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, verifyHook, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
     cancel, status: () => ({ ...state, count: vms.size }) };
 }
 

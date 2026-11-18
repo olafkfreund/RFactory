@@ -261,3 +261,72 @@ test('review: revoke goes through the cancel route first', async (t) => {
   await s.call('POST', '/api/desktop/d1/revoke', APPROVER, {});
   assert.deepEqual(cancelled, ['d1']);
 });
+
+test('an approved click carries the live grant hosts, and none once the grant is gone', async (t) => {
+  const s = await start(t);
+  const ctx = { scope: 's1', call_id: 'c1', desktop_id: 'd1' };
+  await s.desktop.queue.enqueue({ name: 'desktop_click', args: { target: '#a' }, running: ctx, reason: 'no-session' });
+  await s.desktop.queue.enqueue({ name: 'desktop_click', args: { target: '#b' }, running: ctx, reason: 'no-session' });
+  const [a, b] = s.desktop.queue.list('d1');
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+  await s.call('POST', `/api/desktop/d1/actions/${a.id}/approve`, APPROVER, { hash: a.hash });
+  await s.call('POST', '/api/desktop/d1/revoke', APPROVER, {});
+  await s.call('POST', `/api/desktop/d1/actions/${b.id}/approve`, APPROVER, { hash: b.hash });
+  assert.deepEqual(s.ran.map((r) => r.ctx.hosts), [[HOST], []]);
+});
+
+test('typed request: approver only, CSRF, same request() path as speech', async (t) => {
+  const s = await start(t, { proposal: { action: 'desktop_open', args: { url: `${HOST}/page` } } });
+  const url = '/api/desktop/d1/request';
+  assert.equal((await s.call('POST', url, MEMBER, { text: 'open it' })).status, 403);
+  assert.equal((await s.call('POST', url, APPROVER, { text: 'open it' }, { csrf: false })).status, 403);
+  assert.equal((await s.call('POST', url, APPROVER, { text: '' })).status, 400);
+  assert.deepEqual(await (await s.call('POST', url, APPROVER, { text: 'open it' })).json(), { text: 'That action is waiting for approval.' });
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+  assert.deepEqual(await (await s.call('POST', url, APPROVER, { text: 'open it' })).json(), { text: 'Done.' });
+  assert.equal((await s.call('POST', '/api/desktop/d2/request', APPROVER, { text: 'x' })).status, 404); // another scope
+});
+
+test('profile admin routes: admin only, CSRF, actor and scope go to the runner', async (t) => {
+  const calls = [];
+  let beats = 0, gone = false;
+  const runner = { call: async (route, body) => { calls.push([route, body]); if (route === 'heartbeat') { beats++; return { status: gone ? 404 : 200, body: {} }; } return { status: 200, body: { ok: true, desktop_id: 'dd' } }; } };
+  const server = createApp({ roles, source: {}, brain: {}, profiles: { runner, scope: 's1' }, heartbeatMs: 5 });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const go = (method, path, email, body, csrf = true) => fetch(base + path, { method, body: body && JSON.stringify(body),
+    headers: { 'X-Forwarded-Email': email, ...(csrf && method !== 'GET' ? { 'x-rfactory-action': '1', origin: base } : {}) } });
+  const pid = '12345678-1234-1234-1234-123456789abc';
+  assert.equal((await go('GET', '/api/profiles', APPROVER)).status, 403);
+  assert.equal((await go('POST', '/api/profiles', ADMIN, { name: 'n' }, false)).status, 403);
+  assert.equal((await go('POST', '/api/profiles', ADMIN, {})).status, 400);
+  assert.equal(calls.length, 0);
+  const actor = { id: ADMIN, admin_scopes: ['s1'] };
+  assert.equal((await go('GET', '/api/profiles', ADMIN)).status, 200);
+  assert.equal((await go('POST', '/api/profiles', ADMIN, { name: 'work' })).status, 200);
+  assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c', platform: 'zoom' })).status, 200);
+  assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c', platform: 'teams' })).status, 400);
+  assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c d', platform: 'zoom' })).status, 400);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.ok(beats >= 2, 'web heartbeats the attached desktop');
+  gone = true; await new Promise((r) => setTimeout(r, 30)); const n = beats; await new Promise((r) => setTimeout(r, 40));
+  assert.equal(beats, n, 'heartbeat stops once the runner refuses');
+  assert.equal((await go('DELETE', `/api/profiles/${pid}`, ADMIN)).status, 200);
+  assert.deepEqual(calls.map((c) => c[0]).filter((r) => r !== 'heartbeat'), ['profile-list', 'profile-create', 'profile-attach', 'profile-delete']);
+  assert.ok(calls.filter((c) => c[0] !== 'heartbeat').every((c) => JSON.stringify(c[1].actor) === JSON.stringify(actor) && c[1].scope === 's1'));
+  assert.equal(calls[1][1].purpose, 'work');
+  assert.deepEqual([calls[2][1].profile_id, calls[2][1].call_id, calls[2][1].platform], [pid, 'c', 'zoom']);
+});
+
+test('RFACTORY_BRAIN_RECORD wrapper appends each redacted brain input as a JSON line', async () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'br-')), 'rec');
+  const brain = require('../server.js').recordBrain({ label: () => 'x', turn: async () => ({ text: 'ok' }), propose: async () => ({ action: 'none' }) }, makeRedactor(['stored-secret']), file);
+  await brain.turn({ items: [], note: 'stored-secret' }, { question: 'q' });
+  await brain.propose({ items: [] }, { request: 'do stored-secret' });
+  const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('stored-secret'));
+  assert.equal(lines[1].request.includes('do'), true);
+});

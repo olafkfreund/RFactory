@@ -738,6 +738,38 @@ v1; Wayland in the guest.
     `platform`; Meet and Zoom have no pinned media ranges, so preflight
     refuses them; web profile admin routes; deviation 22.
 
+24. **Step 16 fixes, round 2, and deviation 22 built (workflow: runner and
+    web clusters with Opus review and a fix round, then scripts, then a
+    whole-branch Opus review; lead fixed its two P1s).** Every `desktop_*`
+    message carries the current grant's hosts (protocol and server; an
+    approved queued action uses the grant live at approval). Each VM boots
+    with its own cid, tap and vsock socket through its per-VM `microvm-run`
+    copy; the guest's `rfactory-identity` oneshot reads its vsock CID and
+    sets `10.77.<cid*4>.2/30`, `fd77:<cid hex>::2/64`, routes and the
+    gateway resolver, so one image serves every VM (the probe image too;
+    the step 2 gate scripts are re-pointed to cid 3's addresses and tap
+    `rfdguest`). Meet (Google support page 1279090) and Zoom (`Zoom.txt`,
+    IPv4 only) media ranges are pinned with source, date and sha256, so
+    preflight passes for them; Teams stays refused. `vm-call` derives the
+    platform from the link's host; `POST /api/call` still accepts only
+    Meet links. Deviation 22: the typed request route and page box, the
+    runner verify hooks (`verifyHooks` module option, default false; 404
+    without it), web profile admin routes (`/api/profiles`, admin only; an
+    attached profile desktop is kept alive by a web heartbeat), and
+    `RFACTORY_BRAIN_RECORD` (the redacted input, not the exact prompt
+    string). The scripts drive every step 17 check; only what needs the
+    owner's eyes is an `owner_confirm` item. Lead fixes from the final
+    review: `profile-attach` accepts `action_id` (attach always failed);
+    `call-config` is sent on every control connection and the guest keeps
+    one call worker per VM (a first connection that died before the agent
+    listened lost the nonce for good, and a reconnect could not stop a
+    share); `share-target-changed` ends the runner's share state; a
+    failed share-stop reports `share-stop-failed`; the profile heartbeat
+    stops when the runner says the VM is gone. Not checked until step 17:
+    any image build or VM boot, cloud-hypervisor as `rfactory-vm` on a
+    pre-made tap, the identity oneshot, the unprivileged control Chrome,
+    dnsmasq `nftset`, and the real share and call audio.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

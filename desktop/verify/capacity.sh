@@ -22,7 +22,7 @@ else fail capacity-fourth-create "created ${#ids[@]} of $MAX, then: $over"; fi
 
 # one slot free, two creates at once
 api destroy "$(jq -nc --arg d "${ids[0]}" '{desktop_id:$d}')" >/dev/null; wait_gone "${ids[0]}" 60 || die "slot did not free"
-for n in a b; do api create "{\"call_id\":\"cap-race-$n\",\"scope\":\"verify-scope\"}" >"$TMP/$n" 2>&1 & done
+for n in a b; do api create "$(create_body "cap-race-$n" verify-scope)" >"$TMP/$n" 2>&1 & done
 wait
 won=0
 for n in a b; do

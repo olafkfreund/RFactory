@@ -590,6 +590,7 @@ test('withExtraArgs writes a per-VM runner whose runtime_args carries the disk; 
   fs.writeFileSync(runner, "#!/bin/sh\nruntime_args=\n\nexec ch --api-socket s ${runtime_args:-}\n");
   fs.mkdirSync(path.join(dir, 'vm'));
   assert.equal(withExtraArgs(runner, path.join(dir, 'vm'), []), runner);
+  assert.equal(withExtraArgs(runner, path.join(dir, 'vm'), [], null), runner);
   const copy = withExtraArgs(runner, path.join(dir, 'vm'), ['--disk', 'path=/var/lib/p/x.img']);
   assert.notEqual(copy, runner);
   assert.match(fs.readFileSync(copy, 'utf8'), /^runtime_args='--disk path=\/var\/lib\/p\/x\.img'$/m);
@@ -614,4 +615,200 @@ test('profile routes exist only with profiles, and non-admin is 403', async () =
   const h = createHandler(lc, { profiles });
   assert.equal(await call(h, 'profile-create', { actor: { id: 'a' } }), 200);
   assert.equal(await call(h, 'profile-create', {}), 403);
+});
+
+test('withExtraArgs with an identity gives each VM its own cid, vsock socket and tap, and fails closed when the image has no placeholder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-wid-'));
+  const runner = path.join(dir, 'microvm-run');
+  fs.writeFileSync(runner, "runtime_args=\n\nexec ch --vsock 'cid=3,socket=notify.vsock' --net 'mac=02:00:00:00:00:01,num_queues=4,tap=rfdguest' ${runtime_args:-}\n");
+  fs.mkdirSync(path.join(dir, 'a')); fs.mkdirSync(path.join(dir, 'b'));
+  const read = (c) => fs.readFileSync(c, 'utf8');
+  const a = withExtraArgs(runner, path.join(dir, 'a'), [], { cid: 7, tap: 'rfd1a2b', sock: '/run/x/a/vsock.sock' });
+  const b = withExtraArgs(runner, path.join(dir, 'b'), ['--disk', 'path=/img'], { cid: 9, tap: 'rfd3c4d', sock: '/run/x/b/vsock.sock' });
+  assert.match(read(a), /--vsock 'cid=7,socket=\/run\/x\/a\/vsock\.sock' --net 'mac=02:00:00:00:00:01,num_queues=4,tap=rfd1a2b'/);
+  assert.match(read(b), /cid=9,socket=\/run\/x\/b\/vsock\.sock.*tap=rfd3c4d/);
+  assert.match(read(b), /^runtime_args='--disk path=\/img'$/m);
+  assert.doesNotMatch(read(a) + read(b), /notify\.vsock|rfdguest|cid=3/);
+  for (const bad of [{ cid: 2, tap: 't', sock: '/s' }, { cid: 3.5, tap: 't', sock: '/s' }, { cid: 5, tap: "t'x", sock: '/s' }, { cid: 5, tap: 't', sock: '/s;x' }]) {
+    assert.throws(() => withExtraArgs(runner, path.join(dir, 'a'), [], bad), /unsafe VM identity/);
+  }
+  fs.writeFileSync(runner, 'exec ch --vsock cid=3,socket=other\n');
+  assert.throws(() => withExtraArgs(runner, path.join(dir, 'a'), [], { cid: 5, tap: 't', sock: '/s' }), /no cid=3/);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('production vmArgv passes each VM its own cid, tap and socket to the per-VM runner', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-vma-'));
+  const runner = path.join(dir, 'microvm-run');
+  fs.writeFileSync(runner, "runtime_args=\nexec ch --vsock 'cid=3,socket=notify.vsock' --net 'tap=rfdguest' ${runtime_args:-}\n");
+  const config = translateConfig({ mtlsPort: 1, maxDesktops: 1, rateMbit: 1, egressBytes: 1, runtimeMaxSec: 1, runDir: dir, guestRunner: runner }, { CREDENTIALS_DIRECTORY: '/c' });
+  assert.equal(config.verifyHooks, false);
+  const [copy] = config.vmArgv({ id: 'ab', cid: 12, tap: 'rfdab', sock: `${dir}/ab/vsock.sock`, dir, extraArgv: [] });
+  assert.match(fs.readFileSync(copy, 'utf8'), /cid=12,socket=.*\/ab\/vsock\.sock.*tap=rfdab/);
+  assert.equal(translateConfig({ mtlsPort: 1, maxDesktops: 1, rateMbit: 1, egressBytes: 1, runtimeMaxSec: 1, runDir: dir, guestRunner: runner, verifyHooks: true }, { CREDENTIALS_DIRECTORY: '/c' }).verifyHooks, true);
+  fs.rmSync(dir, { recursive: true });
+});
+
+// ---- round 2: verify hooks, profile client errors, concurrent cancels, serve wiring ----
+async function post(handler, name, body) {
+  let code, out;
+  const req = Object.assign(require('node:stream').Readable.from([JSON.stringify(body)]), { method: 'POST', url: `/${name}`, socket: { authorized: true } });
+  await handler(req, { writeHead: (c) => { code = c; }, end: (o) => { out = JSON.parse(o); } });
+  return [code, out];
+}
+
+test('verify routes are 404 without the flag and map to the hooks with it (unknown desktop 404)', async () => {
+  const seen = [];
+  const lc = { verifyHook: (id, hook) => { seen.push([id, hook]); return id === 'ab' ? { ok: true } : { error: 'no-desktop' }; } };
+  for (const hook of ['fail-share-stop', 'auto-select-screen', 'drop-control']) {
+    assert.equal((await post(createHandler(lc), `verify/${hook}`, { desktop_id: 'ab' }))[0], 404);
+  }
+  assert.deepEqual(seen, []);
+  const h = createHandler(lc, { verifyHooks: true });
+  for (const hook of ['fail-share-stop', 'auto-select-screen', 'drop-control']) assert.deepEqual(await post(h, `verify/${hook}`, { desktop_id: 'ab' }), [200, { ok: true }]);
+  assert.equal((await post(h, 'verify/drop-control', { desktop_id: 'zz' }))[0], 404);
+  assert.equal((await post(h, 'verify/other', { desktop_id: 'ab' }))[0], 404);
+  assert.deepEqual(seen.slice(0, 3), [['ab', 'fail-share-stop'], ['ab', 'auto-select-screen'], ['ab', 'drop-control']]);
+});
+
+test('hook fail-share-stop: the next share-stop is a frame the guest drops, so it fails and the share stays armed; the one after lands', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  assert.deepEqual(ctx.lc.verifyHook(desktop_id, 'fail-share-stop'), { ok: true });
+  const before = ctx.conns[0].out.length; // the guest's decoder only keeps frames that validate
+  const failed = await ctx.lc.shareStop(desktop_id, { share_id: 's1' });
+  assert.equal(failed.error, 'share-stop-failed');
+  assert.equal(ctx.conns[0].out.length, before, 'the guest decoder dropped it');
+  await ctx.clock.advance(7000); // still sharing, so the control channel rule is armed but the channel is up: the VM lives
+  assert.equal(ctx.lc.list().length, 1);
+  assert.equal((await ctx.lc.shareStop(desktop_id, { share_id: 's1' })).ok, true); // one failure only
+});
+
+test('hook auto-select-screen: call-config carries the flag when called before the guest connects, too-late after', async () => {
+  let release; const gate = new Promise((r) => { release = r; });
+  const ctx = agentSetup({ onWrite: echoOk, deps: { connectGuest: async () => { await gate; const conn = new EventEmitter(); conn.out = []; conn.destroy = () => conn.emit('close');
+    const d = dec((m) => conn.out.push(m)); conn.write = (b) => d.write(b); ctx.conns.push(conn); return conn; } } });
+  const { desktop_id, nonce } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  assert.deepEqual(ctx.lc.verifyHook(desktop_id, 'auto-select-screen'), { ok: true });
+  release(); await tick(); await tick(); await tick();
+  assert.deepEqual(ctx.conns[0].out, [{ type: 'call-config', nonce, auto_select_screen: true }]);
+  assert.equal(ctx.lc.verifyHook(desktop_id, 'auto-select-screen').error, 'too-late');
+  assert.equal(ctx.lc.verifyHook('missing', 'auto-select-screen').error, 'no-desktop');
+  assert.equal(ctx.lc.verifyHook(desktop_id, 'nope').error, 'bad-message');
+});
+
+test('hook drop-control: closes the 5000 channel, and a share then loses the VM after 5 s', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const inner = ctx.lc;
+  const { desktop_id } = await inner.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await inner.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  let closed = 0; ctx.conns[0].on('close', () => { closed++; });
+  assert.deepEqual(inner.verifyHook(desktop_id, 'drop-control'), { ok: true });
+  assert.equal(closed, 1);
+  assert.equal((await inner.action(desktop_id, { type: 'desktop_scroll', dy: 1 })).error, 'no-control');
+  assert.equal(inner.verifyHook(desktop_id, 'drop-control').error, 'no-control');
+  await ctx.clock.advance(7000); // a share that lost 5000 stays armed across the reconnect
+  assert.equal(inner.list().length, 0);
+});
+
+test('profile route client errors are 4xx, a real failure is 500', async () => {
+  const fail = (e) => ({ create: async () => { throw e; } });
+  const code = async (e) => (await post(createHandler({}, { tls: false, profiles: fail(e) }), 'profile-create', {}))[0];
+  assert.equal(await code(new Error('profile not found')), 404);
+  assert.equal(await code(new TypeError('invalid profile')), 400);
+  assert.equal(await code(new Error('profile already attached')), 409);
+  assert.equal(await code(new Error('profile expired')), 409);
+  assert.equal(await code(new Error('profile deletion in progress')), 409);
+  assert.equal(await code(new Error('profile access denied')), 403);
+  assert.equal(await code(new TypeError("cannot read properties of undefined")), 500);
+  assert.equal(await code(new Error('disk on fire')), 500);
+});
+
+test('two concurrent cancels on one VM share one ack waiter and one cancel frame', async () => {
+  const ctx = agentSetup({ onWrite: (conn, m) => { if (m.type === 'cancel') setImmediate(() => conn.emit('data', enc({ type: 'cancel-ack' }))); } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  const [a, b] = await Promise.all([ctx.lc.cancel(desktop_id), ctx.lc.cancel(desktop_id)]);
+  assert.deepEqual([a, b], [{ ok: true }, { ok: true }]);
+  assert.equal(ctx.conns[0].out.filter((m) => m.type === 'cancel').length, 1);
+  assert.deepEqual(await ctx.lc.cancel(desktop_id), { ok: true }); // a later cancel runs again
+  assert.equal(ctx.conns[0].out.filter((m) => m.type === 'cancel').length, 2);
+});
+
+test('serve wires Profiles (admin check, adapters, onDestroyed, hourly expiry), verify hooks off by default', async (t) => {
+  const { serve } = require('./runner');
+  const { Profiles } = require('./profiles');
+  const { execFileSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-serve-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(dir, 'k'), '-out', path.join(dir, 'c'), '-subj', '/CN=x', '-days', '1'], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(dir, 'master'), Buffer.alloc(40, 7));
+  const seen = [];
+  const calls = []; const clock = fakeClock();
+  const exec = async (argv) => { calls.push(argv); return ''; };
+  const config = { ...baseConfig(), vmArgv: (vm) => { seen.push(vm.extraArgv); return ['microvm-run']; }, port: 0, host: '127.0.0.1',
+    tls: { key: path.join(dir, 'k'), cert: path.join(dir, 'c'), ca: path.join(dir, 'c') },
+    profiles: { vmUser: 'vmu', dir: path.join(dir, 'profiles'), keyPath: path.join(dir, 'master') } };
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { server, lifecycle, profiles } = await serve(config, { exec, clock, fs: { mkdir: async () => {}, rm: async () => {}, readdir: async () => [] }, listen: () => ({ close() {} }) });
+  t.after(() => { server.close(); });
+  assert.ok(profiles instanceof Profiles);
+  assert.equal(profiles.vmUser, 'vmu');
+  assert.equal(profiles.isAdmin({ id: 'a', admin_scopes: ['s'] }, 's'), true);
+  assert.equal(profiles.isAdmin({ id: 'a', admin_scopes: ['t'] }, 's'), false);
+  assert.equal(profiles.isAdmin({ id: 'a' }, 's'), false);
+  // startDesktop -> lifecycle.create with the disk args; an error result throws
+  const started = await profiles.startDesktop({ call_id: 'c1', scope: 's' }, ['--disk', 'path=/img']);
+  assert.deepEqual(seen.at(-1), ['--disk', 'path=/img']);
+  assert.equal(lifecycle.list().length, 1);
+  // onDestroyed -> profiles.release, destroyDesktop -> lifecycle.destroy
+  const released = []; profiles.release = (id) => released.push(id);
+  await profiles.destroyDesktop(started.desktop_id);
+  assert.deepEqual(released, [started.desktop_id]);
+  assert.equal(lifecycle.list().length, 0);
+  // the hourly expiry runs expire() and a failure is logged, not swallowed
+  const logged = []; t.mock.method(console, 'error', (m) => logged.push(m));
+  let expired = 0; profiles.expire = async () => { expired++; throw new Error('boom'); };
+  t.mock.timers.tick(3600000);
+  await tick();
+  assert.equal(expired, 1);
+  assert.match(logged.join('\n'), /profile expiry failed: boom/);
+  // over the real mTLS server: hooks are off without the flag (plain 404), on with it (the hook answers) and a warning is logged
+  const hit = async (srv) => { if (!srv.listening) await require('node:events').once(srv, 'listening'); return hit1(srv); };
+  const hit1 = (srv) => new Promise((resolve, reject) => {
+    const r = require('node:https').request({ port: srv.address().port, host: '127.0.0.1', path: '/verify/drop-control', method: 'POST', ca: fs.readFileSync(path.join(dir, 'c')),
+      key: fs.readFileSync(path.join(dir, 'k')), cert: fs.readFileSync(path.join(dir, 'c')), checkServerIdentity: () => undefined }, (x) => { let b = ''; x.on('data', (c) => { b += c; }); x.on('end', () => resolve(JSON.parse(b))); });
+    r.on('error', reject); r.end('{"desktop_id":"ab"}');
+  });
+  assert.deepEqual(await hit(server), { error: 'not found' });
+  const warned = []; t.mock.method(console, 'warn', (m) => warned.push(m));
+  const on = await serve({ ...config, port: 0, verifyHooks: true }, { exec, clock, fs: { mkdir: async () => {}, rm: async () => {}, readdir: async () => [] }, listen: () => ({ close() {} }) });
+  t.after(() => { on.server.close(); });
+  assert.deepEqual(await hit(on.server), { error: 'no-desktop' });
+  assert.match(warned.join('\n'), /verifyHooks is ON/);
+});
+
+const { encode } = require('./protocol');
+test('call-config is sent again on a reconnected control channel (a first connection can die before the guest agent listens)', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const r = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  ctx.conns[0].emit('close');
+  await ctx.clock.advance(1500);
+  assert.equal(ctx.conns.length, 2);
+  assert.deepEqual(ctx.conns[1].out[0], { type: 'call-config', nonce: r.nonce });
+});
+
+test('share-target-changed from the guest ends the runner share, so a later control loss does not destroy the VM', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  ctx.conns[0].emit('data', encode({ type: 'share-target-changed', share_id: 's1' }));
+  ctx.conns[0].emit('close');
+  await ctx.clock.advance(7000);
+  assert.equal(ctx.lc.list().length, 1);
 });

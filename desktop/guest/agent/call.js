@@ -9,14 +9,14 @@ const MAX_LINE = 4 * 1024 * 1024; // a speak line with a WAV; same cap as bot/ru
 // The guest's call worker (plan 13c): bot/run.js with its stdin/stdout carried as call-in / call-out pieces.
 // The call Chrome gets callLaunchArgs(nonce) and the share (step 11) runs in that same Chrome.
 // deps (tests): run, playwrightHost, join. onExit() fires when the worker has finished.
-function createCallWorker({ nonce, send, onExit = () => {}, deps = {}, env = process.env }) {
+function createCallWorker({ nonce, screen = false, send, onExit = () => {}, deps = {}, env = process.env }) {
   const stdin = new PassThrough();
   let host = null, share = null, buf = '', skipping = false;
   const run = deps.run || require('../../../bot/run.js').run;
   const workerDeps = {
     playwrightHost: async (o) => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
-      return (host = await launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce)] }));
+      return (host = await launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] }));
     },
     join: async (link, o) => {
       const call = await (deps.join || require('@vibeconferencing/calls').join)(link, o);

@@ -100,3 +100,11 @@ test('media ports accept a [low, high] range and reject bad ones', () => {
     assert.throws(() => buildRules({ ...options, media: [{ cidrs: ['142.250.82.0/24'], tcp: [], udp: bad }] }), /invalid media port/);
   }
 });
+
+test('the pinned meet and zoom ranges render as rules (ports, ranges, both families)', () => {
+  const pinned = require('../ranges/ranges.json');
+  const rules = buildRules({ ...options, media: [pinned.meet, pinned.zoom] });
+  assert.match(rules, /ip daddr 74\.125\.250\.0\/24 udp dport 19302-19309 accept/);
+  assert.match(rules, /ip6 daddr 2001:4860:4864:5::\/64 udp dport 3478 accept/);
+  assert.match(rules, /ip daddr 170\.114\.0\.0\/16 udp dport 8801-8810 accept/);
+});

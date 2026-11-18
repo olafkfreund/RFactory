@@ -4,7 +4,8 @@ const { randomBytes } = require('node:crypto');
 
 const nonce = () => randomBytes(16).toString('hex');
 const titleFor = (value) => `RFactory share ${value}`;
-const callLaunchArgs = (value) => [`--auto-select-desktop-capture-source=${titleFor(value)}`];
+// screen: the verify hook's whole-screen auto-select; the share guard then refuses it (not a browser tab)
+const callLaunchArgs = (value, screen = false) => [`--auto-select-desktop-capture-source=${screen ? 'Entire screen' : titleFor(value)}`];
 
 function installCaptureGuard() {
   const install = () => {

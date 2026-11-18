@@ -2,13 +2,25 @@
 # Step 17 secrets checks: the guest holds no credentials, the brain cannot type one, a preview login stays out of sight (#3 "No secrets").
 # Runs against the PRODUCTION image. The production guest has no way in (no SSH), so the first check reads the built image's closure
 # on the host instead of the running VM; a profile's own files live on its encrypted disk and are not in the image.
-# Routes: none for the checks that run (the first reads the built image's closure); the other two are reported as not drivable.
-# Env: none.
+# Routes: web POST /api/desktop/:id/{handover,request}, GET /api/desktop/:id/state; runner create, destroy, list (mTLS).
+# The web server runs with RFACTORY_BRAIN_RECORD=<file> (verify unit only; one redacted JSON line per brain input) and the file is
+# readable here as VERIFY_BRAIN_RECORD.
+# secrets-type-stored-refused: a request to type a key-shaped value (the AWS documentation example, not a secret) is refused by the redactor
+#   check in the request route; it is typed on a desktop the approver may drive, so the refusal is the redactor's, not a missing grant.
+# secrets-login-not-leaked: desktop_login has no route (the runner's action route takes only the five desktop_* tools), so the login is
+#   never started here; the script drives requests through the brain and looks for the login value in what the brain was given and in the
+#   runner and web logs. A fresh brain record line is required, so a record that is not being written fails instead of passing.
+# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE, VERIFY_FIXTURE_URL (an approved preview origin),
+# VERIFY_BRAIN_RECORD, VERIFY_LOGIN_FILE (a file holding the preview login value(s), one per line; read, never printed),
+# VERIFY_POD_USER (owner of the rfactory pod, to read the web container's log).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_root; need_cmds nix nix-store find
+need_root; need_cmds nix nix-store find curl jq grep
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_BRAIN_RECORD VERIFY_LOGIN_FILE VERIFY_POD_USER
+TMP=$(mktemp -d)
+extra_cleanup() { rm -rf "$TMP"; }
 
 # 1. the guest image carries no credential files or cookie stores
 out=$(nix build --no-link --print-out-paths "path:$ROOT#nixosConfigurations.desktop-guest.config.microvm.declaredRunner") || die "nix build of the guest failed"
@@ -17,9 +29,29 @@ found=$(find "${closure[@]}" \( -name Cookies -o -name 'Login Data' -o -name .ne
   -o -name credentials.json -o -name .credentials.json -o -name auth.json -o -name '*.pem' -o -name .env \) -not -path '*/node_modules/*' 2>/dev/null | head -20 || true)
 if [ -z "$found" ]; then pass secrets-no-credential-files; else fail secrets-no-credential-files "found: $found"; fi
 
-# 2 and 3: the gateway refuses desktop_type for a stored value (core/src/gateway.js, credential-refused) and desktop_login is filled by the guest
-# agent; neither is reachable through a runner or web route (the runner's `action` route takes only the five desktop_* tools, and the agent's
-# own tool call has no HTTP route). Covered offline by core/test/desktop.test.js and desktop/guest/agent/agent.test.js.
-undriven secrets-type-stored-refused "no route carries the agent's desktop_type through the gateway's credential check"
-undriven secrets-login-not-leaked "desktop_login is not a runner route, so no login can be started to look for its secret in the logs"
+new_desktop secrets-call verify-scope || die "create: $DERR"; D=$DID
+sleep 30
+
+# 2. a typed request whose text is a key-shaped value is refused, and nothing is queued or run
+r=$(ask "$D" "Type AKIAIOSFODNN7EXAMPLE into the #key field") || true
+if [ "$(jq -r '.text // empty' <<<"$r" 2>/dev/null)" = "I can't do that." ] && [ -z "$(queued_of "$D" desktop_type)" ] && [ "$(state_of "$D" | jq -r '.running // "none"')" = none ]; then
+  pass secrets-type-stored-refused
+else fail secrets-type-stored-refused "reply: $r"; fi
+
+# 3. drive real requests through the brain, then look for the login in everything the brain was given and in the logs
+grep -v '^$' "$VERIFY_LOGIN_FILE" >"$TMP/patterns" || true
+[ -s "$TMP/patterns" ] || die "VERIFY_LOGIN_FILE holds no value"
+before=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)
+g=$(grant "$D" 10 '["desktop_open","desktop_screenshot"]')
+[ "$(jq -r '.ok // false' <<<"$g")" = true ] || die "grant failed: $g"
+ask "$D" "Open $VERIFY_FIXTURE_URL/ in the browser" >/dev/null || true
+ask "$D" "Take a screenshot" >/dev/null || true
+after=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)
+runner_log --since today >"$TMP/runner.log" || true
+as_pod_user podman logs rfactory-web >"$TMP/web.log" 2>&1 || true
+leaks=
+for f in "$VERIFY_BRAIN_RECORD" "$TMP/runner.log" "$TMP/web.log"; do if grep -qFf "$TMP/patterns" "$f" 2>/dev/null; then leaks="$leaks $(basename "$f")"; fi; done
+if [ "$after" -le "$before" ]; then fail secrets-login-not-leaked "the brain record did not grow ($before to $after bytes): is RFACTORY_BRAIN_RECORD set on the web server?"
+elif [ -s "$TMP/web.log" ] && [ -z "$leaks" ]; then pass secrets-login-not-leaked
+else fail secrets-login-not-leaked "found in:${leaks:- nothing, but the web log was empty or unreadable}"; fi
 finish

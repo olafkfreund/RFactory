@@ -10,7 +10,7 @@ const SHOT_TYPES = [['/9j/', 'image/jpeg'], ['iVBORw0KGgo', 'image/png']];
 const LIFETIME = 10 * 60 * 1000;
 const PENDING_LIMIT = 5;
 const ID = '([A-Za-z0-9_-]{1,64})';
-const ROUTE = new RegExp(`^/api/desktop/${ID}/(handover|revoke|state|screenshot|share/stop|share/${ID}/approve|actions/${ID}/(?:approve|reject))$`);
+const ROUTE = new RegExp(`^/api/desktop/${ID}/(handover|revoke|state|screenshot|share/stop|share/${ID}/approve|request|actions/${ID}/(?:approve|reject))$`);
 
 const hashOf = (e) => createHash('sha256').update(JSON.stringify([e.id, e.name, e.args, e.desktop_id, e.call_id, e.scope, e.expires_at])).digest('hex');
 const sameOrigin = (req) => {
@@ -70,7 +70,7 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
 
 // runner: { list() -> {status, body: {desktops, alert}} }. run/startShare/stopShare/cancel/destroy reach the guest through the runner.
 // writesEnabled and isAllowed are the gateway's mandatory scope checks (core/src/gateway.js); the phase is 'desktop' because this module is mounted only then. Both fail closed when missing.
-function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = async () => false, runner, run, startShare, stopShare, cancel, destroy, openVnc, brain, redactor, clock = Date.now }) {
+function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = async () => false, runner, run, startShare, stopShare, cancel, destroy, openVnc, brain, redactor, snapshot, clock = Date.now }) {
   const sessions = createSessions({ isApprover: (user) => roles.has(user, 'approver'), cancel: cancel || destroy, destroy, clock });
   const pageText = new Map();
   const shares = new Map(); // desktop_id -> { share_id, url }; kept until the guest confirms the stop or the desktop is gone
@@ -84,7 +84,10 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
     if (type) shots.set(context.running.desktop_id, { b64: result.image_base64, type: type[1], at: clock() });
     return result;
   };
-  const queue = createDesktopQueue({ roles, run: runDesktop, clock });
+  // an approved action runs with the grant that is live now (never an older one); no live grant sends [] and the guest fails closed
+  const liveHosts = (id) => { const s = sessions.get(id); return s && !s.revoked && clock() < s.until ? s.hosts : []; };
+  const queue = createDesktopQueue({ roles, clock, run: (name, args, ctx) =>
+    runDesktop(name, args, name === 'desktop_open' ? ctx : { ...ctx, hosts: liveHosts(ctx.running.desktop_id) }) });
   async function runnerState() {
     const { body } = await runner.list();
     const present = new Set((body.desktops || []).map((d) => d.desktop_id));
@@ -130,7 +133,7 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
     const get = what === 'state' || what === 'screenshot';
     if (req.method !== (get ? 'GET' : 'POST')) { req.resume(); return json(res, 405, { error: 'method' }); }
     if (!get && !sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
-    const approverOnly = what === 'handover' || what === 'revoke' || what.endsWith('/approve') || what.endsWith('/reject');
+    const approverOnly = what === 'handover' || what === 'request' || what === 'revoke' || what.endsWith('/approve') || what.endsWith('/reject');
     if (approverOnly && !roles.has(email, 'approver')) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
     const run_ = async () => {
       const state = await runnerState();
@@ -147,7 +150,7 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
         const active = s && !s.revoked && clock() < s.until;
         return json(res, 200, { desktop_id: id, can_approve: roles.has(email, 'approver'),
           handover: active ? { actions: s.actions, hosts: s.hosts, until: s.until } : null,
-          running: queue.running(id), queued: queue.list(id),
+          can_admin: roles.has(email, 'admin'), running: queue.running(id), queued: queue.list(id),
           share: shares.get(id) || null, screenshot: shots.has(id) ? { at: shots.get(id).at } : null,
           cleanup_alert: roles.has(email, 'admin') ? state.alert : null });
       }
@@ -159,6 +162,10 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
           const s = sessions.grant(email, { scope: desk.scope, call_id: desk.call_id, desktop_id: id, actions: body.actions, hosts: body.hosts, until: clock() + minutes * 60000 });
           return json(res, 200, { ok: true, until: s.until });
         } catch (e) { return json(res, e.message === 'session-active' ? 409 : e.message === 'approver-required' ? 403 : 400, { error: e.message }); }
+      }
+      if (what === 'request') {
+        if (typeof body.text !== 'string' || !body.text || body.text.length > 500) return json(res, 400, { error: 'bad-request' });
+        return json(res, 200, await request(body.text, id, snapshot ? await snapshot() : { items: [] }));
       }
       if (what === 'revoke') { await sessions.revoke(id); return json(res, 200, { ok: true }); }
       if (what === 'share/stop') {

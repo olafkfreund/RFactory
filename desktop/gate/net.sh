@@ -6,7 +6,7 @@ set -euo pipefail
 # shellcheck source=desktop/gate/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 need_root; need_cmds nix systemd-run systemctl node ip nft sysctl
-TAP=rfgate0 TABLE=rfgate
+TAP=rfdguest TABLE=rfgate
 TAP_MADE=0 TABLE_MADE=0
 
 extra_cleanup() {
@@ -21,8 +21,8 @@ LAN=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
 [ -n "$LAN" ] || die "no host LAN address found"
 
 ip tuntap add dev "$TAP" mode tap multi_queue; TAP_MADE=1
-ip addr add 10.77.0.1/30 dev "$TAP"
-ip -6 addr add fd77::1/64 dev "$TAP" nodad
+ip addr add 10.77.0.13/30 dev "$TAP"
+ip -6 addr add fd77:3::1/64 dev "$TAP" nodad
 ip link set "$TAP" up
 # forwarding on this tap only, so forwarded probes reach the forward hook
 sysctl -qw "net.ipv4.conf.$TAP.forwarding=1" "net.ipv6.conf.$TAP.forwarding=1"
@@ -41,10 +41,10 @@ unreachable() { [ "$1" = timeout ] || [ "$1" = error ] || [ -z "$1" ]; }
 
 # baseline with no rules: the host's tap address must be reachable (not a timeout)
 for p in tcp udp; do
-  r=$(probe "$p" 10.77.0.1 8080)
+  r=$(probe "$p" 10.77.0.13 8080)
   if unreachable "$r"; then fail "baseline-$p-v4" "got '$r' with no rules, test would be vacuous"; else pass "baseline-$p-v4 ($r)"; fi
 done
-r=$(probe tcp fd77::1 8080)
+r=$(probe tcp fd77:3::1 8080)
 if unreachable "$r"; then fail baseline-tcp-v6 "got '$r' with no rules"; else pass "baseline-tcp-v6 ($r)"; fi
 
 cat >"$GATE_DIR/rules.nft" <<RULES
@@ -59,10 +59,10 @@ table inet $TABLE {
     iifname "$TAP" jump guest_in
   }
   chain guest_in {
-    ip saddr != 10.77.0.2 counter name spoof drop
-    ip6 saddr != { fd77::2, fe80::/10 } counter name spoof drop
-    ip daddr 10.77.0.1 meta l4proto { tcp, udp } th dport 53 accept
-    ip6 daddr fd77::1 meta l4proto { tcp, udp } th dport 53 accept
+    ip saddr != 10.77.0.14 counter name spoof drop
+    ip6 saddr != { fd77:3::2, fe80::/10 } counter name spoof drop
+    ip daddr 10.77.0.13 meta l4proto { tcp, udp } th dport 53 accept
+    ip6 daddr fd77:3::1 meta l4proto { tcp, udp } th dport 53 accept
     counter name host drop
   }
   chain forward {
@@ -71,7 +71,7 @@ table inet $TABLE {
     iifname "$TAP" jump guest_fwd
   }
   chain guest_fwd {
-    ip saddr != 10.77.0.2 counter name spoof drop
+    ip saddr != 10.77.0.14 counter name spoof drop
     ip daddr 169.254.169.254 counter name metadata drop
     ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter name private drop
     ip6 daddr { fc00::/7, fe80::/10 } counter name private drop
@@ -85,10 +85,10 @@ expect_blocked() { # name proto addr port
   local r; r=$(probe "$2" "$3" "$4")
   if [ "$r" = timeout ]; then pass "blocked-$1"; else fail "blocked-$1" "$2 $3:$4 got '$r', wanted timeout"; fi
 }
-expect_blocked host-tap-tcp-v4 tcp 10.77.0.1 8080
-expect_blocked host-tap-udp-v4 udp 10.77.0.1 8080
-expect_blocked host-tap-tcp-v6 tcp fd77::1 8080
-expect_blocked host-tap-udp-v6 udp fd77::1 8080
+expect_blocked host-tap-tcp-v4 tcp 10.77.0.13 8080
+expect_blocked host-tap-udp-v4 udp 10.77.0.13 8080
+expect_blocked host-tap-tcp-v6 tcp fd77:3::1 8080
+expect_blocked host-tap-udp-v6 udp fd77:3::1 8080
 expect_blocked host-lan-v4 tcp "$LAN" 22
 expect_blocked metadata tcp 169.254.169.254 80
 expect_blocked rfc1918 tcp 10.255.255.1 80
@@ -98,7 +98,7 @@ expect_blocked ula-v6 tcp fd00::1 80
 expect_blocked linklocal-v6 tcp fe80::1 80
 
 for p in tcp udp; do
-  r=$(probe "$p" 10.77.0.1 53)
+  r=$(probe "$p" 10.77.0.13 53)
   if unreachable "$r"; then fail "resolver-open-$p" "got '$r'"; else pass "resolver-open-$p ($r)"; fi
 done
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Step 17 handover checks: the session rules and the browser boundary (#3 "Driving apps").
 # Runs against the PRODUCTION image. Routes used (all exist):
-#   web:    POST /api/desktop/:id/handover {minutes,actions,hosts}, POST /api/desktop/:id/revoke, GET /api/desktop/:id/state
+#   web:    POST /api/desktop/:id/handover {minutes,actions,hosts}, POST /api/desktop/:id/request {text}, POST /api/desktop/:id/revoke,
+#           GET /api/desktop/:id/state
 #   runner: create, destroy, list, action {desktop_id,message} (mTLS)
-# The agent's own tool call has no HTTP route (it runs inside the brain's gateway, core/test/desktop.test.js), so the session rules are
-# checked on the session record the server reports in `state` (handover: null or {actions,hosts,until}), and the browser boundary through
-# the runner's `action` route, which is what the gateway calls after its checks.
+# The session rules are checked on the session record the server reports in `state` (handover: null or {actions,hosts,until}); a request
+# typed on another desktop goes through the real request route (needs the brain); the browser boundary is checked through the runner's
+# `action` route, which is what the gateway calls after its checks.
 # The web server must run with scope verify-scope and RFACTORY_DESKTOP=1.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA (runner), VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE (an approver's session cookie, name=value),
 # VERIFY_FIXTURE_URL (fixture.js port A as the guest sees it, e.g. http://10.1.2.3:8081; an approved preview),
@@ -24,10 +25,7 @@ new_desktop handover-other-call "$SCOPE" || die "create 2: $DERR"; D2=$DID
 new_desktop handover-other-scope "$VERIFY_OTHER_SCOPE" || die "create 3: $DERR"; D3=$DID
 sleep 30 # the guest agent needs a moment to listen
 
-# grant <id> <minutes> <actions-json> -> the web reply
-grant() {
-  approver POST "/api/desktop/$1/handover" "$(jq -nc --argjson m "$2" --argjson a "$3" --arg h "$VERIFY_FIXTURE_URL" '{minutes:$m,actions:$a,hosts:[$h]}')"
-}
+hits() { curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits"; }
 # session_of <id>: the session record from state, "none" when there is no session, "bad: <reply>" when the reply is not this desktop's state
 # (401/403/404/500, an oauth2-proxy page): a bad reply must never read as "no session"
 session_of() { local r; r=$(state_of "$1") || true; jq -rc --arg d "$1" 'select(.desktop_id == $d) | .handover // "none"' <<<"$r" 2>/dev/null | grep . || echo "bad: $r"; }
@@ -42,8 +40,14 @@ if [ "$(jq -r '.ok // false' <<<"$r")" = true ] && [ "$s" != none ] && [[ "$s" !
 else fail handover-action-not-allowed "grant: $r; session: $s"; fi
 
 if [ "$(session_of "$D2")" = none ]; then pass handover-wrong-call; else fail handover-wrong-call "D's grant shows on the desktop of another call"; fi
-# no route uses a session granted on one desktop against another; the gateway check is unit-covered (core/test/desktop.test.js, wrong-session)
-undriven handover-wrong-desktop "no route applies one desktop's session to another"
+# D holds a live grant for the fixture; a request typed on D2 (no grant) must not run on D2, and must not use D's grant
+curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
+r=$(ask "$D2" "Open $VERIFY_FIXTURE_URL/ in the browser") || true
+sleep 3
+h=$(hits)
+if [ "$(jq -r '.text // empty' <<<"$r")" != "Done." ] && [ "$(jq -r '.a // 1' <<<"$h" 2>/dev/null)" = 0 ] && [ "$(session_of "$D2")" = none ] && [ "$(state_of "$D2" | jq -r '.running // "none"')" = none ]; then
+  pass handover-wrong-desktop
+else fail handover-wrong-desktop "reply: $r; fixture hits: $h"; fi
 r=$(grant "$D3" 5 "$ALL")
 if [ "$(jq -r '.error // empty' <<<"$r")" = not-found ]; then pass handover-wrong-scope; else fail handover-wrong-scope "handover on another scope's desktop: $r"; fi
 
@@ -52,7 +56,6 @@ if [ "$(session_of "$D")" = none ]; then pass handover-expired; else fail handov
 
 # browser boundary through the runner's action route: open each trap page; nothing may reach origin B, and the service worker must not register
 r=$(grant "$D" 30 "$ALL"); [ "$(jq -r '.ok // false' <<<"$r")" = true ] || die "grant failed: $r"
-hits() { curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits"; }
 # open_page <path>: the runner's reply is kept in OPENED; the page counts as loaded only when ok is true and the fixture saw a hit on A
 open_page() { OPENED=$(act "$D" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL$1" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')") || true; }
 page_loaded() { [ "$(jq -r '.ok // false' <<<"$OPENED" 2>/dev/null)" = true ] && [ "$(jq -r '.a // 0' <<<"$(hits)" 2>/dev/null)" -gt 0 ]; }

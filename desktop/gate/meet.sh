@@ -6,7 +6,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [ $# = 1 ] || die "usage: meet.sh <meet-link>"
 need_root; need_cmds nix systemd-run systemctl node ip nft sysctl
-TAP=rfgate0 TABLE=rfgate_nat
+TAP=rfdguest TABLE=rfgate_nat
 TAP_MADE=0 TABLE_MADE=0
 
 extra_cleanup() {
@@ -19,14 +19,14 @@ if ip link show "$TAP" >/dev/null 2>&1; then die "$TAP already exists, not ours"
 if nft list table ip "$TABLE" >/dev/null 2>&1; then die "nft table $TABLE already exists, not ours"; fi
 
 ip tuntap add dev "$TAP" mode tap multi_queue; TAP_MADE=1
-ip addr add 10.77.0.1/30 dev "$TAP"
+ip addr add 10.77.0.13/30 dev "$TAP"
 ip link set "$TAP" up
 sysctl -qw "net.ipv4.conf.$TAP.forwarding=1"
 nft -f - <<RULES
 table ip $TABLE {
   chain post {
     type nat hook postrouting priority 100;
-    ip saddr 10.77.0.2 oifname != "$TAP" masquerade
+    ip saddr 10.77.0.14 oifname != "$TAP" masquerade
   }
 }
 RULES

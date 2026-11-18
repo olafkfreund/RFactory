@@ -154,8 +154,12 @@ class Profiles {
   }
 
   listExpired() {
-    return fs.readdirSync(this.dir).filter((name) => name.endsWith('.json'))
-      .map((name) => this.read(name.slice(0, -5))).filter((record) => this.expired(record));
+    const out = [];
+    for (const name of fs.readdirSync(this.dir).filter((n) => n.endsWith('.json'))) {
+      try { const record = this.read(name.slice(0, -5)); if (this.expired(record)) out.push(record); } // one bad record must not stop the sweep
+      catch (error) { console.error(`rfactory-runner: profile ${name} unreadable: ${error.message}`); }
+    }
+    return out;
   }
 }
 

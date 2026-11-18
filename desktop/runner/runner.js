@@ -14,7 +14,7 @@ const { Profiles } = require('./profiles');
 const MAX_BODY = 16 * 1024;
 
 // mTLS client identity is checked by the TLS layer; `tls: true` makes the handler refuse unauthorised sockets too.
-function createHandler(lifecycle, { tls = true, profiles = null } = {}) {
+function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = false } = {}) {
   const routes = {
     create: (b) => lifecycle.create(b),
     destroy: (b) => lifecycle.destroy(String(b.desktop_id), 'requested'),
@@ -26,6 +26,9 @@ function createHandler(lifecycle, { tls = true, profiles = null } = {}) {
     action: (b) => lifecycle.action(String(b.desktop_id), b.message),
     'share-start': (b) => lifecycle.shareStart(String(b.desktop_id), b),
     'share-stop': (b) => lifecycle.shareStop(String(b.desktop_id), b),
+    // Test-only faults (deviation 22): absent, so 404, unless the runner was configured with verifyHooks.
+    ...(verifyHooks ? Object.fromEntries(['fail-share-stop', 'auto-select-screen', 'drop-control']
+      .map((hook) => [`verify/${hook}`, async (b) => lifecycle.verifyHook(String(b.desktop_id), hook)])) : {}),
     // Profile admin: the web server (mTLS) names the actor, { id, admin_scopes }; Profiles does the scope-admin checks.
     ...(profiles ? {
       'profile-create': (b) => profiles.create(b.actor, b),
@@ -49,9 +52,18 @@ function createHandler(lifecycle, { tls = true, profiles = null } = {}) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return send(400, { error: 'bad json' });
     try {
       const result = await routes[name](body);
-      return send(result && result.error ? (result.error === 'capacity' ? 409 : result.error === 'bad-message' ? 400 : 503) : 200, result);
-    } catch (error) { return send(/denied|admin required/.test(error.message) ? 403 : 500, { error: error.message }); }
+      return send(result && result.error ? ({ capacity: 409, 'too-late': 409, 'bad-message': 400, 'no-desktop': 404 }[result.error] || 503) : 200, result);
+    } catch (error) { return send(clientStatus(error), { error: error.message }); }
   };
+}
+
+// Profile client mistakes are 4xx; anything else is the runner's own failure.
+function clientStatus(error) {
+  if (/denied|admin required/.test(error.message)) return 403;
+  if (/not found/.test(error.message)) return 404;
+  if (error instanceof TypeError && /^invalid profile/.test(error.message)) return 400;
+  if (/already attached|expired|in progress|is starting/.test(error.message)) return 409;
+  return 500;
 }
 
 // GET /vnc/<desktop_id> with Upgrade: rfactory-vnc: a raw byte bridge to the guest's VNC (vsock 5900). mTLS identity only.
@@ -93,14 +105,29 @@ function addrFor(cid) {
   return { host4: `10.77.${a}.${b + 1}`, source4: `10.77.${a}.${b + 2}`, host6: `fd77:${hex}::1`, source6: `fd77:${hex}::2` };
 }
 
-// microvm-run ignores its arguments and resets runtime_args=, so a per-VM copy carries the extra cloud-hypervisor args (a profile's --disk).
-function withExtraArgs(runner, dir, extra = []) {
-  if (!extra.length) return runner;
+// microvm-run ignores its arguments and resets runtime_args=, so a per-VM copy carries what differs per VM: the extra
+// cloud-hypervisor args (a profile's --disk) and, with `identity`, this VM's own vsock cid and socket and tap in place of the
+// image's placeholders (guest/default.nix: cid 3, notify.vsock, tap rfdguest). The guest derives its address from its cid.
+function withExtraArgs(runner, dir, extra = [], identity = null) {
+  if (!extra.length && !identity) return runner;
   if (extra.some((a) => !/^[\w=,./:-]+$/.test(a))) throw new Error('unsafe VM argument');
-  const text = fs.readFileSync(runner, 'utf8');
-  if (!/^runtime_args=$/m.test(text)) throw new Error('guest runner has no runtime_args hook');
+  let text = fs.readFileSync(runner, 'utf8');
+  const swap = (from, to) => {
+    if (!text.includes(from)) throw new Error(`guest runner has no ${from}`);
+    text = text.split(from).join(to);
+  };
+  if (extra.length) {
+    if (!/^runtime_args=$/m.test(text)) throw new Error('guest runner has no runtime_args hook');
+    text = text.replace(/^runtime_args=$/m, () => `runtime_args='${extra.join(' ')}'`);
+  }
+  if (identity) {
+    const { cid, tap, sock } = identity;
+    if (!Number.isInteger(cid) || cid < 3 || !/^[\w-]+$/.test(tap) || !/^[\w./-]+$/.test(sock)) throw new Error('unsafe VM identity');
+    swap('cid=3,socket=notify.vsock', `cid=${cid},socket=${sock}`);
+    swap('tap=rfdguest', `tap=${tap}`);
+  }
   const copy = path.join(dir, 'microvm-run');
-  fs.writeFileSync(copy, text.replace(/^runtime_args=$/m, () => `runtime_args='${extra.join(' ')}'`), { mode: 0o755 });
+  fs.writeFileSync(copy, text, { mode: 0o755 });
   return copy;
 }
 
@@ -116,10 +143,11 @@ function translateConfig(raw, env = process.env) {
     port: raw.mtlsPort, host: raw.host || '0.0.0.0',
     tls: { cert: path.join(creds, 'tls-cert'), key: path.join(creds, 'tls-key'), ca: path.join(creds, 'client-ca') },
     maxVms: raw.maxDesktops, rateMbit: raw.rateMbit, egressQuotaBytes: raw.egressBytes, runtimeMaxSec: seconds(raw.runtimeMaxSec),
+    verifyHooks: raw.verifyHooks === true,
     workerBeatTimeoutMs: raw.workerBeatTimeoutMs ?? 30000, serverBeatTimeoutMs: raw.serverBeatTimeoutMs ?? 60000,
     idleMs: raw.idleMs ?? 600000, bootGraceMs: raw.bootGraceMs ?? 45000, cleanupRetries: raw.cleanupRetries ?? 3, backoffMs: raw.backoffMs ?? 1000,
     runDir: raw.runDir, vmUser: raw.vmUser, vmPath: raw.vmPath, dnsmasqBin: raw.dnsmasqBin,
-    vmArgv: ({ dir, extraArgv }) => [withExtraArgs(raw.guestRunner, dir, extraArgv)],
+    vmArgv: ({ dir, extraArgv, cid, tap, sock }) => [withExtraArgs(raw.guestRunner, dir, extraArgv, { cid, tap, sock })],
     profiles: { vmUser: raw.vmUser, dir: raw.profileDir || '/var/lib/rfactory-desktop/profiles', keyPath: path.join(creds, 'profile-key') },
     ranges,
     net: {
@@ -177,13 +205,14 @@ async function serve(config, deps) {
       },
       destroyDesktop: async (id) => { if (!(await lifecycle.destroy(id, 'profile')).ok) throw new Error('desktop destroy failed'); },
     });
-    expiry = setInterval(() => profiles.expire().catch(() => {}), 3600000);
+    expiry = setInterval(() => profiles.expire().catch((error) => console.error(`rfactory-runner: profile expiry failed: ${error.message}`)), 3600000);
     expiry.unref();
   }
+  if (config.verifyHooks) console.warn('rfactory-runner: verifyHooks is ON: /verify/* test faults are enabled (never in production)');
   const server = https.createServer({
     key: fs.readFileSync(config.tls.key), cert: fs.readFileSync(config.tls.cert), ca: fs.readFileSync(config.tls.ca),
     requestCert: true, rejectUnauthorized: true,
-  }, createHandler(lifecycle, { profiles }));
+  }, createHandler(lifecycle, { profiles, verifyHooks: config.verifyHooks }));
   server.on('upgrade', createUpgrade(lifecycle));
   server.on('close', () => clearInterval(expiry));
   server.listen(config.port, config.host);

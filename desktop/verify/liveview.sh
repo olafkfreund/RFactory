@@ -7,12 +7,25 @@
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (http://host:port, no path), VERIFY_MEMBER_COOKIE (a member of verify-scope,
 # session cookie name=value), VERIFY_NONMEMBER_COOKIE (a signed-in user who is not a member), VERIFY_OTHER_SCOPE (a scope other than
 # verify-scope; its desktop must be refused to the member), VERIFY_CHROME (a Chrome binary on this host).
+# liveview-revoke-5s: roles live in the pod's environment, so the member is removed from RFACTORY_ALLOWED_EMAILS and the web pod is recreated
+# with deploy/pod.sh (VERIFY_POD_SH, default $ROOT/deploy/pod.sh; no other unit is touched), as VERIFY_POD_USER, then put back.
+# Also: VERIFY_APPROVER_COOKIE (still a member after the removal, used to see the server is back), VERIFY_MEMBER_EMAIL (the member to
+# remove; not an approver or admin: roles-not-members would stop the server), VERIFY_ALLOWED_EMAILS (the current RFACTORY_ALLOWED_EMAILS
+# list, restored afterwards), VERIFY_POD_USER. deploy/pod.sh passes only the variables it names, so the pod's desktop settings must come
+# from the environment of the pod.sh you point VERIFY_POD_SH at; a restart that drops RFACTORY_DESKTOP fails the checks that follow.
+# The stream closes when the old server stops, so the time measured is from the restart returning; the 5 s membership timer itself is
+# covered by web/live-view.test.js.
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_cmds jq node sha256sum
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_MEMBER_COOKIE VERIFY_NONMEMBER_COOKIE VERIFY_OTHER_SCOPE VERIFY_CHROME
+need_cmds jq node sha256sum curl getent
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_MEMBER_COOKIE VERIFY_NONMEMBER_COOKIE VERIFY_OTHER_SCOPE VERIFY_CHROME \
+  VERIFY_APPROVER_COOKIE VERIFY_MEMBER_EMAIL VERIFY_ALLOWED_EMAILS VERIFY_POD_USER
+POD_SH=${VERIFY_POD_SH:-$ROOT/deploy/pod.sh}
+HOLD=$(mktemp)
+RESTORE=
+extra_cleanup() { [ -z "${HP:-}" ] || kill "$HP" 2>/dev/null || true; rm -f "$HOLD"; if [ -n "$RESTORE" ]; then as_pod_user RFACTORY_ALLOWED_EMAILS="$VERIFY_ALLOWED_EMAILS" "$POD_SH" up >/dev/null 2>&1 || fail liveview-restore-pod "the web pod was not put back with the full member list"; fi; }
 LV=$ROOT/desktop/verify/liveview.js
 BASE=${VERIFY_SERVER_URL%/}
 WS=${BASE/#http/ws}
@@ -40,6 +53,26 @@ sleep 2
 after=$(shot) || after="no-shot-after"
 if [ "$r" = closed ] && [ "$before" = "$after" ]; then pass liveview-keyevent-closes; else fail liveview-keyevent-closes "stream '$r'; screen changed: $([ "$before" = "$after" ] && echo no || echo yes)"; fi
 
-# Membership is read from the server's role lists at start-up; no web route removes a member while a stream is open. Covered by web/live-view.test.js.
-undriven liveview-revoke-5s "no route removes a member from the server's roles"
+# revoke: remove the member from the list the server reads at start-up, recreate the pod; their open stream must be closed within 5 s and a
+# new one refused. The approver (still a member) opens a stream afterwards, so a refusal is not just a server that is down.
+new_list=$(tr ',' '\n' <<<"$VERIFY_ALLOWED_EMAILS" | tr -d ' ' | grep -vixF "$VERIFY_MEMBER_EMAIL" | paste -sd, -) || true
+if [ "$new_list" = "$(tr -d ' ' <<<"$VERIFY_ALLOWED_EMAILS")" ] || [ -z "$new_list" ]; then die "VERIFY_MEMBER_EMAIL is not in VERIFY_ALLOWED_EMAILS, or it is the only member"; fi
+LV_COOKIE=$VERIFY_MEMBER_COOKIE node "$LV" hold "$URL" >"$HOLD" &
+HP=$!
+sleep 5
+if ! grep -q '^open' "$HOLD"; then fail liveview-revoke-5s "the member's stream did not open before the revoke"
+else
+  RESTORE=1
+  as_pod_user RFACTORY_ALLOWED_EMAILS="$new_list" "$POD_SH" up >/dev/null || die "deploy/pod.sh up failed"
+  t_up=$(date +%s%3N)
+  for _ in $(seq 1 20); do kill -0 "$HP" 2>/dev/null || break; sleep 1; done
+  closed=$(awk '/^closed/ {print $2}' "$HOLD")
+  end=$((SECONDS + 120))
+  until [ "$(state_of "$D" | jq -r '.desktop_id // empty' 2>/dev/null)" = "$D" ] || [ $SECONDS -ge "$end" ]; do sleep 2; done
+  again=$(LV_COOKIE=$VERIFY_MEMBER_COOKIE node "$LV" open "$URL" || echo error)
+  control=$(LV_COOKIE=$VERIFY_APPROVER_COOKIE node "$LV" open "$URL" || echo error)
+  if [ -n "$closed" ] && [ $((closed - t_up)) -le 5000 ] && [ "$again" = refused ] && [ "$control" = open ]; then
+    pass "liveview-revoke-5s (closed $((closed - t_up)) ms after the restart returned)"
+  else fail liveview-revoke-5s "stream closed at: ${closed:-never}, restart returned at $t_up; new stream for the removed member: $again; approver's stream: $control"; fi
+fi
 finish
