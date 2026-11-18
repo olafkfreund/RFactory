@@ -36,6 +36,18 @@ spec:
             - {name: control, containerPort: 5000}
             - {name: heartbeat, containerPort: 5001}
             - {name: vnc, containerPort: 5900}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+            # Host-specific always-protected ranges (the node, pod and service CIDRs are built
+            # into the policy generator): the whole 192.168.0.0/16 (p620's LAN and the Factory
+            # hosts sit inside it) and the Tailscale ranges. kyverno.yaml lists the same.
+            - name: RF_ALWAYS_PROTECTED
+              value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
+            # Guest images (k10 records the digests) and the kernel command line from
+            # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
+            - {name: RF_GUEST_BOOT_IMAGE, value: "rfactory/guest-boot@sha256:REPLACE"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "rfactory/guest-disk@sha256:REPLACE"}
+            - {name: RF_GUEST_CMDLINE, value: "REPLACE"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

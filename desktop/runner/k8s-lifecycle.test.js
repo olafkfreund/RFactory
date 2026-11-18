@@ -7,6 +7,7 @@ const { createLifecycle } = require('./lifecycle');
 const { createDecoder } = require('./protocol');
 const { createUpgrade } = require('./runner');
 
+const CMDLINE = 'init=/nix/store/' + 'a'.repeat(32) + '-nixos-system-guest/init console=ttyS0';
 const vmiUID = '11111111-1111-4111-8111-111111111111';
 const podUID = '22222222-2222-4222-8222-222222222222';
 const pod = { metadata: { uid: podUID, labels: { 'rfactory.io/role': 'desktop' } }, status: { podIP: '10.42.1.7', hostIP: '172.18.0.3' } };
@@ -32,7 +33,7 @@ function setup(fail) {
   const config = { maxVms: 3, runtimeMaxSec: 10800, workerBeatTimeoutMs: 30000, serverBeatTimeoutMs: 60000, idleMs: 600000,
     bootGraceMs: 45000, egressQuotaBytes: 1073741824,
     net: { previews: { alpha: ['10.50.0.7:8443'] }, dns: { platform: ['meet.google.com'], scopes: { alpha: ['preview.example'] } } },
-    k8s: { bootImage: 'guest-boot@sha256:' + 'a'.repeat(64), diskImage: 'guest-disk@sha256:' + 'b'.repeat(64),
+    k8s: { cmdline: CMDLINE, bootImage: 'guest-boot@sha256:' + 'a'.repeat(64), diskImage: 'guest-disk@sha256:' + 'b'.repeat(64),
       runnerIP: '10.43.250.10', proxyIP: '10.43.250.11', proxyPort: 3128, alwaysProtected: ['192.168.1.0/24'] } };
   const lc = createLifecycle(config, { k8s, clock, listenTcp: (port, handler) => { handlers.set(port, handler); return { close() {} }; },
     guard: async (_vm, action, body) => { beats.push({ action, body }); if (fail === `guard-${action}`) throw new Error(action); return action === 'ready' ? { ready: true } : { bytes: 0 }; },
@@ -56,7 +57,8 @@ test('paused VMI, UID and pod, owned policy and entries, guard ready, then unpau
   assert.equal(vmi.spec.startStrategy, 'Paused');
   assert.equal(vmi.spec.nodeSelector['kubernetes.io/hostname'], 'k3d-factory-agent-0');
   assert.equal(vmi.metadata.labels['rfactory.io/role'], 'desktop');
-  assert.equal(vmi.spec.domain.firmware.kernelBoot.kernelArgs, 'rf.runner=10.43.250.10 rf.proxy=10.43.250.11:3128');
+  assert.match(vmi.spec.domain.firmware.kernelBoot.kernelArgs, /^init=\/nix\/store\/\S+\/init console=ttyS0 /);
+  assert.equal(vmi.spec.domain.firmware.kernelBoot.kernelArgs, `${CMDLINE} rf.runner=10.43.250.10 rf.proxy=10.43.250.11:3128`);
   assert.equal(vmi.spec.domain.devices.disks[0].disk.readonly, true);
   assert.equal(vmi.spec.domain.resources.limits.memory, '6Gi');
   for (const item of [policy, proxy, guard]) assert.equal(item.metadata.ownerReferences[0].uid, vmiUID);
@@ -165,4 +167,14 @@ test('runner start deletes only unknown labelled desktop VMIs', async () => {
   ];
   await ctx.lc.reconcile();
   assert.deepEqual(ctx.calls.filter(x => x === 'deleteVmi'), ['deleteVmi']);
+});
+
+test('connects from one pod IP are rate-limited before the pod list', async () => {
+  const ctx = setup();
+  await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
+  ctx.lc.run();
+  const before = ctx.calls.filter(c => c === 'listPods').length;
+  for (let i = 0; i < 100; i++) await ctx.handlers.get(5000)(new Socket(pod.status.podIP));
+  assert.ok(ctx.calls.filter(c => c === 'listPods').length - before <= 20);
+  await ctx.lc.stop();
 });

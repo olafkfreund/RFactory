@@ -2,7 +2,7 @@
 { pkgs, lib }:
 let
   clean = src: lib.cleanSourceWith { inherit src; filter = n: _: baseNameOf n != "node_modules"; };
-  # bot/package-lock.json holds the same dependencies as spike/package-lock.json, so the hash is probe.nix's
+  # bot/package-lock.json holds the same dependencies as spike/package-lock.json, so the hash is the spike lockfile's
   botModules = pkgs.buildNpmPackage {
     pname = "rfactory-bot";
     version = "0";

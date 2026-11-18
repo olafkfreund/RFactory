@@ -13,12 +13,13 @@
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE, VERIFY_MEET_LINK (a Meet the owner is in),
 # VERIFY_FIXTURE_URL (an allowlisted preview origin; an approved preview), VERIFY_JOIN_WAIT (seconds to wait for the join, 240),
 # optional VERIFY_TEAMS_LINK (a Teams meeting the owner is in) and VERIFY_POD_SERVER_URL (for its pod half).
-# Needs a terminal for the owner's confirmations. nft must be on PATH (deviation 9).
+# Needs a terminal for the owner's confirmations. k14 (plan 2026-11-18-3-agent-workspace-k3d): kubectl against the factory cluster; "nothing left" is lib.sh desk_gone
+# (no VMI, pod, owned policy or entry, guard table).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_root; need_cmds curl jq ip nft systemctl grep
+need_kube; need_cmds curl jq grep
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_MEET_LINK
 EV=$(mktemp)
 TEVS=() # the Teams halves' event files
@@ -58,9 +59,7 @@ else fail e2e-share-only-window "share did not start: $SHAREERR"; fi
 # the call ends: DELETE /api/call stops the worker, which ends the VM
 approver DELETE /api/call >/dev/null || true
 left=
-wait_gone "$D" 60 || left="$left desktop"
-for t in "rf$D" "rfd$D"; do ip link show "$t" >/dev/null 2>&1 && left="$left tap:$t"; done # lifecycle.js names it rf<id>, the runner module rfd<id>
-nft list table inet "rfd_$D" >/dev/null 2>&1 && left="$left nft-table"
+wait_gone "$D" 60 || left="$left desktop:$(desk_leftovers "$D")"
 if [ -z "$left" ]; then pass e2e-nothing-left; else fail e2e-nothing-left "left behind:$left"; fi
 
 # Teams, from the pod and from a VM: join, answer, leave. <name> pod|vm, <base> the web server's URL. The pod half needs a server without RFACTORY_DESKTOP.
@@ -89,8 +88,7 @@ teams_call() {
     if [ -z "$new" ]; then fail e2e-teams-vm-nothing-left "no VM was found to check"
     else
       left=
-      wait_gone "$new" 60 || left="$left desktop"
-      nft list table inet "rfd_$new" >/dev/null 2>&1 && left="$left nft-table"
+      wait_gone "$new" 60 || left="$left desktop:$(desk_leftovers "$new")"
       if [ -z "$left" ]; then pass e2e-teams-vm-nothing-left; else fail e2e-teams-vm-nothing-left "left behind:$left"; fi
     fi
   fi

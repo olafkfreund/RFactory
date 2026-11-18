@@ -1,7 +1,6 @@
 'use strict';
 // View-only RFB filter (plan step 9, "Live view"). Client-to-server bytes only: the server's own bytes are untouched.
-// Assumes RFB 3.7 or 3.8 with security type None (x11vnc listens on the guest's loopback behind the vsock).
-const { connectGuest } = require('./vsock.js');
+// Assumes RFB 3.7 or 3.8 with security type None (the guest's x11vnc dials the runner).
 
 const MAX_ENCODINGS = 1024;
 const sizeOf = (buf) => { // length of the first complete client message in buf, null if more bytes are needed, -1 if forbidden
@@ -51,7 +50,7 @@ function createFilter(forward, violation) {
   };
 }
 
-// guest: a duplex stream to the guest's VNC (see openVnc). toClient gets the server's bytes unchanged.
+// guest: a duplex stream to the guest's VNC (the reverse connection the guest's x11vnc opened). toClient gets the server's bytes unchanged.
 function bridgeViewOnly(guest, { toClient, onClose = () => {} }) {
   let closed = false;
   const close = (why) => { if (closed) return; closed = true; guest.destroy(); onClose(why); };
@@ -62,6 +61,4 @@ function bridgeViewOnly(guest, { toClient, onClose = () => {} }) {
   return { fromClient: (chunk) => { if (!closed) filter.write(chunk); }, close: () => close('closed') };
 }
 
-const openVnc = (sockPath) => connectGuest(sockPath, 5900);
-
-module.exports = { createFilter, bridgeViewOnly, openVnc };
+module.exports = { createFilter, bridgeViewOnly };

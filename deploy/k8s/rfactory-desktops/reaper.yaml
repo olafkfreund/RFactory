@@ -22,6 +22,8 @@ spec:
       containers:
         - name: reaper
           image: rfactory/reaper@sha256:REPLACE
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

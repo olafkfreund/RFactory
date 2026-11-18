@@ -28,6 +28,14 @@ spec:
           image: rfactory/guard@sha256:REPLACE
           ports:
             - {name: guard, containerPort: 9443, hostPort: 9443}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - {name: GUARD_PORT, value: "9443"}
+            - {name: GUARD_TLS_CERT, value: /etc/rfactory/tls/tls.crt}
+            - {name: GUARD_TLS_KEY, value: /etc/rfactory/tls/tls.key}
+            - {name: GUARD_CLIENT_CA, value: /etc/rfactory/tls/ca.crt}
           securityContext:
             runAsNonRoot: false
             runAsUser: 0

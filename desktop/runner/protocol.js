@@ -71,7 +71,7 @@ function encode(message) {
   return frame;
 }
 
-function createDecoder(onMessage, onDrop = (reason) => console.warn(`vsock message dropped: ${reason}`)) {
+function createDecoder(onMessage, onDrop = (reason) => console.warn(`guest message dropped: ${reason}`)) {
   let pending = Buffer.alloc(0);
   let length = null;
   let closed = false;

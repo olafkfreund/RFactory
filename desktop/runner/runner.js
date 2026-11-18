@@ -3,17 +3,16 @@
 const https = require('node:https');
 const fs = require('node:fs');
 const net = require('node:net');
-const path = require('node:path');
-const { execFile } = require('node:child_process');
 const { preflight } = require('./preflight');
 const { createLifecycle } = require('./lifecycle');
-const { connectGuest } = require('./vsock');
-const { openVnc: openGuestVnc } = require('./vnc');
 const { bridgeViewOnly } = require('./vnc');
 const { createK8s } = require('./k8s');
 const { Profiles } = require('./profiles');
 
 const MAX_BODY = 16 * 1024;
+
+// The one private CA also signs the guard and runner leaves, so a valid chain is not enough: only the web server's CN may call.
+const webPeer = (socket) => socket.authorized === true && socket.getPeerCertificate?.().subject?.CN === 'rfactory-web';
 
 // mTLS client identity is checked by the TLS layer; `tls: true` makes the handler refuse unauthorised sockets too.
 function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = false } = {}) {
@@ -49,7 +48,7 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     let gone = false;
     res.on?.('close', () => { if (!res.writableFinished) gone = true; });
     const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-    if (tls && !req.socket.authorized) return send(401, { error: 'client certificate required' });
+    if (tls && !webPeer(req.socket)) return send(401, { error: 'client certificate required' });
     const name = req.url.slice(1);
     if (req.method !== 'POST' || !Object.hasOwn(routes, name)) return send(404, { error: 'not found' });
     let raw = '';
@@ -76,110 +75,29 @@ function clientStatus(error) {
   return 500;
 }
 
-// GET /vnc/<desktop_id> with Upgrade: rfactory-vnc: a raw byte bridge to the guest's VNC (vsock 5900). mTLS identity only.
+// GET /vnc/<desktop_id> with Upgrade: rfactory-vnc: a raw byte bridge to the guest's VNC (the connection x11vnc opens to 5900). mTLS identity only.
 // GET /call/<desktop_id> with Upgrade: rfactory-call: the call worker's stdin/stdout lines over the guest channel (plan 13c).
-function createUpgrade(lifecycle, { openVnc = openGuestVnc } = {}) {
+function createUpgrade(lifecycle) {
   const viewers = new Set();
   return async (req, socket) => {
     const refuse = (code, text) => socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.on('error', () => {});
     const m = /^\/(vnc|call)\/([0-9a-f]{1,16})$/.exec(req.url);
-    if (!socket.authorized && socket.authorized !== undefined) return refuse(401, 'Unauthorized');
+    if (socket.authorized !== undefined && !webPeer(socket)) return refuse(401, 'Unauthorized');
     if (req.method !== 'GET' || !m || String(req.headers.upgrade).toLowerCase() !== `rfactory-${m[1]}`) return refuse(404, 'Not Found');
     if (m[1] === 'call') {
       if (!lifecycle.callAttach(m[2], socket)) return refuse(404, 'Not Found');
       return socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: rfactory-call\r\nConnection: Upgrade\r\n\r\n');
     }
-    const sock = lifecycle.vncSock(m[2]);
-    if (!sock) return refuse(404, 'Not Found');
+    const guest = lifecycle.vncSock(m[2]);
+    if (!guest) return refuse(404, 'Not Found');
     if (viewers.has(m[2])) return refuse(409, 'Conflict');
+    if (socket.destroyed) return guest.destroy();
     viewers.add(m[2]);
-    let guest;
-    try { guest = typeof sock === 'string' ? await openVnc(sock) : sock; } catch { viewers.delete(m[2]); return refuse(502, 'Bad Gateway'); }
-    if (socket.destroyed) { viewers.delete(m[2]); return guest.destroy(); }
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: rfactory-vnc\r\nConnection: Upgrade\r\n\r\n');
     const view = bridgeViewOnly(guest, { toClient: chunk => socket.write(chunk), onClose: () => socket.destroy() });
     socket.on('data', chunk => view.fromClient(chunk));
     socket.on('close', () => { viewers.delete(m[2]); view.close(); });
-  };
-}
-
-const UNITS = { s: 1, m: 60, h: 3600, d: 86400 };
-function seconds(value) {
-  if (Number.isFinite(value) && value > 0) return value;
-  const m = /^(\d+)([smhd]?)$/.exec(String(value));
-  if (!m || !Number(m[1])) throw new Error(`bad duration: ${value}`);
-  return Number(m[1]) * UNITS[m[2] || 's'];
-}
-
-// One /30 per cid in 10.77.0.0/16 (the host takes .1, the guest .2) and a fd77:<cid>::/64; the guest image uses the same values.
-function addrFor(cid) {
-  const block = cid * 4, a = block >> 8, b = block & 255, hex = cid.toString(16);
-  return { host4: `10.77.${a}.${b + 1}`, source4: `10.77.${a}.${b + 2}`, host6: `fd77:${hex}::1`, source6: `fd77:${hex}::2` };
-}
-
-// microvm-run ignores its arguments and resets runtime_args=, so a per-VM copy carries what differs per VM: the extra
-// cloud-hypervisor args (a profile's --disk) and, with `identity`, this VM's own vsock cid and socket and tap in place of the
-// image's placeholders (guest/default.nix: cid 3, notify.vsock, tap rfdguest). The guest derives its address from its cid.
-// Sizing (vcpu, memMiB) is applied the same way when it differs from what the image was built with (guest/default.nix: 2 and 3072).
-const IMAGE_SIZE = { vcpu: 2, memMiB: 3072 };
-function withExtraArgs(runner, dir, extra = [], identity = null, size = IMAGE_SIZE) {
-  const resized = size.vcpu !== IMAGE_SIZE.vcpu || size.memMiB !== IMAGE_SIZE.memMiB;
-  if (!extra.length && !identity && !resized) return runner;
-  if (extra.some((a) => !/^[\w=,./:-]+$/.test(a))) throw new Error('unsafe VM argument');
-  let text = fs.readFileSync(runner, 'utf8');
-  const swap = (from, to) => {
-    if (!text.includes(from)) throw new Error(`guest runner has no ${from}`);
-    text = text.split(from).join(to);
-  };
-  if (extra.length) {
-    if (!/^runtime_args=$/m.test(text)) throw new Error('guest runner has no runtime_args hook');
-    text = text.replace(/^runtime_args=$/m, () => `runtime_args='${extra.join(' ')}'`);
-  }
-  if (identity) {
-    const { cid, tap, sock } = identity;
-    if (!Number.isInteger(cid) || cid < 3 || !/^[\w-]+$/.test(tap) || !/^[\w./-]+$/.test(sock)) throw new Error('unsafe VM identity');
-    swap('cid=3,socket=notify.vsock', `cid=${cid},socket=${sock}`);
-    swap('tap=rfdguest', `tap=${tap}`);
-  }
-  if (resized) {
-    if (!Number.isInteger(size.vcpu) || size.vcpu < 2 || size.vcpu > 16 || !Number.isInteger(size.memMiB) || size.memMiB < 1024) throw new Error('unsafe VM size');
-    swap(`boot=${IMAGE_SIZE.vcpu}`, `boot=${size.vcpu}`);
-    swap(`num_queues=${2 * IMAGE_SIZE.vcpu}`, `num_queues=${2 * size.vcpu}`); // multi-queue net: two queues per vcpu
-    swap(`size=${IMAGE_SIZE.memMiB}M`, `size=${size.memMiB}M`);
-  }
-  const copy = path.join(dir, 'microvm-run');
-  fs.writeFileSync(copy, text, { mode: 0o755 });
-  return copy;
-}
-
-// The module's JSON (strings, no functions) -> what createLifecycle and serve need. Missing required values fail here, loudly.
-function translateConfig(raw, env = process.env) {
-  for (const key of ['mtlsPort', 'maxDesktops', 'rateMbit', 'egressBytes', 'runtimeMaxSec', 'runDir', 'guestRunner']) {
-    if (raw[key] === undefined) throw new Error(`missing config: ${key}`);
-  }
-  const creds = env.CREDENTIALS_DIRECTORY;
-  if (!creds) throw new Error('CREDENTIALS_DIRECTORY is not set');
-  const ranges = raw.rangesFile ? JSON.parse(fs.readFileSync(raw.rangesFile, 'utf8')) : {};
-  return {
-    port: raw.mtlsPort, host: raw.host || '0.0.0.0',
-    tls: { cert: path.join(creds, 'tls-cert'), key: path.join(creds, 'tls-key'), ca: path.join(creds, 'client-ca') },
-    maxVms: raw.maxDesktops, rateMbit: raw.rateMbit, egressQuotaBytes: raw.egressBytes, runtimeMaxSec: seconds(raw.runtimeMaxSec),
-    verifyHooks: raw.verifyHooks === true,
-    workerBeatTimeoutMs: raw.workerBeatTimeoutMs ?? 30000, serverBeatTimeoutMs: raw.serverBeatTimeoutMs ?? 60000,
-    idleMs: raw.idleMs ?? 600000, bootGraceMs: raw.bootGraceMs ?? 45000, cleanupRetries: raw.cleanupRetries ?? 3, backoffMs: raw.backoffMs ?? 1000,
-    runDir: raw.runDir, vmUser: raw.vmUser, vmPath: raw.vmPath, dnsmasqBin: raw.dnsmasqBin,
-    vmArgv: ({ dir, extraArgv, cid, tap, sock }) => [withExtraArgs(raw.guestRunner, dir, extraArgv, { cid, tap, sock }, { vcpu: raw.vcpu ?? IMAGE_SIZE.vcpu, memMiB: raw.memMiB ?? IMAGE_SIZE.memMiB })],
-    loginsPath: raw.previewLogins ? path.join(creds, 'preview-logins') : null,
-    profiles: { vmUser: raw.vmUser, dir: raw.profileDir || '/var/lib/rfactory-desktop/profiles', keyPath: path.join(creds, 'profile-key') },
-    ranges,
-    net: {
-      addr: addrFor,
-      protectedRanges: ['127.0.0.0/8', '::1/128', ...(raw.protectedRanges || [])],
-      media: Object.values(ranges).filter((e) => e && typeof e === 'object' && e.cidrs && e.cidrs.length),
-      previews: raw.scopePreviews || {},
-      dns: { upstreams: raw.upstreamResolvers || [], platform: raw.dnsAllowlist || [], scopes: raw.scopeDomains || {} },
-    },
   };
 }
 
@@ -192,15 +110,8 @@ function tcpConnect(host, port, timeoutMs) {
   });
 }
 
-// Real dependencies: argv-only exec (stderr kept in the error so cleanup can tell absence from failure).
+// Real dependencies.
 function realDeps(config) {
-  const exec = (argv, { input } = {}) => new Promise((resolve, reject) => {
-    const child = execFile(argv[0], argv.slice(1), { encoding: 'utf8', maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
-      if (error) reject(Object.assign(new Error(`${argv[0]}: ${(stderr || error.message).trim()}`), { stderr }));
-      else resolve(stdout);
-    });
-    if (input !== undefined) child.stdin.end(input);
-  });
   const clock = { now: Date.now, setInterval, clearInterval, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
   // The stored preview logins (a credential file, read at each use so a change needs no restart). A bad or missing file means no
   // login; the error is dropped because a JSON parse error can quote the file.
@@ -229,14 +140,14 @@ function realDeps(config) {
       req.end(body && JSON.stringify(body));
     });
   } : undefined;
-  return { exec, clock, k8s, guard, resolveLogin, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
+  return { clock, k8s, guard, resolveLogin,
     preflight: (platform) => preflight(platform, config.ranges, tcpConnect) };
 }
 
-// Production entry: config.tls = {key, cert, ca} are file paths from the module option, never from the repo.
+// Production entry: config.tls = {key, cert, ca} are file paths (the mounted TLS Secret), never from the repo.
 async function serve(config, deps) {
   let profiles = null;
-  const lifecycle = createLifecycle(config, { connectGuest, ...deps, onDestroyed: (id) => profiles && profiles.release(id) });
+  const lifecycle = createLifecycle(config, { ...deps, onDestroyed: (id) => profiles && profiles.release(id) });
   await lifecycle.reconcile();
   lifecycle.run();
   let expiry = null;
@@ -272,6 +183,9 @@ async function serve(config, deps) {
 function inClusterConfig(env) {
   const bootImage = env.RF_GUEST_BOOT_IMAGE, diskImage = env.RF_GUEST_DISK_IMAGE;
   if (![bootImage, diskImage].every(image => /@sha256:[a-f0-9]{64}$/.test(image || ''))) throw new Error('digest-pinned guest images are required');
+  // The whole guest command line (the flake's guest-kubevirt-cmdline): KubeVirt passes kernelArgs as-is and nothing reads /boot/cmdline.
+  const cmdline = (env.RF_GUEST_CMDLINE || '').trim();
+  if (!/^init=\/nix\/store\/[a-z0-9]{32}-[A-Za-z0-9._+-]+\/init( [A-Za-z0-9._,:=\/+-]+)*$/.test(cmdline) || /\brf\.(runner|proxy)=/.test(cmdline)) throw new Error('RF_GUEST_CMDLINE must be the guest cmdline starting with init=<toplevel>/init');
   const protectedRanges = JSON.parse(env.RF_ALWAYS_PROTECTED || 'null');
   if (!Array.isArray(protectedRanges) || !protectedRanges.length) throw new Error('RF_ALWAYS_PROTECTED is required');
   const scopePreviews = JSON.parse(env.RF_SCOPE_PREVIEWS || '{}');
@@ -285,20 +199,19 @@ function inClusterConfig(env) {
     port: 8443, host: '0.0.0.0', tls: { cert: '/etc/rfactory/tls/tls.crt', key: '/etc/rfactory/tls/tls.key', ca: '/etc/rfactory/tls/ca.crt' },
     profiles: { keyPath: '/etc/rfactory/tls/profile-key' }, maxVms: 3, runtimeMaxSec: 10800,
     workerBeatTimeoutMs: 30000, serverBeatTimeoutMs: 60000, idleMs: 600000, bootGraceMs: 45000,
-    egressQuotaBytes: 1073741824, runDir: '/tmp/rfactory', verifyHooks: env.RF_VERIFY_HOOKS === '1',
+    egressQuotaBytes: 1073741824, verifyHooks: env.RF_VERIFY_HOOKS === '1',
     loginsPath: env.RF_PREVIEW_LOGINS_PATH || null,
     ranges: require('../ranges/ranges.json'),
     net: { previews: scopePreviews, dns: { platform: platformNames, scopes: scopeDomains } },
-    k8s: { bootImage, diskImage, runnerIP: '10.43.250.10', proxyIP: '10.43.250.11', proxyPort: Number(env.RF_PROXY_PORT || 3128),
+    k8s: { bootImage, diskImage, cmdline, runnerIP: '10.43.250.10', proxyIP: '10.43.250.11', proxyPort: Number(env.RF_PROXY_PORT || 3128),
       alwaysProtected: protectedRanges },
   };
 }
 
-// `node runner.js --config <json>`: translate, serve, and tear every VM down on SIGTERM or SIGINT.
-async function main(argv = process.argv.slice(2), env = process.env) {
-  const at = argv.indexOf('--config');
-  if (at < 0 && !env.KUBERNETES_SERVICE_HOST) throw new Error('usage: runner.js --config <file>');
-  const config = at >= 0 ? translateConfig(JSON.parse(fs.readFileSync(argv[at + 1], 'utf8')), env) : inClusterConfig(env);
+// In the cluster only: configure from the environment, serve, and tear every VM down on SIGTERM or SIGINT.
+async function main(env = process.env) {
+  if (!env.KUBERNETES_SERVICE_HOST) throw new Error('rfactory-runner runs only in the cluster (KUBERNETES_SERVICE_HOST is not set)');
+  const config = inClusterConfig(env);
   const { server, lifecycle } = await serve(config, realDeps(config));
   let stopping = false;
   const stop = async () => {
@@ -315,4 +228,4 @@ async function main(argv = process.argv.slice(2), env = process.env) {
 
 if (require.main === module) main().catch((error) => { console.error(`rfactory-runner: ${error.message}`); process.exit(1); });
 
-module.exports = { createHandler, createUpgrade, serve, main, translateConfig, inClusterConfig, addrFor, seconds, realDeps, withExtraArgs };
+module.exports = { createHandler, createUpgrade, serve, main, inClusterConfig, realDeps };

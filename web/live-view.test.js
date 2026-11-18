@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const net = require('node:net');
 const { createApp } = require('./server.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
-const { openVnc } = require('../desktop/runner/vnc.js');
 
 const ME = 'member@example.com';
 const OTHER = 'other@example.com';
@@ -111,7 +110,6 @@ test('a membership lookup that throws closes the stream', async (t) => {
   await c.done;
 });
 
-test('openVnc only connects port 5900 of the vsock', async () => {
-  await assert.rejects(() => require('../desktop/runner/vsock.js').connectGuest('/nonexistent', 22), /not allowed/);
-  assert.equal(typeof openVnc, 'function');
+test('the web image needs only the filter and view-only bridge from runner/vnc.js (no vsock)', () => {
+  assert.deepEqual(Object.keys(require('../desktop/runner/vnc.js')).sort(), ['bridgeViewOnly', 'createFilter']);
 });

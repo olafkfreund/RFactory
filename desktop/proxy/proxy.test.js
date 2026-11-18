@@ -115,6 +115,34 @@ test('only exact approved private preview ip:port may use a plain tunnel', async
   assert.throws(() => checkedAddresses(['192.168.1.2'], guard.alwaysProtected, true), /blocked destination/);
 });
 
+test('plain HTTP is forwarded only to an approved preview ip:port, with the token, to the checked address', async () => {
+  const calls = [];
+  const forward = options => {
+    calls.push(options);
+    const up = new EventEmitter(); up.setTimeout = () => {}; up.write = () => true; up.end = () => {}; up.destroy = () => {};
+    up.on = up.on.bind(up);
+    setImmediate(() => up.emit('response', Object.assign(new EventEmitter(), { statusCode: 200, headers: {}, pipe: res => res.end() })));
+    return up;
+  };
+  const proxy = createProxy({ api: api(), forward });
+  const send = async (url, token = entry.token) => {
+    const headers = token === null ? {} : { 'proxy-authorization': auth(token) };
+    const req = Object.assign(new EventEmitter(), { url, method: 'GET', headers, socket: new Socket(), pipe: up => up.end() });
+    const res = { codes: [], headersSent: false, writeHead(code) { this.codes.push(code); this.headersSent = true; }, end() { this.done = true; } };
+    await proxy.handleForward(req, res);
+    await new Promise(resolve => setImmediate(resolve));
+    return res.codes[0];
+  };
+  assert.equal(await send('http://10.50.0.7:8443/a?b=1'), 200);
+  assert.deepEqual([calls[0].host, calls[0].port, calls[0].path, calls[0].headers['proxy-authorization']], ['10.50.0.7', 8443, '/a?b=1', undefined]);
+  assert.equal(await send('http://10.50.0.7:80/'), 403);
+  assert.equal(await send('http://www.example.com:443/'), 403);
+  assert.equal(await send('https://10.50.0.7:8443/'), 403);
+  assert.equal(await send('http://10.50.0.7:8443/', null), 407);
+  assert.equal(await send('http://10.50.0.7:8443/', 'wrong'), 407);
+  assert.equal(calls.length, 1);
+});
+
 test('one desktop cannot exceed its connection cap and a close releases its slot', async () => {
   const proxy = createProxy({ api: api(), maxConnections: 1, connect: () => new Socket() });
   const first = new Socket();
@@ -163,4 +191,38 @@ test('in-cluster API lists live desktop pods and entries, and watches both resou
     assert.ok(calls.every(call => call.options.headers.Authorization === 'Bearer fake-token'));
     assert.equal(events, 2);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a flood from one source IP is limited before any Kubernetes API call, per IP', async () => {
+  let reads = 0;
+  const base = api();
+  const counted = { ...base, snapshot: async () => { reads++; return base.snapshot(); } };
+  const proxy = createProxy({ api: counted, burst: 5, perSec: 1, now: () => 0, resolve: async () => [{ address: '93.184.215.14' }] });
+  for (let i = 0; i < 50; i++) await proxy.answerDns(dnsQuestion('www.example.com'), podIP);
+  for (let i = 0; i < 50; i++) { const c = new Socket(); await proxy.handleConnect(request(), c, Buffer.alloc(0)); }
+  assert.ok(reads <= 5, `${reads} API reads`);
+  await proxy.answerDns(dnsQuestion('www.example.com'), '10.42.1.8');
+  assert.equal(reads, 6, 'another IP has its own bucket');
+});
+
+test('50 sequential forwards on one keep-alive socket all succeed with one API read', async () => {
+  let reads = 0;
+  const base = api();
+  const counted = { ...base, snapshot: async () => { reads++; return base.snapshot(); } };
+  const forward = () => {
+    const up = new EventEmitter(); up.setTimeout = () => {}; up.write = () => true; up.end = () => {}; up.destroy = () => {};
+    setImmediate(() => up.emit('response', Object.assign(new EventEmitter(), { statusCode: 200, headers: {}, pipe: res => res.end() })));
+    return up;
+  };
+  const proxy = createProxy({ api: counted, forward, burst: 5, perSec: 1, now: () => 0 });
+  const socket = new Socket();
+  const codes = [];
+  for (let i = 0; i < 50; i++) {
+    const req = Object.assign(new EventEmitter(), { url: `http://10.50.0.7:8443/m${i}`, method: 'GET', headers: { 'proxy-authorization': auth() }, socket, pipe: up => up.end() });
+    const res = { headersSent: false, writeHead(code) { codes.push(code); this.headersSent = true; }, end() {} };
+    await proxy.handleForward(req, res);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.deepEqual(codes, Array(50).fill(200));
+  assert.equal(reads, 1);
 });

@@ -2,80 +2,30 @@
 
 const crypto = require('node:crypto');
 const net = require('node:net');
-const path = require('node:path');
-const { buildRules, buildDnsConf } = require('./net');
 const { createDecoder, tag, encode } = require('./protocol');
 const { nonce: newNonce } = require('../guest/agent/share');
-const { listenGuest } = require('./vsock');
 const { buildPolicy } = require('./k8s-policy');
 
-const UNIT = 'rfactory-vm-';
-const REQUIRED = ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatTimeoutMs', 'idleMs', 'rateMbit',
-  'egressQuotaBytes', 'cleanupRetries', 'backoffMs', 'runDir', 'vmArgv', 'net'];
-
-// deps: exec(argv, {input}) -> Promise, clock {now, setInterval, clearInterval, sleep},
-// fs {mkdir, rm, readdir, readFile}, hasKvm(), listen(sock, handler) (defaults to vsock.listenGuest).
-// connectGuest(sock, port) -> duplex (optional; without it there is no host -> guest channel: action, share-* and call-config fail closed).
+// deps: k8s (the API client), clock {now, setInterval, clearInterval, sleep}, guard(vm, action, body), preflight(platform),
+// resolveLogin(scope, profile), listenTcp(port, handler) (tests), onGuestMessage, onDestroyed.
+// Every guest channel is guest-initiated and accepted in accept(); with no control channel, action, share-* and call-config fail closed.
 function createLifecycle(config, deps) {
-  for (const key of deps.k8s ? ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatTimeoutMs', 'idleMs', 'k8s'] : REQUIRED) {
+  if (!deps.k8s) throw new Error('missing dependency: k8s');
+  for (const key of ['maxVms', 'runtimeMaxSec', 'workerBeatTimeoutMs', 'serverBeatTimeoutMs', 'idleMs', 'k8s']) {
     if (config[key] === undefined) throw new Error(`missing config: ${key}`);
   }
-  const { exec, clock, fs } = deps;
-  const listen = deps.listen || listenGuest;
+  const { clock } = deps;
   const vms = new Map(); // id -> vm
-  const owners = new Map(); // socket path -> {call_id, scope, desktop_id}; the only source of tags
+  const owners = new Map(); // pod UID -> {call_id, scope, desktop_id}; the only source of tags
   const state = { blocked: false, alert: null };
-  let nextCid = 3;
   let timer = null;
   let leaseTimer = null;
   let leaseError = null;
   let leaseBusy = false;
   const tcpServers = [];
-  const MAX_CID = 16000; // the default address plan holds a /30 per cid in 10.77.0.0/16
-  function allocCid() {
-    for (;;) {
-      const cid = nextCid;
-      nextCid = nextCid >= MAX_CID ? 3 : nextCid + 1;
-      if (![...vms.values()].some((v) => v.cid === cid)) return cid;
-    }
-  }
-
-  const names = (id) => ({ unit: UNIT + id, dns: `rfactory-dns-${id}`, tap: `rfd${id}`, table: `rfd_${id}`, dir: path.join(config.runDir, id) });
-  // Only a confirmed absence is fine to skip; any other failure (permission, busy) goes to retry and alert.
-  const ABSENT = /No such file or directory|Cannot find device|No such device|does not exist|not loaded|not found/i;
-  const absentOk = (error) => { if (!ABSENT.test(`${error.message} ${error.stderr || ''}`)) throw error; };
-
-  async function retry(fn) {
-    for (let attempt = 0; ; attempt++) {
-      try { return await fn(); } catch (error) {
-        if (attempt + 1 >= config.cleanupRetries) throw error;
-        await clock.sleep(config.backoffMs * 2 ** attempt);
-      }
-    }
-  }
-
   async function cleanup(id) {
-    if (deps.k8s) {
-      try { await deps.k8s.deleteVmi(`rfdesk-${id}`); return true; }
-      catch (error) { state.blocked = true; state.alert = `cleanup of ${id} failed: ${error.message}`; return false; }
-    }
-    const n = names(id);
-    const steps = [
-      () => exec(['systemctl', 'stop', n.unit]).catch(absentOk),
-      ...(config.net.dns ? [() => exec(['systemctl', 'stop', n.dns]).catch(absentOk)] : []),
-      () => exec(['nft', 'delete', 'table', 'inet', n.table]).catch(absentOk),
-      () => exec(['ip', 'link', 'delete', n.tap]).catch(absentOk),
-      () => fs.rm(n.dir, { recursive: true, force: true }),
-    ];
-    try {
-      for (const step of steps) await retry(step);
-      return true;
-    } catch (error) {
-      state.blocked = true;
-      state.alert = `cleanup of ${id} failed: ${error.message}`;
-      console.error(`rfactory-runner ALERT ${state.alert}`);
-      return false;
-    }
+    try { await deps.k8s.deleteVmi(`rfdesk-${id}`); return true; }
+    catch (error) { state.blocked = true; state.alert = `cleanup of ${id} failed: ${error.message}`; return false; }
   }
 
   function destroy(id, reason = 'requested') {
@@ -84,7 +34,6 @@ function createLifecycle(config, deps) {
     if (vm.destroying) return vm.destroying; // idempotent
     vm.destroying = (async () => {
       owners.delete(vm.sock);
-      if (vm.server) vm.server.close();
       if (vm.agent) vm.agent.destroy();
       if (vm.reverseVnc) vm.reverseVnc.destroy();
       endCall(vm);
@@ -145,20 +94,10 @@ function createLifecycle(config, deps) {
         if (vm.agent !== conn) return;
         vm.agent = null; endCall(vm); failPending(vm, 'control-closed');
         if (vm.sharing) vm.controlLostAt = clock.now();
-        if (!deps.k8s) clock.sleep(1000).then(() => { if (vms.get(vm.id) === vm && !vm.destroying) return connectAgent(vm); }).catch(() => {});
       };
       conn.on('data', (c) => decoder.write(c));
       conn.on('end', closed); conn.on('error', closed); conn.on('close', closed);
       sendCallConfig(vm);
-  }
-  async function connectAgent(vm) {
-    while (vms.get(vm.id) === vm && !vm.destroying) {
-      let conn;
-      try { conn = await deps.connectGuest(vm.sock, 5000); } catch { await clock.sleep(1000); continue; }
-      if (vms.get(vm.id) !== vm || vm.destroying) return conn.destroy();
-      attachAgent(vm, conn);
-      return;
-    }
   }
   function sendCallConfig(vm) {
     if (!vm.nonce || !vm.agent) return;
@@ -285,7 +224,7 @@ function createLifecycle(config, deps) {
     socket.on('close', () => { if (vm.callSock === socket) vm.callSock = null; });
     return true;
   }
-  const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? (deps.k8s ? vm.reverseVnc || null : vm.sock) : null; };
+  const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? vm.reverseVnc || null : null; };
 
   // Previews and extra DNS names belong to the VM's scope; a spare (scope null) has none until claimed.
   function scoped(scope) {
@@ -293,33 +232,22 @@ function createLifecycle(config, deps) {
     return { previews: scope && previews && !Array.isArray(previews) ? previews[scope] || [] : [],
       domains: [...(dns.platform || []), ...(scope && dns.scopes ? dns.scopes[scope] || [] : [])] };
   }
-  function netFor(vm) {
-    const n = names(vm.id);
-    const a = config.net.addr(vm.cid);
-    const extra = scoped(vm.scope);
-    const resolver4 = a.host4 || config.net.resolver4, resolver6 = a.host6 || config.net.resolver6;
-    const other = [...vms.values()].filter((v) => v !== vm).map((v) => names(v.id).tap);
-    const rules = buildRules({
-      table: n.table, tap: n.tap, ...a, resolver4, resolver6, protectedRanges: config.net.protectedRanges, otherTaps: other,
-      previews: extra.previews, media: config.net.media || [],
-    });
-    const dns = config.net.dns ? buildDnsConf({ table: n.table, listen: [resolver4, resolver6], domains: extra.domains, upstreams: config.net.dns.upstreams || [] }) : null;
-    return { rules, dns, extra };
-  }
-  async function bootK8(vm, platform) {
+  async function boot(vm, platform) {
     const k = config.k8s;
     const vmiName = `rfdesk-${vm.id}`;
-    const profile = vm.extraArgv && !Array.isArray(vm.extraArgv) ? vm.extraArgv : null;
+    const profile = vm.diskSpec;
     const labels = { 'rfactory.io/desktop': 'true', 'rfactory.io/role': 'desktop', 'rfactory.io/desktop-id': vm.id,
       'rfactory.io/call': crypto.createHash('sha256').update(vm.call_id || '').digest('hex').slice(0, 16),
       'rfactory.io/scope': crypto.createHash('sha256').update(vm.scope || '').digest('hex').slice(0, 16) };
     const vmi = { apiVersion: 'kubevirt.io/v1', kind: 'VirtualMachineInstance', metadata: { name: vmiName, labels },
       spec: { startStrategy: 'Paused', nodeSelector: { 'kubernetes.io/hostname': 'k3d-factory-agent-0' },
+        // Desktops own k3d-factory-agent-0 (taint rfactory.io/desktops=true, NoSchedule and NoExecute).
+        tolerations: [{ key: 'rfactory.io/desktops', operator: 'Equal', value: 'true' }],
         domain: { cpu: { cores: k.vcpu || 2 }, memory: { guest: k.memory || '6Gi' },
           resources: { requests: { cpu: String(k.vcpu || 2), memory: k.memory || '6Gi' },
             limits: { cpu: String(k.vcpu || 2), memory: k.memory || '6Gi' } },
           firmware: { kernelBoot: { container: { image: k.bootImage, imagePullPolicy: 'Never', kernelPath: '/boot/kernel', initrdPath: '/boot/initrd' },
-            kernelArgs: `rf.runner=${k.runnerIP} rf.proxy=${k.proxyIP}:${k.proxyPort}` } },
+            kernelArgs: `${k.cmdline} rf.runner=${k.runnerIP} rf.proxy=${k.proxyIP}:${k.proxyPort}` } },
           devices: { disks: [{ name: 'root', disk: { bus: 'virtio', readonly: true } }, ...(profile ? [profile.disk] : [])],
             interfaces: [{ name: 'default', masquerade: {} }] } },
         networks: [{ name: 'default', pod: {} }],
@@ -357,117 +285,43 @@ function createLifecycle(config, deps) {
     }
     await deps.k8s.unpauseVmi(vmiName);
   }
-  // A claimed spare takes its scope's previews and names: one atomic nft transaction, then the VM's own resolver restarts.
-  async function rescope(vm) {
-    const n = names(vm.id);
-    const { rules, dns, extra } = netFor(vm);
-    if (!extra.previews.length && !(config.net.dns && (config.net.dns.scopes || {})[vm.scope])) return;
-    await exec(['nft', '-f', '-'], { input: `delete table inet ${n.table}\n${rules}` });
-    if (dns !== null) { await fs.writeFile(path.join(n.dir, 'dnsmasq.conf'), dns); await exec(['systemctl', 'restart', n.dns]); }
-  }
-
-  async function boot(vm) {
-    const n = names(vm.id);
-    const sock = vm.sock;
-    await fs.mkdir(n.dir, { recursive: true });
-    const vmUser = config.vmUser || 'rfactory-vm';
-    vm.server = listen(sock, (conn) => { // guest -> host heartbeat link (5001): liveness only
-      const decoder = createDecoder((m) => onMessage(vm, m));
-      conn.on('data', (c) => decoder.write(c));
-      conn.on('end', () => decoder.end());
-      conn.on('error', () => {});
-    });
-    // the VM runs as vmUser: it must create vsock.sock in its directory and connect to our _5001 listener
-    if (vm.server && vm.server.once) await new Promise((resolve, reject) => { vm.server.once('listening', resolve); vm.server.once('error', reject); });
-    await exec(['chown', vmUser, n.dir, `${sock}_5001`]);
-    const { rules, dns } = netFor(vm);
-    const a = config.net.addr(vm.cid);
-    const rate = `${config.rateMbit}mbit`;
-    await exec(['ip', 'tuntap', 'add', 'dev', n.tap, 'mode', 'tap', 'multi_queue', 'user', config.vmUser || 'rfactory-vm']);
-    if (a.host4) { // the host side of this tap; forwarding is on for this tap only, the per-VM table decides what passes
-      await exec(['ip', 'addr', 'add', `${a.host4}/30`, 'dev', n.tap]);
-      await exec(['ip', '-6', 'addr', 'add', `${a.host6}/64`, 'dev', n.tap, 'nodad']);
-      await exec(['sysctl', '-qw', `net.ipv4.conf.${n.tap}.forwarding=1`, `net.ipv6.conf.${n.tap}.forwarding=1`]);
-    }
-    await exec(['ip', 'link', 'set', n.tap, 'up']);
-    await exec(['tc', 'qdisc', 'add', 'dev', n.tap, 'root', 'tbf', 'rate', rate, 'burst', '32kbit', 'latency', '400ms']);
-    await exec(['tc', 'qdisc', 'add', 'dev', n.tap, 'handle', 'ffff:', 'ingress']);
-    await exec(['tc', 'filter', 'add', 'dev', n.tap, 'parent', 'ffff:', 'protocol', 'all', 'u32', 'match', 'u32', '0', '0',
-      'police', 'rate', rate, 'burst', '100k', 'drop', 'flowid', ':1']);
-    await exec(['nft', '-f', '-'], { input: rules });
-    if (dns !== null) { // this VM's own resolver, bound to its tap addresses only
-      const conf = path.join(n.dir, 'dnsmasq.conf');
-      await fs.writeFile(conf, dns);
-      await exec(['systemd-run', '--quiet', `--unit=${n.dns}`, '--collect', '-p', 'BindsTo=rfactory-runner.service', '-p', 'PartOf=rfactory-runner.service',
-        config.dnsmasqBin || 'dnsmasq', '--keep-in-foreground', `--conf-file=${conf}`]);
-    }
-    await exec(['systemd-run', '--quiet', `--unit=${n.unit}`, '--collect', '-p', `WorkingDirectory=${n.dir}`,
-      ...(config.vmPath ? [`--setenv=PATH=${config.vmPath}`] : []),
-      '-p', `RuntimeMaxSec=${config.runtimeMaxSec}`,
-      '-p', 'BindsTo=rfactory-runner.service', '-p', 'PartOf=rfactory-runner.service',
-      '-p', 'User=rfactory-vm', ...config.vmArgv({ id: vm.id, cid: vm.cid, tap: n.tap, sock, dir: n.dir, extraArgv: vm.extraArgv })]);
-  }
-
-  async function start(call_id, scope, extraArgv = [], platform) {
+  async function start(call_id, scope, diskSpec, platform) {
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
-    if (!deps.k8s && deps.hasKvm && !deps.hasKvm()) return { error: 'no-kvm', message: 'this host has no /dev/kvm' };
     // Reserve the slot synchronously (no await before vms.set): two concurrent creates cannot both pass.
     if (vms.size >= config.maxVms) return { error: 'capacity', message: 'no desktop slot is free' };
     const id = crypto.randomBytes(4).toString('hex');
     const now = clock.now();
-    const vm = { id, cid: deps.k8s ? null : allocCid(), sock: deps.k8s ? id : path.join(config.runDir, id, 'vsock.sock'), created: now,
+    const vm = { id, sock: id, created: now,
       lastWorker: now + (config.bootGraceMs || 0), lastServer: now + (config.bootGraceMs || 0), lastActivity: now, call_id, scope,
-      pending: new Map(), nonce: call_id ? newNonce() : null, extraArgv };
+      pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec };
     vms.set(id, vm);
-    if (call_id && !deps.k8s) owners.set(vm.sock, { call_id, scope, desktop_id: id });
-    try { if (deps.k8s) await bootK8(vm, platform); else await boot(vm); } catch (error) {
+    try { await boot(vm, platform); } catch (error) {
       await destroy(id, 'boot-failed');
       return { error: 'boot-failed', message: error.message };
     }
-    if (!deps.k8s && deps.connectGuest) connectAgent(vm).catch(() => {});
-    return { desktop_id: id, cid: vm.cid, sock: vm.sock, ...(vm.nonce ? { nonce: vm.nonce } : {}) };
+    return { desktop_id: id, ...(vm.nonce ? { nonce: vm.nonce } : {}) };
   }
 
-  // extraArgv (a profile's --disk) comes only from in-process callers, never from the HTTP body.
-  async function create({ call_id, scope, platform }, extraArgv = []) {
+  // diskSpec (a profile's disk and volume) comes only from in-process callers, never from the HTTP body.
+  async function create({ call_id, scope, platform }, diskSpec = null) {
     if (typeof call_id !== 'string' || typeof scope !== 'string' || !call_id || !scope) return { error: 'bad-request' };
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     if (deps.preflight) { // the pinned media ranges must answer before any call joins: a clear refusal, never an unusable call
       if (typeof platform !== 'string' || !platform) return { error: 'bad-request', message: 'platform is required' };
       try { await deps.preflight(platform); } catch (error) { return { error: 'preflight-failed', message: error.message }; }
     }
-    if (deps.k8s) {
-      const cold = [...vms.values()].find(v => v.spare && v.cold);
-      if (cold) vms.delete(cold.id);
-      return start(call_id, scope, extraArgv, platform);
-    }
-    const spare = extraArgv.length ? null : [...vms.values()].find((v) => v.spare && !v.destroying && v.booted);
-    if (spare) { // claim: bind once to one call_id
-      spare.spare = false; spare.call_id = call_id; spare.scope = scope;
-      const t0 = clock.now(); spare.lastWorker = t0; spare.lastServer = t0; spare.lastActivity = t0; // the awaited rescope must not let check() expire it
-      try { await rescope(spare); } catch (error) { await destroy(spare.id, 'rescope-failed'); return { error: 'boot-failed', message: error.message }; }
-      const t = clock.now(); spare.lastWorker = t; spare.lastServer = t; spare.lastActivity = t;
-      owners.set(spare.sock, { call_id, scope, desktop_id: spare.id });
-      spare.nonce = newNonce(); // per call, fixed from here; the guest gets it as its first message
-      sendCallConfig(spare);
-      return { desktop_id: spare.id, cid: spare.cid, sock: spare.sock, nonce: spare.nonce };
-    }
-    return start(call_id, scope, extraArgv, platform);
+    const cold = [...vms.values()].find(v => v.spare && v.cold);
+    if (cold) vms.delete(cold.id);
+    return start(call_id, scope, diskSpec, platform);
   }
 
+  // A spare only reserves capacity; its VMI is created when it is claimed (the platform and scope policy cannot be fixed before).
   async function createSpare() {
-    if (deps.k8s) {
-      if ([...vms.values()].some(v => v.spare)) return { error: 'spare-exists' };
-      if (vms.size >= config.maxVms) return { error: 'capacity' };
-      const id = crypto.randomBytes(4).toString('hex');
-      vms.set(id, { id, spare: true, cold: true });
-      return { desktop_id: id };
-    }
-    if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
-    if ([...vms.values()].some((v) => v.spare)) return { error: 'spare-exists' };
-    const result = await start(null, null);
-    if (!result.error) { const vm = vms.get(result.desktop_id); vm.spare = true; vm.booted = true; }
-    return result;
+    if ([...vms.values()].some(v => v.spare)) return { error: 'spare-exists' };
+    if (vms.size >= config.maxVms) return { error: 'capacity' };
+    const id = crypto.randomBytes(4).toString('hex');
+    vms.set(id, { id, spare: true, cold: true });
+    return { desktop_id: id };
   }
 
   const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, ...(v.nonce ? { nonce: v.nonce } : {}) }));
@@ -498,20 +352,11 @@ function createLifecycle(config, deps) {
       else if (!vm.spare && now - vm.lastWorker >= config.workerBeatTimeoutMs) reason = 'worker-heartbeat';
       else if (!vm.spare && now - vm.lastServer >= config.serverBeatTimeoutMs) reason = 'server-heartbeat';
       else if (!vm.spare && !vm.sharing && now - vm.lastActivity >= config.idleMs) reason = 'idle';
-      if (!reason && deps.k8s && vm.podUID && now - (vm.lastGuard || 0) >= (vm.sharing ? 2000 : 10000)) {
+      if (!reason && vm.podUID && now - (vm.lastGuard || 0) >= (vm.sharing ? 2000 : 10000)) {
         vm.lastGuard = now;
         deps.guard(vm, 'heartbeat', { pod_uid: vm.podUID, sharing: !!vm.sharing }).catch(() => {});
       }
-      if (!reason && deps.readFile && !deps.k8s && !vm.spare) {
-        try { // bytes the guest sent = rx on the tap
-          const bytes = Number(await deps.readFile(`/sys/class/net/${names(vm.id).tap}/statistics/rx_bytes`));
-          if (bytes >= config.egressQuotaBytes) {
-            await exec(['ip', 'link', 'set', names(vm.id).tap, 'down']).catch(() => {});
-            reason = 'egress-quota';
-          }
-        } catch { /* tap not readable yet */ }
-      }
-      else if (!reason && deps.k8s && !vm.spare && vm.podUID && deps.guard) {
+      if (!reason && !vm.spare && vm.podUID) {
         try { if ((await deps.guard(vm, 'counters')).bytes >= (config.egressQuotaBytes || 1073741824)) reason = 'egress-quota'; }
         catch { /* the kernel guard expires its own permission; the runner does not widen it */ }
       }
@@ -521,25 +366,27 @@ function createLifecycle(config, deps) {
 
   // Recovery: a desktop never survives a runner restart.
   async function reconcile() {
-    if (deps.k8s) {
-      for (const vmi of await deps.k8s.listVmis()) {
-        if (vmi.metadata?.labels?.['rfactory.io/desktop'] === 'true' && ![...vms.values()].some(vm => `rfdesk-${vm.id}` === vmi.metadata.name)) {
-          await deps.k8s.deleteVmi(vmi.metadata.name);
-        }
+    for (const vmi of await deps.k8s.listVmis()) {
+      if (vmi.metadata?.labels?.['rfactory.io/desktop'] === 'true' && ![...vms.values()].some(vm => `rfdesk-${vm.id}` === vmi.metadata.name)) {
+        await deps.k8s.deleteVmi(vmi.metadata.name);
       }
-      return;
     }
-    const ids = new Set();
-    const out = await exec(['systemctl', 'list-units', `${UNIT}*`, '--all', '--plain', '--no-legend', '--no-pager']);
-    for (const m of String(out || '').matchAll(new RegExp(`${UNIT}([0-9a-f]+)\\.service`, 'g'))) ids.add(m[1]);
-    for (const name of await fs.readdir(config.runDir).catch(() => [])) if (/^[0-9a-f]+$/.test(name)) ids.add(name);
-    for (const id of ids) await cleanup(id);
   }
 
   function clear() { state.blocked = false; state.alert = null; }
 
+  // Per-IP token bucket before the pod list, so a guest looping connects cannot fan out to the API server.
+  const buckets = new Map();
+  function allowAccept(ip) {
+    if (buckets.size > 4096) buckets.clear();
+    const t = clock.now(), b = buckets.get(ip) || { n: 20, t };
+    b.n = Math.min(20, b.n + (t - b.t) / 200); b.t = t; buckets.set(ip, b);
+    if (b.n < 1) return false;
+    b.n -= 1; return true;
+  }
   async function accept(port, conn) {
     const ip = conn.remoteAddress?.startsWith('::ffff:') ? conn.remoteAddress.slice(7) : conn.remoteAddress;
+    if (!allowAccept(ip)) { conn.destroy(); return; }
     let pods;
     try { pods = await deps.k8s.listPods('rfactory.io/desktop=true'); } catch { conn.destroy(); return; }
     const matches = pods.filter(p => p.status?.podIP === ip);
@@ -573,15 +420,13 @@ function createLifecycle(config, deps) {
   }
   function run() {
     timer = clock.setInterval(check, config.checkMs || 1000);
-    if (deps.k8s) {
-      for (const port of [5000, 5001, 5900]) {
-        const server = deps.listenTcp ? deps.listenTcp(port, conn => accept(port, conn)) : net.createServer(conn => accept(port, conn));
-        if (!deps.listenTcp) server.listen(port, '::');
-        tcpServers.push(server);
-      }
-      leaseTick();
-      leaseTimer = clock.setInterval(leaseTick, 10000);
+    for (const port of [5000, 5001, 5900]) {
+      const server = deps.listenTcp ? deps.listenTcp(port, conn => accept(port, conn)) : net.createServer(conn => accept(port, conn));
+      if (!deps.listenTcp) server.listen(port, '::');
+      tcpServers.push(server);
     }
+    leaseTick();
+    leaseTimer = clock.setInterval(leaseTick, 10000);
   }
 
   async function stop() {

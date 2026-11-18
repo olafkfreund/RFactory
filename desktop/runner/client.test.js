@@ -15,14 +15,15 @@ function pki() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-pki-'));
   const o = (...a) => execFileSync('openssl', a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
   const ca = (name) => { o('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', `${name}.key`, '-out', `${name}.crt`, '-subj', `/CN=${name}`, '-days', '2'); };
-  const leaf = (name, issuer, ext) => {
-    o('req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${name}`);
+  const leaf = (name, issuer, ext, cn = name) => {
+    o('req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${cn}`);
     fs.writeFileSync(path.join(dir, `${name}.ext`), ext);
     o('x509', '-req', '-in', `${name}.csr`, '-CA', `${issuer}.crt`, '-CAkey', `${issuer}.key`, '-CAcreateserial', '-out', `${name}.crt`, '-days', '2', '-extfile', `${name}.ext`);
   };
   ca('ca'); ca('evil');
   leaf('server', 'ca', 'subjectAltName=DNS:localhost,IP:127.0.0.1');
-  leaf('client', 'ca', 'extendedKeyUsage=clientAuth');
+  leaf('client', 'ca', 'extendedKeyUsage=clientAuth', 'rfactory-web');
+  leaf('guard', 'ca', 'extendedKeyUsage=clientAuth', 'rfactory-guard');
   leaf('rogue', 'evil', 'extendedKeyUsage=clientAuth');
   const f = (n) => path.join(dir, n);
   return { dir, f };
@@ -32,10 +33,11 @@ test('client: mTLS call, VNC upgrade; a certificate from another CA is refused',
   const k = pki();
   t.after(() => fs.rmSync(k.dir, { recursive: true, force: true }));
   const seen = [];
-  const lifecycle = { vncSock: (id) => (id === 'ab12' ? '/sock' : null), list: () => [], status: () => ({}), action: async (id, m) => { seen.push([id, m]); return { ok: true }; } };
-  const server = https.createServer({ key: fs.readFileSync(k.f('server.key')), cert: fs.readFileSync(k.f('server.crt')), ca: fs.readFileSync(k.f('ca.crt')), requestCert: true, rejectUnauthorized: true }, createHandler(lifecycle));
   const echo = new PassThrough();
-  server.on('upgrade', createUpgrade(lifecycle, { openVnc: async () => { const g = new Duplex({ read() {}, write(c, _e, cb) { echo.write(c); cb(); } }); g.push('RFB 003.008\n'); return g; } }));
+  const guestDuplex = () => { const g = new Duplex({ read() {}, write(c, _e, cb) { echo.write(c); cb(); } }); g.push('RFB 003.008\n'); return g; };
+  const lifecycle = { vncSock: (id) => (id === 'ab12' ? guestDuplex() : null), list: () => [], status: () => ({}), action: async (id, m) => { seen.push([id, m]); return { ok: true }; } };
+  const server = https.createServer({ key: fs.readFileSync(k.f('server.key')), cert: fs.readFileSync(k.f('server.crt')), ca: fs.readFileSync(k.f('ca.crt')), requestCert: true, rejectUnauthorized: true }, createHandler(lifecycle));
+  server.on('upgrade', createUpgrade(lifecycle));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const url = `https://localhost:${server.address().port}`;

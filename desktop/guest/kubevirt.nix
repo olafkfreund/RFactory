@@ -1,4 +1,4 @@
-# k2: the guest for KubeVirt. Imports default.nix (agent, Xvfb, openbox, Chromes) with rfactory.guest.kubevirt on:
+# k2: the guest for KubeVirt. Imports default.nix (agent, Xvfb, openbox, Chromes):
 # kernelBoot from a container image, a read-only erofs for /nix/store as the containerDisk, everything writable on tmpfs.
 # The runner passes `rf.runner=<ClusterIP>` and `rf.proxy=<ip>:<port>` as kernel arguments (the `cmdline` output has the rest).
 { pkgs, lib, config, ... }:
@@ -48,8 +48,6 @@ let
 in
 {
   imports = [ ./default.nix ];
-  rfactory.guest.kubevirt = true;
-  microvm.guest.enable = false;
 
   boot.loader.grub.enable = false;
   boot.kernelParams = [ "console=ttyS0" ];

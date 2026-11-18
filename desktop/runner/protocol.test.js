@@ -7,7 +7,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { MAX, encode, createDecoder, tag } = require('./protocol');
-const { connectGuest, listenGuest } = require('./vsock');
 
 function raw(body) {
   const bytes = Buffer.from(body);
@@ -49,10 +48,10 @@ test('oversize header is dropped before body buffering, and incomplete frames ar
 });
 
 test('tag replaces guest identity from the socket map', () => {
-  const map = new Map([['/vm/one/vsock.sock', { call_id: 'real', scope: 'scope', desktop_id: 'one' }]]);
-  assert.deepEqual(tag({ type: 'heartbeat', call_id: 'other', scope: 'other', desktop_id: 'other' }, '/vm/one/vsock.sock', map),
+  const map = new Map([['pod-one', { call_id: 'real', scope: 'scope', desktop_id: 'one' }]]);
+  assert.deepEqual(tag({ type: 'heartbeat', call_id: 'other', scope: 'other', desktop_id: 'other' }, 'pod-one', map),
     { type: 'heartbeat', call_id: 'real', scope: 'scope', desktop_id: 'one' });
-  assert.throws(() => tag({ type: 'heartbeat' }, '/vm/two/vsock.sock', map), /unknown desktop socket/);
+  assert.throws(() => tag({ type: 'heartbeat' }, 'pod-two', map), /unknown desktop socket/);
 });
 
 test('desktop messages carry action ids, host grants and untrusted result bytes', () => {
@@ -66,61 +65,6 @@ test('desktop messages carry action ids, host grants and untrusted result bytes'
   decoder.write(encode({ type: 'action-content', action_id: 'a2', index: 0, chunk: 'aGVsbG8=' }));
   assert.equal(sent[2].chunk, 'aGVsbG8=');
   assert.throws(() => encode({ type: 'desktop_open', url: 'https://example.test', hosts: ['file:///tmp/x'] }), /invalid protocol/);
-});
-
-async function withSocket(run, reply) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-vsock-'));
-  const sock = path.join(dir, 'vsock.sock');
-  const clients = new Set();
-  const server = net.createServer((client) => {
-    clients.add(client);
-    client.once('close', () => clients.delete(client));
-    client.once('data', (data) => reply(client, data));
-  });
-  await new Promise((resolve) => server.listen(sock, resolve));
-  try { await run(sock); } finally {
-    for (const client of clients) client.destroy();
-    await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-test('connectGuest sends exact handshake and preserves bytes after OK', async () => {
-  await withSocket(async (sock) => {
-    const stream = await connectGuest(sock, 5000);
-    assert.equal((await new Promise((resolve) => stream.once('data', resolve))).toString(), 'payload');
-    stream.destroy();
-  }, (client, data) => {
-    assert.equal(data.toString(), 'CONNECT 5000\n');
-    client.write('OK 3\npayload');
-  });
-});
-
-test('connectGuest rejects wrong reply, timeout and disallowed port', async () => {
-  await withSocket(async (sock) => {
-    await assert.rejects(connectGuest(sock, 5000), /invalid vsock handshake/);
-    await assert.rejects(connectGuest(sock, 22), /port not allowed/);
-  }, (client) => client.write('NO\n'));
-  await withSocket(async (sock) => {
-    const start = Date.now();
-    await assert.rejects(connectGuest(sock, 5000), /timeout/);
-    assert.ok(Date.now() - start >= 1900);
-  }, () => {});
-});
-
-test('listenGuest binds only the heartbeat suffix', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-listen-'));
-  const sock = path.join(dir, 'vsock.sock');
-  const server = listenGuest(sock, (client) => client.end());
-  try {
-    await new Promise((resolve) => server.once('listening', resolve));
-    assert.ok(fs.existsSync(`${sock}_5001`));
-    assert.equal(fs.existsSync(sock), false);
-    assert.equal(fs.existsSync(`${sock}_5000`), false);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test('every desktop_* action accepts hosts (and refuses a bad origin)', () => {

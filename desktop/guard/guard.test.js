@@ -109,6 +109,15 @@ test('a guard entry with another pod UID or MAC never installs a table', async (
   }
 });
 
+test('a reconcile error after the tables read back is logged and keeps the pod ready', async () => {
+  const f = fake(); const guard = createGuard({ api: f.api, run: f.run, sleep: async () => {}, nodeName: 'n' });
+  await guard.reconcile();
+  f.api.entry = async () => { throw new Error('api down'); };
+  const log = console.error; console.error = () => {};
+  try { await guard.reconcile(); } finally { console.error = log; }
+  assert.deepEqual(await guard.status(uid), { ready: true });
+});
+
 test('heartbeat refreshes by delete then add, with 60s or 5s; deadline is never recreated', async () => {
   const f = fake(); const guard = createGuard({ api: f.api, run: f.run, sleep: async () => {}, nodeName: 'n' });
   await guard.reconcile(); f.calls.length = 0;

@@ -1,74 +1,139 @@
 #!/usr/bin/env bash
-# Step 17 lifecycle checks: every way a desktop ends leaves nothing behind (#3 "Lifecycle and disposal").
-# Needs the runner to start the probe image, with test timings in its config: runtimeMaxSec 60, and a worker timeout short enough
-# for the waits below. Env: VERIFY_CERT VERIFY_KEY VERIFY_CA. Optional waits (seconds): VERIFY_WAIT_WORKER (90), VERIFY_WAIT_SERVER (150),
-# VERIFY_WAIT_IDLE (720), VERIFY_WAIT_MAX (150).
-# Kills and restarts rfactory-runner.service (the service under test); touches no other unit.
+# k14 lifecycle checks (plan 2026-11-18-3-agent-workspace-k3d, deviations 3, 7): every way a desktop ends leaves nothing behind, in the cluster:
+# no entry in `list`, no VMI, launcher pod, owned policy or entry, and no guard table (lib.sh desk_gone).
+# Owner-gated: run by the lead on p620 with the owner's OK and an agent-bus notice. Real desktops from the deployed runner (the guest's own agent
+# sends the worker heartbeat). The runner's timings are the in-cluster ones (worker 30 s, server 60 s, idle 600 s, runtime 3 h), so the whole
+# script takes over 3 hours: the runtime-limit desktop is created first and checked after the idle case, before the runner is disturbed.
+# Disturbs rfactory-runner (kill, rollout restart, scale to 0 and back): the owner must have ArgoCD auto-sync off for rfactory-desktops while
+# lifecycle-reaper-alone runs, or the runner comes back before the reaper acts (the check then fails and says so).
+# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_MEET_LINK (the call lifecycle-runner-restart keeps live). Optional waits (seconds):
+# VERIFY_WAIT_WORKER (90), VERIFY_WAIT_SERVER (150), VERIFY_WAIT_IDLE (720), VERIFY_WAIT_MAX (11100, from creation), VERIFY_RUNTIME_MAX (10800), VERIFY_WAIT_REAPER (100),
+# VERIFY_BOOT_WAIT (60, after the VMI runs, for the guest agent to dial).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_root; need_cmds curl jq node systemctl mount umount base64
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA
-NO_BEAT=1 # these cases test heartbeat loss: only `hold` below sends heartbeats (lib.sh new_desktop would otherwise keep every VM alive)
-MOUNTED=
-extra_cleanup() { if [ -n "$MOUNTED" ]; then umount "$MOUNTED" 2>/dev/null || true; MOUNTED=; fi; }
+need_kube; need_cmds curl jq node base64
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_MEET_LINK
+# every desktop keeps its server heartbeat (lib.sh new_desktop) until the case disturbs it: stop_beat at the disturbance, not before
+SCALED=
+KEEPPID=
+AGT=${NODES##* }
+extra_cleanup() { [ -z "$KEEPPID" ] || kill "$KEEPPID" 2>/dev/null || true; if [ -n "$SCALED" ]; then kc scale deployment rfactory-runner --replicas=1 >/dev/null 2>&1 || true; fi; }
 
-HB=$(frame_b64 '{"type":"heartbeat"}')
-# hold <id> <seconds> <server 0|1> <worker 0|1>: keep the chosen heartbeats going until the desktop is gone or time runs out
+# hold <id> <seconds> <server 0|1>: keep the server heartbeat going until the desktop is gone or time runs out (the worker's comes from the guest)
 hold() {
   local end=$((SECONDS + $2))
   while [ $SECONDS -lt "$end" ]; do
     desk_gone "$1" && return 0
     if [ "$3" = 1 ]; then api heartbeat "$(jq -nc --arg d "$1" '{desktop_id:$d}')" >/dev/null || true; fi
-    if [ "$4" = 1 ]; then vsock_send "$1" 5001 "$HB" >/dev/null || true; fi
     sleep 5
   done
   return 1
 }
-# case_hold <name> <id> <seconds> <server> <worker>
-case_hold() { if hold "$2" "$3" "$4" "$5"; then pass "$1"; else fail "$1" "$2 still present after $3 s (list, unit or directory)"; fi; }
+# case_hold <name> <id> <seconds> <server>
+case_hold() { if hold "$2" "$3" "$4"; then pass "$1"; else fail "$1" "$2 still present after $3 s: $(desk_leftovers "$2")"; fi; }
 fresh() { new_desktop "life-$1" verify-scope || die "create for $1: $DERR"; }
+# settled <id>: the VMI runs and the guest has had time to dial the runner
+settled() {
+  local end=$((SECONDS + 240))
+  until [ "$(kc get vmi "rfdesk-$1" -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ]; do [ $SECONDS -lt "$end" ] || die "VMI rfdesk-$1 not running"; sleep 2; done
+  sleep "${VERIFY_BOOT_WAIT:-60}"
+}
+# egress_cut <uid>: the guard's alive element for the pod is gone, or the whole table is
+egress_cut() {
+  local o; o=$(gnft "$AGT" -j list set inet "rfdesk_$1" alive4 2>&1) || { grep -q 'No such file or directory' <<<"$o"; return; }
+  [ -z "$(jq -r '[.nftables[].set?.elem[]?] | first // empty' <<<"$o")" ]
+}
+# watch_end <id> <seconds>: until desk_gone; sets CUT_AT (first second egress_cut held) and GONE_AT, empty when not reached
+watch_end() {
+  local t0=$SECONDS uid=${PODUID[$1]:-}; CUT_AT=; GONE_AT=
+  while [ $((SECONDS - t0)) -lt "$2" ]; do
+    [ -n "$CUT_AT" ] || { [ -z "$uid" ] || ! egress_cut "$uid" || CUT_AT=$((SECONDS - t0)); }
+    if desk_gone "$1"; then GONE_AT=$((SECONDS - t0)); return 0; fi
+    sleep 1
+  done
+  return 1
+}
 
-fresh end; wait_probe "$DID" 240 || die "the runner's desktop does not answer the probe on 5000 (is it the probe image?)"
-vsock_send "$DID" 5001 "$(frame_b64 '{"type":"call-end"}')" >/dev/null
-if wait_gone "$DID" 30; then pass lifecycle-call-end; else fail lifecycle-call-end "$DID left after call-end"; fi
+# the runtime-limit desktop first, so its 3 hours overlap the other cases. Heartbeats are liveness, not activity: without real use the idle
+# rule (600 s) would end it first, so a screenshot every 2 minutes keeps it in use. MAX_T0 is taken before the create, so it is never later
+# than the runner's own creation time.
+MAX_T0=$SECONDS; fresh max; MAXID=$DID
+( while sleep 120; do act "$MAXID" '{"type":"desktop_screenshot","hosts":[]}' || true; done ) >/dev/null 2>&1 &
+KEEPPID=$!
 
-fresh worker; case_hold lifecycle-worker-heartbeat "$DID" "${VERIFY_WAIT_WORKER:-90}" 1 0
+# normal call end: the web server ends the desktop with destroy when the call is over
+fresh end; settled "$DID"
+api destroy "$(jq -nc --arg d "$DID" '{desktop_id:$d}')" >/dev/null
+if wait_gone "$DID" 60; then pass lifecycle-call-end; else fail lifecycle-call-end "$DID left after destroy: $(desk_leftovers "$DID")"; fi
 
-fresh server; wait_probe "$DID" 240 || die "probe did not answer"
-case_hold lifecycle-server-heartbeat "$DID" "${VERIFY_WAIT_SERVER:-150}" 0 1
+# worker heartbeat loss: a paused VMI stops the guest's agent (and its heartbeat); the server's keeps coming
+fresh worker; settled "$DID"
+printf '{}' | kubectl --context "$KCTX" replace --raw "/apis/subresources.kubevirt.io/v1/namespaces/$NS/virtualmachineinstances/rfdesk-$DID/pause" -f - >/dev/null \
+  || die "pause rfdesk-$DID"
+case_hold lifecycle-worker-heartbeat "$DID" "${VERIFY_WAIT_WORKER:-90}" 1
+
+fresh server; settled "$DID"; stop_beat "$DID"
+case_hold lifecycle-server-heartbeat "$DID" "${VERIFY_WAIT_SERVER:-150}" 0
 
 # idle: both heartbeats keep running (they are liveness, not activity), so only the idle rule can end it
-fresh idle; case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1 1
+fresh idle; settled "$DID"
+case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1
 
-fresh max; wait_probe "$DID" 240 || die "probe did not answer"
-lim=$(systemctl show -p RuntimeMaxUSec --value "rfactory-vm-$DID.service" 2>/dev/null || true)
-case_hold lifecycle-runtime-max "$DID" "${VERIFY_WAIT_MAX:-150}" 1 1
-echo "info RuntimeMaxUSec=$lim"
+# the runtime limit: still heartbeating and in use, so it must end only at the limit (VERIFY_RUNTIME_MAX, the runner's runtimeMaxSec, 10800)
+end=$((MAX_T0 + ${VERIFY_WAIT_MAX:-11100}))
+until desk_gone "$MAXID" || [ $SECONDS -ge "$end" ]; do sleep 5; done
+age=$((SECONDS - MAX_T0))
+if desk_gone "$MAXID" && [ "$age" -ge "${VERIFY_RUNTIME_MAX:-10800}" ]; then pass "lifecycle-runtime-limit (gone at $age s)"
+else fail lifecycle-runtime-limit "$MAXID: gone=$(desk_gone "$MAXID" && echo yes || echo no) at $age s (want gone, and not before ${VERIFY_RUNTIME_MAX:-10800} s): $(desk_leftovers "$MAXID")"; fi
+stop_beat "$MAXID"; kill "$KEEPPID" 2>/dev/null || true; KEEPPID=
 
-# the runner is killed: systemd stops the VM through BindsTo; the restarted runner reconciles the rest
-fresh kill; id=$DID
-systemctl kill --signal=SIGKILL rfactory-runner.service
-sleep 5
-wait_api 90 || die "runner did not come back after kill"
-if wait_gone "$id" 60; then pass lifecycle-runner-killed; else fail lifecycle-runner-killed "$id left after the runner was killed"; fi
+# the runner pod is killed: its replacement reconciles, or the reaper acts first; either way the desktop is gone within 60 s
+fresh kill; id=$DID; settled "$id"
+runner=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].metadata.name}')
+stop_beat "$id"
+kc delete pod "$runner" --grace-period=0 --force >/dev/null 2>&1 || die "delete runner pod"
+if watch_end "$id" 60; then pass "lifecycle-runner-killed (gone ${GONE_AT} s after the kill, egress cut at ${CUT_AT:-before the table went} s)"
+else fail lifecycle-runner-killed "$id left 60 s after the runner pod was killed: $(desk_leftovers "$id")"; fi
+kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "runner did not come back"
+wait_api 90 || die "runner API does not answer"
 
-fresh restart; id=$DID
-systemctl restart rfactory-runner.service
-wait_api 90 || die "runner did not come back after restart"
-if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-runner-restart "$id survived a runner restart"; fi
+# the runner is restarted (a rollout) with a live call: the desktop does not survive it
+fresh restart; id=$DID; settled "$id"
+join_call "$id" || die "join the call: $CALLERR"
+stop_beat "$id"
+kc rollout restart deployment/rfactory-runner >/dev/null || die "rollout restart"
+kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "runner did not come back"
+wait_api 90 || die "runner API does not answer"
+if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-runner-restart "$id survived a runner restart: $(desk_leftovers "$id")"; fi
 
-# forced cleanup failure: a bind mount on the desktop's directory makes the final rm fail (EBUSY)
-fresh clean; id=$DID
-mount --bind "$RUN_DIR/$id" "$RUN_DIR/$id"; MOUNTED=$RUN_DIR/$id
-dres=$(api destroy "$(jq -nc --arg d "$id" '{desktop_id:$d}')" || true)
-cres=$(api create "$(create_body life-blocked verify-scope)" || true)
-still=$(desk_ids | grep -cx "$id" || true)
-umount "$MOUNTED"; MOUNTED=
-api clear >/dev/null
-api destroy "$(jq -nc --arg d "$id" '{desktop_id:$d}')" >/dev/null || true
-if [ "$(jq -r .ok <<<"$dres")" = false ] && [ "$(jq -r .error <<<"$cres")" = cleanup-blocked ] && [ "$still" = 1 ] && wait_gone "$id" 30 \
-  && new_desktop life-after-clear verify-scope; then pass lifecycle-cleanup-failure
-else fail lifecycle-cleanup-failure "destroy: $dres; create while blocked: $cres; still listed: $still"; fi
+# the reaper alone: the runner is scaled to 0, so nothing renews the Lease or the guard's permission; the reaper deletes it, egress cut first
+fresh reaper; id=$DID; settled "$id"
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+stop_beat "$id"
+SCALED=1; kc scale deployment rfactory-runner --replicas=0 >/dev/null || die "scale runner to 0"
+t0=$SECONDS; CUT_AT=; GONE_AT=
+uid=${PODUID[$id]:-}; [ -n "$uid" ] || die "no launcher pod UID for $id"
+while [ $((SECONDS - t0)) -lt "${VERIFY_WAIT_REAPER:-100}" ]; do
+  [ -n "$CUT_AT" ] || ! egress_cut "$uid" || CUT_AT=$((SECONDS - t0))
+  if [ -z "$(desk_leftovers "$id")" ]; then GONE_AT=$((SECONDS - t0)); break; fi
+  sleep 1
+done
+by=$(kc logs deployment/rfactory-reaper --since-time="$since" 2>/dev/null | grep -c "deleted vmi rfdesk-$id" || true)
+replicas=$(kc get deployment rfactory-runner -o jsonpath='{.spec.replicas}')
+if [ -n "$GONE_AT" ] && [ "$by" -ge 1 ] && [ -n "$CUT_AT" ] && [ "$CUT_AT" -le "$GONE_AT" ]; then pass "lifecycle-reaper-alone (egress cut at $CUT_AT s, deleted at $GONE_AT s)"
+else fail lifecycle-reaper-alone "gone at '${GONE_AT:-never}' s, egress cut at '${CUT_AT:-never}' s, reaper log lines: $by, runner replicas now: $replicas (ArgoCD auto-sync back on? the runner's own reconcile would have deleted it)"; fi
+kc scale deployment rfactory-runner --replicas=1 >/dev/null || die "scale runner to 1"; SCALED=
+kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "runner did not come back"
+wait_api 90 || die "runner API does not answer"
+
+# a manual delete of the VMI: its policy and entries go with it (owner references), the guard drops the table, the runner drops the entry
+fresh manual; id=$DID; settled "$id"
+kc delete vmi "rfdesk-$id" >/dev/null || die "delete vmi"
+if wait_gone "$id" 60; then pass lifecycle-manual-vmi-delete; else fail lifecycle-manual-vmi-delete "$id left after kubectl delete vmi: $(desk_leftovers "$id")"; fi
+
+# nothing at all is left
+left=$(desk_ids | tr '\n' ' '); for id in "${CREATED[@]}"; do left="$left$(desk_leftovers "$id")"; done
+if [ -z "${left// /}" ]; then pass lifecycle-nothing-left; else fail lifecycle-nothing-left "still there: $left"; fi
 finish

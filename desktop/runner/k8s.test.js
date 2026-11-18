@@ -60,7 +60,7 @@ test('client exchanges JSON with a fake Kubernetes API server', async (t) => {
 });
 
 test('in-cluster runner config requires pinned guest images and host-specific protected ranges', () => {
-  const env = { RF_GUEST_BOOT_IMAGE: 'boot@sha256:' + 'a'.repeat(64), RF_GUEST_DISK_IMAGE: 'disk@sha256:' + 'b'.repeat(64),
+  const env = { RF_GUEST_BOOT_IMAGE: 'boot@sha256:' + 'a'.repeat(64), RF_GUEST_DISK_IMAGE: 'disk@sha256:' + 'b'.repeat(64), RF_GUEST_CMDLINE: 'init=/nix/store/' + 'a'.repeat(32) + '-nixos-system-guest/init console=ttyS0',
     RF_ALWAYS_PROTECTED: '["192.168.1.0/24","100.90.1.2/32"]' };
   const config = inClusterConfig(env);
   assert.equal(config.port, 8443);
@@ -68,5 +68,6 @@ test('in-cluster runner config requires pinned guest images and host-specific pr
   assert.equal(config.profiles.keyPath, '/etc/rfactory/tls/profile-key');
   assert.deepEqual(config.k8s.alwaysProtected, ['192.168.1.0/24', '100.90.1.2/32']);
   assert.throws(() => inClusterConfig({ ...env, RF_GUEST_BOOT_IMAGE: 'boot:latest' }), /digest-pinned/);
+  for (const bad of [undefined, 'console=ttyS0', 'init=/bin/sh', env.RF_GUEST_CMDLINE + ' rf.proxy=1.2.3.4:1']) assert.throws(() => inClusterConfig({ ...env, RF_GUEST_CMDLINE: bad }), /RF_GUEST_CMDLINE/);
   assert.throws(() => inClusterConfig({ ...env, RF_ALWAYS_PROTECTED: '[]' }), /ALWAYS_PROTECTED/);
 });

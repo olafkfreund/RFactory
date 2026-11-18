@@ -39,6 +39,8 @@ spec:
             - {name: connect, containerPort: 3128}
             - {name: dns-udp, containerPort: 53, protocol: UDP}
             - {name: dns-tcp, containerPort: 53, protocol: TCP}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

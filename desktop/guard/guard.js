@@ -196,7 +196,11 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
         const cm = await api.entry(uid);
         const entry = JSON.parse(cm.data.entry);
         await apply(pod, entry);
-      } catch (error) { ready.set(uid, error.code || error.message); }
+      } catch (error) {
+        // tables already installed and reading back: a transient reconcile error (API, veth lookup) must not cut a live call
+        if (ready.get(uid) === true && await tables(uid).catch(() => false)) console.error(`guard reconcile ${uid}: ${error.message}`);
+        else ready.set(uid, error.code || error.message);
+      }
     }
   }
   let reconciling;

@@ -90,3 +90,72 @@ spec:
         - ipBlock:
             cidr: ::/0
             except: [fc00::/7, fe80::/10]
+---
+# Runner egress for the pre-call media probe (preflight.js): TCP to the probe host of each
+# pinned range only, never a whole range. Generated from desktop/ranges/ranges.json;
+# kyverno-scope.test.js fails when the two drift. Regenerate after ranges refresh.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-runner-egress-media-probe, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-runner}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 101.36.167.1/32}
+        - ipBlock: {cidr: 101.36.170.1/32}
+        - ipBlock: {cidr: 103.122.166.1/32}
+        - ipBlock: {cidr: 111.33.115.1/32}
+        - ipBlock: {cidr: 111.33.181.1/32}
+        - ipBlock: {cidr: 115.110.154.193/32}
+        - ipBlock: {cidr: 115.114.115.1/32}
+        - ipBlock: {cidr: 115.114.131.1/32}
+        - ipBlock: {cidr: 115.114.56.193/32}
+        - ipBlock: {cidr: 121.244.146.1/32}
+        - ipBlock: {cidr: 134.224.0.1/32}
+        - ipBlock: {cidr: 137.66.128.1/32}
+        - ipBlock: {cidr: 142.250.82.1/32}
+        - ipBlock: {cidr: 144.195.0.1/32}
+        - ipBlock: {cidr: 147.124.96.1/32}
+        - ipBlock: {cidr: 149.137.0.1/32}
+        - ipBlock: {cidr: 15.220.80.1/32}
+        - ipBlock: {cidr: 15.220.81.1/32}
+        - ipBlock: {cidr: 156.45.0.1/32}
+        - ipBlock: {cidr: 159.124.0.1/32}
+        - ipBlock: {cidr: 160.1.56.129/32}
+        - ipBlock: {cidr: 161.199.136.1/32}
+        - ipBlock: {cidr: 162.12.232.1/32}
+        - ipBlock: {cidr: 162.255.36.1/32}
+        - ipBlock: {cidr: 166.108.64.1/32}
+        - ipBlock: {cidr: 168.140.0.1/32}
+        - ipBlock: {cidr: 170.114.0.1/32}
+        - ipBlock: {cidr: 173.231.80.1/32}
+        - ipBlock: {cidr: 18.254.23.129/32}
+        - ipBlock: {cidr: 18.254.61.1/32}
+        - ipBlock: {cidr: 192.204.12.1/32}
+        - ipBlock: {cidr: 198.251.128.1/32}
+        - ipBlock: {cidr: 20.203.158.81/32}
+        - ipBlock: {cidr: 20.203.190.193/32}
+        - ipBlock: {cidr: 203.200.219.129/32}
+        - ipBlock: {cidr: 204.80.104.1/32}
+        - ipBlock: {cidr: 206.247.0.1/32}
+        - ipBlock: {cidr: 221.122.63.1/32}
+        - ipBlock: {cidr: 221.122.64.1/32}
+        - ipBlock: {cidr: 221.122.88.129/32}
+        - ipBlock: {cidr: 221.122.88.65/32}
+        - ipBlock: {cidr: 221.122.89.129/32}
+        - ipBlock: {cidr: 221.123.139.193/32}
+        - ipBlock: {cidr: 3.235.82.1/32}
+        - ipBlock: {cidr: 3.235.96.159/32}
+        - ipBlock: {cidr: 3.235.96.27/32}
+        - ipBlock: {cidr: 3.7.35.1/32}
+        - ipBlock: {cidr: 52.112.23.72/32}
+        - ipBlock: {cidr: 52.123.128.14/32}
+        - ipBlock: {cidr: 52.61.100.129/32}
+        - ipBlock: {cidr: 64.211.144.1/32}
+        - ipBlock: {cidr: 64.224.32.1/32}
+        - ipBlock: {cidr: 69.174.110.1/32}
+        - ipBlock: {cidr: 74.125.247.128/32}
+        - ipBlock: {cidr: 74.125.250.1/32}
+        - ipBlock: {cidr: 99.77.128.1/32}
+      ports: [{protocol: TCP, port: 443}]

@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
-# Step 17 profile checks: one scope, one attach, ciphertext only on the host, delete and expiry destroy the desktop first (#3 "Persistent profiles").
-# Routes (all exist): web, as an admin: GET/POST /api/profiles, POST /api/profiles/:pid/attach {call_id,platform}, DELETE /api/profiles/:pid
-# (the web server forwards the actor {id: email, admin_scopes: [verify-scope]} and keeps an attached profile's desktop alive with heartbeats
-# while the runner accepts them); runner (mTLS): profile-attach, which is the only way to name another scope, and create, destroy, list.
-# The web server runs with scope verify-scope and the profile routes on; the runner with profiles enabled. Run as root: it reads the
-# profile directory and kills the one VM unit it created.
-# Environment:
-#   VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_ADMIN_COOKIE (an admin's session cookie, name=value),
-#   VERIFY_OTHER_SCOPE (a scope other than verify-scope), VERIFY_FIXTURE_URL and VERIFY_FIXTURE_CTL (fixture.js; /mark?v=<text> sets
-#   a cookie with that text in the guest's Chrome, the plaintext marker).
-#   Optional: VERIFY_PROFILE_DIR (/var/lib/rfactory-desktop/profiles), VERIFY_VM_USER (rfactory-vm), VERIFY_WAIT_EXPIRY (3700 s).
-# profiles-expire-destroys-desktop backdates the profile's record and waits for the runner's hourly expiry sweep (3600 s, not configurable),
-# so the script runs for over an hour; lower VERIFY_WAIT_EXPIRY only if the sweep is shortened.
-# profiles-guest-has-vdb: attach returns only after the guest unlocked its disk (profile-attach is a control message the guest answers), and
-# the VM user must be able to read the image: both are checked. The guest has no way in to list /dev/vdb.
+# k14 profile checks (plan 2026-11-18-3-agent-workspace-k3d, deviations 4, 6, 9): profiles on PVCs, formatted only when provably new, one scope,
+# one attach, delete and expiry destroy the desktop first, and a rollback keeps the data.
+# Owner-gated: run by the lead on p620 with the owner's OK and an agent-bus notice. Routes: web, as an admin: GET/POST /api/profiles,
+# POST /api/profiles/:pid/attach {call_id,platform}, DELETE /api/profiles/:pid; runner (mTLS): profile-attach (the only way to name another scope).
+# A profile is a PVC and a ConfigMap rfprofile-<id>; the PVC holds one raw disk.img (LUKS), in a k3d node's local-path directory, read with
+# `$VERIFY_NODE_CLI exec` (default podman). The StorageClass keeps the volume (Retain): the PVs of the profiles this script makes stay, and are
+# listed at the end for the owner to delete.
+# Environment: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_ADMIN_COOKIE (an admin's session cookie, name=value),
+# VERIFY_OTHER_SCOPE (a scope other than verify-scope). Optional: VERIFY_WAIT_EXPIRY (3700 s).
+# profiles-expire-destroys-desktop backdates the profile's record and waits for the runner's hourly expiry sweep, so the script runs over an hour.
+# profiles-rollback-keeps-data asks the owner on the terminal to delete the ArgoCD Application rfactory-desktops (the namespace stays) and sync it
+# again: the script never touches the argocd namespace.
+# shellcheck disable=SC2016
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_root; need_cmds curl jq cryptsetup strings runuser systemctl stat
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_ADMIN_COOKIE VERIFY_OTHER_SCOPE VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL
-DIR=${VERIFY_PROFILE_DIR:-/var/lib/rfactory-desktop/profiles}
-VM_USER=${VERIFY_VM_USER:-rfactory-vm}
+need_kube; need_cmds curl jq node
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_ADMIN_COOKIE VERIFY_OTHER_SCOPE
 MARKER=rfmark-$(cat /proc/sys/kernel/random/uuid)
+LUKS=4c554b53babe # "LUKS" 0xba 0xbe
 PROFILES=() # profile ids this script created; the only ones it deletes
 extra_cleanup() { local p; for p in "${PROFILES[@]}"; do admin DELETE "/api/profiles/$p" >/dev/null 2>&1 || true; done; }
 
@@ -33,22 +30,33 @@ mk_profile() {
   [ -n "$P" ] || die "create profile: $r"
   PROFILES+=("$P")
 }
-# attach <profile> <call_id>: the web attach route (boots a VM and waits for the guest's unlock, so WEB_MAX is 300 s); sets ATTACHED (reply), AD (the desktop id, empty when refused)
+# attach <profile> <call_id>: the web attach route (starts a desktop and waits for the guest's unlock, so WEB_MAX is 300 s); sets ATTACHED (reply),
+# AD (the desktop id, empty when refused)
 attach() {
   ATTACHED=$(WEB_MAX=300 admin POST "/api/profiles/$1/attach" "$(jq -nc --arg c "$2" --arg p "$PLATFORM" '{call_id:$c,platform:$p}')") || true
   AD=$(jq -r '.desktop_id // empty' <<<"$ATTACHED" 2>/dev/null || true)
-  [ -z "$AD" ] || CREATED+=("$AD")
+  if [ -n "$AD" ]; then CREATED+=("$AD"); note_pod "$AD"; fi
 }
-mapper() { find /dev/mapper -mindepth 1 -printf '%f\n' 2>/dev/null | sort; }
-# on_host <profile> <what>: the image is LUKS, no /dev/mapper entry appeared for it, and its bytes hold no plaintext marker
-on_host() {
-  local img=$DIR/$1.img now
-  now=$(mapper)
-  cryptsetup isLuks "$img" || { echo "not LUKS"; return 1; }
-  [ "$now" = "$MAPPER0" ] || { echo "new /dev/mapper entries: $(comm -13 <(echo "$MAPPER0") <(echo "$now") | tr '\n' ' ')"; return 1; }
-  ! strings -a -n 8 "$img" | grep -qF "$MARKER" || { echo "plaintext marker found"; return 1; }
+cm_field() { kc get configmap "rfprofile-$1" -o jsonpath="{.data.$2}" 2>/dev/null; }
+# pv_locate <profile>: sets PVNODE and PVPATH (the node and the disk.img file behind the profile's PVC)
+pv_locate() {
+  local pv j dir; pv=$(kc get pvc "rfprofile-$1" -o jsonpath='{.spec.volumeName}' 2>/dev/null) && [ -n "$pv" ] || return 1
+  j=$(kubectl --context "$KCTX" get pv "$pv" -o json) || return 1
+  dir=$(jq -r '.spec.hostPath.path // .spec.local.path // empty' <<<"$j")
+  PVNODE=$(jq -r '.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0] // empty' <<<"$j")
+  [ -n "$dir" ] && [ -n "$PVNODE" ] || return 1
+  PVPATH=$dir/disk.img
 }
-MAPPER0=$(mapper)
+# on_node <profile> <sh -c script>: the script on the profile's node, the image path as $1
+on_node() { pv_locate "$1" && node_exec "$PVNODE" sh -c "$2" sh "$PVPATH"; }
+magic() { on_node "$1" 'head -c 6 "$1" | od -An -tx1 | tr -d " \n"'; }
+zero_head() { on_node "$1" 'head -c 16777216 "$1" | tr -d "\000" | wc -c'; } # 0 when the first 16 MiB are all zero
+# ciphertext <profile>: the image is LUKS and holds no plaintext marker (the pattern goes in on stdin, not argv)
+ciphertext() {
+  [ "$(magic "$1")" = "$LUKS" ] || { echo "not LUKS"; return 1; }
+  ! printf '%s\n' "$MARKER" | on_node "$1" 'grep -qaF -f - "$1"' || { echo "plaintext marker found"; return 1; }
+}
+gone_pvc_cm() { ! kc get pvc "rfprofile-$1" >/dev/null 2>&1 && ! kc get configmap "rfprofile-$1" >/dev/null 2>&1; }
 
 # the other scope: the web routes are fixed to verify-scope, so this goes to the runner's profile-attach as an admin of the OTHER scope
 mk_profile "verify-profile"; P1=$P
@@ -57,45 +65,77 @@ r=$(api profile-attach "$(jq -nc --arg p "$P1" --arg s "$VERIFY_OTHER_SCOPE" --a
 if [ -n "$r" ] && [ -z "$(jq -r '.desktop_id // empty' <<<"$r" 2>/dev/null)" ] && [ -n "$(jq -r '.error // empty' <<<"$r" 2>/dev/null)" ]; then pass profiles-other-scope-refused
 else fail profiles-other-scope-refused "attach as another scope's admin: $r"; fi
 
-# first attach, then a second one is refused
+# the first attach formats: the record said initialized false, and says true after, with a LUKS header on the disk
+pre=$(cm_field "$P1" initialized)
 attach "$P1" profiles-call-1; D1=$AD
 [ -n "$D1" ] || die "first attach failed: $ATTACHED"
+if [ "$pre" = false ] && [ "$(cm_field "$P1" initialized)" = true ] && [ "$(magic "$P1")" = "$LUKS" ]; then pass profiles-first-attach-formats
+else fail profiles-first-attach-formats "initialized before '$pre', after '$(cm_field "$P1" initialized)'; header '$(magic "$P1" || true)' (want $LUKS)"; fi
+
+# a second attach is refused
 attach "$P1" profiles-call-2
 if [ -z "$AD" ] && [ -n "$(jq -r '.error // empty' <<<"$ATTACHED" 2>/dev/null)" ]; then pass profiles-second-attach-refused
 else fail profiles-second-attach-refused "second attach: $ATTACHED"; fi
 
-# while attached: the guest unlocked the disk (attach waits for it), the VM user opens the image, the host sees only ciphertext
-sleep 20 # the page's cookie below needs the guest's Chrome up
-curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
-o=$(act "$D1" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL/mark?v=$MARKER" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')") || true
-sleep 40 # Chrome writes its cookie store a little later
-if [ "$(jq -r '.a // 0' <<<"$(curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits")")" -gt 0 ] && [ "$(jq -r '.ok // false' <<<"$o")" = true ]; then
-  if why=$(on_host "$P1"); then pass "profiles-host-ciphertext:attached"; else fail "profiles-host-ciphertext:attached" "$why"; fi
-else fail "profiles-host-ciphertext:attached" "the marker page did not load in the attached guest: $o"; fi
-if desk_ids | grep -qx "$D1" && runuser -u "$VM_USER" -- head -c 16 "$DIR/$P1.img" >/dev/null 2>&1; then pass profiles-guest-has-vdb
-else fail profiles-guest-has-vdb "desktop $D1 not listed, or $VM_USER cannot read the image (attach reply: $ATTACHED)"; fi
+# while attached, the guest holds a marker in its Chrome profile; the node's disk image shows only ciphertext
+o=
+end=$((SECONDS + 240))
+while [ $SECONDS -lt "$end" ]; do
+  o=$(act "$D1" "$(jq -nc --arg u "https://meet.google.com/?$MARKER" '{type:"desktop_open",url:$u,hosts:["https://meet.google.com"]}')" 2>/dev/null) || o=
+  if [ -n "$o" ] && jq -e '.ok == true' <<<"$o" >/dev/null 2>&1; then break; fi
+  o=; sleep 10
+done
+sleep 30 # Chrome writes its stores a little later
+if [ -z "$o" ]; then fail profiles-host-ciphertext "the marker page did not load in the attached guest"
+elif why=$(ciphertext "$P1"); then pass profiles-host-ciphertext; else fail profiles-host-ciphertext "$why"; fi
 
-# the VM is killed (its own unit, the only one touched): the runner releases the profile; still ciphertext on the host
-systemctl kill --signal=SIGKILL "rfactory-vm-$D1.service" || true
-if wait_gone "$D1" 90; then
-  if why=$(on_host "$P1"); then pass "profiles-host-ciphertext:killed"; else fail "profiles-host-ciphertext:killed" "$why"; fi
-else fail "profiles-host-ciphertext:killed" "$D1 did not go after its unit was killed"; fi
+# the desktop ends, the profile is released; the header is then wiped: initialized, no header, so it fails closed and is never formatted
+api destroy "$(jq -nc --arg d "$D1" '{desktop_id:$d}')" >/dev/null || true
+wait_gone "$D1" 90 || die "$D1 did not go"
+on_node "$P1" 'dd if=/dev/zero of="$1" bs=1M count=16 conv=notrunc 2>/dev/null' || die "could not wipe the header of $P1"
+attach "$P1" profiles-call-wiped
+if [ -z "$AD" ] && [ -n "$(jq -r '.error // empty' <<<"$ATTACHED" 2>/dev/null)" ] && [ "$(zero_head "$P1")" = 0 ] && [ "$(cm_field "$P1" initialized)" = true ]; then
+  pass profiles-wiped-header-fails-closed
+else fail profiles-wiped-header-fails-closed "attach: $ATTACHED; non-zero bytes in the first 16 MiB: $(zero_head "$P1" || echo '?'); initialized: $(cm_field "$P1" initialized)"; fi
 
-# delete destroys an attached desktop first, then the files
-attach "$P1" profiles-call-3; D3=$AD
-[ -n "$D3" ] || die "attach after the kill failed: $ATTACHED"
-rd=$(admin DELETE "/api/profiles/$P1") || true
-if [ "$(jq -r '.ok // false' <<<"$rd" 2>/dev/null)" = true ] && wait_gone "$D3" 60 && [ ! -e "$DIR/$P1.img" ] && [ ! -e "$DIR/$P1.json" ]; then pass profiles-delete-destroys-desktop
-else fail profiles-delete-destroys-desktop "delete reply: $rd; desktop gone: $(desk_gone "$D3" && echo yes || echo no); files: $(find "$DIR" -name "$P1.*" | wc -l)"; fi
+# delete destroys an attached desktop first, then the PVC and the record (the PV stays: Retain)
+mk_profile "verify-delete"; P2=$P
+attach "$P2" profiles-call-3; D3=$AD
+[ -n "$D3" ] || die "attach for delete failed: $ATTACHED"
+rd=$(admin DELETE "/api/profiles/$P2") || true
+if [ "$(jq -r '.ok // false' <<<"$rd" 2>/dev/null)" = true ] && wait_gone "$D3" 60 && gone_pvc_cm "$P2"; then pass profiles-delete-destroys-desktop
+else fail profiles-delete-destroys-desktop "delete reply: $rd; desktop left: $(desk_leftovers "$D3"); pvc or record left: $(gone_pvc_cm "$P2" && echo no || echo yes)"; fi
 
-# expiry: backdate the record, wait for the sweep; the attached desktop must go, then the files
-mk_profile "verify-expiring"; P2=$P
-attach "$P2" profiles-call-4; D4=$AD
+# expiry: backdate the record, wait for the sweep; the attached desktop must go, then the PVC and the record
+mk_profile "verify-expiring"; P3=$P
+attach "$P3" profiles-call-4; D4=$AD
 [ -n "$D4" ] || die "attach for expiry failed: $ATTACHED"
-tmp=$(mktemp "$DIR/.backdate.XXXXXX")
-jq '.created_at = "2000-01-01T00:00:00.000Z"' "$DIR/$P2.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$DIR/$P2.json"
+kc patch configmap "rfprofile-$P3" --type merge -p '{"data":{"created_at":"2000-01-01T00:00:00.000Z"}}' >/dev/null || die "backdate $P3"
+# the desktop is kept in use (a heartbeat is not activity: the idle rule, 600 s, would end it long before the hourly sweep), so only the
+# expiry can end it; once it is gone the profile's PVC and record must follow within a minute
 end=$((SECONDS + ${VERIFY_WAIT_EXPIRY:-3700}))
-until desk_gone "$D4" || [ $SECONDS -ge "$end" ]; do sleep 20; done
-if desk_gone "$D4" && [ ! -e "$DIR/$P2.img" ] && [ ! -e "$DIR/$P2.json" ]; then pass profiles-expire-destroys-desktop
-else fail profiles-expire-destroys-desktop "desktop $D4 or the profile files remained ${VERIFY_WAIT_EXPIRY:-3700} s after the record was backdated"; fi
+until desk_gone "$D4" || [ $SECONDS -ge "$end" ]; do act "$D4" '{"type":"desktop_screenshot","hosts":[]}' >/dev/null 2>&1 || true; sleep 20; done
+for _ in $(seq 12); do gone_pvc_cm "$P3" && break; sleep 5; done
+if desk_gone "$D4" && gone_pvc_cm "$P3"; then pass profiles-expire-destroys-desktop
+else fail profiles-expire-destroys-desktop "desktop $D4 ($(desk_leftovers "$D4")) or the profile objects remained ${VERIFY_WAIT_EXPIRY:-3700} s after the record was backdated"; fi
+
+# rollback rehearsal: the owner deletes the ArgoCD Application (the namespace stays) and syncs it again; the PVC and the record are the same
+mk_profile "verify-rollback"; P4=$P
+attach "$P4" profiles-call-5; D5=$AD
+[ -n "$D5" ] || die "attach for the rollback rehearsal failed: $ATTACHED"
+api destroy "$(jq -nc --arg d "$D5" '{desktop_id:$d}')" >/dev/null || true; wait_gone "$D5" 90 || die "$D5 did not go"
+uid0=$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}'); cm0=$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}')
+ans=
+if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  printf 'Rollback rehearsal: delete the ArgoCD Application rfactory-desktops now (the namespace stays), wait until its workloads are gone, sync it again,\nthen answer. Profile %s (PVC rfprofile-%s) must survive. Done? [y/N] ' "$P4" "$P4" >/dev/tty
+  read -r -t 1800 ans </dev/tty || true
+fi
+if [ "$ans" != y ] && [ "$ans" != Y ]; then fail profiles-rollback-keeps-data "the owner did not confirm the rehearsal"
+elif [ "$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$uid0" ] \
+  && [ "$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}' 2>/dev/null)" = "$cm0" ] && [ "$(magic "$P4")" = "$LUKS" ]; then
+  pass profiles-rollback-keeps-data
+else fail profiles-rollback-keeps-data "PVC or record changed or missing after the rehearsal (pvc was $uid0, record $cm0)"; fi
+
+echo "info volumes kept (Retain) behind this namespace's profile claims, delete them yourself: $(kubectl --context "$KCTX" get pv -o json \
+  | jq -r --arg ns "$NS" '[.items[] | select(.spec.claimRef.namespace == $ns and ((.spec.claimRef.name // "") | startswith("rfprofile-"))) | .metadata.name] | join(" ")')"
 finish

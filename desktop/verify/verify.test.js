@@ -109,8 +109,121 @@ test('the scripts use the current protocol and outcomes', () => {
   const share = read('share.sh');
   assert.ok(share.indexOf('join_call "$D"') < share.indexOf('start_shared "$D"'));
   assert.equal((share.match(/new_desktop /g) || []).length, (share.match(/join_call "\$[ADE]"/g) || []).length); // every VM joins the call
-  assert.match(read('lifecycle.sh'), /^NO_BEAT=1/m);
+  assert.ok(!/^NO_BEAT=/m.test(read('lifecycle.sh'))); // every desktop keeps its server heartbeat until its case disturbs it
   const secrets = read('secrets.sh');
   assert.match(secrets, /grant "\$D" 10 '\[[^']*\]' "\$VERIFY_LOGIN_PROFILE"/);
   assert.ok(secrets.indexOf('not filled') < secrets.indexOf('grep -qFf'));
+});
+
+// k12: the scripts' checks, from the plan's k10b list and k14 table. Each name must be printed by exactly one script.
+const CHECKS = {
+  'net.sh': ['net-startup-filtered', 'net-protected-blocked', 'net-samenode-pod-unreachable', 'net-antispoof-ip', 'net-antispoof-mac', 'net-media-reachable',
+    'net-proxy-with-token', 'net-guard-killed-cuts-flow', 'net-share-cut-5s', 'net-guard-restart-keeps-deadline', 'net-proxy-protected-resolution',
+    'net-proxy-sni-mismatch', 'net-proxy-missing-token', 'net-no-guest-marker-on-nodes'],
+  'lifecycle.sh': ['lifecycle-call-end', 'lifecycle-worker-heartbeat', 'lifecycle-server-heartbeat', 'lifecycle-idle', 'lifecycle-runtime-limit',
+    'lifecycle-runner-killed', 'lifecycle-runner-restart', 'lifecycle-reaper-alone', 'lifecycle-manual-vmi-delete', 'lifecycle-nothing-left'],
+  'capacity.sh': ['capacity-fourth-create', 'capacity-quota-refuses', 'capacity-race', 'capacity-rate-20mbit', 'capacity-egress-quota', 'capacity-startup-time',
+    'capacity-runner-quota-destroy', 'capacity-share-cutoff'],
+  'profiles.sh': ['profiles-other-scope-refused', 'profiles-first-attach-formats', 'profiles-second-attach-refused', 'profiles-host-ciphertext',
+    'profiles-wiped-header-fails-closed', 'profiles-delete-destroys-desktop', 'profiles-expire-destroys-desktop', 'profiles-rollback-keeps-data'],
+  'liveview.sh': ['liveview-non-member-refused', 'liveview-other-scope-refused', 'liveview-novnc-frame', 'liveview-keyevent-closes', 'liveview-second-viewer-409',
+    'liveview-revoke-5s'],
+};
+
+test('every k10b and k14 check name is printed by exactly one script, the one that owns it', () => {
+  const scripts = fs.readdirSync(__dirname).filter((f) => f.endsWith('.sh') && f !== 'lib.sh');
+  for (const [owner, names] of Object.entries(CHECKS)) {
+    for (const name of names) {
+      const printing = scripts.filter((f) => new RegExp(`\\b(pass|fail|case_hold|owner_confirm)\\s+"?${name}\\b`).test(read(f)));
+      assert.deepEqual(printing, [owner], `${name} printed by ${printing.join(', ') || 'no script'}`);
+    }
+  }
+});
+
+test('no verification script still uses the host layer', () => {
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.sh'))) {
+    assert.ok(!/vsock|wait_probe|probe_conn|unit_present|frame_b64|RUN_DIR|systemctl|microvm\.declaredRunner/.test(read(f).replace(/^\s*#.*$/gm, '')), f);
+  }
+  assert.ok(!fs.existsSync(path.join(__dirname, 'channel.sh'))); // its vsock-port checks have no cluster meaning
+});
+
+test('every kubectl call goes through kc, pinned to the factory context and rfactory-desktops', () => {
+  const lib = read('lib.sh');
+  assert.match(lib, /kc\(\) \{ kubectl --context "\$KCTX" --namespace "\$NS" "\$@"; \}/);
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.sh'))) {
+    for (const line of read(f).replace(/^\s*#.*$/gm, '').split('\n')) {
+      if (!/(?:^|[;|&(]|\$\()\s*kubectl\s/.test(line)) continue;
+      assert.match(line, /--context "\$KCTX"/, `${f}: ${line}`);
+      if (!line.startsWith('kc()')) assert.ok(!/\s(-n|--namespace)[ =]/.test(line), `${f}: ${line}`);
+    }
+  }
+});
+
+const probe = require('./probe');
+const { parseHello } = require('../proxy/proxy');
+const INPUT = { podName: 'rfverify-ab-a1', podUID: '11111111-2222-3333-4444-555555555555', podIP: '10.42.1.5', token: 'a'.repeat(64), runnerIP: '10.43.250.10',
+  proxyIP: '10.43.250.11', proxyPort: 3128, names: ['meet.google.com'], alwaysProtected: ['192.168.1.0/24'], platform: 'meet', scope: 'verify-scope' };
+
+test('probe manifests: owned by the pod, selected by its uid label, carrying the token', () => {
+  const [policy, proxyEntry, guardEntry] = probe.manifests(INPUT).items;
+  for (const item of [policy, proxyEntry, guardEntry]) assert.deepEqual(item.metadata.ownerReferences, [{ apiVersion: 'v1', kind: 'Pod', name: 'rfverify-ab-a1', uid: INPUT.podUID }]);
+  assert.deepEqual(policy.spec.podSelector, { matchLabels: { 'rfactory.io/verify-uid': INPUT.podUID } });
+  assert.equal(JSON.parse(proxyEntry.data.entry).token, 'a'.repeat(64));
+  assert.equal(guardEntry.metadata.name, `rfdesk-${INPUT.podUID}-guard`);
+  assert.throws(() => probe.manifests({ ...INPUT, token: '' }), /invalid token/);
+});
+
+test('probe clienthello carries the SNI the proxy parses, and media gives addresses inside the pinned ranges', () => {
+  assert.equal(parseHello(probe.clienthello('meet.google.com')), 'meet.google.com');
+  assert.equal(parseHello(probe.clienthello('evil.example')), 'evil.example');
+  assert.deepEqual(probe.media('meet').slice(0, 2), ['74.125.250.1', '142.250.82.1']);
+});
+
+test('lib.sh desk_leftovers says unreadable when kubectl fails, so an unreachable cluster is never "gone"', () => {
+  const r = bash('kubectl() { return 1; }; desk_leftovers abc; desk_gone abc; echo "gone=$?"');
+  assert.match(r.out, /unreadable/);
+  assert.match(r.out, /gone=1/);
+});
+
+test('mk_probe names a pod the way Kubernetes and the policy generator accept, whatever the tag case', () => {
+  const f = path.join(os.tmpdir(), `mkprobe-${process.pid}.json`);
+  const r = bash(`kubectl() { echo; }; kc() { cat > "${f}"; return 1; }; mk_probe A1 node-x '[]'`, { env: { VERIFY_PROBE_IMAGE: 'img' } });
+  const name = JSON.parse(fs.readFileSync(f, 'utf8')).metadata.name;
+  fs.rmSync(f);
+  assert.match(name, /^rfverify-[0-9a-f]{8}-a1$/, r.err);
+  assert.doesNotThrow(() => probe.manifests({ ...INPUT, podName: name }));
+  assert.throws(() => probe.manifests({ ...INPUT, podName: 'rfverify-0a1b2c3d-A1' }), /invalid desktop identity/);
+});
+
+test('mk_probe refuses a node with the desktops taint, and passes an untainted one', () => {
+  const run = keys => bash(`kubectl() { echo '${keys}'; }; KCTX=x; kc() { return 1; }; mk_probe A1 n '[]'`, { env: { VERIFY_PROBE_IMAGE: 'img' } });
+  assert.match(run('foo rfactory.io/desktops').err, /has the rfactory.io\/desktops taint/);
+  assert.doesNotMatch(run('foo').err, /taint/);
+  assert.match(read('net.sh'), /probe_node_ok "\$1" \|\| die/);
+});
+
+test('net.sh: target pods are named by the whole node, probes run on the agent only, spoof checks read the node', () => {
+  const net = read('net.sh').replace(/^\s*#.*$/gm, '');
+  assert.match(net, /n=rfverify-\$RUNID-t-\$1 /); // not ${1##*-}, which is 0 on both nodes
+  assert.ok(!/\bS1\b/.test(net)); // a role=desktop pod cannot be scheduled beside the runner and the proxy
+  assert.match(net, /nf_conntrack/);
+  assert.match(net, /bridge fdb show br cni0/);
+});
+
+test('lifecycle.sh keeps the runtime-limit desktop in use and passes only at the limit; heartbeats stop at the disturbance', () => {
+  const life = read('lifecycle.sh').replace(/^\s*#.*$/gm, '');
+  assert.match(life, /desktop_screenshot/);
+  assert.match(life, /\$age" -ge "\$\{VERIFY_RUNTIME_MAX:-10800\}"/);
+  assert.ok(life.indexOf('MAX_T0=$SECONDS; fresh max') >= 0);
+  for (const at of ['kc delete pod "$runner"', 'kc rollout restart', 'kc scale deployment rfactory-runner --replicas=0']) {
+    assert.match(life.slice(life.lastIndexOf('\n', life.indexOf(at) - 1) - 40, life.indexOf(at)), /stop_beat "\$id"/, at);
+  }
+});
+
+test('profiles.sh keeps the expiring profile\'s desktop in use', () => {
+  assert.match(read('profiles.sh'), /act "\$D4" '\{"type":"desktop_screenshot"/);
+});
+
+test('liveview.sh bounds the second-viewer check with a timeout', () => {
+  assert.match(read('liveview.sh'), /second=\$\(timeout 6 node "\$LV" vnc/);
 });

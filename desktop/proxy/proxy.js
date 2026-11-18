@@ -203,10 +203,25 @@ function createApi({ fetcher = fetch, host = process.env.KUBERNETES_SERVICE_HOST
     guard: uid => get(`/configmaps/rfdesk-${uid}-guard`), watch };
 }
 
+// Token bucket per source IP, checked before any Kubernetes API call (shortcut: in-memory, reset when the map grows past 4096 IPs).
+function limiter(burst, perSec, now = Date.now) {
+  const seen = new Map();
+  return ip => {
+    if (seen.size > 4096) seen.clear();
+    const t = now(), b = seen.get(ip) || { n: burst, t };
+    b.n = Math.min(burst, b.n + (t - b.t) * perSec / 1000); b.t = t;
+    seen.set(ip, b);
+    if (b.n < 1) return false;
+    b.n -= 1; return true;
+  };
+}
+
 function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, verbatim: true }),
-  connect = options => net.connect(options), idleMs = 60000, maxConnections = 32 }) {
+  connect = options => net.connect(options), forward = options => http.request(options), idleMs = 60000, maxConnections = 32, burst = 20, perSec = 10, now = Date.now }) {
   if (!api || !Number.isInteger(idleMs) || idleMs < 1000 || !Number.isInteger(maxConnections) || maxConnections < 1) throw new Error('invalid proxy configuration');
   const active = new Map();
+  const allow = limiter(burst, perSec, now);
+  const forwarded = new WeakMap(); // socket -> checked entry; shortcut: valid for the connection's life, so a revoked entry lasts until idle close
   async function entryFor(ip) {
     const [pods, configMaps] = await api.snapshot();
     const live = pods.items.filter(p => p.status?.podIP === ip && UID.test(p.metadata?.uid));
@@ -226,8 +241,38 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
     const records = await resolve(name);
     return checkedAddresses(records, entry.protectedRanges);
   }
+  // Plain-HTTP private preview: Chrome sends an absolute-form request through the proxy. Same checks as CONNECT,
+  // exact approved ip:port only, forwarded to the checked address and never to a name.
+  async function handleForward(req, res) {
+    const fail = (code, headers) => { if (!res.headersSent) res.writeHead(code, headers); res.end(); };
+    const ip = sourceIp(req.socket);
+    let entry = forwarded.get(req.socket), dest, url;
+    if (!entry) { // only the first request on a keep-alive connection is rate-limited and read from the API
+      if (!allow(ip)) return fail(429);
+      try { entry = await entryFor(ip); } catch { return fail(403); }
+      if (!entry) return fail(403);
+      forwarded.set(req.socket, entry);
+    }
+    if (!sameToken(tokenFrom(req.headers['proxy-authorization']), entry.token)) return fail(407, { 'Proxy-Authenticate': 'Basic realm="desktop"' });
+    let address;
+    try {
+      url = new URL(req.url);
+      if (url.protocol !== 'http:' || url.username || url.password) throw new Error('not a plain preview URL');
+      dest = target(`${url.hostname}:${url.port || 80}`, entry);
+      if (!dest.preview) throw new Error('names are CONNECT only');
+      address = checkedAddresses([dest.host.replace(/^\[|\]$/g, '')], entry.protectedRanges, true)[0];
+    } catch { return fail(403); }
+    const headers = { ...req.headers, host: url.host };
+    for (const name of ['proxy-authorization', 'proxy-connection', 'connection']) delete headers[name];
+    const upstream = forward({ host: address, port: dest.port, method: req.method, path: url.pathname + url.search, headers });
+    upstream.setTimeout(idleMs, () => upstream.destroy());
+    upstream.once('error', () => fail(502));
+    upstream.once('response', response => { res.writeHead(response.statusCode, response.headers); response.pipe(res); });
+    req.pipe(upstream);
+  }
   async function handleConnect(req, client, head) {
     const ip = sourceIp(client);
+    if (!allow(ip)) { client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
     let entry;
     try { entry = await entryFor(ip); } catch { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     if (client.destroyed) return;
@@ -277,6 +322,7 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
     let query;
     try { query = parseDns(packet); } catch { return null; }
     if (![1, 28].includes(query.type) || query.class !== 1) return dnsReply(packet, query, [], true);
+    if (!allow(ip)) return dnsReply(packet, query, [], true);
     try {
       const entry = await entryFor(ip);
       if (!entry || !nameAllowed(query.name, entry.names)) return dnsReply(packet, query, [], true);
@@ -284,7 +330,7 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
     } catch { return dnsReply(packet, query, [], true); }
   }
   function serve(port = 3128, dnsPort = 53) {
-    const web = http.createServer((_req, res) => { res.writeHead(405).end(); });
+    const web = http.createServer((req, res) => { handleForward(req, res).catch(() => res.destroy()); });
     web.on('connect', (req, socket, head) => { handleConnect(req, socket, head).catch(() => socket.destroy()); });
     const udp = dgram.createSocket('udp4');
     const udp6 = dgram.createSocket({ type: 'udp6', ipv6Only: true });
@@ -315,15 +361,9 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
     return { web, udp, udp6, tcp };
   }
   async function watch() {
-    await api.snapshot();
-    for (const resource of ['pods', 'configmaps']) (async () => {
-      for (;;) {
-        try { await api.watch(resource, () => api.snapshot()); } catch (error) { console.error(`proxy ${resource} watch:`, error.message); }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    })();
+    await api.snapshot(); // startup check only: every request reads fresh, so a watch loop would only add API load
   }
-  return { handleConnect, answerDns, serve, watch };
+  return { handleConnect, handleForward, answerDns, serve, watch };
 }
 
 if (require.main === module) {

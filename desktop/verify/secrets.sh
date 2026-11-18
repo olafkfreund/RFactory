@@ -26,7 +26,7 @@ TMP=$(mktemp -d)
 extra_cleanup() { rm -rf "$TMP"; }
 
 # 1. the guest image carries no credential files or cookie stores
-out=$(nix build --no-link --print-out-paths "path:$ROOT#nixosConfigurations.desktop-guest.config.microvm.declaredRunner") || die "nix build of the guest failed"
+out=$(nix build --no-link --print-out-paths "path:$ROOT#nixosConfigurations.desktop-guest-kubevirt.config.system.build.toplevel") || die "nix build of the guest failed"
 mapfile -t closure < <(nix-store -qR "$out")
 found=$(find "${closure[@]}" \( -name Cookies -o -name 'Login Data' -o -name .netrc -o -name .git-credentials -o -name id_rsa -o -name id_ed25519 \
   -o -name credentials.json -o -name .credentials.json -o -name auth.json -o -name '*.pem' -o -name .env \) -not -path '*/node_modules/*' 2>/dev/null | head -20 || true)
@@ -63,7 +63,7 @@ fi
 ask "$D" "Open $VERIFY_FIXTURE_URL/ in the browser" >/dev/null || true
 ask "$D" "Take a screenshot" >/dev/null || true
 after=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)
-runner_log --since today >"$TMP/runner.log" || true
+runner_log --since=24h >"$TMP/runner.log" || true
 as_pod_user podman logs rfactory-web >"$TMP/web.log" 2>&1 || true
 leaks=
 for f in "$VERIFY_BRAIN_RECORD" "$TMP/runner.log" "$TMP/web.log"; do if grep -qFf "$TMP/patterns" "$f" 2>/dev/null; then leaks="$leaks $(basename "$f")"; fi; done

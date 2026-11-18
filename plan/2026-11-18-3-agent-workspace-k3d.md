@@ -397,6 +397,81 @@ and 27) and the scripts. This plan is self-contained.
       - `RF_ALWAYS_PROTECTED` (p620 LAN, Tailscale, Factory hosts);
       - `NODE_EXTRA_CA_CERTS`;
       - a runner egress allowance for the pinned media preflight probes.
+19. **Security review of the Codex-built core, manifest follow-up, k12 and
+    k13 (workflow: Opus review, coders, fix rounds; lead verified).**
+    - **Runner API:** it and its upgrade routes accept only a client
+      certificate with CN `rfactory-web`. All four hops now pin a CN.
+    - **Rate limits per source IP, before any API read:** the proxy
+      (burst 20, 10/s; its discarded watch loops are removed) and the
+      runner's `accept()` (burst 20, 5/s). The maps reset past 4096 IPs.
+    - **The guard keeps a pod ready** when a reconcile error occurs but its
+      tables still read back. One API blip no longer cuts a desktop.
+    - **Manifests:**
+      - `RF_ALWAYS_PROTECTED` is `192.168.0.0/16` plus the Tailscale
+        ranges, the same as Kyverno's list (a test enforces it);
+      - `NODE_EXTRA_CA_CERTS` on all four pods;
+      - the guard gets its TLS, port and `NODE_NAME` variables;
+      - a static `rfactory-runner-egress-media-probe` policy (the probe
+        hosts on TCP 443, generated from `ranges.json`, with a drift
+        test);
+      - the proxy binds 53 through a pod sysctl, with the Service mapping
+        53 on TCP and UDP.
+    - **k13:** the host layer is removed:
+      - `desktop/nixos/`, `desktop/gate/`, the probe guest and `vsock.js`;
+      - the flake's runner module, sample host, vsock guests and the
+        `microvm` input.
+
+      The runner is Kubernetes-only, and `create()` returns
+      `{desktop_id, nonce}`.
+20. **Final review blockers (workflow: fix, Opus review, fix round).**
+    - **Boot:** the VMI `kernelArgs` is the whole command line: the
+      runner's `RF_GUEST_CMDLINE` (the flake's `guest-kubevirt-cmdline`
+      output, validated `init=/nix/store/<hash>-<name>/init`, no `rf.*`)
+      plus `rf.runner` and `rf.proxy`. k10 fills it in `runner.yaml`.
+    - **Private previews over plain HTTP:** the proxy also forwards
+      absolute-form `http://` requests, only to an approved private
+      preview `ip:port`, with the same token, pod UID and source checks,
+      and only to the checked address. This supersedes k6's CONNECT-only
+      wording.
+      - The checked entry is cached per keep-alive connection, so a page
+        with many assets is not rate-limited.
+      - The token and target are checked on every request.
+      - A revoked entry stays in force until that connection closes.
+    - **The web image** no longer copies the removed `vsock.js`.
+    - **Images for k10:** flake outputs `image-runner`, `image-guard`,
+      `image-proxy` and `image-reaper` (`deploy/images/`). The guard image
+      includes nftables, iproute2 and tc, and runs as root with
+      `NET_ADMIN`; the others run as uid 10001. Test files are excluded.
+21. **agent-0 is reserved for desktops (Opus core review; the IP-identity
+    risk).**
+    - At k11 the lead taints `k3d-factory-agent-0` with
+      `rfactory.io/desktops=true:NoSchedule` and `:NoExecute`.
+    - Desktop VMIs tolerate it (`lifecycle.js`).
+    - The cluster-wide Kyverno policy `rfactory-desktops-toleration` admits
+      that toleration only on `rfactory-desktops` launcher pods. It has
+      `failurePolicy: Fail`, CREATE and UPDATE only, and a matchCondition,
+      so only pods carrying the key reach the webhook.
+    - So only guarded veths sit on that node's bridge, and no other pod
+      can claim a desktop's IP there.
+    - A per-desktop channel secret is not added.
+22. **Verification with probe pods; changed k10b and k14 split (lead
+    accepts).**
+    - `net.sh` and the probe parts of `capacity.sh` use ordinary probe
+      pods, not probe VMIs. KubeVirt's masquerade means a guest cannot
+      spoof at the veth, but a pod can.
+    - Probes run on agent-0 and cannot tolerate the desktop taint, so all
+      probe checks run in **k10b, before the k11 taint**. The scripts
+      refuse to start once the taint is present.
+    - k10b's "on each node" becomes "on the desktop node, against
+      same-node and cross-node targets", because desktops run only on
+      agent-0 (deviation 11).
+    - **In k14:** `net.sh`'s k10b result stands. `capacity.sh` runs only
+      its create checks (a 4th create refused, one success out of two
+      simultaneous creates, start-up time).
+    - **`owner_confirm` items with a real sharing desktop:** the runner's
+      1 GiB egress destroy, and the 5 s share cutoff with the runner
+      stopped. `net.sh` measures the 5 s cutoff on a probe as
+      `net-share-cut-5s`.
 
 
 ## Steps

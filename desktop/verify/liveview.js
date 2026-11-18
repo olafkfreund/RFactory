@@ -3,11 +3,13 @@
 //   node liveview.js open <wsurl>        print "refused" or "open" (the server accepted and sent bytes within 10 s)
 //   node liveview.js hold <wsurl>        print "open <epoch ms>" then "closed <epoch ms>" when the server closes
 //   node liveview.js key <wsurl>         handshake, send a KeyEvent, print "closed" or "open" (3 s later)
+//   node liveview.js vnc <runner-url>   the runner's own /vnc/<id> upgrade over mTLS ($VERIFY_CERT, $VERIFY_KEY, $VERIFY_CA are file paths): print the status
+//                                        code, then, on 101, hold the stream until killed and print "closed" when the runner ends it
 //   node liveview.js page <pageurl>      load the noVNC page in headless Chrome ($VERIFY_CHROME); print "frame" or "noframe: <why>"
 // The session cookie (name=value) is read from $LV_COOKIE (not argv), goes in a cookie header and is never printed.
 const [mode, url] = process.argv.slice(2);
 const cookie = process.env.LV_COOKIE;
-if (!mode || !url) { console.error('usage: liveview.js open|hold|key|page <url>'); process.exit(2); }
+if (!mode || !url) { console.error('usage: liveview.js open|hold|key|vnc|page <url>'); process.exit(2); }
 
 const headers = cookie ? { cookie } : {};
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -57,6 +59,18 @@ async function main() {
       }), null, { timeout: 30000 });
       out('frame');
     } catch (e) { out(`noframe: ${e.message.split('\n')[0]}`); } finally { await browser.close(); }
+    return;
+  }
+  if (mode === 'vnc') {
+    const { request } = require('node:https');
+    const { readFileSync } = require('node:fs');
+    const u = new URL(url);
+    const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: 'GET', headers: { Connection: 'Upgrade', Upgrade: 'rfactory-vnc' },
+      cert: readFileSync(process.env.VERIFY_CERT), key: readFileSync(process.env.VERIFY_KEY), ca: readFileSync(process.env.VERIFY_CA) });
+    req.on('upgrade', (res, socket) => { out(String(res.statusCode)); socket.on('data', () => {}); socket.on('close', () => { out('closed'); process.exit(0); }); socket.on('error', () => {}); });
+    req.on('response', (res) => { out(String(res.statusCode)); process.exit(0); });
+    req.on('error', (e) => { out(`error: ${e.message}`); process.exit(1); });
+    req.end();
     return;
   }
   const ws = connect();
