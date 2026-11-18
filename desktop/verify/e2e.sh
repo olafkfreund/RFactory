@@ -12,7 +12,7 @@
 # is heard and seen. Names: e2e-teams-{pod,vm}-{joins,answers,leaves} and e2e-teams-vm-nothing-left.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE, VERIFY_MEET_LINK (a Meet the owner is in),
 # VERIFY_FIXTURE_URL (an allowlisted preview origin; an approved preview), VERIFY_JOIN_WAIT (seconds to wait for the join, 240),
-# optional VERIFY_TEAMS_LINK (a Teams meeting the owner is in) and VERIFY_POD_SERVER_URL (for its pod half).
+# optional VERIFY_TEAMS_LINK (a Teams meeting the owner is in) and VERIFY_POD_SERVER_URL (its optional pod half; VERIFY_TEAMS_LINK is required by k14).
 # Needs a terminal for the owner's confirmations. k14 (plan 2026-11-18-3-agent-workspace-k3d): kubectl against the factory cluster; "nothing left" is lib.sh desk_gone
 # (no VMI, pod, owned policy or entry, guard table).
 set -euo pipefail
@@ -21,33 +21,38 @@ set -euo pipefail
 trap verify_exit EXIT
 need_kube; need_cmds curl jq grep
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_MEET_LINK
+export WEB_MAX=${WEB_MAX:-180} # POST /api/call, a request and an approve can take over 60 s under load
 EV=$(mktemp)
 TEVS=() # the Teams halves' event files
-extra_cleanup() { [ -z "${EVPID:-}" ] || kill "$EVPID" 2>/dev/null || true; rm -f "$EV" "${TEVS[@]}"; }
+extra_cleanup() { [ -z "${EVPID:-}" ] || kill "$EVPID" 2>/dev/null || true; rm -f "$EV" "$EV.err" "${TEVS[@]}"; }
 
 # the bot joins from a desktop VM: POST /api/call, then a new desktop in our scope and the call's `in-call` state
 real_ids() { api list | jq -r '.desktops[] | select(.spare | not) | .desktop_id'; } # a warm spare is not the call's VM
 before=$(real_ids)
-printf 'cookie: %s\n' "$VERIFY_APPROVER_COOKIE" | curl -sSN -H @- "${VERIFY_SERVER_URL%/}/api/call/events" >"$EV" 2>/dev/null &
+printf 'cookie: %s\n' "$VERIFY_APPROVER_COOKIE" | curl -sSN -H @- "${VERIFY_SERVER_URL%/}/api/call/events" >"$EV" 2>"$EV.err" &
 EVPID=$!
 r=$(approver POST /api/call "$(jq -nc --arg l "$VERIFY_MEET_LINK" '{link:$l}')") || true
 [ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" = true ] || die "POST /api/call: $r"
 D=
-for _ in $(seq 1 120); do
+for _ in $(seq 1 "${VERIFY_JOIN_WAIT:-240}"); do
   D=$(real_ids | grep -vxF -f <(printf '%s\n' "$before") | head -1 || true)
   [ -z "$D" ] || break
   sleep 1
 done
 [ -n "$D" ] || die "no desktop appeared in the runner's list after POST /api/call"
 CREATED+=("$D") # destroyed at exit if the call end below does not do it
+# web made this VM, so the guard table (named by the launcher pod's UID) is noted here, while the pod exists
+for _ in $(seq 1 30); do note_pod "$D"; [ -z "${PODUID[$D]:-}" ] || break; sleep 1; done
 end=$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))
 until grep -q '"state":"in-call"' "$EV" || [ $SECONDS -ge "$end" ]; do sleep 2; done
-if grep -q '"state":"in-call"' "$EV"; then pass e2e-bot-joins; else fail e2e-bot-joins "no in-call state within ${VERIFY_JOIN_WAIT:-240} s; events: $(tr '\n' ' ' <"$EV" | cut -c1-300)"; fi
+if grep -q '"state":"in-call"' "$EV"; then pass e2e-bot-joins; else fail e2e-bot-joins "no in-call state within ${VERIFY_JOIN_WAIT:-240} s; events: $(tr '\n' ' ' <"$EV" | cut -c1-300); stream errors: $(head -c 200 "$EV.err" 2>/dev/null | tr '\n' ' ') (a 302 or 401 means a bad VERIFY_APPROVER_COOKIE)"; fi
 
+curl -fsS --max-time 10 "${VERIFY_FIXTURE_URL%/}/reset" >/dev/null 2>&1 || true # count only what the agent's open causes
 g=$(grant "$D" 15 '["desktop_open","desktop_screenshot","propose_share"]')
 o=$(ask "$D" "Open $VERIFY_FIXTURE_URL/ in the browser") || true
-if [ "$(jq -r '.ok // false' <<<"$g")" = true ] && [ "$(jq -r '.text // empty' <<<"$o" 2>/dev/null)" = "Done." ]; then pass e2e-handover-open
-else fail e2e-handover-open "handover: $g; request: $o"; fi
+hits=$(curl -fsS --max-time 10 "${VERIFY_FIXTURE_URL%/}/hits" 2>/dev/null | jq -r '.a // 0' 2>/dev/null || echo 0)
+if [ "$(jq -r '.ok // false' <<<"$g")" = true ] && [ "$(jq -r '.text // empty' <<<"$o" 2>/dev/null)" = "Done." ] && [ "$hits" -gt 0 ] 2>/dev/null; then pass e2e-handover-open
+else fail e2e-handover-open "handover: $g; request: $o; fixture requests the guest made: $hits"; fi
 
 if start_shared "$D" "$VERIFY_FIXTURE_URL/"; then
   sleep 5
@@ -60,6 +65,7 @@ else fail e2e-share-only-window "share did not start: $SHAREERR"; fi
 approver DELETE /api/call >/dev/null || true
 left=
 wait_gone "$D" 60 || left="$left desktop:$(desk_leftovers "$D")"
+[ -n "${PODUID[$D]:-}" ] || left="$left no-launcher-pod-uid(guard table unchecked)"
 if [ -z "$left" ]; then pass e2e-nothing-left; else fail e2e-nothing-left "left behind:$left"; fi
 
 # Teams, from the pod and from a VM: join, answer, leave. <name> pod|vm, <base> the web server's URL. The pod half needs a server without RFACTORY_DESKTOP.
@@ -74,6 +80,7 @@ teams_call() {
   until grep -q '"state":"in-call"' "$ev" || [ $SECONDS -ge $((t + ${VERIFY_JOIN_WAIT:-240})) ]; do sleep 2; done
   new=$(real_ids | grep -vxF -f <(printf '%s\n' "$before") | head -1 || true)
   [ -z "$new" ] || CREATED+=("$new")
+  [ -z "$new" ] || note_pod "$new" # before the call ends: the pod is gone afterwards
   if ! grep -q '"state":"in-call"' "$ev"; then fail "e2e-teams-$name-joins" "no in-call state within ${VERIFY_JOIN_WAIT:-240} s; events: $(tr '\n' ' ' <"$ev" | cut -c1-300)"
   elif [ "$name" = vm ] && [ -z "$new" ]; then fail "e2e-teams-vm-joins" "in call, but no desktop VM appeared (is RFACTORY_DESKTOP=1 on $base?)"
   elif [ "$name" = pod ] && [ -n "$new" ]; then fail "e2e-teams-pod-joins" "a desktop VM appeared ($new): $base runs with RFACTORY_DESKTOP, so this is not the pod's own bot"
@@ -89,14 +96,16 @@ teams_call() {
     else
       left=
       wait_gone "$new" 60 || left="$left desktop:$(desk_leftovers "$new")"
+      [ -n "${PODUID[$new]:-}" ] || left="$left no-launcher-pod-uid(guard table unchecked)"
       if [ -z "$left" ]; then pass e2e-teams-vm-nothing-left; else fail e2e-teams-vm-nothing-left "left behind:$left"; fi
     fi
   fi
 }
-if [ -n "${VERIFY_TEAMS_LINK:-}" ]; then
-  kill "$EVPID" 2>/dev/null || true # the Meet half's listener
-  if [ -n "${VERIFY_POD_SERVER_URL:-}" ]; then teams_call pod "$VERIFY_POD_SERVER_URL"
-  else for n in joins answers leaves; do fail "e2e-teams-pod-$n" "set VERIFY_POD_SERVER_URL (a web server run without RFACTORY_DESKTOP)"; done; fi
+if [ -z "${VERIFY_TEAMS_LINK:-}" ]; then
+  for n in joins answers leaves nothing-left; do fail "e2e-teams-vm-$n" "set VERIFY_TEAMS_LINK (k14 requires a Teams call from a desktop VMI)"; done
+else
+  kill "${EVPID:-}" 2>/dev/null || true # the Meet half's listener
+  [ -z "${VERIFY_POD_SERVER_URL:-}" ] || teams_call pod "$VERIFY_POD_SERVER_URL" # optional: k14 needs only the VM half
   teams_call vm "$VERIFY_SERVER_URL"
 fi
 finish

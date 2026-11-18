@@ -4,17 +4,20 @@
 # Owner-gated: run by the lead on p620 with the owner's OK and an agent-bus notice. Real desktops from the deployed runner (the guest's own agent
 # sends the worker heartbeat). The runner's timings are the in-cluster ones (worker 30 s, server 60 s, idle 600 s, runtime 3 h), so the whole
 # script takes over 3 hours: the runtime-limit desktop is created first and checked after the idle case, before the runner is disturbed.
-# Disturbs rfactory-runner (kill, rollout restart, scale to 0 and back): the owner must have ArgoCD auto-sync off for rfactory-desktops while
-# lifecycle-reaper-alone runs, or the runner comes back before the reaper acts (the check then fails and says so).
+# Disturbs rfactory-runner (kill, rollout restart, killed and scaled to 0, then back): the owner must have ArgoCD auto-sync off for
+# rfactory-desktops (checked at start), or the runner comes back before the reaper acts. The runner needs RF_SCOPE_PREVIEWS for verify-scope
+# with grants for meet.google.com, apps.google.com and workspace.google.com (the signed-out Meet redirect chain). Run it alone: it ends with
+# a check that no rfdesk_ guard table is left on either node, and it kills the runner, which ends every desktop.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_MEET_LINK (the call lifecycle-runner-restart keeps live). Optional waits (seconds):
-# VERIFY_WAIT_WORKER (90), VERIFY_WAIT_SERVER (150), VERIFY_WAIT_IDLE (720), VERIFY_WAIT_MAX (11100, from creation), VERIFY_RUNTIME_MAX (10800), VERIFY_WAIT_REAPER (100),
-# VERIFY_BOOT_WAIT (60, after the VMI runs, for the guest agent to dial).
+# VERIFY_WAIT_WORKER (90), VERIFY_WAIT_SERVER (150), VERIFY_WAIT_IDLE (720), VERIFY_WAIT_MAX (11100, from creation), VERIFY_RUNTIME_MAX (10800), VERIFY_WAIT_REAPER (150),
+# VERIFY_BOOT_WAIT (60, after the guest agent has attached).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
 need_kube; need_cmds curl jq node base64
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_MEET_LINK
+# ArgoCD would put the runner back during the kill and reaper cases: run under deploy/k3d/k14-env.sh on, which pauses its auto-sync
 # every desktop keeps its server heartbeat (lib.sh new_desktop) until the case disturbs it: stop_beat at the disturbance, not before
 SCALED=
 KEEPPID=
@@ -31,13 +34,26 @@ hold() {
   done
   return 1
 }
-# case_hold <name> <id> <seconds> <server>
-case_hold() { if hold "$2" "$3" "$4"; then pass "$1"; else fail "$1" "$2 still present after $3 s: $(desk_leftovers "$2")"; fi; }
+# case_hold <name> <id> <seconds> <server> <min seconds>: gone within <seconds>, and not sooner than <min>: an earlier end is another rule's
+case_hold() {
+  local t0=$SECONDS e
+  if hold "$2" "$3" "$4"; then
+    e=$((SECONDS - t0))
+    if [ "$e" -ge "$5" ]; then pass "$1"; else fail "$1" "$2 gone after only $e s (want >= $5 s): another rule ended it"; fi
+  else
+    fail "$1" "$2 still present after $3 s: $(desk_leftovers "$2")"
+    api destroy "$(jq -nc --arg d "$2" '{desktop_id:$d}')" >/dev/null 2>&1 || true
+  fi
+}
 fresh() { new_desktop "life-$1" verify-scope || die "create for $1: $DERR"; }
-# settled <id>: the VMI runs and the guest has had time to dial the runner
+# settled <id>: the VMI runs and the guest agent is attached (act answers no-control until then; the screenshot also counts as activity)
 settled() {
   local end=$((SECONDS + 240))
   until [ "$(kc get vmi "rfdesk-$1" -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ]; do [ $SECONDS -lt "$end" ] || die "VMI rfdesk-$1 not running"; sleep 2; done
+  end=$((SECONDS + 240))
+  until [ "$(act "$1" '{"type":"desktop_screenshot","hosts":[]}' 2>/dev/null | jq -r 'has("error")' 2>/dev/null)" = false ]; do
+    [ $SECONDS -lt "$end" ] || die "guest of $1 never attached"; sleep 5
+  done
   sleep "${VERIFY_BOOT_WAIT:-60}"
 }
 # egress_cut <uid>: the guard's alive element for the pod is gone, or the whole table is
@@ -72,14 +88,14 @@ if wait_gone "$DID" 60; then pass lifecycle-call-end; else fail lifecycle-call-e
 fresh worker; settled "$DID"
 printf '{}' | kubectl --context "$KCTX" replace --raw "/apis/subresources.kubevirt.io/v1/namespaces/$NS/virtualmachineinstances/rfdesk-$DID/pause" -f - >/dev/null \
   || die "pause rfdesk-$DID"
-case_hold lifecycle-worker-heartbeat "$DID" "${VERIFY_WAIT_WORKER:-90}" 1
+case_hold lifecycle-worker-heartbeat "$DID" "${VERIFY_WAIT_WORKER:-90}" 1 20
 
 fresh server; settled "$DID"; stop_beat "$DID"
-case_hold lifecycle-server-heartbeat "$DID" "${VERIFY_WAIT_SERVER:-150}" 0
+case_hold lifecycle-server-heartbeat "$DID" "${VERIFY_WAIT_SERVER:-150}" 0 50
 
 # idle: both heartbeats keep running (they are liveness, not activity), so only the idle rule can end it
 fresh idle; settled "$DID"
-case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1
+case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1 500
 
 # the runtime limit: still heartbeating and in use, so it must end only at the limit (VERIFY_RUNTIME_MAX, the runner's runtimeMaxSec, 10800)
 end=$((MAX_T0 + ${VERIFY_WAIT_MAX:-11100}))
@@ -92,10 +108,11 @@ stop_beat "$MAXID"; kill "$KEEPPID" 2>/dev/null || true; KEEPPID=
 # the runner pod is killed: its replacement reconciles, or the reaper acts first; either way the desktop is gone within 60 s
 fresh kill; id=$DID; settled "$id"
 runner=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].metadata.name}')
+[ -n "${PODUID[$id]:-}" ] || die "no launcher pod UID for $id"
 stop_beat "$id"
 kc delete pod "$runner" --grace-period=0 --force >/dev/null 2>&1 || die "delete runner pod"
-if watch_end "$id" 60; then pass "lifecycle-runner-killed (gone ${GONE_AT} s after the kill, egress cut at ${CUT_AT:-before the table went} s)"
-else fail lifecycle-runner-killed "$id left 60 s after the runner pod was killed: $(desk_leftovers "$id")"; fi
+if watch_end "$id" 60 && [ "$GONE_AT" -le 60 ] && [ -n "$CUT_AT" ] && [ "$CUT_AT" -le "$GONE_AT" ]; then pass "lifecycle-runner-killed (gone ${GONE_AT} s after the kill, egress cut at ${CUT_AT} s)"
+else fail lifecycle-runner-killed "$id: gone='${GONE_AT:-never}' s, egress cut='${CUT_AT:-never}' s (want gone <= 60 and the cut first): $(desk_leftovers "$id")"; fi
 kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "runner did not come back"
 wait_api 90 || die "runner API does not answer"
 
@@ -108,14 +125,18 @@ kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "r
 wait_api 90 || die "runner API does not answer"
 if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-runner-restart "$id survived a runner restart: $(desk_leftovers "$id")"; fi
 
-# the reaper alone: the runner is scaled to 0, so nothing renews the Lease or the guard's permission; the reaper deletes it, egress cut first
+# the reaper alone: the runner is killed (SIGKILL: a SIGTERM would make it destroy every desktop itself) and scaled to 0 before its replacement
+# starts, so nothing renews the Lease or the guard's permission; the reaper deletes it, egress cut first
 fresh reaper; id=$DID; settled "$id"
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+runner=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].metadata.name}')
+SCALED=1
 stop_beat "$id"
-SCALED=1; kc scale deployment rfactory-runner --replicas=0 >/dev/null || die "scale runner to 0"
+kc delete pod "$runner" --grace-period=0 --force --wait=false >/dev/null 2>&1 || die "kill runner pod"
+kc scale deployment rfactory-runner --replicas=0 >/dev/null || die "scale runner to 0"
 t0=$SECONDS; CUT_AT=; GONE_AT=
 uid=${PODUID[$id]:-}; [ -n "$uid" ] || die "no launcher pod UID for $id"
-while [ $((SECONDS - t0)) -lt "${VERIFY_WAIT_REAPER:-100}" ]; do
+while [ $((SECONDS - t0)) -lt "${VERIFY_WAIT_REAPER:-150}" ]; do
   [ -n "$CUT_AT" ] || ! egress_cut "$uid" || CUT_AT=$((SECONDS - t0))
   if [ -z "$(desk_leftovers "$id")" ]; then GONE_AT=$((SECONDS - t0)); break; fi
   sleep 1
@@ -135,5 +156,8 @@ if wait_gone "$id" 60; then pass lifecycle-manual-vmi-delete; else fail lifecycl
 
 # nothing at all is left
 left=$(desk_ids | tr '\n' ' '); for id in "${CREATED[@]}"; do left="$left$(desk_leftovers "$id")"; done
+for n in $NODES; do
+  t=$(gnft "$n" list tables 2>&1) && left="$left $(grep -o 'rfdesk_[0-9a-f-]*' <<<"$t" | sort -u | sed "s/^/table@$n:/" | tr '\n' ' ')" || left="$left unreadable@$n"
+done
 if [ -z "${left// /}" ]; then pass lifecycle-nothing-left; else fail lifecycle-nothing-left "still there: $left"; fi
 finish

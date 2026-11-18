@@ -1,6 +1,6 @@
 'use strict';
 // Helper for liveview.sh: a minimal RFB-over-WebSocket client and a headless noVNC page check.
-//   node liveview.js open <wsurl>        print "refused" or "open" (the server accepted and sent bytes within 10 s)
+//   node liveview.js open <wsurl>        print "refused" (closed), "open" (bytes within 10 s) or "silent" (neither)
 //   node liveview.js hold <wsurl>        print "open <epoch ms>" then "closed <epoch ms>" when the server closes
 //   node liveview.js key <wsurl>         handshake, send a KeyEvent, print "closed" or "open" (3 s later)
 //   node liveview.js vnc <runner-url>   the runner's own /vnc/<id> upgrade over mTLS ($VERIFY_CERT, $VERIFY_KEY, $VERIFY_CA are file paths): print the status
@@ -75,7 +75,7 @@ async function main() {
   }
   const ws = connect();
   if (mode === 'open') {
-    const t = setTimeout(() => { out('refused'); process.exit(0); }, 10000);
+    const t = setTimeout(() => { out('silent'); process.exit(0); }, 10000); // accepted but no bytes: not a refusal
     ws.onmessage = () => { clearTimeout(t); out('open'); process.exit(0); };
     ws.onclose = () => { clearTimeout(t); out('refused'); process.exit(0); };
     ws.onerror = () => {};

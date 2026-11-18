@@ -7,7 +7,7 @@
 # `$VERIFY_NODE_CLI exec` (default podman). The StorageClass keeps the volume (Retain): the PVs of the profiles this script makes stay, and are
 # listed at the end for the owner to delete.
 # Environment: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_ADMIN_COOKIE (an admin's session cookie, name=value),
-# VERIFY_OTHER_SCOPE (a scope other than verify-scope). Optional: VERIFY_WAIT_EXPIRY (3700 s).
+# VERIFY_OTHER_SCOPE (a scope other than the web server's). Optional: VERIFY_SCOPE (the web server's scope, default verify-scope), VERIFY_WAIT_EXPIRY (3700 s).
 # profiles-expire-destroys-desktop backdates the profile's record and waits for the runner's hourly expiry sweep, so the script runs over an hour.
 # profiles-rollback-keeps-data asks the owner on the terminal to delete the ArgoCD Application rfactory-desktops (the namespace stays) and sync it
 # again: the script never touches the argocd namespace.
@@ -18,6 +18,7 @@ set -euo pipefail
 trap verify_exit EXIT
 need_kube; need_cmds curl jq node
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_ADMIN_COOKIE VERIFY_OTHER_SCOPE
+VERIFY_SCOPE=${VERIFY_SCOPE:-verify-scope}
 MARKER=rfmark-$(cat /proc/sys/kernel/random/uuid)
 LUKS=4c554b53babe # "LUKS" 0xba 0xbe
 PROFILES=() # profile ids this script created; the only ones it deletes
@@ -37,6 +38,16 @@ attach() {
   AD=$(jq -r '.desktop_id // empty' <<<"$ATTACHED" 2>/dev/null || true)
   if [ -n "$AD" ]; then CREATED+=("$AD"); note_pod "$AD"; fi
 }
+# rattach <profile> <scope> <call_id>: the runner's own profile-attach (its error text is not masked like the web route's); sets ATTACHED, AD
+rattach() {
+  ATTACHED=$(api profile-attach "$(jq -nc --arg p "$1" --arg s "$2" --arg c "$3" --arg f "$PLATFORM" \
+    '{profile_id:$p,scope:$s,call_id:$c,platform:$f,actor:{id:"verify",admin_scopes:[$s]}}')") || true
+  AD=$(jq -r '.desktop_id // empty' <<<"$ATTACHED" 2>/dev/null || true)
+  if [ -n "$AD" ]; then CREATED+=("$AD"); note_pod "$AD"; fi
+}
+errmatch() { jq -e --arg re "$2" '.error | strings | test($re)' <<<"$1" >/dev/null 2>&1; }
+# nonzero <profile>: count of non-zero bytes in disk.img after the first 16 MiB (the 256 MiB behind it)
+nonzero() { on_node "$1" 'tail -c +16777217 "$1" | head -c 268435456 | tr -d "\000" | wc -c'; }
 cm_field() { kc get configmap "rfprofile-$1" -o jsonpath="{.data.$2}" 2>/dev/null; }
 # pv_locate <profile>: sets PVNODE and PVPATH (the node and the disk.img file behind the profile's PVC)
 pv_locate() {
@@ -54,47 +65,51 @@ zero_head() { on_node "$1" 'head -c 16777216 "$1" | tr -d "\000" | wc -c'; } # 0
 # ciphertext <profile>: the image is LUKS and holds no plaintext marker (the pattern goes in on stdin, not argv)
 ciphertext() {
   [ "$(magic "$1")" = "$LUKS" ] || { echo "not LUKS"; return 1; }
-  ! printf '%s\n' "$MARKER" | on_node "$1" 'grep -qaF -f - "$1"' || { echo "plaintext marker found"; return 1; }
+  local rc=0
+  printf '%s\n' "$MARKER" | on_node "$1" 'grep -qaF -f - "$1"' || rc=$?
+  [ "$rc" = 1 ] || { echo "marker scan rc=$rc (0 = plaintext found, 1 is the only pass, else the scan failed)"; return 1; }
 }
 gone_pvc_cm() { ! kc get pvc "rfprofile-$1" >/dev/null 2>&1 && ! kc get configmap "rfprofile-$1" >/dev/null 2>&1; }
 
 # the other scope: the web routes are fixed to verify-scope, so this goes to the runner's profile-attach as an admin of the OTHER scope
 mk_profile "verify-profile"; P1=$P
-r=$(api profile-attach "$(jq -nc --arg p "$P1" --arg s "$VERIFY_OTHER_SCOPE" --arg c profiles-other --arg f "$PLATFORM" \
-  '{profile_id:$p,scope:$s,call_id:$c,platform:$f,actor:{id:"verify",admin_scopes:[$s]}}')") || true
-if [ -n "$r" ] && [ -z "$(jq -r '.desktop_id // empty' <<<"$r" 2>/dev/null)" ] && [ -n "$(jq -r '.error // empty' <<<"$r" 2>/dev/null)" ]; then pass profiles-other-scope-refused
-else fail profiles-other-scope-refused "attach as another scope's admin: $r"; fi
+rattach "$P1" "$VERIFY_OTHER_SCOPE" profiles-other
+if [ -z "$AD" ] && errmatch "$ATTACHED" 'access denied'; then pass profiles-other-scope-refused
+else fail profiles-other-scope-refused "attach as another scope's admin: $ATTACHED"; fi
 
 # the first attach formats: the record said initialized false, and says true after, with a LUKS header on the disk
-pre=$(cm_field "$P1" initialized)
+pre=$(cm_field "$P1" initialized) || pre=unreadable
 attach "$P1" profiles-call-1; D1=$AD
 [ -n "$D1" ] || die "first attach failed: $ATTACHED"
 if [ "$pre" = false ] && [ "$(cm_field "$P1" initialized)" = true ] && [ "$(magic "$P1")" = "$LUKS" ]; then pass profiles-first-attach-formats
 else fail profiles-first-attach-formats "initialized before '$pre', after '$(cm_field "$P1" initialized)'; header '$(magic "$P1" || true)' (want $LUKS)"; fi
 
 # a second attach is refused
-attach "$P1" profiles-call-2
-if [ -z "$AD" ] && [ -n "$(jq -r '.error // empty' <<<"$ATTACHED" 2>/dev/null)" ]; then pass profiles-second-attach-refused
+rattach "$P1" "$VERIFY_SCOPE" profiles-call-2
+if [ -z "$AD" ] && errmatch "$ATTACHED" 'already attached'; then pass profiles-second-attach-refused
 else fail profiles-second-attach-refused "second attach: $ATTACHED"; fi
 
 # while attached, the guest holds a marker in its Chrome profile; the node's disk image shows only ciphertext
+nz0=$(nonzero "$P1") || nz0=
 o=
 end=$((SECONDS + 240))
 while [ $SECONDS -lt "$end" ]; do
-  o=$(act "$D1" "$(jq -nc --arg u "https://meet.google.com/?$MARKER" '{type:"desktop_open",url:$u,hosts:["https://meet.google.com"]}')" 2>/dev/null) || o=
+  o=$(act "$D1" "$(jq -nc --arg u "https://meet.google.com/?$MARKER" '{type:"desktop_open",url:$u,hosts:["https://meet.google.com","https://apps.google.com","https://workspace.google.com"]}')" 2>/dev/null) || o=
   if [ -n "$o" ] && jq -e '.ok == true' <<<"$o" >/dev/null 2>&1; then break; fi
-  o=; sleep 10
+  o=; sleep 20
 done
 sleep 30 # Chrome writes its stores a little later
+nz1=$(nonzero "$P1") || nz1=
 if [ -z "$o" ]; then fail profiles-host-ciphertext "the marker page did not load in the attached guest"
+elif ! [[ "$nz0" =~ ^[0-9]+$ && "$nz1" =~ ^[0-9]+$ ]] || [ "$nz1" -le "$nz0" ]; then fail profiles-host-ciphertext "no new ciphertext written (non-zero bytes $nz0 -> $nz1), the scan proves nothing"
 elif why=$(ciphertext "$P1"); then pass profiles-host-ciphertext; else fail profiles-host-ciphertext "$why"; fi
 
 # the desktop ends, the profile is released; the header is then wiped: initialized, no header, so it fails closed and is never formatted
 api destroy "$(jq -nc --arg d "$D1" '{desktop_id:$d}')" >/dev/null || true
 wait_gone "$D1" 90 || die "$D1 did not go"
 on_node "$P1" 'dd if=/dev/zero of="$1" bs=1M count=16 conv=notrunc 2>/dev/null' || die "could not wipe the header of $P1"
-attach "$P1" profiles-call-wiped
-if [ -z "$AD" ] && [ -n "$(jq -r '.error // empty' <<<"$ATTACHED" 2>/dev/null)" ] && [ "$(zero_head "$P1")" = 0 ] && [ "$(cm_field "$P1" initialized)" = true ]; then
+rattach "$P1" "$VERIFY_SCOPE" profiles-call-wiped
+if [ -z "$AD" ] && errmatch "$ATTACHED" 'profile unlock failed' && [ "$(zero_head "$P1")" = 0 ] && [ "$(cm_field "$P1" initialized)" = true ]; then
   pass profiles-wiped-header-fails-closed
 else fail profiles-wiped-header-fails-closed "attach: $ATTACHED; non-zero bytes in the first 16 MiB: $(zero_head "$P1" || echo '?'); initialized: $(cm_field "$P1" initialized)"; fi
 
@@ -103,7 +118,7 @@ mk_profile "verify-delete"; P2=$P
 attach "$P2" profiles-call-3; D3=$AD
 [ -n "$D3" ] || die "attach for delete failed: $ATTACHED"
 rd=$(admin DELETE "/api/profiles/$P2") || true
-if [ "$(jq -r '.ok // false' <<<"$rd" 2>/dev/null)" = true ] && wait_gone "$D3" 60 && gone_pvc_cm "$P2"; then pass profiles-delete-destroys-desktop
+if [ "$(jq -r '.ok // false' <<<"$rd" 2>/dev/null)" = true ] && wait_gone "$D3" 60 && { for _ in $(seq 12); do gone_pvc_cm "$P2" && break; sleep 5; done; gone_pvc_cm "$P2"; }; then pass profiles-delete-destroys-desktop
 else fail profiles-delete-destroys-desktop "delete reply: $rd; desktop left: $(desk_leftovers "$D3"); pvc or record left: $(gone_pvc_cm "$P2" && echo no || echo yes)"; fi
 
 # expiry: backdate the record, wait for the sweep; the attached desktop must go, then the PVC and the record
@@ -125,12 +140,15 @@ attach "$P4" profiles-call-5; D5=$AD
 [ -n "$D5" ] || die "attach for the rollback rehearsal failed: $ATTACHED"
 api destroy "$(jq -nc --arg d "$D5" '{desktop_id:$d}')" >/dev/null || true; wait_gone "$D5" 90 || die "$D5 did not go"
 uid0=$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}'); cm0=$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}')
+rt0=$(kc get deployment rfactory-runner -o jsonpath='{.metadata.uid}' 2>/dev/null) || rt0=
 ans=
 if [ -r /dev/tty ] && [ -w /dev/tty ]; then
   printf 'Rollback rehearsal: delete the ArgoCD Application rfactory-desktops now (the namespace stays), wait until its workloads are gone, sync it again,\nthen answer. Profile %s (PVC rfprofile-%s) must survive. Done? [y/N] ' "$P4" "$P4" >/dev/tty
   read -r -t 1800 ans </dev/tty || true
 fi
 if [ "$ans" != y ] && [ "$ans" != Y ]; then fail profiles-rollback-keeps-data "the owner did not confirm the rehearsal"
+elif ! kc rollout status deployment/rfactory-runner --timeout=300s >/dev/null 2>&1; then fail profiles-rollback-keeps-data "runner Deployment not back after the sync"
+elif [ -z "$rt0" ] || [ "$(kc get deployment rfactory-runner -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$rt0" ]; then fail profiles-rollback-keeps-data "runner Deployment uid unchanged: the Application was not deleted and recreated"
 elif [ "$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$uid0" ] \
   && [ "$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}' 2>/dev/null)" = "$cm0" ] && [ "$(magic "$P4")" = "$LUKS" ]; then
   pass profiles-rollback-keeps-data

@@ -19,6 +19,9 @@ set -euo pipefail
 trap verify_exit EXIT
 need_cmds curl jq node
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL VERIFY_MEET_LINK
+need_kube
+# a stale .retitled from an earlier run would let share-title-change pass without this run's page retitling
+curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null || die "fixture not reachable at $VERIFY_FIXTURE_CTL"
 
 SHARE_ACTIONS='["desktop_open","desktop_screenshot","propose_share"]'
 # ready <id>: a grant that allows a share of the fixture origin (the VM is already in the call, so its guest is up)
@@ -90,8 +93,8 @@ else
   else
     dh=$(hook drop-control "$E"); t0=$SECONDS
     if [ "$(jq -r '.ok // false' <<<"$dh")" != true ]; then fail share-control-down "hook reply: $dh"
-    elif wait_gone "$E" 40; then pass "share-control-down ($((SECONDS - t0)) s after the channel was dropped)"
-    else fail share-control-down "$E still present 40 s after the control channel was dropped"; fi
+    elif wait_gone "$E" 40 && [ $((SECONDS - t0)) -le 25 ]; then pass "share-control-down ($((SECONDS - t0)) s after the channel was dropped; cutoff is 5 s plus teardown)"
+    else fail share-control-down "$E not gone within 25 s of the dropped channel (took $((SECONDS - t0)) s, or still present at 40 s)"; fi
   fi
 fi
 finish

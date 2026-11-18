@@ -7,11 +7,13 @@
 # The session rules are checked on the session record the server reports in `state` (handover: null or {actions,hosts,until}); a request
 # typed on another desktop goes through the real request route (needs the brain); the browser boundary is checked through the runner's
 # `action` route, which is what the gateway calls after its checks.
-# The web server must run with scope verify-scope and RFACTORY_DESKTOP=1.
+# The web server must run with RFACTORY_DESKTOP=1; SCOPE (VERIFY_SCOPE, default verify-scope) must equal its scope name, else every web route answers not-found.
+# The runner needs RF_SCOPE_PREVIEWS naming the fixture's A and B (ip:port) for that scope: B reachable at network level, so only the browser stops it.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA (runner), VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE (an approver's session cookie, name=value),
 # VERIFY_FIXTURE_URL (fixture.js port A as the guest sees it, e.g. http://10.1.2.3:8081; an approved preview),
 # VERIFY_FIXTURE_CTL (the same server as this script sees it), VERIFY_OTHER_SCOPE (a scope other than verify-scope).
 # Run `node desktop/verify/fixture.js <portA> <portB>` on a host the guest may reach (B must be reachable but not in hosts).
+# The service-worker check needs a secure-context fixture URL (https, localhost or 127.*): a plain http IP has no navigator.serviceWorker.
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -19,11 +21,21 @@ trap verify_exit EXIT
 need_cmds curl jq date
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL VERIFY_OTHER_SCOPE
 
-SCOPE=verify-scope CALL=handover-call
+SCOPE=${VERIFY_SCOPE:-verify-scope} CALL=handover-call
 new_desktop "$CALL" "$SCOPE" || die "create: $DERR"; D=$DID
 new_desktop handover-other-call "$SCOPE" || die "create 2: $DERR"; D2=$DID
 new_desktop handover-other-scope "$VERIFY_OTHER_SCOPE" || die "create 3: $DERR"; D3=$DID
-sleep 30 # the guest agent needs a moment to listen (a server heartbeat keeps each VM alive meanwhile: lib.sh new_desktop)
+# wait_attached <id>: poll until the runner has the guest's control link (the action route stops answering no-control); a heartbeat keeps each VM alive meanwhile
+wait_attached() {
+  local end=$((SECONDS + ${VERIFY_BOOT_WAIT:-240})) r
+  while [ $SECONDS -lt "$end" ]; do
+    r=$(act "$1" "$(jq -nc --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_screenshot",hosts:[$h]}')" 2>/dev/null) || r=
+    [ -z "$r" ] || [ "$(jq -r '.error // empty' <<<"$r" 2>/dev/null)" = no-control ] || return 0
+    sleep 3
+  done
+  return 1
+}
+for i in "$D" "$D2" "$D3"; do wait_attached "$i" || die "guest of $i never attached"; done
 
 hits() { curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits"; }
 # session_of <id>: the session record from state, "none" when there is no session, "bad: <reply>" when the reply is not this desktop's state
@@ -45,7 +57,7 @@ curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
 r=$(ask "$D2" "Open $VERIFY_FIXTURE_URL/ in the browser") || true
 sleep 3
 h=$(hits)
-if [ "$(jq -r '.text // empty' <<<"$r")" != "Done." ] && [ "$(jq -r '.a // 1' <<<"$h" 2>/dev/null)" = 0 ] && [ "$(session_of "$D2")" = none ] && [ "$(state_of "$D2" | jq -r '.running // "none"')" = none ]; then
+if jq -e '(.text | type) == "string" and .text != "Done."' <<<"$r" >/dev/null 2>&1 && [ "$(jq -r '.a // 1' <<<"$h" 2>/dev/null)" = 0 ] && [ "$(session_of "$D2")" = none ] && [ "$(state_of "$D2" | jq -r '.running // "none"')" = none ]; then
   pass handover-wrong-desktop
 else fail handover-wrong-desktop "reply: $r; fixture hits: $h"; fi
 r=$(grant "$D3" 5 "$ALL")
@@ -83,7 +95,9 @@ curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
 open_page /sw; sleep 3
 h=$(hits)
 if ! page_loaded; then fail handover-blocked-service-worker "page did not load: open: $OPENED; hits: $h"
-elif [ "$(jq -r .sw <<<"$h")" != registered ]; then pass handover-blocked-service-worker; else fail handover-blocked-service-worker "a service worker registered: $h"; fi
+elif [ "$(jq -r .sw <<<"$h")" = registered ]; then fail handover-blocked-service-worker "a service worker registered: $h"
+elif [ "$(jq -r .sw <<<"$h")" = unavailable ] && ! [[ "$VERIFY_FIXTURE_URL" =~ ^(https://|http://(localhost|127\.)) ]]; then fail handover-blocked-service-worker "not exercised: $VERIFY_FIXTURE_URL is not a secure context, so the page has no navigator.serviceWorker: $h"
+elif [ "$(jq -r .sw <<<"$h")" = unavailable ] || [ "$(jq -r .sw <<<"$h")" = none ]; then pass handover-blocked-service-worker; else fail handover-blocked-service-worker "a service worker registered: $h"; fi
 
 # revoked: the server's revoke ends the session and cancels the guest; a confirmed cancel keeps the VM (it is destroyed only when the
 # guest does not confirm), so state must answer for D with no session, and D must still be listed
@@ -97,6 +111,7 @@ extra_cleanup() { rm -f "$OUT"; kill "${BG:-}" 2>/dev/null || true; }
 ( act "$D2" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL/slow" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')" >"$OUT" ) &
 BG=$!
 sleep 3
+kill -0 "$BG" 2>/dev/null || { fail handover-revoke-stops-action "the slow action had already ended before revoke: $(cat "$OUT")"; finish; exit 1; }
 t0=$SECONDS; ms0=$(date +%s%N)
 approver POST "/api/desktop/$D2/revoke" >/dev/null
 stopped=

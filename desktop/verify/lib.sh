@@ -8,7 +8,7 @@
 # Each check prints exactly one `PASS <name>` or `FAIL <name>: <evidence>` line;
 # `grep -c '^FAIL'` over the output is the result. A script that cannot start prints a FAIL line too.
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-RUNNER_URL=${RUNNER_URL:-https://127.0.0.1:8443}
+RUNNER_URL=${RUNNER_URL:-https://127.0.0.1:18443} # the k3d load balancer, loopback only (k11); the cert has IP SAN 127.0.0.1
 NS=rfactory-desktops
 KCTX=${VERIFY_KUBE_CONTEXT:-k3d-factory}
 NODES=${VERIFY_NODES:-k3d-factory-server-0 k3d-factory-agent-0} # the two k3d nodes (kubernetes.io/hostname); desktops run on the second

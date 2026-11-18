@@ -757,6 +757,18 @@ and 27) and the scripts. This plan is self-contained.
     - Not changed: the guard heartbeat's API read (fails closed), the
       Kyverno guard exemption (only cluster admins can create pods
       there).
+37. **k12 re-done for k3d from a parallel read-only audit (lead plus
+    one coder per script).**
+    - No script false-PASSes on a vacuous result: lifecycle's heartbeat
+      and idle cases need the guest attached and a minimum elapsed time;
+      the reaper case kills the runner (SIGTERM makes the runner clean up
+      itself); share, liveview and handover reset or bound their state.
+    - capacity skips the probe checks when agent-0 is tainted
+      (deviation 22) and no longer hangs on `wait`.
+    - The runner API default is `https://127.0.0.1:18443` (k11).
+    - The scripts need test mode (`deploy/k3d/k14-env.sh on`): ArgoCD
+      auto-sync paused, the runner with `RF_VERIFY_HOOKS=1` and the
+      verify previews, and the web pod on scope `verify-scope`.
 
 
 ## Steps

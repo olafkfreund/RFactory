@@ -215,7 +215,7 @@ test('lifecycle.sh keeps the runtime-limit desktop in use and passes only at the
   assert.match(life, /desktop_screenshot/);
   assert.match(life, /\$age" -ge "\$\{VERIFY_RUNTIME_MAX:-10800\}"/);
   assert.ok(life.indexOf('MAX_T0=$SECONDS; fresh max') >= 0);
-  for (const at of ['kc delete pod "$runner"', 'kc rollout restart', 'kc scale deployment rfactory-runner --replicas=0']) {
+  for (const at of ['kc delete pod "$runner"', 'kc rollout restart', 'kc delete pod "$runner" --grace-period=0 --force --wait=false']) {
     assert.match(life.slice(life.lastIndexOf('\n', life.indexOf(at) - 1) - 40, life.indexOf(at)), /stop_beat "\$id"/, at);
   }
 });

@@ -45,6 +45,8 @@ http.createServer((req, res) => {
       const n = (e) => e.value.length, tell = () => fetch('/login-state?u=' + n(user) + '&p=' + n(pass));
       user.oninput = pass.oninput = tell; go.onclick = () => fetch('/login-submitted');
     </script>`); break;
+    // liveview: a visible, focused input; a key that reached the guest would show in login.user
+    case '/focus': html(res, `<h1>rfactory live view</h1><input id="user" autofocus><script>user.oninput = () => fetch('/login-state?u=' + user.value.length + '&p=0')</script>`); break;
     case '/login-state': { const q = new URL(req.url, 'http://x').searchParams; state.login.user = Number(q.get('u')) || 0; state.login.pass = Number(q.get('p')) || 0; res.end('{}'); break; }
     case '/login-submitted': state.login.submitted = true; res.end('{}'); break;
     default: html(res, 'ok');
