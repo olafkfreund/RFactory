@@ -270,6 +270,23 @@ and 27) and the scripts. This plan is self-contained.
       no longer uses; k5 ignores it.
     - Callers (k3) must pass the host-specific always-protected ranges:
       p620's LAN and Tailscale addresses, and the Factory hosts.
+14. **k5 results (Codex, lead verified).**
+    - `desktop/guard/guard.js` writes the deviation 11 tables per pod UID
+      and keeps existing tables on start (so `deadline` is never reset).
+      It removes stale `rfdesk_<uid>` tables only, and reports ready only
+      after reading both tables back.
+    - It serves a runner-only mTLS endpoint.
+    - Rate limiting is `tc` ingress policing at 20 Mbit/s on the veth
+      (the pod's egress).
+    - Reconcile also runs every 10 s, to cover missed watch events.
+    - `desktop/guard/package.json` exists so `node --test guard/`
+      resolves.
+    - The lead made each `alive` refresh one `nft -f` transaction (delete
+      plus add), so the element is never absent in between. An expired
+      element makes the transaction fail, so the cut stands.
+    - k8 must give the guard `NODE_NAME`, the desktop label
+      `rfactory.io/desktop=true` and the ServiceAccount CA.
+    - Kernel behaviour is proven only at k10b.
 
 ## Steps
 
