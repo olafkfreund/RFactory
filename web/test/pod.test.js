@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const pod = path.join(__dirname, '..', '..', 'deploy', 'pod.sh');
+const realPod = path.join(__dirname, '..', '..', 'deploy', 'pod.sh');
 
 // Runs `pod.sh up` with a fake podman that records argv; returns the status and the rfactory-web run args.
 function run(env, { writeKey = false } = {}) {
@@ -17,6 +17,11 @@ function run(env, { writeKey = false } = {}) {
   if (writeKey) files['cfactory-write-key'] = 'w\n';
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(cfg, name), body, { mode: 0o600 });
   fs.writeFileSync(path.join(bin, 'podman'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n`, { mode: 0o755 });
+  // pod.sh runs next to a fake source guard (the real one needs a clean, pushed checkout; it has its own tests)
+  const deploy = path.join(dir, 'repo', 'deploy'); fs.mkdirSync(deploy, { recursive: true });
+  fs.copyFileSync(realPod, path.join(deploy, 'pod.sh'));
+  fs.writeFileSync(path.join(deploy, 'source-guard.sh'), '#!/bin/sh\necho 0123456789abcdef0123456789abcdef01234567\n', { mode: 0o755 });
+  const pod = path.join(deploy, 'pod.sh');
   const r = spawnSync('bash', [pod, 'up'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir,
     RFACTORY_CONFIG: cfg, RFACTORY_CLAUDE_HOME: path.join(dir, 'claude'), RFACTORY_ALLOWED_EMAILS: 'a@example.com', ...env } });
   const lines = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n') : [];

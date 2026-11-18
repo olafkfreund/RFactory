@@ -65,7 +65,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null, profiles = null, heartbeatMs = 10000 }) {
+function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -90,6 +90,7 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const url = req.url.split('?')[0];
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -228,11 +229,15 @@ async function main() {
   }
   let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
-    const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
-    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions, desktop,
+    const { createTts } = require('./tts.js');
+    const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
+    const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
+      ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions, desktop,
       ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, brain, roles, call, actions, desktop, profiles: runner ? { runner, scope: scope.name } : null }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  createApp({ source, brain, roles, call, actions, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+    commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 if (require.main === module) {

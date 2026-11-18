@@ -5,13 +5,14 @@ const { createHearing } = require('@rfactory/core/src/call/hearing.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts } = require('@rfactory/core/src/facts.js');
 const { summarise } = require('@rfactory/core/src/items.js');
+const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
 const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
-function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, clock = globalThis,
-  quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null }) {
+function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null }) {
   const listeners = new Set();
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
@@ -85,9 +86,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
     if (call !== c || c.generation !== generation || c.stopping) return;
     const sentences = toSpeech(text);
     if (!sentences.length) return;
-    const synthesise = (sentence) => Promise.resolve().then(() => tts.say(sentence))
+    const synthesise = (sentence) => Promise.resolve().then(() => c.tts.say(sentence))
       .then((wav) => {
-        if (call === c && tts.voice !== c.voice) { c.voice = tts.voice; emit({ type: 'voice', voice: c.voice }); }
+        if (call === c && c.tts.voice !== c.voice) { c.voice = c.tts.voice; emit({ type: 'voice', voice: c.voice }); }
         return { wav };
       }, (error) => ({ error }));
     let next = synthesise(sentences[0]);
@@ -212,11 +213,18 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
 
   async function start(link) {
     if (call) throw new Error('busy');
-    const child = spawn(botCmd[0], botCmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    const choices = avatar === 'random' ? Object.keys(portraits).filter((id) => portraits[id].anchors) : avatar;
+    const resolvedAvatar = Array.isArray(choices) ? choices[Math.floor(random() * choices.length)] : choices;
+    const env = { ...process.env };
+    delete env.RFACTORY_AVATAR;
+    if (resolvedAvatar) env.RFACTORY_AVATAR = resolvedAvatar;
+    const child = spawn(botCmd[0], botCmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], detached: true, env });
+    const callTts = resolvedAvatar?.startsWith('m') ? maleTts : tts;
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
-      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, voice: tts.voice };
+      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0,
+      tts: callTts, voice: callTts.voice };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);

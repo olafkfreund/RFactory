@@ -13,3 +13,7 @@ Work follows intent → spec → plan: see `intent/`, `spec/`, `plan/`.
 - `RFACTORY_ADMINS`: members with the admin role.
 
 Approvers and admins must also be members; otherwise the web app refuses to start (`roles-not-members`).
+
+## Licence
+
+RFactory is free software under the GNU Affero General Public License v3.0 only (`LICENSE`). Third-party parts and their licences are listed in `NOTICE.md`; upstream licence texts are in `LICENSES/`. This is not a legal review.

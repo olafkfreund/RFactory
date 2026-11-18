@@ -28,11 +28,12 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot, tts, desktop } = {}) {
+function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random, desktop } = {}) {
   const clock = fakeClock();
-  const children = [], events = [], kills = [], spoken = [];
+  const children = [], events = [], kills = [], spoken = [], spawnOptions = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
-  const child = () => {
+  const child = (bin, args, options) => {
+    spawnOptions.push(options);
     const c = new EventEmitter();
     c.pid = 100 + children.length;
     c.desktop_id = 'd1';
@@ -50,7 +51,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts, desktop } = {}) {
   const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
     tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
-    redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop });
+    maleTts, avatar, random, redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop });
   manager.subscribe((event) => events.push(event));
   const restore = () => { process.kill = originalKill; };
   const messages = () => spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s));
@@ -58,8 +59,41 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts, desktop } = {}) {
     children.at(-1).output({ type: 'heard', id, speaker, text, final: true });
     clock.tick(1500); await flush();
   };
-  return { manager, children, events, kills, spoken, messages, clock, heard, restore, snapshot };
+  return { manager, children, events, kills, spoken, messages, spawnOptions, clock, heard, restore, snapshot };
 }
+
+test('avatar resolves once per call and the child receives its id only when set', async () => {
+  for (const [avatar, random, expected] of [
+    [undefined, () => 0, undefined], ['m04', () => 0, 'm04'],
+    [['f01', 'm04'], () => 0.99, 'm04'], ['random', () => 0, 'f01'],
+  ]) {
+    const f = setup({ avatar, random });
+    try {
+      await f.manager.start('link');
+      assert.equal(f.spawnOptions[0].env.RFACTORY_AVATAR, expected);
+      assert.equal(Object.hasOwn(f.spawnOptions[0].env, 'RFACTORY_AVATAR'), expected !== undefined);
+      const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+    } finally { f.restore(); }
+  }
+});
+
+test('male faces use the male voice; female, absent and missing male voice use default', async () => {
+  const female = { voice: 'female', say: async (s) => Buffer.from(s) };
+  const male = { voice: 'male', say: async (s) => Buffer.from(s) };
+  for (const [avatar, maleTts, voice] of [
+    ['m04', male, 'male'], ['f01', male, 'female'], [undefined, male, 'female'], ['m04', undefined, 'female'],
+  ]) {
+    const f = setup({ avatar, tts: female, maleTts });
+    try {
+      await f.manager.start('link');
+      assert.deepEqual(f.events[0], { type: 'voice', voice });
+      f.children[0].output({ type: 'state', state: 'in-call' });
+      await flush();
+      assert.equal(f.manager.current().find((e) => e.type === 'voice').voice, voice);
+      const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+    } finally { f.restore(); }
+  }
+});
 
 test('start, greeting, voice, mic and stopped state', async () => {
   const f = setup();

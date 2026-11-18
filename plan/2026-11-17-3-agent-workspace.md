@@ -770,6 +770,44 @@ v1; Wayland in the guest.
     pre-made tap, the identity oneshot, the unprivileged control Chrome,
     dnsmasq `nftset`, and the real share and call audio.
 
+25. **#13 and main merged into this branch (lead, 2026-11-18), owner's
+    "build and deploy now".** Deploying this branch's web image without #13
+    would remove the live avatar, so `origin/feat/13-talking-avatar`
+    (845929f) and `main` (roles, 0c1011c) are merged. Conflicts in
+    `README.md`, `web/call.js`, `web/server.js` and `web/test/call.test.js`
+    keep both sides (avatar, male voice and `/api/config` commit; roles,
+    desktop and profiles). `web/test/pod.test.js` runs `pod.sh` next to a
+    fake source guard, since the real guard needs a clean pushed checkout
+    and has its own tests. noVNC and its pako are now in `NOTICE.md` and
+    `LICENSES/` (deviation 19). Known gap: a call that joins from a VM has
+    no avatar (`RFACTORY_AVATAR` is not passed through `call-config`).
+26. **Microsoft Teams (owner decision, 2026-11-18: "We need to make sure we
+    can use Microsoft Teams as well for this ... Approved").** New step
+    13e, after step 17's first p620 run: Teams calls work like Meet calls,
+    from the pod and from a desktop VM. `@vibeconferencing/calls`
+    0.1.0-alpha.3 already ships a Teams provider
+    (`providers/teams-provider.js`, browser join as a named guest), so:
+    - `POST /api/call` accepts Teams meeting links
+      (`https://teams.microsoft.com/l/meetup-join/…`,
+      `https://teams.live.com/meet/…`) besides Meet; `vm-call` maps them to
+      platform `teams`; the bot passes the link to the library unchanged.
+    - Teams media ranges pinned like Meet and Zoom, from Microsoft's
+      published endpoints (`endpoints.office.com`, the Teams "Optimize"
+      category: UDP 3478-3481 and the listed IPv4/IPv6 ranges) with
+      source, date and sha256; preflight passes for `teams`.
+    - The guest's DNS allowlist gains the Teams web-join names
+      (`teams.microsoft.com`, `teams.live.com` and the CDN and auth names
+      the join needs, found by a recorded join, not guessed).
+    - The share (step 11) and the avatar camera use the library's Teams
+      provider paths; any Teams-specific button labels go in the provider
+      layer, never in RFactory code.
+    - AI disclosure and the source offer unchanged (name, chat line,
+      camera badge).
+    → verify: unit tests for link validation and platform mapping; the
+    ranges and allowlist tests; live, with the owner, a Teams meeting
+    joined from the pod and from a VM (spoken answer, leave, share of an
+    approved window).
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

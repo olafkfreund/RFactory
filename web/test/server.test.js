@@ -49,6 +49,11 @@ test('static files carry CSP, nosniff and no-store', async (t) => {
   }
 });
 
+test('page config returns the source commit', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain, commit: 'abc123' });
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: 'abc123' });
+});
+
 test('standup response has exactly the planned keys; deadline is passed to the brain', async (t) => {
   let seen;
   const brain = { label: () => 'fake', turn: async (snap, o) => { seen = o; return { text: 'ok' }; } };
