@@ -25,7 +25,8 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: guard
-          image: rfactory/guard@sha256:REPLACE
+          image: docker.io/rfactory/guard:52xii2aj3x7hm9yg5f4ck298vwh4nmvj@sha256:eda8f8973d61522354f4883e47acf2f78f712441f6124f9484c51926925bc397
+          imagePullPolicy: Never
           ports:
             - {name: guard, containerPort: 9443, hostPort: 9443}
           env:

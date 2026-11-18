@@ -30,7 +30,8 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: runner
-          image: rfactory/runner@sha256:REPLACE
+          image: docker.io/rfactory/runner:gxabjrqpvpay2fmvv8s0nfpjd3rb49kq@sha256:2b6e706a27f5755892bdb54a28d0137d19e907982af316cbe243db5e1e05cf1f
+          imagePullPolicy: Never
           ports:
             - {name: api, containerPort: 8443}
             - {name: control, containerPort: 5000}
@@ -45,9 +46,9 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "rfactory/guest-boot@sha256:REPLACE"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "rfactory/guest-disk@sha256:REPLACE"}
-            - {name: RF_GUEST_CMDLINE, value: "REPLACE"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:8d2eeac04c9ff77a8e974165b98cae78a5bc3d10352068f02d0f07fa330a27f4"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:24a9ecf960a56b6adbe50a4015ae4ad603fc63f4dab60357678e48044478498f"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/qqv1vr0kwp14y464jqx3qwhdzsw0z19v-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

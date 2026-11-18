@@ -21,7 +21,8 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: reaper
-          image: rfactory/reaper@sha256:REPLACE
+          image: docker.io/rfactory/reaper:6l05yhi22i672mha1k1pcsy2vg6h797q@sha256:5e56c7861109089273f19fba3e72f152c7cae757cfc2af18dc458cfbd58befd1
+          imagePullPolicy: Never
           env:
             - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
           securityContext:

@@ -481,6 +481,20 @@ and 27) and the scripts. This plan is self-contained.
     - The demo VMI ran in 15 s on `k3d-factory-agent-0`, with `/dev/kvm`
       in the launcher and `<domain type='kvm'>`.
     - The scratch namespace was deleted. **PASS.**
+24. **k10 results (lead, owner-approved, agent bus first).**
+    - Built with nix on p620: runner, guard, proxy and reaper (81–91 MB
+      each), the guest boot image (56 MB), the guest disk image (1.1 GB)
+      and the guest cmdline (`init=/nix/store/…-nixos-system-desktop-guest…/init
+      console=ttyS0 root=fstab loglevel=4 lsm=…`).
+    - **`k3d image import` reports success but imports nothing on the
+      recreated cluster**, because its shared image volume is not mounted
+      on the nodes. The images were instead copied into each node and
+      imported with `ctr -n k8s.io images import`.
+    - Both nodes show the same digests. The manifests now pin
+      `docker.io/rfactory/<name>:<tag>@sha256:…` and
+      `docker.io/library/rfactory-guest-{boot,disk}:k2@sha256:…`, with
+      `imagePullPolicy: Never` (the images exist only in the nodes).
+    - A cluster recreate needs the import repeated.
 
 
 ## Steps
