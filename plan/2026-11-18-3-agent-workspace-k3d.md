@@ -495,6 +495,22 @@ and 27) and the scripts. This plan is self-contained.
       `docker.io/library/rfactory-guest-{boot,disk}:k2@sha256:…`, with
       `imagePullPolicy: Never` (the images exist only in the nodes).
     - A cluster recreate needs the import repeated.
+25. **k11 app sync (lead; agent bus first; factory-gitops#383 merged).**
+    - k11-prep (owner) applied the namespace and the two TLS Secrets from
+      agenix.
+    - First sync: every pod `ErrImageNeverPull`. kubelet's image garbage
+      collection (node disk at 83%) had removed the k10 imports, because
+      no pod used them yet.
+    - Also, `ctr import` creates only `repo:tag`, but a `tag@digest` pin
+      is looked up as `repo@sha256:…`.
+    - Fix, on both nodes:
+      - re-import;
+      - `ctr images tag <repo:tag> <repo@digest>`;
+      - label every rfactory ref `io.cri-containerd.pinned=pinned`, so
+        GC skips the guest images that only a running VMI uses.
+    - Then: all five pods Ready, app `Synced/Healthy`, four Kyverno
+      policies Ready. A cluster recreate or re-import repeats all three
+      steps.
 
 
 ## Steps
