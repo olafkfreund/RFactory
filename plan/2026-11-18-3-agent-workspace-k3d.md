@@ -714,6 +714,23 @@ and 27) and the scripts. This plan is self-contained.
       - The guest's route handler logs why it aborted a request: reason
         and host only.
       - The proxy and guest images were rebuilt.
+    - **The last `ERR_FAILED`** was the agent working as intended:
+      signed out, `meet.google.com/` redirects to `apps.google.com`, which
+      was not granted. The marker step now grants the landing hosts
+      (`apps.google.com`, `workspace.google.com`). The gate's API helper
+      waits 180 s, because under load a create can take the runner's full
+      budget.
+34. **k10b PASS: run 12, 33/33 (lead).**
+    - Every protected range blocked (TCP and UDP, same node and cross
+      node).
+    - Both anti-spoofing checks, the STUN media check and the proxy checks
+      pass.
+    - Guard kill and guard restart, and the 5 s share cutoff.
+    - A real desktop (created in about 21 s, Meet opened through the
+      guard and proxy) leaves no marker on the nodes after a forced
+      delete.
+    - Nothing was left in the namespace. The scripts and the install guide
+      are in `deploy/k3d/` (README with every problem above).
 
 
 ## Steps

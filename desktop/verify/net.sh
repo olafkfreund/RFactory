@@ -191,11 +191,13 @@ else fail net-share-cut-5s "5 s refresh applied: $refreshed; last growth at ${la
 
 # a forced delete of a real desktop leaves no guest marker on a node's files. The marker is in a URL the guest's Chrome loads (TLS hides it
 # from the proxy), so only guest memory should hold it. The nodes' own files are searched with the pattern on stdin, not in argv.
+# signed out, meet.google.com redirects to apps.google.com (then workspace.google.com): the grant covers that landing page, or the agent
+# rightly refuses the redirect
 MARKER=rfmark-$(cat /proc/sys/kernel/random/uuid)
 new_desktop net-marker verify-scope || die "create for the marker: $DERR"; D=$DID
 ok=false; end=$((SECONDS + 240))
 while [ $SECONDS -lt "$end" ]; do
-  o=$(act "$D" "$(jq -nc --arg u "https://meet.google.com/?$MARKER" '{type:"desktop_open",url:$u,hosts:["https://meet.google.com"]}')" 2>/dev/null) || o=
+  o=$(act "$D" "$(jq -nc --arg u "https://meet.google.com/?$MARKER" '{type:"desktop_open",url:$u,hosts:["https://meet.google.com","https://apps.google.com","https://workspace.google.com"]}')" 2>/dev/null) || o=
   if [ -n "$o" ] && jq -e '.ok == true' <<<"$o" >/dev/null 2>&1; then ok=true; break; fi
   sleep 10
 done

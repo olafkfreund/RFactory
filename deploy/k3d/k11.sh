@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # k11: reserve the desktop node, expose the runner on the host's loopback, and start the web pod with desktops on.
-# Usage: deploy/k3d/k11.sh <k10b gate log>   (run after a clean k10b: the probe checks cannot run once agent-0 is tainted)
+# Usage: deploy/k3d/k11.sh <gate log>   (the log of a clean deploy/k3d/gate.sh run: the probe checks cannot run once agent-0 is tainted)
 # Plan 2026-11-18-3-agent-workspace-k3d, step k11 and deviation 31. Announce on the agent bus first: the k3d load
 # balancer is recreated (the cluster API is unreachable for a few seconds) and the web pod restarts.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-GATE=${1:?usage: k11.sh <k10b gate log>}
+GATE=${1:?usage: k11.sh <gate.sh log>}
 NODE=${K11_NODE:-k3d-factory-agent-0}
 LB=${K11_LB:-k3d-factory-serverlb}
 PORT=${K11_PORT:-18443}      # host loopback port; 8443 is left to the gate's port-forward
@@ -14,7 +14,7 @@ CERTS=${RFACTORY_CONFIG:-$HOME/.config/rfactory}/desktop-runner
 URL=https://127.0.0.1:$PORT
 
 if ! { [ -s "$GATE" ] && ! grep -q '^FAIL' "$GATE" && grep -q '^PASS net-antispoof-mac' "$GATE"; }; then
-  echo "refusing: $GATE is not a clean k10b run" >&2; exit 2
+  echo "refusing: $GATE is not a clean gate.sh run" >&2; exit 2
 fi
 kubectl -n kubevirt get ds virt-handler -o jsonpath='{.spec.template.spec.tolerations}' | grep -q '{"operator":"Exists"}' \
   || { echo "refusing: virt-handler has no blanket toleration yet (factory-gitops#391)" >&2; exit 2; }

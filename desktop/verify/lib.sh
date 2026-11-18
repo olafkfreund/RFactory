@@ -42,7 +42,7 @@ api() {
   local body=${2-}
   [ -n "$body" ] || body='{}'
   need_env VERIFY_CERT VERIFY_KEY VERIFY_CA
-  curl -sS --max-time 60 --cacert "$VERIFY_CA" --cert "$VERIFY_CERT" --key "$VERIFY_KEY" \
+  curl -sS --max-time 180 --cacert "$VERIFY_CA" --cert "$VERIFY_CERT" --key "$VERIFY_KEY" \
     -X POST -H 'content-type: application/json' --data "$body" "$RUNNER_URL/$1"
 }
 
