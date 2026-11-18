@@ -7,7 +7,7 @@ let
     pname = "rfactory-bot";
     version = "0";
     src = clean ../../bot;
-    npmDepsHash = "sha256-w/8+hvYX4mg2OG5JPZLoLFWuhbNedwNJexWg1yL1Tgc=";
+    npmDepsHash = "sha256-cmsWRZtGqf5c2XVoeqz2joSGlhwQNuDvIACLxf9OV4c="; # bot/package-lock.json, measured by the first p620 build
     dontNpmBuild = true;
     installPhase = ''
       runHook preInstall
