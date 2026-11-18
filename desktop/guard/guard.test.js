@@ -146,6 +146,26 @@ test('an identity or veth error cuts a live pod; only an API error is forgiven',
   assert.deepEqual(await guard.status(uid), { ready: false, reason: 'guard-no-veth' });
 });
 
+test('the police filter is added once; a reconcile with it in place adds nothing and keeps the pod ready', async () => {
+  const f = fake(); let filter = '';
+  const run = async (file, argv, stdin) => {
+    if (file === 'tc' && argv[0] === 'filter' && argv[1] === 'show') return filter;
+    if (file === 'tc' && argv[0] === 'filter' && argv[1] === 'add') {
+      if (filter) { const e = new Error('RTNETLINK answers: File exists'); e.code = 2; throw e; }
+      filter = 'filter protocol all pref 1 matchall chain 0 \nfilter protocol all pref 1 matchall chain 0 handle 0x1 \n  not_in_hw \n\taction order 1:  police 0x1 rate 20Mbit burst 64Kb mtu 2Kb action drop overhead 0b \n';
+    }
+    return f.run(file, argv, stdin);
+  };
+  const guard = createGuard({ api: f.api, run, readResults: f.readResults, sleep: async () => {}, nodeName: 'n' });
+  await guard.reconcile(); await guard.reconcile(); await guard.reconcile();
+  assert.deepEqual(await guard.status(uid), { ready: true });
+  filter = 'filter protocol all pref 1 matchall chain 0 handle 0x1 \n\taction order 1:  police 0x1 rate 1Mbit burst 8Kb mtu 2Kb action drop \n';
+  const calls = []; const spy = async (file, argv, stdin) => { if (file === 'tc') calls.push(argv.slice(0, 2).join(' ')); if (file === 'tc' && argv[1] === 'del') filter = ''; return run(file, argv, stdin); };
+  const g2 = createGuard({ api: f.api, run: spy, readResults: f.readResults, sleep: async () => {}, nodeName: 'n' });
+  await g2.reconcile();
+  assert.deepEqual(calls.filter(c => c.startsWith('filter')), ['filter show', 'filter del', 'filter add']); // a different filter is replaced
+});
+
 test('rendered tables carry the rules version', () => {
   const { bridge, inet } = renderTables(pod, { ...entry, podMAC: '52:54:00:00:00:07' }, 'veth123');
   const c = `  comment "${RULES_VERSION} veth123 52:54:00:00:00:07 10.42.1.7,fd50::7";`;

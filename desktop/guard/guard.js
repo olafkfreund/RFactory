@@ -103,6 +103,8 @@ function renderTables(pod, entry, veth) {
 }
 
 const CNI_RESULTS = process.env.RF_CNI_RESULTS || '/var/lib/cni/results';
+// the ingress police filter as `tc filter show` prints it (iproute2 on the guard image)
+const POLICED = /pref 1 matchall[\s\S]*?police 0x[0-9a-f]+ rate 20Mbit burst 64Kb[\s\S]*?action drop/;
 const CNI_NETWORK = process.env.RF_CNI_NETWORK || 'cbr0'; // k3s flannel
 function readCniResults(dir = CNI_RESULTS) {
   return fs.readdirSync(dir).flatMap(file => { try { return [JSON.parse(fs.readFileSync(`${dir}/${file}`, 'utf8'))]; } catch { return []; } });
@@ -208,8 +210,13 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
       await run('nft', ['-f', '-'], `${rules.bridge}\n${rules.inet}`);
     }
     await run('tc', ['qdisc', 'replace', 'dev', found.veth, 'clsact']);
-    await run('tc', ['filter', 'replace', 'dev', found.veth, 'ingress', 'protocol', 'all', 'pref', '1', 'matchall',
-      'action', 'police', 'rate', '20mbit', 'burst', '64k', 'drop']);
+    // `tc filter replace` of a matchall answers "File exists" once it is there (seen live): check, then add only when missing or different
+    const shown = await run('tc', ['filter', 'show', 'dev', found.veth, 'ingress']);
+    if (!POLICED.test(shown)) {
+      if (/\bpref 1\b/.test(shown)) await run('tc', ['filter', 'del', 'dev', found.veth, 'ingress', 'pref', '1']);
+      await run('tc', ['filter', 'add', 'dev', found.veth, 'ingress', 'protocol', 'all', 'pref', '1', 'handle', '1', 'matchall',
+        'action', 'police', 'rate', '20mbit', 'burst', '64k', 'drop']);
+    }
     if ((await tables(uid, expect)) !== true) throw new Error('guard table read-back failed');
     ready.set(uid, true);
   }
@@ -232,7 +239,7 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
       } catch (error) {
         // only a Kubernetes API error is forgiven for a live pod whose tables read back; identity, veth, MAC or binding errors cut it
         if (error.transient && ready.get(uid) === true && (await tables(uid).catch(() => false)) === true) console.error(`guard reconcile ${uid}: ${error.message}`);
-        else ready.set(uid, error.code || error.message);
+        else ready.set(uid, typeof error.code === 'string' ? error.code : String(error.message).slice(0, 200)); // a command's exit code alone says nothing
       }
     }
   }
