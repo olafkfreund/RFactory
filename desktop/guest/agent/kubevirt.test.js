@@ -71,7 +71,7 @@ test('call worker: the call Chrome launch gets the proxy, only for that launch',
   let hostOpts;
   const worker = createCallWorker({ nonce: 'n', proxy, send: () => {}, env: {}, deps: {
     chromium,
-    playwrightHost: async (o) => { hostOpts = o; await chromium.launchPersistentContext('/d', { args: o.args }); return { context: {}, close: async () => {} }; },
+    playwrightHost: async (o) => { hostOpts = o; await chromium.launchPersistentContext('/d', { args: o.args }); return { context: { addInitScript: async () => {} }, close: async () => {} }; },
     join: async () => { throw new Error('no call'); },
     run: async ({ deps }) => { await deps.playwrightHost({ userDataDir: '/d' }); },
   } });

@@ -22,6 +22,17 @@ async function withProxy(proxy, chromium, launch) {
   try { return await launch(); } finally { pw.launchPersistentContext = original; }
 }
 
+// Meet sometimes shows a guest a "Continue as guest" page before the name and "Ask to join"; the calls library (0.1.0-alpha.3)
+// does not know it, sees no lobby, join or call UI, and reports "denied" after its limbo grace (k14). This clicks through it.
+// shortcut: matches the English label only (the guest Chrome runs in English); upgrade if the library learns the page.
+const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === window.top) {
+  const t = setInterval(() => {
+    const b = [...document.querySelectorAll('button, [role="button"]')].find((e) => e.offsetParent && /^\\s*Continue as guest\\s*$/i.test(e.innerText || ''));
+    if (b) b.click();
+  }, 500);
+  setTimeout(() => clearInterval(t), 300000);
+}`;
+
 // The guest's call worker (plan 13c): bot/run.js with its stdin/stdout carried as call-in / call-out pieces.
 // The call Chrome gets callLaunchArgs(nonce) and the share (step 11) runs in that same Chrome.
 // deps (tests): run, playwrightHost, join. onExit() fires when the worker has finished.
@@ -32,7 +43,9 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
   const workerDeps = {
     playwrightHost: async (o) => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
-      return (host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] })));
+      host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] }));
+      await host.context.addInitScript(MEET_GUEST);
+      return host;
     },
     join: async (link, o) => {
       const call = await (deps.join || require('@vibeconferencing/calls').join)(link, o);
@@ -73,4 +86,4 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
   };
 }
 
-module.exports = { createCallWorker, withProxy };
+module.exports = { createCallWorker, withProxy, MEET_GUEST };

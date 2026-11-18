@@ -18,7 +18,7 @@ function fixture() {
     leave: async () => {}, chat: { send: async () => {} }, _inner: { page: { evaluate: async () => false } },
   });
   const worker = createCallWorker({ nonce: 'n1', send: (m) => sent.push(m), onExit: () => { exited++; }, env: { CHROME: '/chrome' }, deps: {
-    playwrightHost: async (o) => { opts.host = o; return { context: {}, close: async () => {} }; },
+    playwrightHost: async (o) => { opts.host = o; return { context: { addInitScript: async () => {} }, close: async () => {} }; },
     join: async (link, o) => { opts.link = link; o.onState('joining'); o.onState('lobby'); return call; },
   } });
   const lines = () => { const out = []; let cur = ''; for (const m of sent) if (m.type === 'call-out') { cur += m.chunk; if (m.end) { out.push(JSON.parse(cur)); cur = ''; } } return out; };
