@@ -731,6 +731,12 @@ and 27) and the scripts. This plan is self-contained.
       delete.
     - Nothing was left in the namespace. The scripts and the install guide
       are in `deploy/k3d/` (README with every problem above).
+35. **k11 done by `deploy/k3d/k11.sh` (lead, owner's go-ahead).**
+    - agent-0 tainted `rfactory.io/desktops=true:NoSchedule` only.
+    - The runner API is published on the host at `127.0.0.1:18443` only
+      (serverlb port to NodePort 31843); the mTLS `/list` call answers.
+    - The web pod restarted with `RFACTORY_DESKTOP=1` and
+      `RFACTORY_RUNNER_URL=https://127.0.0.1:18443`; both nodes Ready.
 
 
 ## Steps
