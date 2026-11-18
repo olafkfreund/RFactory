@@ -249,7 +249,8 @@ function createLifecycle(config, deps) {
           firmware: { kernelBoot: { container: { image: k.bootImage, imagePullPolicy: 'Never', kernelPath: '/boot/kernel', initrdPath: '/boot/initrd' },
             kernelArgs: `${k.cmdline} rf.runner=${k.runnerIP} rf.proxy=${k.proxyIP}:${k.proxyPort}` } },
           devices: { disks: [{ name: 'root', disk: { bus: 'virtio', readonly: true } }, ...(profile ? [profile.disk] : [])],
-            interfaces: [{ name: 'default', masquerade: {} }] } },
+            // the guest's serial console (kernel and systemd unit status, console=ttyS0) as the launcher's guest-console-log container
+            interfaces: [{ name: 'default', masquerade: {} }], logSerialConsole: true } },
         networks: [{ name: 'default', pod: {} }],
         volumes: [{ name: 'root', containerDisk: { image: k.diskImage, imagePullPolicy: 'Never' } }, ...(profile ? [profile.volume] : [])] } };
     await deps.k8s.createVmi(vmi);

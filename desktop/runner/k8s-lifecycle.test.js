@@ -69,6 +69,7 @@ test('paused VMI, UID and pod, owned policy and entries, guard ready, then unpau
   assert.match(vmi.spec.domain.firmware.kernelBoot.kernelArgs, /^init=\/nix\/store\/\S+\/init console=ttyS0 /);
   assert.equal(vmi.spec.domain.firmware.kernelBoot.kernelArgs, `${CMDLINE} rf.runner=10.43.250.10 rf.proxy=10.43.250.11:3128`);
   assert.equal(vmi.spec.domain.devices.disks[0].disk.readonly, true);
+  assert.equal(vmi.spec.domain.devices.logSerialConsole, true);
   assert.equal(vmi.spec.domain.resources.limits.memory, '6Gi');
   for (const item of [policy, proxy, guard]) assert.equal(item.metadata.ownerReferences[0].uid, vmiUID);
   assert.ok(JSON.parse(proxy.data.entry).token);

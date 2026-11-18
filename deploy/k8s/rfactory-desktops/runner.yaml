@@ -30,7 +30,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: runner
-          image: docker.io/rfactory/runner:a0ir2kspjsb9lkx26xmkp4g5hi01z1nk@sha256:9e47bbcccacdbdeef8d646d93116708e9a0aaae4acf61205bb8d6554063e2aa7
+          image: docker.io/rfactory/runner:d9bidcdzkmi14glb49yn51g6czkb7bm5@sha256:6b4332d5e0d9dfa1e5ef243721920f749367761e7cdeba47b053974bb7837b2f
           imagePullPolicy: Never
           ports:
             - {name: api, containerPort: 8443}
