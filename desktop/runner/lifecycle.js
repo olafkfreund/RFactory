@@ -62,6 +62,7 @@ function createLifecycle(config, deps) {
       owners.delete(vm.sock);
       if (vm.server) vm.server.close();
       if (vm.agent) vm.agent.destroy();
+      endCall(vm);
       failPending(vm, 'destroyed');
       const ok = await cleanup(id);
       if (ok) vms.delete(id); else vm.destroying = null; // a later destroy retries
@@ -81,6 +82,7 @@ function createLifecycle(config, deps) {
 
   // Host -> guest control channel (vsock 5000, duplex): call-config goes first, then actions; replies are matched by action_id.
   const MAX_CONTENT = 4 * 1024 * 1024;
+  function endCall(vm) { if (vm.callSock) vm.callSock.destroy(); vm.callSock = null; } // no worker behind it: let web/vm-call.js see the close
   function failPending(vm, error) { for (const p of vm.pending.values()) p.resolve({ error }); vm.pending.clear(); }
   function onAgentMessage(vm, m) {
     if (m.type === 'action-content' || m.type === 'action-result') {
@@ -95,6 +97,10 @@ function createLifecycle(config, deps) {
       const image = p.chunks.length && p.chunks.every((c) => typeof c === 'string') ? Buffer.concat(p.chunks.map((c) => Buffer.from(c, 'base64'))).toString('base64') : undefined;
       return p.resolve({ ok: m.ok, ...(m.content === undefined ? {} : { content: m.content }), ...(image ? { image_base64: image } : {}) });
     }
+    if (m.type === 'call-out') { // the call worker's stdout line, piece by piece
+      if (vm.callSock && !vm.callSock.destroyed) { vm.lastActivity = clock.now(); vm.callSock.write(m.chunk + (m.end ? '\n' : '')); }
+      return;
+    }
     onMessage(vm, m);
   }
   async function connectAgent(vm) {
@@ -104,7 +110,7 @@ function createLifecycle(config, deps) {
       if (vms.get(vm.id) !== vm || vm.destroying) return conn.destroy();
       vm.agent = conn;
       const decoder = createDecoder((m) => onAgentMessage(vm, m));
-      const closed = () => { if (vm.agent === conn) { vm.agent = null; failPending(vm, 'control-closed'); } };
+      const closed = () => { if (vm.agent === conn) { vm.agent = null; endCall(vm); failPending(vm, 'control-closed'); } };
       conn.on('data', (c) => decoder.write(c));
       conn.on('end', closed); conn.on('error', closed); conn.on('close', closed);
       sendCallConfig(vm);
@@ -146,6 +152,32 @@ function createLifecycle(config, deps) {
     const r = await toGuest(id, { type: 'share-stop', share_id });
     if (r.ok) sharing(id, false); // a stop that did not land keeps the control-channel rule armed
     return r.error || r.ok ? r : { ...r, error: 'share-stop-failed' };
+  }
+  // The call worker's line stream (plan 13c): raw lines on `socket` <-> call-in / call-out pieces on the guest channel.
+  const CALL_PIECE = 16 * 1024;
+  function callAttach(id, socket) {
+    const vm = vms.get(id);
+    if (!vm || vm.destroying || vm.spare || !vm.agent || !vm.configSent || vm.callSock) return false;
+    vm.callSock = socket;
+    let open = false; // a line has started and not yet ended
+    const piece = (chunk, end) => {
+      try { vm.agent.write(encode({ type: 'call-in', chunk, end })); } catch { socket.destroy(); }
+    };
+    socket.setEncoding('utf8');
+    socket.on('data', (text) => {
+      vm.lastActivity = clock.now();
+      const parts = text.split('\n');
+      parts.forEach((part, i) => {
+        const complete = i < parts.length - 1;
+        for (let o = 0; o < part.length; o += CALL_PIECE) {
+          open = !(complete && o + CALL_PIECE >= part.length);
+          piece(part.slice(o, o + CALL_PIECE), !open);
+        }
+        if (complete && !part.length && open) { piece('', true); open = false; }
+      });
+    });
+    socket.on('close', () => { if (vm.callSock === socket) vm.callSock = null; });
+    return true;
   }
   const vncSock = (id) => { const vm = vms.get(id); return vm && !vm.destroying && !vm.spare ? vm.sock : null; };
 
@@ -290,7 +322,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, destroy, list, heartbeat, activity, sharing, action, shareStart, shareStop, vncSock, check, reconcile, clear, run, stop,
+  return { create, createSpare, destroy, list, heartbeat, activity, sharing, action, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
     status: () => ({ ...state, count: vms.size }) };
 }
 

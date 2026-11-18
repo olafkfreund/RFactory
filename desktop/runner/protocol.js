@@ -26,6 +26,9 @@ const schemas = Object.freeze({
   desktop_screenshot: { action_id: optional(string) },
   desktop_login: { profile: string },
   'call-config': { nonce: string },
+  // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
+  'call-in': { chunk: string, end: boolean },
+  'call-out': { chunk: string, end: boolean },
   'share-start': { share_id: string, url: string, hosts, action_id: optional(string) },
   'share-stop': { share_id: string, action_id: optional(string) },
 });

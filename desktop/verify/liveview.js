@@ -1,14 +1,15 @@
 'use strict';
 // Helper for liveview.sh: a minimal RFB-over-WebSocket client and a headless noVNC page check.
-//   node liveview.js open <wsurl> <token>        print "refused" or "open" (the server accepted and sent bytes within 10 s)
-//   node liveview.js hold <wsurl> <token>        print "open <epoch ms>" then "closed <epoch ms>" when the server closes
-//   node liveview.js key <wsurl> <token>         handshake, send a KeyEvent, print "closed" or "open" (3 s later)
-//   node liveview.js page <pageurl> <token>      load the noVNC page in headless Chrome ($VERIFY_CHROME); print "frame" or "noframe: <why>"
-// The token goes in an authorization header; it is never printed.
-const [mode, url, token] = process.argv.slice(2);
-if (!mode || !url) { console.error('usage: liveview.js open|hold|key|page <url> <token>'); process.exit(2); }
+//   node liveview.js open <wsurl>        print "refused" or "open" (the server accepted and sent bytes within 10 s)
+//   node liveview.js hold <wsurl>        print "open <epoch ms>" then "closed <epoch ms>" when the server closes
+//   node liveview.js key <wsurl>         handshake, send a KeyEvent, print "closed" or "open" (3 s later)
+//   node liveview.js page <pageurl>      load the noVNC page in headless Chrome ($VERIFY_CHROME); print "frame" or "noframe: <why>"
+// The session cookie (name=value) is read from $LV_COOKIE (not argv), goes in a cookie header and is never printed.
+const [mode, url] = process.argv.slice(2);
+const cookie = process.env.LV_COOKIE;
+if (!mode || !url) { console.error('usage: liveview.js open|hold|key|page <url>'); process.exit(2); }
 
-const headers = token ? { authorization: `Bearer ${token}` } : {};
+const headers = cookie ? { cookie } : {};
 const out = (s) => process.stdout.write(`${s}\n`);
 
 function connect() {
@@ -42,7 +43,10 @@ async function main() {
     const { chromium } = require('playwright-core');
     const browser = await chromium.launch({ executablePath: process.env.VERIFY_CHROME, headless: true, args: ['--no-sandbox'] });
     try {
-      const page = await (await browser.newContext({ extraHTTPHeaders: headers })).newPage();
+      const context = await browser.newContext();
+      const [name, ...value] = (cookie || '=').split('=');
+      if (name) await context.addCookies([{ name, value: value.join('='), url }]); // the page's own WebSocket sends it too
+      const page = await context.newPage();
       await page.goto(url, { timeout: 30000 });
       // noVNC draws into a canvas; a frame is a canvas with at least one non-black pixel
       await page.waitForFunction(() => [...document.querySelectorAll('canvas')].some((c) => {

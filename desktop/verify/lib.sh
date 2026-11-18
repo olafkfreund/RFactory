@@ -31,17 +31,22 @@ api() {
     -X POST -H 'content-type: application/json' --data "$body" "$RUNNER_URL/$1"
 }
 
-# srv <METHOD> <path> [json]: call the server (gateway and web) at VERIFY_SERVER_URL. The bearer token is SRV_TOKEN
-# (set per call by the script, e.g. approver or agent) or VERIFY_SERVER_TOKEN; it is sent, never printed.
-srv() {
-  local args=(-sS --max-time 60 -X "$1" -H 'content-type: application/json') tok=${SRV_TOKEN:-${VERIFY_SERVER_TOKEN:-}}
+# web <METHOD> <path> [json]: call the web server at VERIFY_SERVER_URL (behind oauth2-proxy) as the user whose session cookie is
+# WEB_COOKIE. Every call carries the CSRF header x-rfactory-action: 1 and an Origin equal to the server's host (web/desktop-routes.js).
+# The cookie goes in on stdin, not in argv, and is never printed.
+web() {
+  local base=${VERIFY_SERVER_URL%/} args
+  args=(-sS --max-time 60 -X "$1" -H 'content-type: application/json' -H 'x-rfactory-action: 1' -H "origin: $base")
   [ -z "${3:-}" ] || args+=(--data "$3")
-  # the token goes in on stdin, not in argv
-  printf 'authorization: Bearer %s\n' "$tok" | curl "${args[@]}" -H @- "$VERIFY_SERVER_URL$2"
+  printf 'cookie: %s\n' "${WEB_COOKIE:-}" | curl "${args[@]}" -H @- "$base$2"
 }
-
-approver() { SRV_TOKEN=$VERIFY_APPROVER_TOKEN srv "$@"; }
-agent() { SRV_TOKEN=$VERIFY_AGENT_TOKEN srv "$@"; }
+approver() { WEB_COOKIE=$VERIFY_APPROVER_COOKIE web "$@"; }
+# act <id> <message-json>: the runner's `action` route (mTLS), one of the five desktop_* messages; prints the reply
+act() { api action "$(jq -nc --arg d "$1" --argjson m "$2" '{desktop_id:$d,message:$m}')"; }
+# state_of <id>: GET /api/desktop/<id>/state as the approver
+state_of() { approver GET "/api/desktop/$1/state"; }
+# undriven <name> <why>: a checklist item that no existing runner or web route can drive; always FAIL so a run cannot look green
+undriven() { fail "$1" "not drivable: $2"; }
 in_secs() { date -u -d "+$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
 
 # new_desktop <call_id> <scope>: sets DID on success; on failure sets DERR to the runner's reply and returns 1

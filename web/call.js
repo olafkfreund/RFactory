@@ -39,7 +39,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
   }
 
   function killGroup(c, signal) {
-    if (c.exited || !c.child.pid) return;
+    if (c.exited) return;
+    if (!c.child.pid) return c.child.kill?.(signal); // a VM call has no process group; kill ends the VM
     try { process.kill(-c.child.pid, signal); }
     catch (error) { if (error.code !== 'ESRCH') log(`group ${signal} failed: ${error.message}`); }
   }

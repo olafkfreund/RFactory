@@ -3,13 +3,13 @@
 // preview, or a public one on the allowlist):  node fixture.js <portA> <portB>
 //   A (allowed origin) serves the trap pages and /hits; B (not allowed) counts every request it gets.
 //   GET A/mark?v=<text> sets a long-lived cookie with that text (profiles.sh looks for it on the host disk).
-//   GET A/hits -> {"b": <requests B received>, "sw": "none"|"registered"|"unavailable", "retitled": bool}; GET A/reset clears them.
+//   GET A/hits -> {"a": <requests A got besides /hits and /reset>, "b": <requests B received>, "sw": "none"|"registered"|"unavailable", "retitled": bool}; GET A/reset clears them.
 const http = require('node:http');
 
 const [portA, portB] = process.argv.slice(2).map(Number);
 if (!portA || !portB) { console.error('usage: node fixture.js <portA> <portB>'); process.exit(2); }
 
-const state = { b: 0, sw: 'none', retitled: false };
+const state = { a: 0, b: 0, sw: 'none', retitled: false };
 const html = (res, body) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<!doctype html><title>fixture</title>${body}`); };
 
 // the guest reaches B at the address in its own Host header, so the pages build B's URL from it
@@ -17,9 +17,11 @@ const otherOrigin = (req) => `http://${(req.headers.host || '').replace(/:\d+$/,
 
 http.createServer((req, res) => {
   const b = otherOrigin(req);
-  switch (req.url.split('?')[0]) {
+  const path = req.url.split('?')[0];
+  if (path !== '/hits' && path !== '/reset') state.a++;
+  switch (path) {
     case '/hits': res.end(JSON.stringify(state)); break;
-    case '/reset': state.b = 0; state.sw = 'none'; state.retitled = false; res.end('{}'); break;
+    case '/reset': state.a = 0; state.b = 0; state.sw = 'none'; state.retitled = false; res.end('{}'); break;
     case '/redirect': res.writeHead(302, { location: `${b}/landing` }); res.end(); break;
     case '/meta': html(res, `<meta http-equiv="refresh" content="0;url=${b}/landing">`); break;
     case '/js': html(res, `<script>location = '${b}/landing'</script>`); break;

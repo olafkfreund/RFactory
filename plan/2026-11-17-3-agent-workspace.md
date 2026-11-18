@@ -597,6 +597,59 @@ v1; Wayland in the guest.
     "(live view unavailable)". Layout and keyboard use are checked in a
     browser in step 17.
 
+18. **Step 13c results (workflow coder, Opus review, lead verified).** The
+    guest image gains `desktop/guest/agent.nix` (`bot/` with its
+    `node_modules`, the agent, `protocol.js`, `core/src/redact.js`) and an
+    `rfactory-agent` systemd service in `default.nix`; its `npmDepsHash` is
+    copied from `probe.nix` and is unverified until the image is built
+    (step 17). The worker's stdin/stdout lines travel as two new protocol
+    messages, `call-in` and `call-out` (`{chunk, end}`, 16 KiB pieces, never
+    splitting a surrogate pair), over a new runner route `GET /call/<id>`
+    (`Upgrade: rfactory-call`, mTLS; refused unless the VM has a claimed call
+    and its guest channel is up; one stream per VM); the runner ends that
+    stream when the VM is destroyed or its guest channel closes.
+    `client.js` gains `openCall`. The guest's `call.js` runs the unchanged
+    `bot/run.js`, adding `--no-sandbox` (the VM is the sandbox) and
+    `callLaunchArgs(nonce)` to the call Chrome and creating the step 11 share
+    on that Chrome after the join; the worker's exit sends `call-end`.
+    `web/vm-call.js` is a `spawn()` for `web/call.js`: it creates the
+    desktop, retries `openCall` for up to 2 minutes, pipes the lines, sends
+    the runner heartbeat every 10 s, and destroys the VM on kill (also when
+    killed while the create is pending). `web/call.js`'s `killGroup` calls
+    `child.kill` when there is no pid. `web/server.js` uses it only with
+    `RFACTORY_DESKTOP=1`. Not checked: the image build, the service at
+    runtime, a real join (step 17 `e2e.sh`), and whether the probe image
+    should carry the agent service.
+19. **noVNC vendored (workflow coder, Opus review, lead verified).** v1.6.0
+    (tag object `95aaf779f7e16c5c427c68ac56976c6ae1c080f5`, commit
+    `a8dfd6a3ea3c74244f5ebdaa5a7f1023007a7820`, github.com/novnc/noVNC)
+    unchanged under `web/public/vendor/novnc/` (`core/`, `vendor/pako`,
+    `LICENSE.txt`, plus `VERSION`); the reviewer diffed it against the tag
+    with no differences. `server.js` already served the path; a test checks
+    200, the JavaScript type and the version. The MPL-2.0 (noVNC) and MIT
+    (pako) entries in `NOTICE.md`/`LICENSES/` are added when #13 is merged
+    into this branch, before the PR.
+20. **Step 15 scripts re-pointed (workflow coder, Opus review, lead
+    verified).** The scripts use only the runner routes and
+    `/api/desktop/:id/{handover,revoke,state}`, the `/desktop/live/<id>`
+    socket and `/desktop.html`; web calls send the session cookie (from
+    `VERIFY_{APPROVER,MEMBER,NONMEMBER}_COOKIE`, never argv),
+    `x-rfactory-action: 1` and a matching `Origin`, against scope
+    `verify-scope`. The agent's tool calls and `propose_share` have no HTTP
+    route, so: handover session rules are checked on `state`, the browser
+    traps through the runner `action` route (a trap check fails unless the
+    page is proven loaded, `fixture.js` `/hits` gains `a`); share and e2e
+    start the share on the runner directly (the guest's share, not the
+    approval), with title change, navigation, plain stop and "only the
+    approved window" as owner-confirmed items. Checks with no route or hook
+    print `FAIL … not drivable: <why>` (`undriven` in `lib.sh`):
+    `secrets-type-stored-refused`, `secrets-login-not-leaked`,
+    `share-stop-fails`, `share-auto-select-screen`, `share-control-down`,
+    `liveview-revoke-5s`, `handover-wrong-desktop`, `e2e-bot-joins`, and the
+    six `profiles-*` checks. **Owner decision before step 17:** add those
+    routes or hooks as a step, or accept them as unit-covered or
+    owner-checked.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

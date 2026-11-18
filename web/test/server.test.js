@@ -261,3 +261,12 @@ test('main() throws roles-not-members before listening when an approver is not a
   try { await assert.rejects(require('../server.js').main(), /roles-not-members/); }
   finally { for (const k of ['RFACTORY_ALLOWED_EMAILS', 'RFACTORY_APPROVERS']) { if (k in saved) process.env[k] = saved[k]; else delete process.env[k]; } }
 });
+
+test('vendored noVNC 1.6.0 is served as JavaScript and pinned by VERSION', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain });
+  const r = await get('/vendor/novnc/core/rfb.js');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /^text\/javascript/);
+  assert.equal((await get('/vendor/novnc/vendor/pako/lib/zlib/deflate.js')).status, 200);
+  assert.match(fs.readFileSync(path.join(__dirname, '../public/vendor/novnc/VERSION'), 'utf8'), /1\.6\.0/);
+});

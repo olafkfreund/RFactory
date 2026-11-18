@@ -1,75 +1,68 @@
 #!/usr/bin/env bash
-# Step 17 handover checks: the five gateway checks and the browser boundary (#3 "Driving apps").
-# Runs against the PRODUCTION image (the guest agent), not the probe image.
-#
-# Assumed server contract (steps 8 and 13 must provide it; adjust here if they differ). JSON in and out:
-#   POST /desktop/grant   {scope,call_id,desktop_id,actions[],hosts[],until}  (approver)  -> {session_id} | {error}
-#   POST /desktop/revoke  {session_id}                                         (approver)  -> {ok}
-#   POST /desktop/tool    {scope,call_id,desktop_id,session_id?,tool,args}     (agent)     -> {status: ok|queued|rejected|blocked, ...}
-# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA (runner), VERIFY_SERVER_URL, VERIFY_APPROVER_TOKEN, VERIFY_AGENT_TOKEN,
+# Step 17 handover checks: the session rules and the browser boundary (#3 "Driving apps").
+# Runs against the PRODUCTION image. Routes used (all exist):
+#   web:    POST /api/desktop/:id/handover {minutes,actions,hosts}, POST /api/desktop/:id/revoke, GET /api/desktop/:id/state
+#   runner: create, destroy, list, action {desktop_id,message} (mTLS)
+# The agent's own tool call has no HTTP route (it runs inside the brain's gateway, core/test/desktop.test.js), so the session rules are
+# checked on the session record the server reports in `state` (handover: null or {actions,hosts,until}), and the browser boundary through
+# the runner's `action` route, which is what the gateway calls after its checks.
+# The web server must run with scope verify-scope and RFACTORY_DESKTOP=1.
+# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA (runner), VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE (an approver's session cookie, name=value),
 # VERIFY_FIXTURE_URL (fixture.js port A as the guest sees it, e.g. http://10.1.2.3:8081; an approved preview),
-# VERIFY_FIXTURE_CTL (the same server as this script sees it), and a second scope VERIFY_OTHER_SCOPE.
+# VERIFY_FIXTURE_CTL (the same server as this script sees it), VERIFY_OTHER_SCOPE (a scope other than verify-scope).
 # Run `node desktop/verify/fixture.js <portA> <portB>` on a host the guest may reach (B must be reachable but not in hosts).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
 need_cmds curl jq date
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_TOKEN VERIFY_AGENT_TOKEN VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL VERIFY_OTHER_SCOPE
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_FIXTURE_CTL VERIFY_OTHER_SCOPE
 
 SCOPE=verify-scope CALL=handover-call
 new_desktop "$CALL" "$SCOPE" || die "create: $DERR"; D=$DID
 new_desktop handover-other-call "$SCOPE" || die "create 2: $DERR"; D2=$DID
+new_desktop handover-other-scope "$VERIFY_OTHER_SCOPE" || die "create 3: $DERR"; D3=$DID
 sleep 30 # the guest agent needs a moment to listen
 
-# grant <secs> <actions-json> -> session id
+# grant <id> <minutes> <actions-json> -> the web reply
 grant() {
-  approver POST /desktop/grant "$(jq -nc --arg s "$SCOPE" --arg c "$CALL" --arg d "$D" --argjson a "$2" --arg h "$VERIFY_FIXTURE_URL" --arg u "$(in_secs "$1")" \
-    '{scope:$s,call_id:$c,desktop_id:$d,actions:$a,hosts:[$h],until:$u}')" | jq -r '.session_id // empty'
+  approver POST "/api/desktop/$1/handover" "$(jq -nc --argjson m "$2" --argjson a "$3" --arg h "$VERIFY_FIXTURE_URL" '{minutes:$m,actions:$a,hosts:[$h]}')"
 }
-# tool <scope> <call> <desktop> <session> <tool> <args-json> -> status
-tool() {
-  agent POST /desktop/tool "$(jq -nc --arg s "$1" --arg c "$2" --arg d "$3" --arg i "$4" --arg t "$5" --argjson a "$6" \
-    '{scope:$s,call_id:$c,desktop_id:$d,tool:$t,args:$a} + (if $i == "" then {} else {session_id:$i} end)')" | jq -r '.status // "error"'
-}
-not_run() { [ "$1" = rejected ] || [ "$1" = queued ]; }
-OPEN=$(jq -nc --arg u "$VERIFY_FIXTURE_URL/" '{url:$u}')
+# session_of <id>: the session record from state, "none" when there is no session, "bad: <reply>" when the reply is not this desktop's state
+# (401/403/404/500, an oauth2-proxy page): a bad reply must never read as "no session"
+session_of() { local r; r=$(state_of "$1") || true; jq -rc --arg d "$1" 'select(.desktop_id == $d) | .handover // "none"' <<<"$r" 2>/dev/null | grep . || echo "bad: $r"; }
 ALL='["desktop_open","desktop_click","desktop_scroll","desktop_screenshot"]'
 
-# session checks: rejected or queued, never run
-r=$(tool "$SCOPE" "$CALL" "$D" "" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-no-session; else fail handover-no-session "status '$r'"; fi
+# session rules: what the gateway's check reads is the record in state
+if [ "$(session_of "$D")" = none ]; then pass handover-no-session; else fail handover-no-session "a session exists before any grant: $(session_of "$D")"; fi
 
-sid=$(grant 4 "$ALL"); [ -n "$sid" ] || die "grant failed"
-sleep 6
-r=$(tool "$SCOPE" "$CALL" "$D" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-expired; else fail handover-expired "status '$r' after until"; fi
+r=$(grant "$D" 1 '["desktop_screenshot"]')
+s=$(session_of "$D")
+if [ "$(jq -r '.ok // false' <<<"$r")" = true ] && [ "$s" != none ] && [[ "$s" != bad:* ]] && ! jq -e '.actions | index("desktop_open")' <<<"$s" >/dev/null; then pass handover-action-not-allowed
+else fail handover-action-not-allowed "grant: $r; session: $s"; fi
 
-sid=$(grant 600 "$ALL"); approver POST /desktop/revoke "$(jq -nc --arg i "$sid" '{session_id:$i}')" >/dev/null
-r=$(tool "$SCOPE" "$CALL" "$D" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-revoked; else fail handover-revoked "status '$r' after revoke"; fi
+if [ "$(session_of "$D2")" = none ]; then pass handover-wrong-call; else fail handover-wrong-call "D's grant shows on the desktop of another call"; fi
+# no route uses a session granted on one desktop against another; the gateway check is unit-covered (core/test/desktop.test.js, wrong-session)
+undriven handover-wrong-desktop "no route applies one desktop's session to another"
+r=$(grant "$D3" 5 "$ALL")
+if [ "$(jq -r '.error // empty' <<<"$r")" = not-found ]; then pass handover-wrong-scope; else fail handover-wrong-scope "handover on another scope's desktop: $r"; fi
 
-sid=$(grant 600 "$ALL")
-r=$(tool "$VERIFY_OTHER_SCOPE" "$CALL" "$D" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-wrong-scope; else fail handover-wrong-scope "status '$r'"; fi
-r=$(tool "$SCOPE" handover-other-call "$D" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-wrong-call; else fail handover-wrong-call "status '$r'"; fi
-r=$(tool "$SCOPE" "$CALL" "$D2" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-wrong-desktop; else fail handover-wrong-desktop "status '$r'"; fi
+sleep 65 # the one-minute grant ends
+if [ "$(session_of "$D")" = none ]; then pass handover-expired; else fail handover-expired "session still shown after its minute: $(session_of "$D")"; fi
 
-sid=$(grant 600 '["desktop_screenshot"]')
-r=$(tool "$SCOPE" "$CALL" "$D" "$sid" desktop_open "$OPEN")
-if not_run "$r"; then pass handover-action-not-allowed; else fail handover-action-not-allowed "status '$r'"; fi
-
-# browser boundary: open each trap page; nothing may reach origin B, and the service worker must not register
-sid=$(grant 900 "$ALL")
+# browser boundary through the runner's action route: open each trap page; nothing may reach origin B, and the service worker must not register
+r=$(grant "$D" 30 "$ALL"); [ "$(jq -r '.ok // false' <<<"$r")" = true ] || die "grant failed: $r"
 hits() { curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits"; }
+# open_page <path>: the runner's reply is kept in OPENED; the page counts as loaded only when ok is true and the fixture saw a hit on A
+open_page() { OPENED=$(act "$D" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL$1" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')") || true; }
+page_loaded() { [ "$(jq -r '.ok // false' <<<"$OPENED" 2>/dev/null)" = true ] && [ "$(jq -r '.a // 0' <<<"$(hits)" 2>/dev/null)" -gt 0 ]; }
 trap_page() { # name path [click-target]
   curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
-  tool "$SCOPE" "$CALL" "$D" "$sid" desktop_open "$(jq -nc --arg u "$VERIFY_FIXTURE_URL$2" '{url:$u}')" >/dev/null
-  if [ -n "${3:-}" ]; then tool "$SCOPE" "$CALL" "$D" "$sid" desktop_click "$(jq -nc --arg t "$3" '{target:$t}')" >/dev/null; fi
+  open_page "$2"
+  if [ -n "${3:-}" ]; then act "$D" "$(jq -nc --arg t "$3" '{type:"desktop_click",target:$t}')" >/dev/null; fi
   sleep 3
   local h; h=$(hits)
+  page_loaded || { fail "handover-blocked-$1" "page did not load: open: $OPENED; hits: $h"; return; }
   if [ "$(jq -r .b <<<"$h")" = 0 ]; then pass "handover-blocked-$1"; else fail "handover-blocked-$1" "origin B got requests: $h"; fi
 }
 trap_page redirect /redirect
@@ -79,26 +72,32 @@ trap_page popup /popup
 trap_page form-post /form
 trap_page click-navigation /click "#go"
 curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
-tool "$SCOPE" "$CALL" "$D" "$sid" desktop_open "$(jq -nc --arg u "$VERIFY_FIXTURE_URL/sw" '{url:$u}')" >/dev/null; sleep 3
+open_page /sw; sleep 3
 h=$(hits)
-if [ "$(jq -r .sw <<<"$h")" != registered ]; then pass handover-blocked-service-worker; else fail handover-blocked-service-worker "a service worker registered: $h"; fi
+if ! page_loaded; then fail handover-blocked-service-worker "page did not load: open: $OPENED; hits: $h"
+elif [ "$(jq -r .sw <<<"$h")" != registered ]; then pass handover-blocked-service-worker; else fail handover-blocked-service-worker "a service worker registered: $h"; fi
 
-# revoke during an action: a 20 s page; the action must stop within 2 s, or the VM must be destroyed
-( agent POST /desktop/tool "$(jq -nc --arg s "$SCOPE" --arg c "$CALL" --arg d "$D" --arg i "$sid" --arg u "$VERIFY_FIXTURE_URL/slow" \
-    '{scope:$s,call_id:$c,desktop_id:$d,session_id:$i,tool:"desktop_open",args:{url:$u}}')" >"${TMPDIR:-/tmp}/rf-handover-$$" ) &
+# revoked: the server's revoke ends the session and (no cancel is wired in web/server.js) destroys the VM; state must not show the session
+approver POST "/api/desktop/$D/revoke" >/dev/null
+# revoke destroys D, so state answers 404 not-found; any other reply (a session, 401, 500) is a failure
+if [ "$(state_of "$D" | jq -r '.error // empty' 2>/dev/null)" = not-found ]; then pass handover-revoked; else fail handover-revoked "session still shown after revoke: $(state_of "$D")"; fi
+
+# revoke during an action: a 20 s page opened through the runner; the action must stop within 2 s, or the VM must be destroyed
+r=$(grant "$D2" 30 "$ALL"); [ "$(jq -r '.ok // false' <<<"$r")" = true ] || die "grant 2 failed: $r"
+OUT=$(mktemp)
+extra_cleanup() { rm -f "$OUT"; kill "${BG:-}" 2>/dev/null || true; }
+( act "$D2" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL/slow" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')" >"$OUT" ) &
 BG=$!
 sleep 3
 t0=$SECONDS; ms0=$(date +%s%N)
-approver POST /desktop/revoke "$(jq -nc --arg i "$sid" '{session_id:$i}')" >/dev/null
+approver POST "/api/desktop/$D2/revoke" >/dev/null
 stopped=
 while [ $((SECONDS - t0)) -lt 8 ]; do
-  if ! kill -0 "$BG" 2>/dev/null || desk_gone "$D"; then stopped=$(( ($(date +%s%N) - ms0) / 1000000 )); break; fi
+  if ! kill -0 "$BG" 2>/dev/null || desk_gone "$D2"; then stopped=$(( ($(date +%s%N) - ms0) / 1000000 )); break; fi
   sleep 0.2
 done
-rm -f "${TMPDIR:-/tmp}/rf-handover-$$"
-kill "$BG" 2>/dev/null || true
 # the guest has 2 s to confirm `cancel`, then the runner destroys the VM; allow the destroy itself some time
 if [ -n "$stopped" ] && [ "$stopped" -le 2500 ]; then pass "handover-revoke-stops-action (${stopped} ms)"
-elif [ -n "$stopped" ] && desk_gone "$D"; then pass "handover-revoke-stops-action (VM destroyed after ${stopped} ms)"
+elif [ -n "$stopped" ] && desk_gone "$D2"; then pass "handover-revoke-stops-action (VM destroyed after ${stopped} ms)"
 else fail handover-revoke-stops-action "action still running ${stopped:-8000+} ms after revoke"; fi
 finish

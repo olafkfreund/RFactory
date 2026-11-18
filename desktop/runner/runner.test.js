@@ -329,3 +329,46 @@ test('runner routes: action, share-start, share-stop map to the lifecycle; a bad
     assert.deepEqual(calls.map((c) => c[0]), ['action', 'action', 'start', 'stop']);
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+test('call stream: lines from the socket become call-in pieces; call-out pieces become lines; one stream per VM', async () => {
+  const { PassThrough } = require('node:stream');
+  const ctx = agentSetup();
+  const r = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  const sock = new PassThrough();
+  assert.equal(ctx.lc.callAttach(r.desktop_id, sock), true);
+  assert.equal(ctx.lc.callAttach(r.desktop_id, new PassThrough()), false);
+  const big = 'x'.repeat(40000);
+  sock.write(`https://meet.google.com/a-b-c\n${big}`);
+  sock.write('\n\n');
+  await tick();
+  const ins = ctx.conns[0].out.filter((m) => m.type === 'call-in');
+  assert.deepEqual(ins[0], { type: 'call-in', chunk: 'https://meet.google.com/a-b-c', end: true });
+  assert.equal(ins.slice(1).map((m) => m.chunk).join(''), big);
+  assert.deepEqual(ins.slice(1).map((m) => m.end), [false, false, false, true]); // 16 KiB pieces, closed by the newline; the second blank line adds nothing
+  let seen = '';
+  sock.on('data', (d) => { seen += d; });
+  ctx.reply(ctx.conns[0], { type: 'call-out', chunk: '{"type":"sta', end: false });
+  ctx.reply(ctx.conns[0], { type: 'call-out', chunk: 'te"}', end: true });
+  await tick();
+  assert.equal(seen, '{"type":"state"}\n');
+  const spare = await ctx.lc.createSpare();
+  assert.equal(ctx.lc.callAttach(spare.desktop_id, new PassThrough()), false); // an unclaimed spare has no call
+});
+
+test('call stream: the socket is destroyed when the VM is destroyed or the guest channel closes', async () => {
+  const { PassThrough } = require('node:stream');
+  const ctx = agentSetup();
+  const a = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  const s1 = new PassThrough();
+  assert.equal(ctx.lc.callAttach(a.desktop_id, s1), true);
+  await ctx.lc.destroy(a.desktop_id);
+  assert.equal(s1.destroyed, true);
+  const b = await ctx.lc.create({ call_id: 'b', scope: 's' });
+  await tick(); await tick();
+  const s2 = new PassThrough();
+  assert.equal(ctx.lc.callAttach(b.desktop_id, s2), true);
+  ctx.conns.at(-1).emit('close');
+  assert.equal(s2.destroyed, true);
+});

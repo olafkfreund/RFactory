@@ -169,16 +169,20 @@ async function main() {
       scope, roles, enabled: true });
     await actions.recover();
   }
+  let runner = null;
+  if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
+    const { createRunnerClient } = require('../desktop/runner/client.js');
+    runner = createRunnerClient({ url: process.env.RFACTORY_RUNNER_URL, key: process.env.RFACTORY_RUNNER_KEY,
+      cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
+  }
   let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
     const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
-    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions });
+    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions,
+      ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   let desktop = null;
-  if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
-    const { createRunnerClient } = require('../desktop/runner/client.js');
-    const runner = createRunnerClient({ url: process.env.RFACTORY_RUNNER_URL, key: process.env.RFACTORY_RUNNER_KEY,
-      cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
+  if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner,
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, ...(name === 'desktop_open' ? { hosts: ctx.hosts } : {}) } }),

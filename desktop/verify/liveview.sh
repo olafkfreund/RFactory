@@ -1,61 +1,45 @@
 #!/usr/bin/env bash
 # Step 17 live view checks: membership at admit and every 5 s, view-only RFB filter (#3 "Live view").
-# Runs against the PRODUCTION image. Assumed server contract (step 9 and 13 must provide it; adjust here if it differs):
-#   WebSocket  GET /desktop/live/<desktop_id>   (bearer token; members of the desktop's scope only)
-#   Page       GET /live.html?desktop_id=<id>   (noVNC, view-only)
-#   POST /desktop/member/remove {scope, user}   (approver)   -> {ok}   (removes VERIFY_MEMBER_USER from the scope)
-#   POST /desktop/tool desktop_screenshot       -> {status, content}
-# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (http://host:port), VERIFY_APPROVER_TOKEN, VERIFY_AGENT_TOKEN,
-# VERIFY_MEMBER_TOKEN (a member of verify-scope, disposable: the revoke check removes them), VERIFY_MEMBER_USER,
-# VERIFY_NONMEMBER_TOKEN, VERIFY_OTHERSCOPE_TOKEN (a member of another scope), VERIFY_FIXTURE_URL, VERIFY_CHROME (a Chrome binary on this host).
+# Runs against the PRODUCTION image. Routes used (all exist):
+#   web WebSocket  GET /desktop/live/<desktop_id>   (session cookie; members of the server's scope, desktop in that scope)
+#   web page       GET /desktop.html?desktop_id=<id> (noVNC, view-only; needs web/public/vendor/novnc)
+#   runner         create, destroy, list, action {desktop_id,message: desktop_screenshot} (mTLS)
+# Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (http://host:port, no path), VERIFY_MEMBER_COOKIE (a member of verify-scope,
+# session cookie name=value), VERIFY_NONMEMBER_COOKIE (a signed-in user who is not a member), VERIFY_OTHER_SCOPE (a scope other than
+# verify-scope; its desktop must be refused to the member), VERIFY_CHROME (a Chrome binary on this host).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
-need_cmds curl jq node sha256sum mktemp date
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_TOKEN VERIFY_AGENT_TOKEN VERIFY_MEMBER_TOKEN VERIFY_MEMBER_USER \
-  VERIFY_NONMEMBER_TOKEN VERIFY_OTHERSCOPE_TOKEN VERIFY_FIXTURE_URL VERIFY_CHROME
+need_cmds jq node sha256sum
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_MEMBER_COOKIE VERIFY_NONMEMBER_COOKIE VERIFY_OTHER_SCOPE VERIFY_CHROME
 LV=$ROOT/desktop/verify/liveview.js
-WS=${VERIFY_SERVER_URL/#http/ws}
+BASE=${VERIFY_SERVER_URL%/}
+WS=${BASE/#http/ws}
 SCOPE=verify-scope CALL=liveview-call
-TMP=$(mktemp -d)
-extra_cleanup() { rm -rf "$TMP"; }
 
 new_desktop "$CALL" "$SCOPE" || die "create: $DERR"; D=$DID
 sleep 30
 URL=$WS/desktop/live/$D
 
-r=$(node "$LV" open "$URL" "$VERIFY_NONMEMBER_TOKEN" || echo error)
+new_desktop liveview-other-scope "$VERIFY_OTHER_SCOPE" || die "create other: $DERR"; D2=$DID
+r=$(LV_COOKIE="$VERIFY_NONMEMBER_COOKIE" node "$LV" open "$URL" || echo error)
 if [ "$r" = refused ]; then pass liveview-non-member-refused; else fail liveview-non-member-refused "got '$r'"; fi
-r=$(node "$LV" open "$URL" "$VERIFY_OTHERSCOPE_TOKEN" || echo error)
+# a member of verify-scope asking for a desktop of another scope: the server only knows its own scope's desktops
+r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" open "$WS/desktop/live/$D2" || echo error)
 if [ "$r" = refused ]; then pass liveview-other-scope-refused; else fail liveview-other-scope-refused "got '$r'"; fi
 
-r=$(node "$LV" page "$VERIFY_SERVER_URL/live.html?desktop_id=$D" "$VERIFY_MEMBER_TOKEN" || echo error)
+r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" page "$BASE/desktop.html?desktop_id=$D" || echo error)
 if [ "$r" = frame ]; then pass liveview-novnc-frame; else fail liveview-novnc-frame "$r"; fi
 
 # KeyEvent closes the stream and the guest screen does not change
-sid=$(approver POST /desktop/grant "$(jq -nc --arg s "$SCOPE" --arg c "$CALL" --arg d "$D" --arg h "$VERIFY_FIXTURE_URL" --arg u "$(in_secs 600)" \
-  '{scope:$s,call_id:$c,desktop_id:$d,actions:["desktop_open","desktop_screenshot"],hosts:[$h],until:$u}')" | jq -r '.session_id // empty')
-[ -n "$sid" ] || die "grant failed"
-shot() { agent POST /desktop/tool "$(jq -nc --arg s "$SCOPE" --arg c "$CALL" --arg d "$D" --arg i "$sid" '{scope:$s,call_id:$c,desktop_id:$d,session_id:$i,tool:"desktop_screenshot",args:{}}')" | sha256sum | cut -d' ' -f1; }
-before=$(shot)
-r=$(node "$LV" key "$URL" "$VERIFY_MEMBER_TOKEN" || echo error)
+shot() { local b; b=$(act "$D" '{"type":"desktop_screenshot"}' | jq -er '.image_base64') || return 1; sha256sum <<<"$b" | cut -d' ' -f1; }
+before=$(shot) || before="no-shot-before"
+r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" key "$URL" || echo error)
 sleep 2
-after=$(shot)
+after=$(shot) || after="no-shot-after"
 if [ "$r" = closed ] && [ "$before" = "$after" ]; then pass liveview-keyevent-closes; else fail liveview-keyevent-closes "stream '$r'; screen changed: $([ "$before" = "$after" ] && echo no || echo yes)"; fi
 
-# revoking the member closes their stream within 5 s
-node "$LV" hold "$URL" "$VERIFY_MEMBER_TOKEN" >"$TMP/hold" 2>&1 &
-HOLD=$!
-for _ in $(seq 1 20); do grep -q '^open' "$TMP/hold" 2>/dev/null && break; sleep 0.5; done
-if grep -q '^open' "$TMP/hold"; then
-  t0=$(date +%s%3N)
-  approver POST /desktop/member/remove "$(jq -nc --arg s "$SCOPE" --arg u "$VERIFY_MEMBER_USER" '{scope:$s,user:$u}')" >/dev/null
-  for _ in $(seq 1 40); do grep -q '^closed' "$TMP/hold" && break; sleep 0.5; done
-  if grep -q '^closed' "$TMP/hold"; then
-    ms=$(( $(awk '/^closed/ {print $2}' "$TMP/hold") - t0 ))
-    if [ "$ms" -le 5000 ]; then pass "liveview-revoke-5s (${ms} ms)"; else fail liveview-revoke-5s "closed ${ms} ms after the member was removed"; fi
-  else fail liveview-revoke-5s "stream still open 20 s after the member was removed"; fi
-else fail liveview-revoke-5s "member stream did not open: $(head -c 200 "$TMP/hold")"; fi
-kill "$HOLD" 2>/dev/null || true
+# Membership is read from the server's role lists at start-up; no web route removes a member while a stream is open. Covered by web/live-view.test.js.
+undriven liveview-revoke-5s "no route removes a member from the server's roles"
 finish

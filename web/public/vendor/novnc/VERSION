@@ -1,0 +1,5 @@
+noVNC 1.6.0
+tag: v1.6.0
+commit: a8dfd6a3ea3c74244f5ebdaa5a7f1023007a7820
+source: https://github.com/novnc/noVNC
+licence: MPL-2.0 (LICENSE.txt); core/ and vendor/ copied unchanged

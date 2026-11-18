@@ -42,14 +42,19 @@ function createHandler(lifecycle, { tls = true } = {}) {
 }
 
 // GET /vnc/<desktop_id> with Upgrade: rfactory-vnc: a raw byte bridge to the guest's VNC (vsock 5900). mTLS identity only.
+// GET /call/<desktop_id> with Upgrade: rfactory-call: the call worker's stdin/stdout lines over the guest channel (plan 13c).
 function createUpgrade(lifecycle, { openVnc = openGuestVnc } = {}) {
   return async (req, socket) => {
     const refuse = (code, text) => socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.on('error', () => {});
-    const m = /^\/vnc\/([0-9a-f]{1,16})$/.exec(req.url);
+    const m = /^\/(vnc|call)\/([0-9a-f]{1,16})$/.exec(req.url);
     if (!socket.authorized && socket.authorized !== undefined) return refuse(401, 'Unauthorized');
-    if (req.method !== 'GET' || !m || String(req.headers.upgrade).toLowerCase() !== 'rfactory-vnc') return refuse(404, 'Not Found');
-    const sock = lifecycle.vncSock(m[1]);
+    if (req.method !== 'GET' || !m || String(req.headers.upgrade).toLowerCase() !== `rfactory-${m[1]}`) return refuse(404, 'Not Found');
+    if (m[1] === 'call') {
+      if (!lifecycle.callAttach(m[2], socket)) return refuse(404, 'Not Found');
+      return socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: rfactory-call\r\nConnection: Upgrade\r\n\r\n');
+    }
+    const sock = lifecycle.vncSock(m[2]);
     if (!sock) return refuse(404, 'Not Found');
     let guest;
     try { guest = await openVnc(sock); } catch { return refuse(502, 'Bad Gateway'); }

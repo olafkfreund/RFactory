@@ -6,12 +6,13 @@ const { encode, createDecoder } = require('../../runner/protocol');
 const { createControl } = require('./control');
 const { createProfile } = require('./profile');
 const { startHeartbeat } = require('./heartbeat');
+const { createCallWorker } = require('./call');
 
 // Dispatches runner messages. `send(msg)` goes back on the control socket.
 // Actions run one at a time; `cancel` jumps the queue so it can stop one in flight.
 // share (optional, from share.js createShare) handles share-start/share-stop. onCallConfig(nonce) launches the call Chrome:
 // it is called once, only after the runner's call-config message, never before (the auto-select flag is fixed at launch).
-function createAgent({ control, profile, send, resolveLogin, share, onCallConfig }) {
+function createAgent({ control, profile, send, resolveLogin, share, onCallConfig, onCallIn }) {
   let seq = 0;
   let chain = Promise.resolve();
   let cancelled = false;
@@ -59,6 +60,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
         configured = true;
         return Promise.resolve(onCallConfig(m.nonce)).catch(() => {});
       }
+      if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
       const id = m.action_id || String(++seq);
       chain = chain.then(() => { if (cancelled) throw new Error('cancelled'); return run(m); }).then((content) => result(id, true, content), () => result(id, false));
@@ -94,7 +96,12 @@ function main() {
   process.on('SIGTERM', () => { try { sendHost({ type: 'call-end' }); } catch { /* host link down */ } Promise.all(agents.map((a) => a.shutdown())).finally(() => process.exit(0)); });
   // socat in the guest forwards vsock 5000 to this loopback port.
   net.createServer((socket) => {
-    const agent = createAgent({ control, profile, send: (m) => socket.write(encode(m)) });
+    const send = (m) => socket.write(encode(m));
+    let worker = null;
+    const agent = createAgent({ control, profile, send,
+      share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() },
+      onCallConfig: (nonce) => { worker = createCallWorker({ nonce, send, onExit: () => sendHost({ type: 'call-end' }) }); },
+      onCallIn: (m) => worker?.in(m) });
     agents.push(agent);
     const dec = createDecoder((m) => agent.handle(m));
     socket.on('data', (d) => dec.write(d));

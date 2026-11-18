@@ -5,6 +5,7 @@ let
     serviceConfig.ExecStart = "${pkgs.socat}/bin/socat VSOCK-LISTEN:${toString port},fork TCP:127.0.0.1:${toString port}";
   };
   xenv = { DISPLAY = ":0"; };
+  agent = pkgs.callPackage ./agent.nix { };
 in
 {
   system.stateVersion = "25.05";
@@ -41,6 +42,14 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "xvfb.service" ];
       serviceConfig.ExecStart = "${pkgs.x11vnc}/bin/x11vnc -display :0 -localhost -rfbport 5900 -viewonly -nopw -forever";
+    };
+    # The guest agent and call worker; it listens on 127.0.0.1:5000 and starts the call Chrome after call-config.
+    rfactory-agent = {
+      wantedBy = [ "multi-user.target" ];
+      after = [ "xvfb.service" ];
+      path = [ pkgs.socat pkgs.cryptsetup pkgs.util-linux ];
+      environment = xenv // { CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable"; };
+      serviceConfig.ExecStart = "${pkgs.nodejs_22}/bin/node ${agent}/desktop/guest/agent/index.js";
     };
     # vsock bridges, guest side listens on 5000 and 5900 only.
     vsock-vnc = bridge 5900;
