@@ -12,6 +12,11 @@ const STATIC = {
   '/live.html': ['live.html', 'text/html; charset=utf-8'],
   '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };
+const DESKTOP_STATIC = { // served only when desktop is enabled
+  '/desktop.html': ['desktop.html', 'text/html; charset=utf-8'],
+  '/desktop.js': ['desktop.js', 'text/javascript; charset=utf-8'],
+  '/desktop.css': ['desktop.css', 'text/css; charset=utf-8'],
+};
 const NOVNC = /^\/vendor\/novnc\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.js$/; // pinned, vendored noVNC; never a CDN
 const HEADERS = {
   // Factory suite fonts come from Google Fonts (plan D8); scripts stay 'self' only
@@ -67,8 +72,9 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const url = req.url.split('?')[0];
-    if (req.method === 'GET' && Object.hasOwn(STATIC, url)) {
-      const [file, type] = STATIC[url];
+    const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
+    if (req.method === 'GET' && Object.hasOwn(files, url)) {
+      const [file, type] = files[url];
       return send(res, 200, type, fs.readFileSync(path.join(PUBLIC, file)));
     }
     if (req.method === 'POST' && url === '/api/standup') {

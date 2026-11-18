@@ -584,6 +584,19 @@ v1; Wayland in the guest.
       refused; a proposal copied from page text still goes through the same
       checks; Phase 3 tests unchanged.
 
+17. **Step 14 results (coder, lead verified).** The page is
+    `/desktop.html?desktop_id=<id>`, served (with `desktop.js`,
+    `desktop.css`) only when desktop is enabled. noVNC is loaded in the page
+    itself (view-only, same `/desktop/live/<id>` socket), not in an
+    iframe of `live.html`, because the CSP's `frame-ancestors 'none'` blocks
+    same-origin embedding and stays unchanged. Handover actions and hosts
+    are comma-separated fields (the server validates them). **Still
+    needed before step 17:** vendor noVNC v1.6.0 (MPL-2.0; its licence text
+    into `LICENSES/` and `NOTICE.md` once this branch has #13's licence
+    files) into `web/public/vendor/novnc/`; until then the page shows
+    "(live view unavailable)". Layout and keyboard use are checked in a
+    browser in step 17.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |
