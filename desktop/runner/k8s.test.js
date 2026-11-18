@@ -16,13 +16,14 @@ test('in-cluster client re-reads the token and uses resource paths, dry-run, unp
     const calls = [];
     const k8s = createK8s({ host: 'api', tokenPath, fetcher: async (url, options) => {
       calls.push({ url, ...options });
-      if (options.method === 'GET' && url.endsWith('/leases/rfactory-runner')) return { ok: true, status: 200, json: async () => ({ metadata: { name: 'rfactory-runner' }, spec: {} }) };
-      return { ok: true, status: 200, json: async () => ({ items: [], metadata: { uid: 'u' } }), body: [Buffer.from('{"type":"ADDED"}\n')] };
+      if (options.method === 'GET' && url.endsWith('/leases/rfactory-runner')) return { ok: true, status: 200, text: async () => JSON.stringify({ metadata: { name: 'rfactory-runner' }, spec: {} }) };
+      if (url.endsWith('/unpause')) return { ok: true, status: 200, text: async () => '' }; // KubeVirt answers unpause with an empty body
+      return { ok: true, status: 200, text: async () => JSON.stringify({ items: [], metadata: { uid: 'u' } }), body: [Buffer.from('{"type":"ADDED"}\n')] };
     } });
     await k8s.createVmi({ kind: 'VirtualMachineInstance' });
     fs.writeFileSync(tokenPath, 'two');
     await k8s.createPolicy({ kind: 'NetworkPolicy' });
-    await k8s.unpauseVmi('rfdesk-ab12');
+    assert.equal(await k8s.unpauseVmi('rfdesk-ab12'), null);
     await k8s.getLease(); await k8s.updateLease({ spec: { renewTime: 'now' } });
     assert.match(calls[0].url, /apis\/kubevirt.io\/v1\/namespaces\/rfactory-desktops\/virtualmachineinstances$/);
     assert.equal(calls[0].headers.Authorization, 'Bearer one');

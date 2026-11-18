@@ -18,7 +18,9 @@ function createK8s({ fetcher = fetch, host = process.env.KUBERNETES_SERVICE_HOST
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.status === 404 && missing) return null;
     if (!response.ok) throw new Error(`Kubernetes ${method} ${path}: ${response.status}`);
-    return response.status === 204 ? null : response.json();
+    // some subresources (VMI unpause) answer 200 with an empty body
+    const text = response.status === 204 ? '' : await response.text();
+    return text ? JSON.parse(text) : null;
   }
   async function watch(path, changed) {
     const token = fs.readFileSync(tokenPath, 'utf8').trim();

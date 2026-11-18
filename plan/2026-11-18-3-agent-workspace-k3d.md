@@ -612,6 +612,9 @@ and 27) and the scripts. This plan is self-contained.
       answers 409.
     - Fix: `lifecycle.js` polls the VMI (same UID) for the condition
       `Paused=True`, up to 60 s, then unpauses. A test covers it.
+    - The sixth run got past that: unpause succeeded but answers 200 with an
+      empty body, and the client's `response.json()` threw. `k8s.js` now
+      parses only a non-empty body. Test.
 31. **k11: agent-0 is tainted NoSchedule only (owner decision,
     2026-11-18); exposure through pasta.**
     - 24 pods ran on agent-0, among them ArgoCD's application controller,
