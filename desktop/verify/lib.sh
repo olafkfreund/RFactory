@@ -254,7 +254,7 @@ answered() { [ "$1" = connected ] || [ "$1" = reply ] || [ "$1" = refused ]; }
 # owner_confirm <name> <question>: owner-only live checks (audio, share). Asks on the terminal; no terminal means FAIL.
 owner_confirm() {
   local ans=
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if { : </dev/tty; } 2>/dev/null; then # -r/-w pass without a controlling terminal; only an open proves one
     printf '%s [y/N] ' "$2" >/dev/tty
     read -r -t 900 ans </dev/tty || true
   fi
