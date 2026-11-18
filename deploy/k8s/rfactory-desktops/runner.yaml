@@ -46,9 +46,9 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:5f15735149804339f9237fc3f95a4ee34f6eb923b6bde82b2047d278a7b808bb"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:c0082e3393d87ad7bfd7da5ccc95bdce20c2bc1c57797e8a7a26cc57e0529abd"}
-            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/ha281hap8sy4r9063i1csykz0ag8p8wh-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:9a5101f1b8f8aec8c2cb120e2d387a5b2a9e162560f49990edb4f375f44edec7"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:9510928eabb79b6c14838e289eb6db1eaaf4890bfd2dd82f1978e7534a9b256f"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/n3sj60wfgvvyyccnwrqj9y0794rgwphb-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
