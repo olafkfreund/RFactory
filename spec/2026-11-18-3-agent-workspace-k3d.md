@@ -65,29 +65,53 @@ flowchart LR
     the share watchdog, cancel) is unchanged.
   - Its host layer is replaced: no systemd-run, taps, nft tables, dnsmasq
     or `microvm-run` copies.
-- **The guest** is the same NixOS image: Xvfb, the call Chrome with the
-  bot, the control Chrome as `rfchrome`, the agent and x11vnc.
-  - It is built as a disk image and shipped as a KubeVirt `containerDisk`:
-    read-only and ephemeral per VMI, which matches "one read-only image,
-    nothing kept".
-  - The image is imported into the cluster with `k3d image import` and
-    pinned by digest.
-- **Guest identity:** the runner records each VMI's pod IP when it is
-  scheduled. Every message arriving on the control or heartbeat ports is
-  tagged from that IP-to-desktop map, never from anything the guest
-  sends, the same rule as the vsock CID map.
-  - The guest listens on 5000 and 5900; the runner listens on 5001.
-  - NetworkPolicy allows those ports only between the runner pod and that
-    VMI. KubeVirt's masquerade binding gives the guest only its pod's
-    address.
+- **The guest** is the same NixOS system (Xvfb, the call Chrome with the
+  bot, the control Chrome as `rfchrome`, the agent, x11vnc), converted for
+  KubeVirt:
+  - **Boot:** KubeVirt `kernelBoot`. The kernel and initrd come from a
+    small container image, and the root is a read-only erofs `containerDisk`
+    mounted `readonly: true`. Every writable path (`/tmp`, `/home`, browser
+    state, the overlay) is a tmpfs in guest memory with a size limit
+    (4 GiB in total). Nothing the guest writes reaches node storage; the
+    gate proves it (below).
+  - **Network:** DHCP on the masquerade interface (KubeVirt serves
+    `10.0.2.2/24`, gateway `10.0.2.1`). DNS points only at the proxy's
+    resolver. The agent and x11vnc bind the guest address, and the guest
+    firewall accepts 5000 and 5900 only from the gateway. The vsock
+    bridges and the CID identity oneshot are removed.
+  - The images are imported with `k3d image import` and pinned by digest.
+- **The desktop guard** is a small DaemonSet in `rfactory-desktops`. It
+  is the per-VM enforcement point that NetworkPolicy alone cannot be: it
+  runs with `hostNetwork` and `NET_ADMIN` on each node, and touches only
+  the veths of pods labelled as desktops. Kyverno allows `hostNetwork`
+  only for this one DaemonSet. Per desktop it enforces:
+  - **anti-spoofing:** a packet from the launcher pod's veth whose source
+    is not that pod's IP is dropped and counted (KubeVirt's masquerade
+    SNATs only the expected guest address);
+  - **startup gate:** the VMI is created with `startStrategy: Paused`. The
+    guard installs the desktop's rules, then proves one allowed and one
+    denied connection from that pod's network namespace, and only then
+    tells the runner, which unpauses the VMI. No guest instruction runs
+    before isolation holds;
+  - **bandwidth and quota:** 20 Mbit/s with `tc` on the veth, and a byte
+    counter that cuts all egress at 1 GiB per call and reports it (the
+    approved limits);
+  - **runner loss:** the guard expects the runner's heartbeat. After 60 s
+    without one it cuts all of that desktop's egress, so a share or call
+    cannot continue after its controller disappears. This works even when
+    the API server is unreachable.
+- **Guest identity:** a desktop is the VMI's UID together with its launcher
+  pod's UID and pod IP, all recorded by the runner when the VMI is
+  scheduled. Messages on 5000 and 5001 are tagged from that record, never
+  from anything the guest sends. The guard's anti-spoofing is what makes
+  the pod IP trustworthy.
 
 ### Network (replaces the approved "Network" section)
 
-Default deny is enforced by NetworkPolicy, with one policy per desktop
-made by the runner:
-
-1. **Namespace default:** all egress and ingress are denied for VMI pods.
-2. **Never reachable** (no policy ever allows them):
+1. **Namespace default:** NetworkPolicy denies all ingress and egress for
+   launcher pods. The guard additionally drops each desktop's traffic
+   until its own rules are in place (the startup gate).
+2. **Never reachable:**
    - the pod CIDR (other than the runner and proxy pods);
    - the service CIDR;
    - the node network `172.18.0.0/16`;
@@ -95,60 +119,101 @@ made by the runner:
    - RFC1918, CGNAT, link-local and `169.254.169.254`;
    - every other desktop.
 
-   Every ipBlock carries these as `except`.
-3. **Web traffic** goes through the namespace's **egress proxy**, which is
-   the only TCP destination besides the media ranges.
-   - The proxy filters CONNECT and SNI per desktop, by source IP: the
-     platform allowlist plus that scope's preview allowlist.
-   - Chrome in the guest is started with `--proxy-server` and
-     `--proxy-bypass-list=<-loopback>`.
-   - The guest's DNS goes only to the proxy's resolver, which answers only
-     allowlisted names.
+   No policy allows these. The policy generator emits only ipBlocks for
+   allowed public ranges, with an `except` only where a protected range is
+   contained in that block. Every generated manifest is validated with a
+   server-side dry run. The guard drops these ranges on the veth as a
+   second layer.
+3. **Web traffic** goes only through the namespace's **egress proxy**:
+   - CONNECT only, with the SNI matching the CONNECT host, else the
+     connection is refused. Plain HTTP is refused, except for an approved
+     private preview.
+   - Per desktop, by source pod IP: the platform allowlist plus that
+     scope's preview allowlist.
+   - The proxy resolves each name once, checks every resolved address
+     against rule 2, and connects to that checked address. A changed DNS
+     answer cannot move a connection into a protected range.
+   - The proxy pod has its own egress NetworkPolicy, public ranges only,
+     with rule 2 excluded.
+   - Chrome uses `--proxy-server`. The guest's only resolver is the
+     proxy's, and it answers only allowlisted names.
 4. **Media:** UDP and TCP go directly to the call platform's **pinned
    published media ranges** as ipBlocks: Meet, Zoom, Teams (deviation 26)
-   and Slack, all already pinned in `desktop/ranges/ranges.json`. WebRTC
-   media cannot pass an HTTP proxy, so media is never proxied.
-5. **Private previews:** an admin-approved `ip:port` for one scope is
-   added to that desktop's policy as an ipBlock with a port. It can never
-   fall inside the ranges in rule 2, and the runner refuses one that does.
-6. **Kyverno** gets one policy that refuses any NetworkPolicy in
-   `rfactory-desktops` allowing rule 2's ranges, and any Pod there with
-   `hostNetwork` or `privileged`.
+   and Slack, from `desktop/ranges/ranges.json`. WebRTC cannot go through
+   an HTTP proxy.
+5. **Private previews:** an admin-approved `ip:port` for one scope goes
+   into that desktop's policy and the proxy's allowlist. The runner
+   refuses one inside rule 2.
+6. **Kyverno** policies scoped to `rfactory-desktops`, with
+   `failurePolicy: Fail`:
+   - refuse a NetworkPolicy that allows any rule 2 range;
+   - refuse a Pod with `hostNetwork` or `privileged`, except the guard;
+   - require signatures (or the pinned digests) for the runner, proxy,
+     guard and guest images.
+
+   The cluster's current signature policies cover only `factory`,
+   `gateway`, `fides` and `fides-reporter`, and use `failurePolicy:
+   Ignore`, so they say nothing about these images today.
 
 ### Lifecycle
 
 - Each desktop is a VMI labelled with its `desktop_id`, `call_id` and
-  scope, and owned by the runner's Deployment.
-- `destroy` deletes the VMI and its policy, and waits until both are gone.
-- On start, the runner lists labelled VMIs and deletes any it does not
-  know, the same rule as today's "runner restart does not keep VMs".
-- Limits move into the VMI spec and a namespace ResourceQuota:
-  - each VMI: 2 vCPU and 3 GiB, the measured sizing in step 17;
-  - the quota caps the namespace at `maxDesktops` VMs;
-  - `RuntimeMaxSec` becomes the runner's runtime limit plus
-    `activeDeadlineSeconds` on the launcher pod.
+  scope. Its NetworkPolicy and proxy entry are created first, then the
+  VMI (paused), and it is unpaused only after the guard's startup gate.
+- `destroy` deletes the VMI, its policy and its proxy entry, and waits
+  until all are gone.
+- **Independent of the runner:** a separate **reaper** Deployment, with
+  its own ServiceAccount allowed only to list and delete labelled VMIs,
+  deletes any desktop whose runner Lease is stale for 60 s or whose age
+  exceeds the runtime limit (3 h). Together with the guard's runner-loss
+  cut, a dead or hung runner can neither keep a VM nor let it talk.
+- On start, the runner deletes labelled VMIs it does not know.
+- Limits:
+  - each VMI: 2 vCPU and 3 GiB;
+  - a ResourceQuota caps the namespace at `maxDesktops` VMIs;
+  - bandwidth and the byte quota are enforced by the guard.
 
 ### Profiles
 
-- Each LUKS profile is a PVC (`local-path`) attached to the VMI as a
-  second disk.
-- The key is sent over the control channel exactly as now: one key per
-  profile, derived on the runner, never on disk in the guest.
-- Plaintext exists only in guest memory.
+- Each profile is a filesystem PVC (`local-path`) holding one raw
+  `disk.img`, created by the runner at profile creation with a fixed size,
+  and attached to the VMI as a second disk with a fixed serial.
+- **First attach:** the guest finds no LUKS header, `luksFormat`s the
+  disk with the key sent over the control channel, then makes the
+  filesystem. Later attaches open it. The key is one per profile, derived
+  on the runner, never on disk in the guest. Plaintext exists only in
+  guest memory.
+- **Records and locking:** profile metadata (owner scope, expiry) lives in
+  a ConfigMap per profile, owned by the runner. A profile attaches to at
+  most one VMI, enforced by the runner's lock and checked at attach time
+  against the list of VMIs (an RWO PVC alone does not prevent two VMIs on
+  one node).
+
+### Exposure
+
+- The runner's Service is a NodePort on a fixed port.
+- `k3d node edit k3d-factory-serverlb --port-add
+  127.0.0.1:<port>:<nodeport>` maps p620's loopback to it. ServiceLB and
+  Traefik stay disabled.
+- mTLS only. The gate checks that p620 binds the port on `127.0.0.1`
+  only.
 
 ### Live view
 
-- x11vnc in the guest, port 5900, reached by the runner over the pod
-  network (policy-pinned). The runner bridges it to `/vnc/<id>` as today.
+- x11vnc in the guest on port 5900, reached by the runner over the pod
+  network (policy-pinned), bridged to `/vnc/<id>` as today.
 - KubeVirt's own VNC console is not used: it shows the VM's virtual
   screen, not the Xvfb display the agent drives.
 
 ### What is removed
 
-`desktop/nixos/runner.nix` and the sample host; the host network layer
-(`net.js` nft and dnsmasq, taps, NAT); the vsock bridges and the identity
-oneshot's vsock CID read; the per-VM `microvm-run` copies; the p620 NixOS
-change. The probe image becomes a VMI too, for `net.sh`.
+- `desktop/nixos/runner.nix` and the sample host;
+- the vsock bridges and the CID identity oneshot;
+- the per-VM `microvm-run` copies;
+- the p620 NixOS change.
+
+The host nft and `tc` code moves into the guard, which applies it per veth
+instead of per tap. The probe image becomes a VMI too, for `net.sh`.
 
 ## Alternatives rejected
 
@@ -172,46 +237,68 @@ change. The probe image becomes a VMI too, for `net.sh`.
 ## Risks
 
 - **Untrusted browsing inside the cluster that runs Factory.** Isolation
-  now rests on NetworkPolicy enforcement for VMI pods plus the VM
-  boundary, where before it rested on host nftables outside the cluster.
-  Mitigations:
-  - default deny and `except` blocks on every rule;
-  - the Kyverno guard;
-  - `net.sh` proving each protected range unreachable from a probe VMI.
-- **KubeVirt inside Docker-hosted k3s nodes** depends on the node
-  containers seeing `/dev/kvm` and on cgroup v2 delegation. Recreating the
-  cluster must keep the nodes privileged. The first plan step is a gate:
-  a VMI boots with KVM, or this revision stops.
-- **Kyverno's first-party signature policy** may refuse KubeVirt's or our
-  images. The owner decides on an exception scoped to `kubevirt` and
-  `rfactory-desktops`.
-- **The k3d load balancer** needs one new port mapping, which is a cluster
-  change made with `k3d node edit` and announced on the agent bus.
-- **More moving parts** (KubeVirt's operator, handler and launcher pods)
-  on a shared cluster: KubeVirt gets its own namespace, and its resource
-  use is measured in step 17.
-- **Time:** the guest, web, share, approval and scripts work carries
-  over; the runner's host layer is rewritten.
+  rests on the VM boundary plus two layers: NetworkPolicy and the guard's
+  per-veth rules (anti-spoofing, protected drops, startup gate). Before,
+  it was host nftables outside the cluster. The gate proves each layer
+  separately.
+- **The guard is privileged** (`hostNetwork`, `NET_ADMIN`) on a shared
+  cluster:
+  - it is small, uses argv only, and touches only labelled pods' veths;
+  - Kyverno allows that exception for it alone;
+  - a guard bug could affect other pods' networking, so its rules are
+    named per desktop and removed with it.
+- **KubeVirt inside Docker-hosted k3s nodes** depends on `/dev/kvm` in the
+  node containers and on cgroup v2 delegation. Recreating the cluster must
+  keep the nodes privileged. The gate stops the revision if a VMI does not
+  boot with KVM.
+- **Startup race:** kube-router programs a new pod's rules after a delay
+  (documented by the live `gate-task-pods-on-network-policy`). The paused
+  start and the guard's gate close it. The gate tests it.
+- **Proxy as a confused deputy:** protected-address checks on every
+  resolved address, its own egress policy, and SNI matching.
+- **More moving parts** on a shared cluster: KubeVirt's operator, handler
+  and launcher pods, plus the guard, reaper and proxy. KubeVirt gets its
+  own namespace, and resource use is measured at step 17.
+- **Time:** the guest, web, share, approval and scripts work carries over.
+  The runner's host layer is rewritten as Kubernetes calls plus the guard.
 
 ## Verification
 
-1. **Gate, on p620 with the owner's OK:**
-   - KubeVirt installed through ArgoCD;
-   - a probe VMI boots our image with KVM (`/dev/kvm` in the launcher,
-     no `useEmulation`);
-   - from inside it, rule 2's ranges are unreachable and a pinned media
-     range is reachable.
-2. **Unit tests:** the runner's Kubernetes client is faked (VMI, policy and
-   PVC create, delete and list), with the same lifecycle tests as now. The
-   policy generator is tested: `except` is on every rule, and a preview
-   inside a protected range is refused. The proxy allowlist is tested per
-   source IP.
+1. **Gate, on p620 with the owner's OK** (stops the revision on any
+   failure):
+   - KubeVirt installed through ArgoCD.
+   - A probe VMI boots with KVM: `/dev/kvm` in the launcher, no
+     `useEmulation`.
+   - From the probe: every rule 2 range is unreachable over TCP and UDP;
+     a pinned media range and the proxy are reachable.
+   - A spoofed source address is dropped (the guard's counter rises).
+   - Traffic sent the moment the VMI is unpaused is still filtered.
+   - With the runner stopped, egress is cut within 60 s and the reaper
+     deletes the VMI.
+   - The proxy refuses a CONNECT to a name that resolves into rule 2, and
+     a CONNECT/SNI mismatch.
+   - After a forced VMI kill, no file on the node contains a marker the
+     guest wrote.
+   - A new profile disk is formatted on first attach, and a second attach
+     is refused.
+   - The runner's port is bound on `127.0.0.1` only.
+   - The bandwidth limit and the 1 GiB cutoff hold.
+2. **Unit tests:**
+   - the runner's Kubernetes client is faked (VMI, policy, PVC and Lease),
+     with the same lifecycle tests as now;
+   - the policy generator: only contained `except` blocks, a protected
+     preview refused, and every manifest passes a schema check;
+   - the guard's rule builder: anti-spoofing, protected drops, quota and
+     runner-loss cut;
+   - the proxy: allowlist per source IP, protected-address checks after
+     resolution, SNI match;
+   - the reaper: stale Lease and age.
 3. **Step 17's checklist**, re-pointed:
    - `net.sh` runs from a probe VMI;
-   - `lifecycle.sh` uses VMI deletion and runner restart;
+   - `lifecycle.sh` adds runner-loss and reaper cases;
    - `profiles.sh` uses PVCs;
    - everything else is unchanged.
 4. **Live, with the owner:** a Meet call and a Teams call joined from a
    desktop VMI, with handover, an approved share and Stop. Nothing of the
-   VM is left afterwards: no VMI, no policy, no PVC except attached
-   profiles.
+   VM is left afterwards: no VMI, policy or proxy entry, and no PVC
+   except attached profiles.
