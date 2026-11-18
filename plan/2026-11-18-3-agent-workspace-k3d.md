@@ -258,6 +258,18 @@ and 27) and the scripts. This plan is self-contained.
     - **k1a waits for it.** k1a then pins the newest maintained KubeVirt
       that supports the upgraded Kubernetes.
     - The offline steps (k2–k9, k12, k13) go ahead meanwhile.
+13. **k4 results (Codex, lead verified).**
+    - `desktop/runner/k8s-policy.js` builds the VMI-owned NetworkPolicy,
+      the proxy entry and the guard entry from one input.
+    - The policy also allows TCP and UDP 53 to the proxy pods, for the
+      guest's only resolver.
+    - A media block that lies wholly inside a protected range is
+      dropped. `except` lists only the protected ranges contained in a
+      block.
+    - The guard entry still carries a `mark` field, which deviation 11
+      no longer uses; k5 ignores it.
+    - Callers (k3) must pass the host-specific always-protected ranges:
+      p620's LAN and Tailscale addresses, and the Factory hosts.
 
 ## Steps
 
