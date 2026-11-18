@@ -223,6 +223,8 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
   if (!api || !Number.isInteger(idleMs) || idleMs < 1000 || !Number.isInteger(maxConnections) || maxConnections < 1) throw new Error('invalid proxy configuration');
   const active = new Map();
   const allow = limiter(burst, perSec, now);
+  // one line per refusal (reason, source IP, requested host; never the token): k14 found a silent proxy undebuggable
+  const refused = (why, ip, host = '') => console.log(JSON.stringify({ refused: why, ip, host: String(host).slice(0, 256) }));
   const forwarded = new WeakMap(); // socket -> checked entry; shortcut: valid for the connection's life, so a revoked entry lasts until idle close
   let cached = null; // { at, promise }
   function snapshot() {
@@ -285,22 +287,23 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
   async function handleConnect(req, client, head) {
     client.on('error', () => client.destroy()); // a client reset must not crash the shared proxy
     const ip = sourceIp(client);
-    if (!allow(ip)) { client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
+    if (!allow(ip)) { refused('rate', ip, req.url); client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
     let entry;
-    try { entry = await entryFor(ip); } catch { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    try { entry = await entryFor(ip); } catch (e) { refused(`entry-error: ${e.message}`, ip, req.url); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     if (client.destroyed) return;
-    if (!entry) { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    if (!entry) { refused('no-entry', ip, req.url); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     if (!sameToken(tokenFrom(req.headers['proxy-authorization']), entry.token)) {
+      refused('auth', ip, req.url);
       client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="desktop"\r\n\r\n'); return;
     }
     let dest, address;
     try {
       dest = target(req.url, entry);
       address = dest.preview ? checkedAddresses([dest.host], entry.protectedRanges, true)[0] : (await addresses(dest.host, entry))[0];
-    } catch { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    } catch (e) { refused(`target: ${e.message}`, ip, req.url); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     if (client.destroyed) return;
     const count = active.get(entry.podUID) || 0;
-    if (count >= maxConnections) { client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
+    if (count >= maxConnections) { refused('max-connections', ip, req.url); client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
     active.set(entry.podUID, count + 1);
     let released = false;
     const release = () => { if (!released) { released = true; active.set(entry.podUID, Math.max(0, (active.get(entry.podUID) || 1) - 1)); } };
@@ -320,10 +323,10 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
         upstream = connect({ host: address, port: dest.port });
         upstream.setTimeout(idleMs, () => upstream.destroy());
         upstream.once('connect', () => { upstream.write(buffered); client.pipe(upstream).pipe(client); });
-        upstream.once('error', () => client.destroy());
+        upstream.once('error', (e) => { refused(`upstream: ${e.code || e.message}`, ip, req.url); client.destroy(); });
         upstream.once('close', () => client.destroy());
         client.once('close', () => upstream.destroy());
-      } catch { client.destroy(); }
+      } catch (e) { refused(`tls: ${e.message}`, ip, req.url); client.destroy(); }
     };
     if (dest.preview) start();
     else {
