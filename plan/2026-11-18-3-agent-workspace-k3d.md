@@ -348,6 +348,36 @@ and 27) and the scripts. This plan is self-contained.
       k3 rewrites that wiring.
     - **Not run:** `kubectl apply --dry-run=client` on the manifests (the
       session's permission check refused it). It runs at k10 instead.
+16. **k6 results (Codex, lead verified).**
+    - `desktop/proxy/proxy.js` takes a fresh API read of the pod and its
+      proxy entry for every CONNECT and DNS request (no stale watch
+      data). It reads the matching guard entry for the protected ranges.
+    - It refuses a name if any resolved address is protected or private
+      (previews: only the exact approved private `ip:port`).
+    - The token is compared in constant time.
+    - `desktop/proxy/package.json` exists for `node --test proxy/`.
+    - k8 must give the proxy the ServiceAccount CA and the right to bind
+      TCP and UDP 53.
+17. **TLS material (owner request, 2026-11-18).** The lead generated it
+    and put it in agenix on olafkfreund/nixos_config#3072 (encrypted to
+    olafkfreund and p620; plaintext shredded).
+    - A private P-256 CA (10 years) and leaf certificates (825 days):
+      - runner API server: `rfactory-runner-api.rfactory-desktops.svc`,
+        `127.0.0.1`;
+      - runner client to the guard: CN `rfactory-runner`;
+      - guard server: `rfactory-guard`, `172.18.0.2`, `172.18.0.3`;
+      - web client: CN `rfactory-web`.
+    - A 64-byte profile master key.
+    - The web client files are in `~/.config/rfactory/desktop-runner/`
+      (mode 600) for `pod.sh`.
+    - **Secret layout k3 and k11 follow:**
+      - `rfactory-runner-tls`: `tls.crt`, `tls.key`, `ca.crt`,
+        `client.crt`, `client.key`, `profile-key`;
+      - `rfactory-guard-tls`: `tls.crt`, `tls.key`, `ca.crt`;
+      - both mounted at `/etc/rfactory/tls`.
+    - The runner verifies the guard by CA and CN `rfactory-guard`, not by
+      IP, because node IPs can change when the cluster is recreated
+      (#3071); otherwise the guard certificate is re-issued from the CA.
 
 ## Steps
 
