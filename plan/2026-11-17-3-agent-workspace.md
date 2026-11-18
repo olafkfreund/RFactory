@@ -808,6 +808,67 @@ v1; Wayland in the guest.
     joined from the pod and from a VM (spoken answer, leave, share of an
     approved window).
 
+27. **Codex second review fixes and Teams step 13e (workflow: runner and
+    web clusters with Opus review and a fix round, scripts, Opus final
+    review; lead finished the cross-cluster items).**
+    - **Revoke:** `cancel-ack` is sent only after the control Chrome is
+      confirmed closed and the profile detached; otherwise there is no ack
+      and the runner destroys the VM.
+    - **Long operations:** the runner client has per-route timeouts
+      (`profile-attach` 150 s; action, login and share 45 s). A
+      `profile-attach` whose client has gone destroys the new desktop
+      (`client-gone`).
+    - **Preview login:**
+      - The runner reads stored logins from a systemd credential (module
+        option `previewLoginsFile`), keyed by scope and profile.
+      - The runner `login` route validates the entry, opens its origin
+        under the grant's hosts, then sends `desktop_login`. The guest
+        fills only that origin's open page and returns no page text.
+      - The web sends a handover's `login` through that route only after
+        the same scope gate as every desktop action (`writes_enabled`,
+        allowlist). A refusal or a failed fill revokes the handover.
+    - **Sizing:** `vcpu` and `memMiB` are applied per VM. `overlayGiB` is
+      removed, and `/tmp` is fixed at 4 GiB.
+    - **Approved single actions:** a click, type, scroll or screenshot is
+      bound to the origin of the page it was proposed on, shown to the
+      approver.
+    - **`pod.sh`:**
+      - carries the desktop settings when `RFACTORY_DESKTOP=1`, and
+        refuses any other value;
+      - mounts the runner client files read-only;
+      - mounts `RFACTORY_BRAIN_RECORD`'s directory for the verify
+        scripts.
+    - **Teams (deviation 26):**
+      - links: `/l/meetup-join/…`, `teams.live.com/meet/…` and the newer
+        `teams.microsoft.com/meet/<id>?p=…`, mapped to `teams` for VM
+        calls and allowed for profile attach;
+      - media ranges pinned from Microsoft's endpoints (Optimize id 11,
+        Allow id 12, sha256 recorded), with preflight probing named
+        hosts inside the ranges;
+      - the Teams web-join names in the default DNS allowlist, marked to
+        confirm at the first live join;
+      - the share and the avatar camera use the library's provider (its
+        `startShare`, and its `setCameraOn` result as the confirmation,
+        marked shortcut).
+    - **Guest shutdown:** the profile is closed even when Chrome will not
+      close.
+    - **Scripts:**
+      - share checks run on a VM that has joined a real call, and capture
+        is confirmed before any fault;
+      - script desktops get a server heartbeat;
+      - messages carry hosts;
+      - revoke keeps the VM after a confirmed cancel;
+      - the live-view check recreates the pod with its full desktop
+        settings;
+      - `secrets.sh` exercises a real stored login;
+      - `e2e.sh` adds Teams from the pod and from a VM.
+    - **Flaky test:** the call worker test's leave wait is condition-based.
+    - **Superseded:** the k3d revision
+      (`plan/2026-11-18-3-agent-workspace-k3d.md`) replaces the host
+      layer these fixes touch: the systemd units, taps, nft, dnsmasq and
+      `microvm-run` copies. The guest, web, scripts and Teams parts carry
+      over.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |
