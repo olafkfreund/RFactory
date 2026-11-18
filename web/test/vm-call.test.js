@@ -28,6 +28,7 @@ test('vm spawn: lines go both ways like a child process; the first line is buffe
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
   await tick();
+  assert.equal(child.desktop_id, 'ab12');
   assert.equal(f.written.join(''), 'https://meet.google.com/a-b-c\n{"type":"leave"}\n');
   f.sock.push('{"type":"state","state":"in-call"}\n');
   await tick();

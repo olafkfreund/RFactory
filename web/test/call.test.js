@@ -28,13 +28,14 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot, tts } = {}) {
+function setup({ brainTurn, ttsSay, sourceSnapshot, tts, desktop } = {}) {
   const clock = fakeClock();
   const children = [], events = [], kills = [], spoken = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
   const child = () => {
     const c = new EventEmitter();
     c.pid = 100 + children.length;
+    c.desktop_id = 'd1';
     c.stdin = new EventEmitter();
     c.stdin.write = (line) => { spoken.push(line); return true; };
     c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {};
@@ -49,7 +50,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts } = {}) {
   const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
     tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
-    redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'] });
+    redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop });
   manager.subscribe((event) => events.push(event));
   const restore = () => { process.kill = originalKill; };
   const messages = () => spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s));
@@ -327,7 +328,8 @@ test('action utterances go to actions.request and the server sentence is spoken;
   const children = [], spoken = [];
   const original = process.kill; process.kill = () => {};
   try {
-    const manager = createCallManager({ actions, source: { snapshot: async () => ({ items: [] }) },
+    const manager = createCallManager({ actions, desktop: { request: async () => { throw new Error('desktop must not be asked'); } },
+      source: { snapshot: async () => ({ items: [] }) },
       brain: { turn: async () => { throw new Error('brain must not be asked'); } }, tts: { voice: 'v', say: async (s) => Buffer.from(s) },
       redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'],
       spawn: () => {
@@ -388,6 +390,23 @@ test('without an actions manager an action utterance is an ordinary question', a
     await f.manager.start('link');
     await f.heard(1, 'RFactory, create a card called Login');
     assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('desktop mode routes an open request to the desktop proposal and speaks its result', async () => {
+  const requests = [];
+  const f = setup({ desktop: { request: async (...args) => { requests.push(args); return { text: "I can't do that." }; } },
+    brainTurn: async () => { throw new Error('question brain must not run'); } });
+  try {
+    await f.manager.start('link');
+    await f.heard(1, 'RFactory, open the preview page');
+    await flush();
+    assert.equal(requests[0][0], 'open the preview page');
+    assert.equal(requests[0][1], 'd1');
+    assert.equal(f.events.find((e) => e.type === 'question').kind, 'action');
+    const spoken = f.messages().find((m) => m.type === 'speak');
+    assert.equal(Buffer.from(spoken.wav, 'base64').toString(), "I can't do that.");
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
 });

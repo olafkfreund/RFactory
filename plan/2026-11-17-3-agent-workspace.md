@@ -650,6 +650,24 @@ v1; Wayland in the guest.
     routes or hooks as a step, or accept them as unit-covered or
     owner-checked.
 
+21. **Step 13d results (Codex, lead verified).** With desktop on, an
+    addressed utterance starting with open, click, type, scroll or
+    (take a) screenshot is a desktop request (`web/call.js`; so "open card
+    …" goes to the desktop path, not Phase 3, while a desktop is
+    configured). `createDesktop().request` asks the brain through a
+    separate no-tools prompt (`claude-desktop-system-prompt.txt`,
+    `propose(…, { desktop: true })`) for one `desktop_*` proposal; the
+    server refuses anything not in the five `desktop_*` actions, any
+    identity/scope/hosts argument, any argument that carries a stored
+    secret (redactor), any message the protocol's `encode` rejects, a call
+    change since the request, a host not granted, and an `open` without an
+    origin, speaking "I can't do that."; inside a handover it runs,
+    otherwise it is queued (step 13a). Page text from the last action
+    result (4 KiB) goes back to the brain redacted and marked untrusted
+    (lead added the redaction, with a test). The approve route also checks
+    the queued entry's scope and call against the desktop. `vm-call.js`
+    exposes `desktop_id` on the child.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

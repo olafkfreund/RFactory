@@ -175,19 +175,19 @@ async function main() {
     runner = createRunnerClient({ url: process.env.RFACTORY_RUNNER_URL, key: process.env.RFACTORY_RUNNER_KEY,
       cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
   }
-  let call = null;
-  if (process.env.RFACTORY_CALLS === '1') {
-    const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
-    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions,
-      ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
-  }
   let desktop = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
-    desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner,
+    desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, brain, redactor,
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, ...(name === 'desktop_open' ? { hosts: ctx.hosts } : {}) } }),
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
+  }
+  let call = null;
+  if (process.env.RFACTORY_CALLS === '1') {
+    const tts = require('./tts.js').createTts({ voicePath: process.env.RFACTORY_VOICE });
+    call = require('./call.js').createCallManager({ source, brain, tts, redactor, actions, desktop,
+      ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   createApp({ source, brain, roles, call, actions, desktop }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }

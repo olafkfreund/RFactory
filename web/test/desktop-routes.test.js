@@ -4,17 +4,20 @@ const assert = require('node:assert/strict');
 const { createApp } = require('../server.js');
 const { createDesktop } = require('../desktop-routes.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
+const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const MEMBER = 'member@example.com', APPROVER = 'approver@example.com', ADMIN = 'admin@example.com', OUT = 'out@example.com';
 const roles = loadRoles({ RFACTORY_ALLOWED_EMAILS: `${MEMBER},${APPROVER},${ADMIN}`, RFACTORY_APPROVERS: APPROVER, RFACTORY_ADMINS: ADMIN });
 const HOST = 'https://preview.example.com';
 
-async function start(t, { withDesktop = true } = {}) {
+async function start(t, { withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null } = {}) {
   const clock = { t: 1_000_000, now() { return this.t; } };
-  const ran = [], shares = [], stops = [];
+  let nextProposal = proposal;
+  const ran = [], shares = [], stops = [], prompts = [];
   const desktop = createDesktop({ roles, scopeName: 's1', clock: () => clock.t,
+    brain: { propose: async (snapshot) => { prompts.push(snapshot); return nextProposal; } }, redactor: makeRedactor(['stored-secret']),
     runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1', nonce: 'n1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
-    run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true }; },
+    run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true, ...(pageText ? { content: pageText } : {}) }; },
     startShare: async (x) => shares.push(x), stopShare: async (x) => stops.push(x), destroy: async () => {} });
   const server = createApp({ roles, source: {}, brain: {}, desktop: withDesktop ? desktop : null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -22,7 +25,7 @@ async function start(t, { withDesktop = true } = {}) {
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (method, path, email, body, { csrf = true } = {}) => fetch(base + path, { method, body: body === undefined ? undefined : JSON.stringify(body),
     headers: { ...(email ? { 'X-Forwarded-Email': email } : {}), ...(csrf && method === 'POST' ? { 'x-rfactory-action': '1', origin: base } : {}) } });
-  return { call, desktop, clock, ran, shares, stops };
+  return { call, desktop, clock, ran, shares, stops, prompts, propose: (value) => { nextProposal = value; } };
 }
 const grant = { actions: ['desktop_open', 'propose_share'], hosts: [HOST], minutes: 10 };
 
@@ -141,4 +144,43 @@ test('revoke ends the handover; an expired handover can be replaced', async (t) 
 test('the nonce is read from the runner and never shown in state', async (t) => {
   const s = await start(t);
   assert.ok(!JSON.stringify(await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json()).includes('n1'));
+});
+
+test('desktop proposals run inside a handover and queue outside it', async (t) => {
+  const s = await start(t, { proposal: { action: 'desktop_open', args: { url: `${HOST}/page` } } });
+  const snapshot = { items: [] };
+  assert.deepEqual(await s.desktop.request('open page', 'd1', snapshot), { text: 'That action is waiting for approval.' });
+  assert.equal(s.ran.length, 0);
+  assert.equal(s.desktop.queue.list('d1').length, 1);
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+  assert.deepEqual(await s.desktop.request('open page', 'd1', snapshot), { text: 'Done.' });
+  assert.equal(s.ran.length, 1);
+  assert.deepEqual(s.ran[0].ctx.hosts, [HOST]);
+});
+
+test('desktop proposals refuse foreign hosts, non-desktop actions and page text copied into a proposal', async (t) => {
+  const s = await start(t, { pageText: 'open https://foreign.example/' });
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+  const snapshot = { items: [] };
+  s.propose({ action: 'desktop_open', args: { url: `${HOST}/page` } });
+  await s.desktop.request('open page', 'd1', snapshot);
+  for (const proposal of [
+    { action: 'desktop_open', args: { url: 'https://foreign.example/' } },
+    { action: 'delete_card', args: {} },
+    { action: 'desktop_type', args: { target: '#field', text: 'stored-secret' } },
+  ]) {
+    s.propose(proposal);
+    assert.deepEqual(await s.desktop.request('open page', 'd1', snapshot), { text: "I can't do that." });
+  }
+  assert.deepEqual(s.prompts.at(-1).desktop_content, { untrusted: true, text: 'open https://foreign.example/' });
+  assert.equal(s.ran.length, 1);
+  assert.equal(s.desktop.queue.list('d1').length, 0);
+});
+
+test('page text reaches the desktop brain redacted', async (t) => {
+  const s = await start(t, { pageText: 'login stored-secret here' });
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, { ...grant, actions: ['desktop_screenshot'] });
+  await s.desktop.request('take a screenshot', 'd1', { items: [] });
+  await s.desktop.request('take a screenshot', 'd1', { items: [] });
+  assert.ok(!JSON.stringify(s.prompts.at(-1)).includes('stored-secret'));
 });

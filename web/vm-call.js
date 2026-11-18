@@ -26,6 +26,7 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
       const made = await runner.create({ call_id: randomUUID(), scope });
       if (made.status !== 200) throw new Error(`runner refused: ${made.body && made.body.error}`);
       id = made.body.desktop_id;
+      child.desktop_id = id;
       if (closed) return runner.destroy(id).catch(() => {}); // killed while the VM was being created
       for (let n = 0; !sock; n++) { // the guest channel connects a few seconds after boot
         if (closed) return;

@@ -2,6 +2,8 @@
 // Desktop routes and the desktop approval queue (plan step 13). Mounted by createApp({ desktop }) only when desktop is configured.
 const { randomUUID, createHash } = require('node:crypto');
 const { createSessions, origin } = require('@rfactory/core/src/desktop/session.js');
+const { encode } = require('../desktop/runner/protocol.js');
+const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
 
 const LIFETIME = 10 * 60 * 1000;
 const PENDING_LIMIT = 5;
@@ -65,9 +67,15 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
 }
 
 // runner: { list() -> {status, body: {desktops, alert}} }. run/startShare/stopShare/cancel/destroy reach the guest through the runner.
-function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, cancel, destroy, openVnc, clock = Date.now }) {
+function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, cancel, destroy, openVnc, brain, redactor, clock = Date.now }) {
   const sessions = createSessions({ isApprover: (user) => roles.has(user, 'approver'), cancel: cancel || destroy, destroy, clock });
-  const queue = createDesktopQueue({ roles, run, clock });
+  const pageText = new Map();
+  const runDesktop = async (name, args, context) => {
+    const result = await run(name, args, context);
+    if (typeof result?.content === 'string') pageText.set(context.running.desktop_id, result.content.slice(0, 4096));
+    return result;
+  };
+  const queue = createDesktopQueue({ roles, run: runDesktop, clock });
   async function runnerState() {
     const { body } = await runner.list();
     return { desktops: (body.desktops || []).filter((d) => d.scope === scopeName && !d.spare), alert: body.alert || null };
@@ -75,6 +83,32 @@ function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, c
   const find = async (id) => (await runnerState()).desktops.find((d) => d.desktop_id === id) || null;
   // live-view membership: a signed-in member of this server's scope, and the desktop belongs to that scope
   const isMember = async (email, id) => roles.has(email, 'member') && !!(await find(id));
+
+  async function request(text, desktopId, snapshot) {
+    const refused = { text: "I can't do that." };
+    const desk = desktopId && await find(desktopId);
+    if (!desk || !brain || !redactor) return refused;
+    const proposal = await brain.propose({ ...snapshot, desktop_content: { untrusted: true, text: redactor.toModel(pageText.get(desktopId) || '') } },
+      { request: text, desktop: true });
+    const { action: name, args } = proposal || {};
+    if (!TOOLS.has(name) || !args || Array.isArray(args) || typeof args !== 'object' ||
+        Object.keys(args).some((key) => ['type', 'scope', 'call_id', 'desktop_id', 'action_id', 'hosts'].includes(key)) ||
+        JSON.stringify(redactor.toModel(args)) !== JSON.stringify(args)) return refused;
+    try { encode({ type: name, ...args }); } catch { return refused; }
+    const current = await find(desktopId);
+    if (!current || current.call_id !== desk.call_id) return refused;
+    const running = { scope: desk.scope, call_id: desk.call_id, desktop_id: desktopId };
+    const session = sessions.get(desktopId);
+    const reason = sessions.check(session, running, name, args);
+    if (reason === 'host-not-granted' || (name === 'desktop_open' && !origin(args.url))) return refused;
+    if (reason) {
+      await queue.enqueue({ name, args, running, reason });
+      return { text: 'That action is waiting for approval.' };
+    }
+    const result = await queue.track(desktopId, name, () => runDesktop(name, args, { running, hosts: session.hosts }));
+    if (sessions.check(session, running, name, args) || result?.ok === false) return refused;
+    return { text: 'Done.' };
+  }
 
   async function handle({ req, res, email, url, json, readJson }) {
     const m = ROUTE.exec(url);
@@ -117,6 +151,12 @@ function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, c
       }
       if (typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
       if (actionId) {
+        const t = queue.take(actionId, id, body.hash, email);
+        if (t.error) return json(res, t.status, { error: t.error });
+        if (t.entry.scope !== desk.scope || t.entry.call_id !== desk.call_id) {
+          queue.drop(actionId);
+          return json(res, 409, { error: 'not-pending' });
+        }
         const r = what.endsWith('/approve') ? await queue.approve(actionId, id, body.hash, email) : queue.reject(actionId, id, body.hash, email);
         return json(res, r.status, r.error ? { error: r.error } : { ok: true });
       }
@@ -134,7 +174,7 @@ function createDesktop({ roles, scopeName, runner, run, startShare, stopShare, c
     };
     run_().catch(() => json(res, 500, { error: 'internal' }));
   }
-  return { sessions, queue, handle, isMember, openVnc: openVnc || (async () => { throw new Error('vnc-unavailable'); }) };
+  return { sessions, queue, request, handle, isMember, openVnc: openVnc || (async () => { throw new Error('vnc-unavailable'); }) };
 }
 
 module.exports = { createDesktop, createDesktopQueue };
