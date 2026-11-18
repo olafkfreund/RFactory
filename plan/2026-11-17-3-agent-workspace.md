@@ -18,6 +18,8 @@ coders:
   13: coder   # production wiring of existing pieces, no new logic
   14: coder   # web UI pages and controls over existing APIs
   15: coder   # verification scripts that drive the probe image
+  13c: coder  # guest image and worker glue (deviation 16, owner decision)
+  13d: codex  # proposal mapping and validation (deviation 16, owner decision)
 reviewers:
   - codex     # read-only second review of the whole diff; agy is out of use (#2748)
 ---
@@ -548,6 +550,39 @@ v1; Wayland in the guest.
     tools have no production consumer: the web app's brain is `claude-cli`
     with no tools, and `createGateway` is built only for GitHub scopes,
     which cannot enable writes.
+
+16. **Owner decisions on deviation 15's gaps (2026-11-18), two new steps
+    before step 15's scripts are re-pointed:**
+    - **13c, the bot joins from the VM** (coder: Nix guest image and worker
+      glue). The guest image carries `bot/` (the existing worker,
+      `bot/run.js`, same call library and pins) and runs it as the guest's
+      call worker; the call Chrome is launched with
+      `callLaunchArgs(nonce)` after `call-config`; the worker's stdin/stdout
+      protocol (`speak`, `cancel`, `leave`, state events) is carried over the
+      guest channel instead of a pipe, so `web/call.js` drives a VM call the
+      same way it drives a pod call; with `RFACTORY_DESKTOP` off, calls
+      join from the pod exactly as today. TTS stays in the pod (WAV sent to
+      the guest), so no voice model enters the guest. The share (step 11)
+      runs in this same Chrome.
+      → verify: unit tests with a fake guest channel (speak, cancel, leave,
+      state); the guest build evaluates (`nix eval`); live in step 17's
+      `e2e.sh`.
+    - **13d, the brain proposes desktop actions** (codex: small tricky
+      mapping and validation). No tool-calling brain: the call brain
+      proposes desktop actions as text the same way Phase 3 proposes
+      CFactory actions; each parsed proposal is validated against the
+      desktop protocol's `desktop_*` schema and the session's
+      `actions`/`hosts`, then either runs under an approver's active
+      handover (actions inside it) or goes to the desktop approval queue
+      (step 13a) for an approver's click; never-allowed or unparseable
+      proposals are dropped with a spoken "I can't do that". Page content
+      returned by `desktop_screenshot` or page text is data to the brain,
+      never an instruction source for new proposals without the same
+      checks.
+      → verify: unit tests: valid proposal inside a handover runs; outside
+      it queues; a host not in `hosts` or a non-`desktop_*` action is
+      refused; a proposal copied from page text still goes through the same
+      checks; Phase 3 tests unchanged.
 
 ## Prerequisites (named revisions)
 
