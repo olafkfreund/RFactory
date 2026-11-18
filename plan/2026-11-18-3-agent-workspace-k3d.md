@@ -769,6 +769,18 @@ and 27) and the scripts. This plan is self-contained.
     - The scripts need test mode (`deploy/k3d/k14-env.sh on`): ArgoCD
       auto-sync paused, the runner with `RF_VERIFY_HOOKS=1` and the
       verify previews, and the web pod on scope `verify-scope`.
+38. **Previews reach the proxy's egress (lead, found preparing k14).**
+    - The guest opens everything through the shared proxy, and the
+      proxy's egress (`rfactory-proxy-egress-public`) excludes every
+      private range, so no approved preview could ever open on k3d.
+    - The runner now also creates `rfdesk-<pod uid>-proxy`, a proxy
+      egress policy for exactly that desktop's approved preview
+      `ip:port`s, owned by the VMI like the rest. Kyverno's
+      protected-range rule still applies; the proxy still checks the
+      desktop's entry.
+    - k14's fixture runs on the `rfverify` docker bridge, 10.250.0.1:
+      private, outside every protected range, reachable from the nodes.
+      `deploy/k3d/k14-env.sh on|off|status` switches the test mode.
 
 
 ## Steps

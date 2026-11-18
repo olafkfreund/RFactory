@@ -61,8 +61,10 @@ test('paused VMI, UID and pod, owned policy and entries, guard ready, then unpau
   const ctx = setup();
   const result = await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
   assert.ok(result.desktop_id);
-  assert.deepEqual(ctx.calls.slice(0, 8), ['createVmi', 'getVmi', 'listPods', 'createPolicy', 'createProxyEntry', 'createGuardEntry', 'getVmi', 'unpauseVmi']);
-  const [vmi, policy, proxy, guard] = ctx.manifests;
+  // scope alpha has a preview, so the proxy's egress policy for it follows the desktop's own
+  assert.deepEqual(ctx.calls.slice(0, 9), ['createVmi', 'getVmi', 'listPods', 'createPolicy', 'createPolicy', 'createProxyEntry', 'createGuardEntry', 'getVmi', 'unpauseVmi']);
+  const [vmi, policy, proxyPolicy, proxy, guard] = ctx.manifests;
+  assert.equal(proxyPolicy.metadata.name, `rfdesk-${podUID}-proxy`);
   assert.equal(vmi.spec.startStrategy, 'Paused');
   assert.equal(vmi.spec.nodeSelector['kubernetes.io/hostname'], 'k3d-factory-agent-0');
   assert.equal(vmi.metadata.labels['rfactory.io/role'], 'desktop');

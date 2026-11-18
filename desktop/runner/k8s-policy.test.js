@@ -116,6 +116,18 @@ test('contained protected subnets become excepts; parent protection removes the 
   assertPolicySchema(parent);
 });
 
+test('approved previews open the proxy egress for exactly those ip:port pairs; no previews, no proxy policy', () => {
+  const { proxyPolicy } = buildPolicy({ ...input, platform: 'meet' });
+  assert.equal(proxyPolicy.metadata.name, `rfdesk-${input.podUID}-proxy`);
+  assert.deepEqual(proxyPolicy.spec.podSelector, { matchLabels: input.proxySelector });
+  assert.deepEqual(proxyPolicy.spec.policyTypes, ['Egress']);
+  assert.deepEqual(proxyPolicy.spec.egress, [
+    { to: [{ ipBlock: { cidr: '10.50.0.7/32' } }], ports: [{ protocol: 'TCP', port: 8443 }] },
+    { to: [{ ipBlock: { cidr: 'fd50::7/128' } }], ports: [{ protocol: 'TCP', port: 8080 }] }]);
+  assert.equal(proxyPolicy.metadata.ownerReferences[0].kind, 'VirtualMachineInstance');
+  assert.equal(buildPolicy({ ...input, previews: [], platform: 'meet' }).proxyPolicy, null);
+});
+
 test('always-protected previews are refused with a code, including IPv6 and built-in ranges', () => {
   for (const preview of ['192.168.1.7:443', '100.90.1.2:443', '10.42.1.8:443', '169.254.169.254:443', '[fd77::9]:443']) {
     assert.throws(() => buildPolicy({ ...input, previews: [preview] }), { code: 'protected-preview' });

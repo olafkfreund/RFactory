@@ -51,6 +51,6 @@ http.createServer((req, res) => {
     case '/login-submitted': state.login.submitted = true; res.end('{}'); break;
     default: html(res, 'ok');
   }
-}).listen(portA);
+}).listen(portA, process.env.FIXTURE_HOST); // FIXTURE_HOST: bind one address (k14: the rfverify bridge), not every interface
 
-http.createServer((req, res) => { state.b++; res.writeHead(200, { 'content-type': 'text/html' }); res.end('landing'); }).listen(portB);
+http.createServer((req, res) => { state.b++; res.writeHead(200, { 'content-type': 'text/html' }); res.end('landing'); }).listen(portB, process.env.FIXTURE_HOST);

@@ -120,7 +120,14 @@ function buildPolicy(input) {
   const guardEntry = configMap('guard', { podUID, podIP, ...(podMAC ? { podMAC } : {}), mark, scope,
     runner: { ip: runnerIP, ports: [5000, 5001, 5900] }, proxy: { ip: proxyIP, port: proxyPort, dnsPort: 53 },
     allowDestinations: destinations, alwaysProtected: protectedRanges });
-  return { networkPolicy, proxyEntry, guardEntry };
+  // The guest reaches a preview only through the shared proxy, whose own egress excludes every private range:
+  // this desktop's approved previews open there too, owned by the VMI like the rest (the proxy still checks the entry).
+  const proxyPolicy = targets.length ? {
+    apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: `${name}-proxy`, ownerReferences },
+    spec: { podSelector: { matchLabels: proxySelector }, policyTypes: ['Egress'],
+      egress: targets.map(t => ({ to: [{ ipBlock: { cidr: `${t.address}/${t.family === 4 ? 32 : 128}` } }], ports: [{ protocol: 'TCP', port: t.port }] })) },
+  } : null;
+  return { networkPolicy, proxyPolicy, proxyEntry, guardEntry };
 }
 
 module.exports = { buildPolicy };

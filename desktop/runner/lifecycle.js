@@ -279,6 +279,7 @@ function createLifecycle(config, deps) {
     const proxyData = JSON.parse(generated.proxyEntry.data.entry); proxyData.token = vm.proxy.token;
     generated.proxyEntry.data.entry = JSON.stringify(proxyData);
     await deps.k8s.createPolicy(generated.networkPolicy);
+    if (generated.proxyPolicy) await deps.k8s.createPolicy(generated.proxyPolicy);
     await deps.k8s.createConfigMap(generated.proxyEntry);
     await deps.k8s.createConfigMap(generated.guardEntry);
     await live();
