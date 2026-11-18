@@ -20,7 +20,10 @@
     ],
     "source": "https://support.google.com/a/answer/1279090",
     "fetched": "2026-11-18",
-    "sha256": "122985082e49086cfdf544ce05eb4396f7a854c02190c3b35a0af454bde1e9f4"
+    "sha256": "122985082e49086cfdf544ce05eb4396f7a854c02190c3b35a0af454bde1e9f4",
+    "stun": [
+      "74.125.250.129:19302"
+    ]
   },
   "zoom": {
     "cidrs": [

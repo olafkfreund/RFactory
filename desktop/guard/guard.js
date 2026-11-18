@@ -11,6 +11,10 @@ const PREFIX = 'rfdesk_';
 const UID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const MAC = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
 const NAME = /^[a-zA-Z0-9_.-]{1,15}$/;
+// bumped with any change to renderTables: tables of another version are never trusted (a guard upgrade must not keep old rules)
+const RULES_VERSION = 'rfdesk-v3';
+// the table comment binds the rules to what they were written for: a new sandbox (veth, MAC) or IP under the same pod UID never inherits them
+const binding = (veth, mac, ips) => `${RULES_VERSION} ${veth} ${(mac || '-').toLowerCase()} ${[...ips].sort().join(',')}`;
 
 function cidrFamily(range) {
   if (typeof range !== 'string') throw new Error('invalid range');
@@ -41,17 +45,18 @@ function identity(pod, entry) {
 
 function renderTables(pod, entry, veth) {
   const { uid, ips, mac } = identity(pod, entry);
-  if (!NAME.test(veth)) throw new Error('invalid veth');
+  if (typeof veth !== 'string' || !NAME.test(veth)) throw new Error('invalid veth');
   const name = `${PREFIX}${uid}`;
   const v4 = ips.filter(ip => net.isIP(ip) === 4);
   const v6 = ips.filter(ip => net.isIP(ip) === 6);
-  const bridge = [`table bridge ${name} {`, '  chain prerouting { type filter hook prerouting priority -300; policy accept;', `    iifname "${veth}" jump source`, '  }',
+  const bound = binding(veth, mac, ips);
+  const bridge = [`table bridge ${name} {`, `  comment "${bound}";`, '  chain prerouting { type filter hook prerouting priority -300; policy accept;', `    iifname "${veth}" jump source`, '  }',
     '  chain forward { type filter hook forward priority -200; policy accept;', `    iifname "${veth}" ether type { ip, ip6 } drop`, `    oifname "${veth}" ether type { ip, ip6 } drop`, '  }',
     '  chain source {', ...(mac ? [`    ether saddr != ${mac} drop`] : []),
     ...(v4.length ? [`    ether type ip ip saddr != { ${v4.join(', ')} } drop`, `    ether type arp arp saddr ip != { ${v4.join(', ')} } drop`] : ['    ether type ip drop', '    ether type arp drop']),
     ...(v6.length ? [`    ether type ip6 ip6 saddr != { ${v6.join(', ')} } drop`] : ['    ether type ip6 drop']),
     '    ether type != { ip, ip6, arp } drop', '  }', '}'];
-  const inet = [`table inet ${name} {`, '  counter egress { }', '  quota traffic { over 1073741824 bytes }'];
+  const inet = [`table inet ${name} {`, `  comment "${bound}";`, '  counter egress { }', '  quota traffic { over 1073741824 bytes }'];
   for (const [family, values] of [['4', v4], ['6', v6]]) {
     if (!values.length) continue;
     const type = family === '4' ? 'ipv4_addr' : 'ipv6_addr';
@@ -97,27 +102,32 @@ function renderTables(pod, entry, veth) {
   return { name, bridge: bridge.join('\n') + '\n', inet: inet.join('\n') + '\n' };
 }
 
-// one UDP datagram to the discard port makes the node resolve the pod's ARP entry: an idle pod (a paused VMI's launcher) has none
-function poke(ip) {
-  return new Promise(resolve => {
-    const socket = require('node:dgram').createSocket(net.isIP(ip) === 6 ? 'udp6' : 'udp4');
-    socket.on('error', () => { socket.close(); resolve(); });
-    socket.send(Buffer.alloc(1), 9, ip, () => { socket.close(); resolve(); });
-  });
+const CNI_RESULTS = process.env.RF_CNI_RESULTS || '/var/lib/cni/results';
+function readCniResults(dir = CNI_RESULTS) {
+  return fs.readdirSync(dir).flatMap(file => { try { return [JSON.parse(fs.readFileSync(`${dir}/${file}`, 'utf8'))]; } catch { return []; } });
 }
 
-async function findVeth(ip, run, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), resolveNeighbour = poke) {
-  if (!net.isIP(ip)) throw new Error('invalid pod IP');
+// The pod's host veth and its MAC, from the CNI plugin's own result cache, keyed by pod UID: the node writes it at pod
+// creation, the pod cannot influence it (unlike ARP or the fdb, which a guest can poison with a neighbour's MAC).
+async function findVeth(pod, { readResults = readCniResults, run, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  const uid = pod.metadata.uid, ip = pod.status?.podIP;
+  if (!UID.test(uid) || !net.isIP(ip)) throw new Error('invalid pod identity');
   for (let attempt = 0; attempt < 5; attempt++) {
-    const neighbours = JSON.parse(await run('ip', ['-j', 'neigh', 'show', 'to', ip, 'dev', 'cni0']));
-    const macs = [...new Set(neighbours.map(item => item.lladdr).filter(Boolean))];
-    if (!macs.length) await resolveNeighbour(ip);
-    if (macs.length > 1) break;
-    if (macs.length === 1) {
-      const fdb = JSON.parse(await run('bridge', ['-j', 'fdb', 'show', 'br', 'cni0']));
-      const ports = [...new Set(fdb.filter(item => item.mac?.toLowerCase() === macs[0].toLowerCase() && NAME.test(item.dev)).map(item => item.dev))];
-      if (ports.length > 1) break;
-      if (ports.length === 1) return { veth: ports[0], mac: macs[0] };
+    const mine = readResults().filter(r => r?.kind === 'cniCacheV1' && Array.isArray(r.cniArgs)
+      && r.cniArgs.some(a => Array.isArray(a) && a[0] === 'K8S_POD_UID' && a[1] === uid));
+    if (mine.length > 1) break;
+    if (mine.length === 1) {
+      const result = mine[0].result || {};
+      const interfaces = Array.isArray(result.interfaces) ? result.interfaces : [];
+      const hostSide = interfaces.filter(i => !i.sandbox && typeof i.name === 'string' && i.name !== 'cni0');
+      const podSide = interfaces.filter(i => i.sandbox && i.name === mine[0].ifName);
+      const hasIP = Array.isArray(result.ips) && result.ips.some(a => typeof a.address === 'string' && a.address.split('/')[0] === ip);
+      if (hostSide.length !== 1 || podSide.length !== 1 || !hasIP || !NAME.test(hostSide[0].name) || !MAC.test(podSide[0].mac || '')) break;
+      const veth = hostSide[0].name;
+      // the cache can outlive its veth: the port must exist now, on cni0
+      const link = JSON.parse(await run('ip', ['-j', 'link', 'show', 'dev', veth]));
+      if (!Array.isArray(link) || link.length !== 1 || link[0].master !== 'cni0' || link[0].address?.toLowerCase() !== hostSide[0].mac?.toLowerCase()) break;
+      return { veth, mac: podSide[0].mac };
     }
     if (attempt < 4) await sleep(1000);
   }
@@ -165,31 +175,40 @@ function createApi({ fetcher = fetch, host = process.env.KUBERNETES_SERVICE_HOST
     entry: uid => get(`/configmaps/rfdesk-${uid}-guard`), watch };
 }
 
-function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory-runner' }) {
+function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory-runner', readResults = readCniResults }) {
   if (!api || !nodeName) throw new Error('guard needs API and node name');
   const ready = new Map();
   const tableName = uid => { if (!UID.test(uid)) throw new Error('invalid pod UID'); return `${PREFIX}${uid}`; };
-  async function tables(uid) {
+  // true: both tables, written for `expect` (or, without it, by this rules version); 'stale': anything else present; false: none
+  async function tables(uid, expect) {
     const name = tableName(uid);
     const listed = JSON.parse(await run('nft', ['-j', 'list', 'tables']));
-    if (!['bridge', 'inet'].every(family => listed.nftables.some(item => item.table?.family === family && item.table.name === name))) return false;
+    const mine = listed.nftables.filter(item => item.table?.name === name && ['bridge', 'inet'].includes(item.table.family));
+    if (!mine.length) return false;
+    const ok = c => typeof c === 'string' && (expect ? c === expect : c.startsWith(`${RULES_VERSION} `));
+    if (mine.length !== 2 || mine[0].table.comment !== mine[1].table.comment || !mine.every(item => ok(item.table.comment))) return 'stale';
     for (const family of ['bridge', 'inet']) await run('nft', ['-j', 'list', 'table', family, name]);
     return true;
   }
   async function apply(pod, entry) {
     const uid = pod.metadata.uid;
     identity(pod, entry);
-    const found = await findVeth(entry.podIP, run, sleep);
+    const found = await findVeth(pod, { readResults, run, sleep });
     if (entry.podMAC && entry.podMAC.toLowerCase() !== found.mac.toLowerCase()) throw new Error('guard MAC mismatch');
-    const details = { ...entry, podMAC: entry.podMAC || found.mac };
-    if (!(await tables(uid))) {
+    const details = { ...entry, podMAC: found.mac };
+    const { ips } = identity(pod, details);
+    const expect = binding(found.veth, found.mac, ips);
+    const state = await tables(uid, expect);
+    // tables of another rules version or binding (or half a pair) are never repaired in place: fail closed, the alive set expires
+    if (state === 'stale') { const error = new Error('guard-stale-rules'); error.code = 'guard-stale-rules'; throw error; }
+    if (!state) {
       const rules = renderTables(pod, details, found.veth);
       await run('nft', ['-f', '-'], `${rules.bridge}\n${rules.inet}`);
     }
     await run('tc', ['qdisc', 'replace', 'dev', found.veth, 'clsact']);
     await run('tc', ['filter', 'replace', 'dev', found.veth, 'ingress', 'protocol', 'all', 'pref', '1', 'matchall',
       'action', 'police', 'rate', '20mbit', 'burst', '64k', 'drop']);
-    if (!(await tables(uid))) throw new Error('guard table read-back failed');
+    if ((await tables(uid, expect)) !== true) throw new Error('guard table read-back failed');
     ready.set(uid, true);
   }
   async function reconcileOnce() {
@@ -204,12 +223,13 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
     for (const pod of pods) {
       const uid = pod.metadata.uid;
       try {
-        const cm = await api.entry(uid);
+        let cm;
+        try { cm = await api.entry(uid); } catch (error) { error.transient = true; throw error; }
         const entry = JSON.parse(cm.data.entry);
         await apply(pod, entry);
       } catch (error) {
-        // tables already installed and reading back: a transient reconcile error (API, veth lookup) must not cut a live call
-        if (ready.get(uid) === true && await tables(uid).catch(() => false)) console.error(`guard reconcile ${uid}: ${error.message}`);
+        // only a Kubernetes API error is forgiven for a live pod whose tables read back; identity, veth, MAC or binding errors cut it
+        if (error.transient && ready.get(uid) === true && (await tables(uid).catch(() => false)) === true) console.error(`guard reconcile ${uid}: ${error.message}`);
         else ready.set(uid, error.code || error.message);
       }
     }
@@ -221,12 +241,13 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
     return reconciling;
   }
   async function heartbeat(uid, sharing) {
-    if (!ready.get(uid) || ready.get(uid) !== true || !(await tables(uid))) throw new Error('guard-not-ready');
+    if (ready.get(uid) !== true || (await tables(uid)) !== true) throw new Error('guard-not-ready');
     const name = tableName(uid);
     const pods = (await api.pods(nodeName)).items;
     const pod = pods.find(p => p.metadata?.uid === uid);
     if (!pod) throw new Error('unknown pod');
     const ips = [...new Set((pod.status?.podIPs || [{ ip: pod.status.podIP }]).map(item => item.ip))];
+    if (!ips.length || !ips.every(ip => net.isIP(ip))) throw new Error('invalid pod IPs'); // nothing unvalidated reaches nft -f
     // one nft transaction, so the element is never absent between delete and add (an expired element fails it: the cut stands)
     const lines = ips.flatMap((ip) => {
       const set = `alive${net.isIP(ip)}`;
@@ -235,7 +256,7 @@ function createGuard({ api, run = command, sleep, nodeName, runnerCN = 'rfactory
     await run('nft', ['-f', '-'], `${lines.join('\n')}\n`);
   }
   async function status(uid) {
-    if (ready.get(uid) !== true || !(await tables(uid))) return { ready: false, reason: ready.get(uid) || 'guard-not-ready' };
+    if (ready.get(uid) !== true || (await tables(uid)) !== true) return { ready: false, reason: ready.get(uid) || 'guard-not-ready' };
     return { ready: true };
   }
   async function counters(uid) {
@@ -284,4 +305,4 @@ if (require.main === module) {
   guard.watch().catch(error => { console.error('guard watch failed:', error.message); process.exitCode = 1; });
 }
 
-module.exports = { renderTables, findVeth, createApi, createGuard };
+module.exports = { renderTables, findVeth, createApi, createGuard, RULES_VERSION, binding };

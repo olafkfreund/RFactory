@@ -14,7 +14,7 @@ const policies = fs.readFileSync(path.join(dir, 'kyverno.yaml'), 'utf8')
 
 const { firstHost } = require('./preflight');
 // A platform whose ranges.json value is the string "not found" has no probe hosts.
-const probeCidrs = (ranges) => new Set(Object.values(ranges).filter((e) => typeof e === 'object')
+const probeCidrs = (ranges) => new Set(Object.values(ranges).filter((e) => typeof e === 'object' && !e.stun)
   .flatMap((e) => e.probe || e.cidrs.map(firstHost).filter(Boolean)).map((h) => `${h}/32`));
 const read = (f) => fs.readFileSync(path.join(dir, f), 'utf8');
 
@@ -105,6 +105,16 @@ test('runner media-probe egress is exactly the preflight probe hosts, TCP only, 
   assert.doesNotMatch(doc, /protocol: UDP|except|namespaceSelector/);
   const protectedNets = ['10.', '172.18.', '192.168.', '169.254.'];
   for (const c of want) assert.ok(!protectedNets.some((p) => c.startsWith(p)) && !/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(c), c);
+});
+
+test('runner media-stun egress is exactly the ranges.json stun targets, UDP only', () => {
+  const want = Object.values(require('../ranges/ranges.json')).filter((e) => typeof e === 'object' && e.stun).flatMap((e) => e.stun);
+  const doc = read('networkpolicies.yaml').split(/^---\s*$/m).find((d) => /name: rfactory-runner-egress-media-stun/.test(d));
+  assert.ok(doc, 'policy exists');
+  const got = [...doc.matchAll(/- to:\n\s+- ipBlock: \{cidr: ([^/]+)\/32\}\n\s+ports: \[\{protocol: UDP, port: (\d+)\}\]/g)].map((m) => `${m[1]}:${m[2]}`);
+  assert.deepEqual(got, want);
+  assert.equal((doc.match(/ipBlock:/g) || []).length, want.length);
+  assert.doesNotMatch(doc, /protocol: TCP|except|namespaceSelector/);
 });
 
 test('a ranges.json platform value "not found" adds no probe host', () => {

@@ -114,7 +114,6 @@ spec:
         - ipBlock: {cidr: 121.244.146.1/32}
         - ipBlock: {cidr: 134.224.0.1/32}
         - ipBlock: {cidr: 137.66.128.1/32}
-        - ipBlock: {cidr: 142.250.82.1/32}
         - ipBlock: {cidr: 144.195.0.1/32}
         - ipBlock: {cidr: 147.124.96.1/32}
         - ipBlock: {cidr: 149.137.0.1/32}
@@ -155,7 +154,19 @@ spec:
         - ipBlock: {cidr: 64.211.144.1/32}
         - ipBlock: {cidr: 64.224.32.1/32}
         - ipBlock: {cidr: 69.174.110.1/32}
-        - ipBlock: {cidr: 74.125.247.128/32}
-        - ipBlock: {cidr: 74.125.250.1/32}
         - ipBlock: {cidr: 99.77.128.1/32}
       ports: [{protocol: TCP, port: 443}]
+
+---
+# Runner egress for the STUN preflight of platforms with `stun` in desktop/ranges/ranges.json (Meet): UDP to
+# those hosts and ports only. kyverno-scope.test.js fails when the two drift.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-runner-egress-media-stun, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-runner}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 74.125.250.129/32}
+      ports: [{protocol: UDP, port: 19302}]

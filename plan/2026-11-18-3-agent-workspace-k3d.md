@@ -555,6 +555,51 @@ and 27) and the scripts. This plan is self-contained.
     - Fix: `lifecycle.js` writes six digits, and a test asserts the
       format. Verified live, with a PUT from the runner pod.
     - Runner image `runner:9k562yn…@sha256:136eb2b8…`.
+29. **k10b third run: 29 pass. Bridge anti-spoofing had never applied; Meet
+    media answers no TCP (lead; three Opus reviews).**
+    - **The bug:** a spoofed MAC connected, and a spoofed source IP reached
+      the node's conntrack. The probe's bridge table read
+      `iifname "undefined"`: `findVeth` read the fdb field `dev`, but
+      iproute2 names it `ifname`, and `NAME.test(undefined)` passes the
+      string "undefined". The test fixture modelled the same wrong field.
+    - **A redesign the review asked for:** even with the right field, the
+      ARP and fdb lookup could be poisoned. A guest that answers ARP with
+      a neighbour's MAC would put its table on the neighbour's veth. So
+      `findVeth` now reads the CNI bridge plugin's result cache
+      (`/var/lib/cni/results`, mounted read-only via hostPath):
+      - the single entry whose `K8S_POD_UID` is the pod's UID;
+      - exactly one host veth and one pod-side `eth0` with a MAC;
+      - the pod IP in its `ips`;
+      - the veth present now on cni0.
+
+      The pod cannot influence that file. The poke (deviation 26) is gone.
+    - **Binding marker:** tables carry
+      `comment "rfdesk-v3 <veth> <mac> <ips>"`. A table with any other
+      comment, or half a pair, is stale: the pod is never ready
+      (`guard-stale-rules`), its alive set expires, and the guard never
+      repairs it in place. So an upgraded guard cannot keep old rules,
+      and a new sandbox (new veth, MAC or IP) under the same pod UID never
+      inherits them. The veth's own MAC must match the cache's host side.
+    - **Only Kubernetes API errors are forgiven** for a live pod. Identity,
+      veth, MAC or binding errors make it not ready.
+    - **Heartbeat:** it validates pod IPs before `nft -f`.
+    - **The Meet preflight now uses STUN.** No Meet media host answered
+      TCP 443, from p620 itself as well, and the preflight refused every
+      Meet call.
+      - The probe is now a STUN binding over UDP, to `ranges.json`
+        `meet.stun` (`74.125.250.129:19302`, stun.l.google.com, inside
+        74.125.250.0/24), checked against the platform's ranges and UDP
+        ports.
+      - A new policy, `rfactory-runner-egress-media-stun` (UDP to exactly
+        that target), has a drift test. Meet's TCP probe hosts are
+        removed.
+      - `net.sh`'s media check sends the same STUN request from the probe
+        with BusyBox `nc -u`, verified from p620.
+      - Teams' probe hosts answer TCP 443. Zoom's do not (not in scope).
+    - **`net.sh` reads the fdb through the guard pod:** on a k3d node,
+      `bridge` is the CNI plugin.
+    - **The scripts that made this work** move to `deploy/k3d/` with a
+      README, the install order for the next user.
 
 
 ## Steps

@@ -104,17 +104,27 @@ else fail net-antispoof-ip "real source '$ctl', spoofed source '$sp', node connt
 sm=$(pexec "$p" sh -c 'o=$(cat /sys/class/net/eth0/address); ip link set dev eth0 address 02:00:00:00:00:99 && { nc -w 3 "$1" "$2" </dev/null >/dev/null 2>&1 && echo connected || echo timeout; ip link set dev eth0 address "$o"; }' sh "$PROXYIP" "$PROXYPORT" 2>/dev/null || echo error)
 back=$(preach "$p" tcp "$PROXYIP" "$PROXYPORT")
 # the bridge hook runs before fdb learning, so a frame that got past the guard would have taught cni0 the spoofed MAC
-fdb=$(node_exec "$AGT" bridge fdb show br cni0 2>/dev/null) || fdb=unreadable
+# through the guard pod (iproute2): on a k3d node `bridge` is the CNI bridge plugin
+fdb=$(gp=$(guard_pod "$AGT") && [ -n "$gp" ] && kc exec "$gp" -c guard -- bridge fdb show br cni0 2>/dev/null) || fdb=unreadable
 if [ "$sm" = timeout ] && answered "$back" && [ "$fdb" != unreadable ] && ! grep -qi '02:00:00:00:00:99' <<<"$fdb"; then pass net-antispoof-mac
 else fail net-antispoof-mac "spoofed MAC '$sm', real MAC again '$back', fdb on $AGT: $(grep -ci '02:00:00:00:00:99' <<<"$fdb" || true) entries for the spoofed MAC (want 0; unreadable: $([ "$fdb" = unreadable ] && echo yes || echo no))"; fi
 [ "$sm" = timeout ] || gnft "$AGT" list table bridge "rfdesk_${PUID[A1]}" >&2 || true # diagnostic: the bridge rules that let the frame through
 
 # a pinned media range and the proxy with its token are reachable
 hit=
-for ip in $MEDIA $(getent ahostsv4 meet.google.com | awk '{print $1}' | sort -u); do
-  r=$(preach "$p" tcp "$ip" 443); if answered "$r"; then hit="$ip $r"; break; fi
-done
-if [ -n "$hit" ]; then pass net-media-reachable; else fail net-media-reachable "no pinned $PLATFORM address answered on 443 (tried $MEDIA and meet.google.com's records); does p620 have internet?"; fi
+# a platform with a STUN target (Meet: its media hosts answer no TCP 443) is reached the way a call reaches it: a STUN binding over UDP
+STUN=$(jq -r --arg p "$PLATFORM" '.[$p].stun[0] // empty' "$ROOT/desktop/ranges/ranges.json")
+if [ -n "$STUN" ]; then
+  r=$(pexec "$p" sh -c 'printf "\000\001\000\000\041\022\244\102RFACTORYTEST" | nc -u -w 3 "$1" "$2" 2>/dev/null | head -c 2 | od -An -tx1 | tr -d " \n"' sh "${STUN%:*}" "${STUN##*:}" 2>/dev/null || true)
+  [ "$r" = 0101 ] && hit="$STUN stun"
+  what="a STUN binding success from $STUN (got '${r:-nothing}')"
+else
+  for ip in $MEDIA; do
+    r=$(preach "$p" tcp "$ip" 443); if answered "$r"; then hit="$ip $r"; break; fi
+  done
+  what="an answer on tcp 443 from one of $MEDIA"
+fi
+if [ -n "$hit" ]; then pass net-media-reachable; else fail net-media-reachable "wanted $what; does p620 have internet?"; fi
 pexec_stdin() { kc exec -i "$1" -c probe -- "${@:2}"; }
 auth=$(printf 'rf:%s' "${PTOK[A1]}" | base64 -w0)
 # connect <name:port> <basic-token-or-empty>: the proxy's first answer line

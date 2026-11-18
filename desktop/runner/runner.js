@@ -3,6 +3,8 @@
 const https = require('node:https');
 const fs = require('node:fs');
 const net = require('node:net');
+const dgram = require('node:dgram');
+const crypto = require('node:crypto');
 const { preflight } = require('./preflight');
 const { createLifecycle } = require('./lifecycle');
 const { bridgeViewOnly } = require('./vnc');
@@ -110,6 +112,19 @@ function tcpConnect(host, port, timeoutMs) {
   });
 }
 
+// true when host:port answers a STUN binding request (RFC 5389) with a success carrying our transaction id
+function stunProbe(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket(net.isIP(host) === 6 ? 'udp6' : 'udp4');
+    const id = crypto.randomBytes(12);
+    const done = (ok) => { clearTimeout(timer); socket.close(); resolve(ok); };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.on('error', () => done(false));
+    socket.on('message', (msg) => { if (msg.length >= 20 && msg.readUInt16BE(0) === 0x0101 && msg.subarray(8, 20).equals(id)) done(true); });
+    socket.send(Buffer.concat([Buffer.from([0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42]), id]), port, host);
+  });
+}
+
 // Real dependencies.
 function realDeps(config) {
   const clock = { now: Date.now, setInterval, clearInterval, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
@@ -141,7 +156,7 @@ function realDeps(config) {
     });
   } : undefined;
   return { clock, k8s, guard, resolveLogin,
-    preflight: (platform) => preflight(platform, config.ranges, tcpConnect) };
+    preflight: (platform) => preflight(platform, config.ranges, tcpConnect, 3000, stunProbe) };
 }
 
 // Production entry: config.tls = {key, cert, ca} are file paths (the mounted TLS Secret), never from the repo.
@@ -228,4 +243,4 @@ async function main(env = process.env) {
 
 if (require.main === module) main().catch((error) => { console.error(`rfactory-runner: ${error.message}`); process.exit(1); });
 
-module.exports = { createHandler, createUpgrade, serve, main, inClusterConfig, realDeps };
+module.exports = { createHandler, createUpgrade, serve, main, inClusterConfig, realDeps, stunProbe };

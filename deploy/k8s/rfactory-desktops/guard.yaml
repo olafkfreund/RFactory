@@ -25,7 +25,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: guard
-          image: docker.io/rfactory/guard:p238hmn8aq9y2pfp3avs56mrqgcxk04r@sha256:d83e23157d347d4494c94b6193dea2cfb95fc9daec20ccb266add11b00cad830
+          image: docker.io/rfactory/guard:2yg0bcrycz0kd1gc36gylss9hyk49glh@sha256:ad8166debdc6ebc2263138d10a26c9d4798ef4d326401c485ce7329e662869d2
           imagePullPolicy: Never
           ports:
             - {name: guard, containerPort: 9443, hostPort: 9443}
@@ -50,8 +50,12 @@ spec:
           volumeMounts:
             - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            # the CNI plugin's per-pod results (pod UID -> host veth, pod MAC): the guard's only source for a pod's port
+            - {name: cni-results, mountPath: /var/lib/cni/results, readOnly: true}
       volumes:
         - name: tls
           secret: {secretName: rfactory-guard-tls}
         - name: tmp
           emptyDir: {}
+        - name: cni-results
+          hostPath: {path: /var/lib/cni/results, type: Directory}

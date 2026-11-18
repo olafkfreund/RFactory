@@ -34,9 +34,22 @@ test('"not found", empty and unknown platforms fail without probing', async () =
   await assert.rejects(preflight('nope', ranges, connect), /unknown call platform/);
 });
 
-test('the pinned meet and zoom entries pass preflight (and probe 443)', async () => {
+test('meet is probed with STUN over UDP, never TCP 443 (its media hosts answer no TCP)', async () => {
   const pinned = require('../ranges/ranges.json');
-  for (const platform of ['meet', 'zoom', 'teams']) {
+  const calls = [];
+  const ok = await preflight('meet', pinned, async () => { throw new Error('must not use tcp'); }, 3000, async (h, p) => { calls.push([h, p]); return true; });
+  assert.deepEqual(calls, [['74.125.250.129', 19302]]);
+  assert.deepEqual(ok, { platform: 'meet', host: '74.125.250.129', port: 19302, protocol: 'udp' });
+  await assert.rejects(preflight('meet', pinned, async () => true, 3000, async () => false), /no STUN answer from 74\.125\.250\.129:19302.*refused/);
+  const probe = async () => { throw new Error('must not probe'); };
+  for (const stun of [['8.8.8.8:19302'], ['74.125.250.129:443'], ['74.125.251.1:19302']]) {
+    await assert.rejects(preflight('meet', { meet: { ...pinned.meet, stun } }, probe, 3000, probe), /outside the pinned ranges or UDP ports/);
+  }
+});
+
+test('the pinned zoom and teams entries pass preflight (and probe 443)', async () => {
+  const pinned = require('../ranges/ranges.json');
+  for (const platform of ['zoom', 'teams']) {
     const calls = [];
     const ok = await preflight(platform, pinned, async (h, p) => { calls.push([h, p]); return true; });
     assert.equal(ok.port, 443, platform);
