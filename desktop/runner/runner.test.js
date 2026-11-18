@@ -65,7 +65,7 @@ function setup(over = {}) {
   const k8s = {
     createVmi: async (m) => { const i = ++n; vmis.set(m.metadata.name, uid(1, i)); manifests.push(m);
       pods.set(uid(1, i), { metadata: { uid: uid(2, i), labels: { 'rfactory.io/role': 'desktop' } }, status: { podIP: `10.42.1.${i}`, hostIP: '172.18.0.3' } }); return {}; },
-    getVmi: async (name) => ({ metadata: { uid: vmis.get(name) } }),
+    getVmi: async (name) => ({ metadata: { uid: vmis.get(name) }, status: { conditions: [{ type: 'Paused', status: 'True' }] } }),
     listPods: async (selector) => { const m = /created-by=(.+)$/.exec(selector); return m ? [pods.get(m[1])].filter(Boolean) : [...pods.values()]; },
     createPolicy: async (m) => m, createConfigMap: async (m) => m, unpauseVmi: async () => ({}),
     deleteVmi: async (name) => { calls.push(['deleteVmi', name]); if (failing.on) throw new Error('delete failed'); return {}; },

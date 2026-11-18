@@ -283,6 +283,14 @@ function createLifecycle(config, deps) {
       if (attempt === 44) throw new Error(status?.reason || 'guard not ready');
       await clock.sleep(1000);
     }
+    // the launcher pod (and so the guard) is ready before KubeVirt has started and paused the domain: unpause answers 409 until then
+    for (let attempt = 0; ; attempt++) {
+      const current = await deps.k8s.getVmi(vmiName);
+      if (current?.metadata?.uid !== created.metadata.uid) throw new Error('VMI was replaced');
+      if ((current.status?.conditions || []).some(c => c.type === 'Paused' && c.status === 'True')) break;
+      if (attempt === 59) throw new Error('VMI did not reach Paused');
+      await clock.sleep(1000);
+    }
     await deps.k8s.unpauseVmi(vmiName);
   }
   async function start(call_id, scope, diskSpec, platform) {

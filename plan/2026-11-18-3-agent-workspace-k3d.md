@@ -605,6 +605,13 @@ and 27) and the scripts. This plan is self-contained.
       `bridge` is the CNI plugin.
     - **The scripts that made this work** move to `deploy/k3d/` with a
       README, the install order for the next user.
+30. **k10b fifth run: 32 pass, including both anti-spoofing checks and the
+    STUN media check. The one real desktop failed with unpause 409 (lead).**
+    - The launcher pod has an IP, and the guard reports ready, before
+      KubeVirt has started and paused the domain. Until then, unpause
+      answers 409.
+    - Fix: `lifecycle.js` polls the VMI (same UID) for the condition
+      `Paused=True`, up to 60 s, then unpauses. A test covers it.
 
 
 ## Steps

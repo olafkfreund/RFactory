@@ -12,13 +12,14 @@ const vmiUID = '11111111-1111-4111-8111-111111111111';
 const podUID = '22222222-2222-4222-8222-222222222222';
 const pod = { metadata: { uid: podUID, labels: { 'rfactory.io/role': 'desktop' } }, status: { podIP: '10.42.1.7', hostIP: '172.18.0.3' } };
 
-function setup(fail) {
+function setup(fail, { pausedAfter = 0 } = {}) {
+  let getVmis = 0;
   const calls = [], manifests = [], handlers = new Map(), timers = new Map();
   let now = 1000, currentPod = pod;
   const step = async (name, value) => { calls.push(name); if (fail === name) throw new Error(name); return value; };
   const k8s = {
     createVmi: manifest => { manifests.push(manifest); return step('createVmi', { metadata: { uid: vmiUID } }); },
-    getVmi: () => step('getVmi', { metadata: { uid: vmiUID } }),
+    getVmi: () => step('getVmi', { metadata: { uid: vmiUID }, status: { conditions: getVmis++ < pausedAfter ? [] : [{ type: 'Paused', status: 'True' }] } }),
     listPods: () => step('listPods', [currentPod]),
     createPolicy: manifest => { manifests.push(manifest); return step('createPolicy', manifest); },
     createConfigMap: manifest => { manifests.push(manifest); return step(manifest.metadata.name.endsWith('-proxy') ? 'createProxyEntry' : 'createGuardEntry', manifest); },
@@ -48,11 +49,19 @@ class Socket extends EventEmitter {
   destroy() { this.destroyed = true; this.emit('close'); }
 }
 
+test('unpause waits for the VMI Paused condition (KubeVirt answers 409 before it)', async () => {
+  const ctx = setup(undefined, { pausedAfter: 4 });
+  assert.ok((await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' })).desktop_id);
+  const i = ctx.calls.indexOf('unpauseVmi');
+  assert.deepEqual(ctx.calls.slice(i - 4, i), ['getVmi', 'getVmi', 'getVmi', 'getVmi']); // polled until Paused
+  await ctx.lc.stop();
+});
+
 test('paused VMI, UID and pod, owned policy and entries, guard ready, then unpause', async () => {
   const ctx = setup();
   const result = await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
   assert.ok(result.desktop_id);
-  assert.deepEqual(ctx.calls.slice(0, 7), ['createVmi', 'getVmi', 'listPods', 'createPolicy', 'createProxyEntry', 'createGuardEntry', 'unpauseVmi']);
+  assert.deepEqual(ctx.calls.slice(0, 8), ['createVmi', 'getVmi', 'listPods', 'createPolicy', 'createProxyEntry', 'createGuardEntry', 'getVmi', 'unpauseVmi']);
   const [vmi, policy, proxy, guard] = ctx.manifests;
   assert.equal(vmi.spec.startStrategy, 'Paused');
   assert.equal(vmi.spec.nodeSelector['kubernetes.io/hostname'], 'k3d-factory-agent-0');
