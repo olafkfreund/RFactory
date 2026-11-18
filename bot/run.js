@@ -1,5 +1,5 @@
 'use strict';
-// Bot child process (plan step 4). stdin: first line is the Meet link, then JSON lines
+// Bot child process (plan step 4). stdin: first line is the call link (Meet or Teams), then JSON lines
 // {type:'speak',seq,wav}|{type:'cancel'}|{type:'leave'}. stdout: JSON lines
 // {type:'state'|'heard'|'mic'|'spoke'|'log', ...}. Limits: 4 MiB per line in, 64 KiB out (D1).
 const fs = require('fs');
@@ -90,7 +90,10 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
           if (stopping) { try { await call.camera.setOn(false); } catch {} return; }
           await waitRetry(); // Meet updates the button after a moment; the spike confirmed after 3 s
           if (stopping) { try { await call.camera.setOn(false); } catch {} return; }
-          if (await page.evaluate(() => !!document.querySelector('button[aria-label="Turn off camera"]'))) {
+          // the button label is Meet's; other providers keep their own labels in the library, so their setOn result is trusted
+          // Meet: its button label; others: the provider's own result (shortcut: private _inner of the alpha library, until it reports the camera state)
+          if (call.platform === 'meet' ? await page.evaluate(() => !!document.querySelector('button[aria-label="Turn off camera"]'))
+            : (typeof call._inner?.setCameraOn !== 'function' || (await call._inner.setCameraOn(true)) !== false)) {
             if (stopping) return;
             const poll = async () => {
               if (stopping) return;

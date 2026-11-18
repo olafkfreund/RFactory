@@ -85,7 +85,7 @@ test('vm spawn: the server heartbeat starts at create, before the guest channel 
 });
 
 test('vm spawn: platform comes from the link host; an unknown host fails before any VM is created', async () => {
-  for (const [link, platform] of [['https://meet.google.com/abc-defg-hij', 'meet'], ['https://us02web.zoom.us/j/1', 'zoom'], ['https://zoom.us/j/1', 'zoom'], ['https://acme.slack.com/huddle/x', 'slack']]) {
+  for (const [link, platform] of [['https://meet.google.com/abc-defg-hij', 'meet'], ['https://us02web.zoom.us/j/1', 'zoom'], ['https://zoom.us/j/1', 'zoom'], ['https://acme.slack.com/huddle/x', 'slack'], ['https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d', 'teams'], ['https://teams.live.com/meet/9300000000?p=abc', 'teams']]) {
     const f = fake();
     const made = [];
     const create = f.runner.create;
@@ -96,7 +96,7 @@ test('vm spawn: platform comes from the link host; an unknown host fails before 
     assert.equal(made[0].platform, platform);
     child.kill();
   }
-  for (const link of ['https://evil.example/zoom.us', 'https://notzoom.us/j/1', 'http://meet.google.com/a', 'nonsense']) {
+  for (const link of ['https://evil.example/zoom.us', 'https://notzoom.us/j/1', 'https://evilteams.microsoft.com.example/l/meetup-join/x', 'http://meet.google.com/a', 'nonsense']) {
     const f = fake();
     let created = false;
     f.runner.create = async () => { created = true; return { status: 200, body: { desktop_id: 'x' } }; };

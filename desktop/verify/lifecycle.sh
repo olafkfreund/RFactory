@@ -10,6 +10,7 @@ set -euo pipefail
 trap verify_exit EXIT
 need_root; need_cmds curl jq node systemctl mount umount base64
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA
+NO_BEAT=1 # these cases test heartbeat loss: only `hold` below sends heartbeats (lib.sh new_desktop would otherwise keep every VM alive)
 MOUNTED=
 extra_cleanup() { if [ -n "$MOUNTED" ]; then umount "$MOUNTED" 2>/dev/null || true; MOUNTED=; fi; }
 

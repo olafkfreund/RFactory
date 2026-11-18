@@ -279,3 +279,67 @@ test('agent: call-config auto_select_screen reaches the launch, and only true do
   await plain.handle({ type: 'call-config', nonce: 'n2' });
   assert.deepEqual(seen, [['n1', true], ['n2', false]]);
 });
+
+test('agent: cancel-ack only after Chrome is closed and the profile detached; any failure sends none', async () => {
+  const run = async (control, profile) => {
+    const sent = [];
+    await createAgent({ control, profile, send: (m) => sent.push(m.type) }).handle({ type: 'cancel' });
+    return sent;
+  };
+  assert.deepEqual(await run({ cancel: async () => {} }, { detach: async () => {} }), ['cancel-ack']);
+  assert.deepEqual(await run({ cancel: async () => { throw new Error('chrome close failed'); } }, { detach: async () => {} }), []);
+  assert.deepEqual(await run({ cancel: async () => {} }, { detach: async () => { throw new Error('umount'); } }), []);
+});
+
+test('control: cancel resolves only for a confirmed close; a failed or hung close rejects', async () => {
+  const { createControl } = require('./control');
+  const open = async (close) => {
+    const ctx = { addInitScript: async () => {}, route: async () => {}, pages: () => [], on() {}, close };
+    const control = createControl({ chromium: { launchPersistentContext: async () => ctx } });
+    await control.applyHosts(['https://a.test']);
+    await control.click('x').catch(() => {}); // starts Chrome (the click itself has no page to hit)
+    return control;
+  };
+  await (await open(async () => {})).cancel();
+  await assert.rejects((await open(async () => { throw new Error('boom'); })).cancel(), /close failed/);
+  await assert.rejects((await open(() => new Promise(() => {}))).cancel(), /in time/);
+});
+
+test('control: a cancelled launch whose own Chrome will not close makes cancel reject', async () => {
+  const { createControl } = require('./control');
+  let release;
+  const ctx = { addInitScript: async () => {}, route: async () => {}, pages: () => [], on() {}, close: async () => { throw new Error('stuck'); } };
+  const control = createControl({ chromium: { launchPersistentContext: () => new Promise((r) => { release = () => r(ctx); }) } });
+  const opening = control.applyHosts(['https://a.test']).then(() => control.click('x')).catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  const cancelling = control.cancel();
+  release();
+  await assert.rejects(cancelling, /close failed/);
+  await opening;
+});
+
+test('login: the runner message supplies it; it fills only the open page of its origin and never appears in an answer', async () => {
+  const { createControl } = require('./control');
+  const { resolveLogin } = require('./index');
+  const calls = [];
+  let url = 'https://a.test/signin';
+  const page = { url: () => url, isClosed: () => false, on() {}, close: async () => {}, mainFrame: () => null, fill: async (t, v) => calls.push(['fill', t, v]), click: async (t) => calls.push(['click', t]) };
+  const ctx = { addInitScript: async () => {}, route: async () => {}, pages: () => [page], on() {}, close: async () => {} };
+  const control = createControl({ chromium: { launchPersistentContext: async () => ctx } });
+  const sent = [];
+  const agent = createAgent({ control, profile: {}, send: (m) => sent.push(m), resolveLogin });
+  const login = { origin: 'https://a.test', fields: [{ target: '#u', value: 'SECRET-USER' }, { target: '#p', value: 'SECRET-PASS' }], submit: '#go' };
+  await agent.handle({ type: 'desktop_login', profile: 'p', hosts: ['https://a.test'], login, action_id: 'l1' });
+  assert.deepEqual(calls, [['fill', '#u', 'SECRET-USER'], ['fill', '#p', 'SECRET-PASS'], ['click', '#go']]);
+  assert.deepEqual(sent, [{ type: 'action-result', action_id: 'l1', ok: true }]);
+  // another origin on screen, no login in the message, or an origin outside the grant: nothing is filled
+  calls.length = 0; sent.length = 0;
+  url = 'https://evil.test/';
+  await agent.handle({ type: 'desktop_login', profile: 'p', hosts: ['https://a.test'], login, action_id: 'l2' });
+  url = 'https://a.test/';
+  await agent.handle({ type: 'desktop_login', profile: 'p', hosts: ['https://a.test'], action_id: 'l3' });
+  await agent.handle({ type: 'desktop_login', profile: 'p', hosts: ['https://b.test'], login, action_id: 'l4' });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(sent.map((m) => [m.action_id, m.ok]), [['l2', false], ['l3', false], ['l4', false]]);
+  assert.ok(!JSON.stringify(sent).includes('SECRET'));
+});

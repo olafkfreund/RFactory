@@ -43,6 +43,7 @@ function render(doc, state, handlers, now = Date.now()) {
   for (const q of state.queued) {
     const li = el(doc, 'li');
     li.appendChild(el(doc, 'div', q.name === 'propose_share' ? `Share proposal: ${q.args.url}` : `${q.name} ${JSON.stringify(q.args)}`));
+    if (q.name !== 'propose_share' && q.name !== 'desktop_open') li.appendChild(el(doc, 'div', `on page: ${q.origin || 'unknown (it will not run)'}`));
     li.appendChild(el(doc, 'div', `why queued: ${q.reason}`, 'fine'));
     if (approver) {
       const a = el(doc, 'button', 'Approve', 'btn'); a.setAttribute('type', 'button'); a.addEventListener('click', () => handlers.approve(q));

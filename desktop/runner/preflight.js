@@ -21,7 +21,8 @@ async function preflight(platform, ranges, connect, timeoutMs = 3000) {
     throw new Error(`no pinned media ranges for ${platform}: the desktop call is refused (no audio, egress stays closed); a voice-only bot can be started instead`);
   }
   const port = Array.isArray(entry.tcp[0]) ? entry.tcp[0][0] : entry.tcp[0];
-  const hosts = entry.cidrs.map(firstHost).filter(Boolean);
+  // an entry may name hosts to probe (Teams: the first host of its ranges does not answer on tcp 443)
+  const hosts = entry.probe || entry.cidrs.map(firstHost).filter(Boolean);
   for (const host of hosts) {
     if (await connect(host, port, timeoutMs)) return { platform, host, port };
   }

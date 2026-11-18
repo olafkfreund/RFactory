@@ -30,12 +30,16 @@ const codeOf = (error, allowed, fallback) => {
   return allowed ? (allowed.has(code) ? code : fallback) : (/^[a-z]+(-[a-z]+)+$/.test(code) ? code : fallback);
 };
 
+// Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
-  if (typeof link !== 'string') return false;
+  if (typeof link !== 'string' || link.length > 2048) return false;
   let u;
   try { u = new URL(link); } catch { return false; }
-  return u.protocol === 'https:' && u.host === 'meet.google.com' && !u.port && !u.username && !u.password
-    && !u.search && !u.hash && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname) && link === u.href;
+  if (u.protocol !== 'https:' || u.port || u.username || u.password || u.hash || link !== u.href) return false;
+  if (u.host === 'meet.google.com') return !u.search && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname);
+  return (u.host === 'teams.microsoft.com' && /^\/l\/meetup-join\/[^/]+(\/[^/]*)*$/.test(u.pathname))
+    || (u.host === 'teams.live.com' && /^\/meet\/[0-9A-Za-z]+\/?$/.test(u.pathname))
+    || (u.host === 'teams.microsoft.com' && /^\/meet\/[0-9]+\/?$/.test(u.pathname)); // the newer work link, with ?p=<passcode>
 }
 
 function sameOrigin(req) {
@@ -134,7 +138,7 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
         b = b || {};
         const body = { profile_id: pid, ...(route === 'profile-create' ? { purpose: b.name } : route === 'profile-attach' ? { call_id: b.call_id, platform: b.platform } : {}), actor, scope: profiles.scope };
         if (route === 'profile-create' && (typeof b.name !== 'string' || !b.name || b.name.length > 100)) return json(res, 400, { error: 'bad-request' });
-        if (route === 'profile-attach' && !(typeof b.call_id === 'string' && /^[\w-]{1,64}$/.test(b.call_id) && ['meet', 'zoom', 'slack'].includes(b.platform))) return json(res, 400, { error: 'bad-request' });
+        if (route === 'profile-attach' && !(typeof b.call_id === 'string' && /^[\w-]{1,64}$/.test(b.call_id) && ['meet', 'zoom', 'slack', 'teams'].includes(b.platform))) return json(res, 400, { error: 'bad-request' });
         const r = await profiles.runner.call(route, body);
         if (route === 'profile-attach' && r.status === 200 && r.body && r.body.desktop_id) keepAlive(r.body.desktop_id, profiles.runner, heartbeatMs);
         return r.status === 200 ? json(res, 200, r.body) : json(res, r.status >= 400 && r.status < 500 ? r.status : 502, { error: 'runner-refused' });
@@ -224,6 +228,7 @@ async function main() {
         return { items: raw.items, counts: summarise(raw.items), unknown: raw.items.filter((i) => i.state === 'unknown'), fetched_at: raw.fetched_at, newest_update: raw.newest_update }; },
       // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, hosts: ctx.hosts } }),
+      login: makeLogin(guest),
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
@@ -240,8 +245,13 @@ async function main() {
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
+// The stored preview login goes through the runner's own login route; a 200 {ok:false} (the guest's fill failed) is a failure too.
+function makeLogin(guest) {
+  return async (b) => { const r = await guest('login', { desktop_id: b.desktop_id, profile: b.profile, hosts: b.hosts }); if (r?.ok !== true) throw new Error('login-failed'); };
+}
+
 if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { makeLogin, createApp, refuseKeyEnv, main, recordBrain };

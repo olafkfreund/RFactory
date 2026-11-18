@@ -3,13 +3,15 @@
 // preview, or a public one on the allowlist):  node fixture.js <portA> <portB>
 //   A (allowed origin) serves the trap pages and /hits; B (not allowed) counts every request it gets.
 //   GET A/mark?v=<text> sets a long-lived cookie with that text (profiles.sh looks for it on the host disk).
-//   GET A/hits -> {"a": <requests A got besides /hits and /reset>, "b": <requests B received>, "sw": "none"|"registered"|"unavailable", "retitled": bool}; GET A/reset clears them.
+//   GET A/login is a login form (#user, #pass, #go) that reports only the LENGTHS of what was typed, never the values (secrets.sh).
+//   GET A/hits -> {"a": <requests A got besides /hits and /reset>, "b": <requests B received>, "sw": "none"|"registered"|"unavailable", "retitled": bool,
+//   "login": {"user": <length>, "pass": <length>, "submitted": bool}}; GET A/reset clears them.
 const http = require('node:http');
 
 const [portA, portB] = process.argv.slice(2).map(Number);
 if (!portA || !portB) { console.error('usage: node fixture.js <portA> <portB>'); process.exit(2); }
 
-const state = { a: 0, b: 0, sw: 'none', retitled: false };
+const state = { a: 0, b: 0, sw: 'none', retitled: false, login: { user: 0, pass: 0, submitted: false } };
 const html = (res, body) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<!doctype html><title>fixture</title>${body}`); };
 
 // the guest reaches B at the address in its own Host header, so the pages build B's URL from it
@@ -21,7 +23,7 @@ http.createServer((req, res) => {
   if (path !== '/hits' && path !== '/reset') state.a++;
   switch (path) {
     case '/hits': res.end(JSON.stringify(state)); break;
-    case '/reset': state.a = 0; state.b = 0; state.sw = 'none'; state.retitled = false; res.end('{}'); break;
+    case '/reset': state.a = 0; state.b = 0; state.sw = 'none'; state.retitled = false; state.login = { user: 0, pass: 0, submitted: false }; res.end('{}'); break;
     case '/redirect': res.writeHead(302, { location: `${b}/landing` }); res.end(); break;
     case '/meta': html(res, `<meta http-equiv="refresh" content="0;url=${b}/landing">`); break;
     case '/js': html(res, `<script>location = '${b}/landing'</script>`); break;
@@ -39,6 +41,12 @@ http.createServer((req, res) => {
     case '/retitle': html(res, `<script>setTimeout(() => { document.title = 'changed'; fetch('/retitled'); }, 1000)</script>shared page`); break;
     case '/retitled': state.retitled = true; res.end('{}'); break;
     case '/away': html(res, `<script>setTimeout(() => { location.href = '/landing-a'; }, 3000)</script>shared page`); break; // a share page that navigates
+    case '/login': html(res, `<input id="user"><input id="pass" type="password"><button id="go" type="button">go</button><script>
+      const n = (e) => e.value.length, tell = () => fetch('/login-state?u=' + n(user) + '&p=' + n(pass));
+      user.oninput = pass.oninput = tell; go.onclick = () => fetch('/login-submitted');
+    </script>`); break;
+    case '/login-state': { const q = new URL(req.url, 'http://x').searchParams; state.login.user = Number(q.get('u')) || 0; state.login.pass = Number(q.get('p')) || 0; res.end('{}'); break; }
+    case '/login-submitted': state.login.submitted = true; res.end('{}'); break;
     default: html(res, 'ok');
   }
 }).listen(portA);

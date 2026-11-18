@@ -178,6 +178,21 @@ function createLifecycle(config, deps) {
     while (result.error === 'no-control' && vms.has(id) && clock.now() < end) { await clock.sleep(500); result = await toGuest(id, message); }
     return result;
   }
+  // A stored preview login (never from the caller): the runner resolves it by this VM's scope and the profile name, checks the
+  // grant's hosts cover its origin, and sends it to its own guest only. The reply is ok or an error, never page text or the login.
+  async function login(id, { profile, hosts }) {
+    const vm = vms.get(id);
+    if (!vm || vm.destroying || vm.spare) return { error: 'no-desktop' };
+    if (typeof profile !== 'string' || !Array.isArray(hosts)) return { error: 'bad-message' };
+    const entry = deps.resolveLogin ? await deps.resolveLogin(vm.scope, profile) : null;
+    if (!entry) return { error: 'no-login' };
+    if (!hosts.includes(entry.origin)) return { error: 'login-host' };
+    try { encode({ type: 'desktop_login', profile, hosts, login: entry, action_id: 'check' }); } catch { return { error: 'bad-message' }; } // an invalid stored entry opens nothing
+    const opened = await toGuest(id, { type: 'desktop_open', url: entry.origin, hosts }); // the guest fills only a page already on the login's origin
+    if (opened.error || opened.ok === false) return { error: opened.error || 'login-open-failed' };
+    const r = await toGuest(id, { type: 'desktop_login', profile, hosts, login: entry });
+    return r.error ? { error: r.error } : { ok: r.ok === true };
+  }
   async function action(id, message, timeoutMs) {
     if (!message || !TOOLS.has(message.type)) return { error: 'bad-message' };
     return toGuest(id, message, timeoutMs);
@@ -434,7 +449,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, verifyHook, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
+  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, login, verifyHook, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
     cancel, status: () => ({ ...state, count: vms.size }) };
 }
 

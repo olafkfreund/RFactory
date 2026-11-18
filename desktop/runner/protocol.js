@@ -10,6 +10,11 @@ const hosts = (v) => Array.isArray(v) && v.every((h) => {
   try { const u = new URL(h); return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin === h; }
   catch { return false; }
 });
+// A preview login the runner hands its own guest: one origin, 1 to 8 fields, an optional submit selector. Never logged.
+const login = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).every((k) => ['origin', 'fields', 'submit'].includes(k)) &&
+  hosts([v.origin]) && Array.isArray(v.fields) && v.fields.length >= 1 && v.fields.length <= 8 &&
+  v.fields.every((f) => f && typeof f === 'object' && Object.keys(f).length === 2 && string(f.target) && f.target.length <= 256 && string(f.value) && f.value.length <= 1024) &&
+  optional((s) => string(s) && s.length <= 256)(v.submit);
 const schemas = Object.freeze({
   heartbeat: {},
   'call-end': {},
@@ -24,7 +29,7 @@ const schemas = Object.freeze({
   desktop_type: { target: string, text: string, action_id: optional(string), hosts: optional(hosts) },
   desktop_scroll: { dy: number, action_id: optional(string), hosts: optional(hosts) },
   desktop_screenshot: { action_id: optional(string), hosts: optional(hosts) },
-  desktop_login: { profile: string, hosts: optional(hosts) },
+  desktop_login: { profile: string, action_id: optional(string), hosts: optional(hosts), login: optional(login) },
   'call-config': { nonce: string, auto_select_screen: optional(boolean) }, // the flag is the verify hook's (deviation 22)
   // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
   'call-in': { chunk: string, end: boolean },

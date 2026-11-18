@@ -6,6 +6,8 @@ const { test } = require('node:test');
 const { createCallWorker } = require('./call');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+// waits for a condition rather than a fixed number of turns (the leave path is slower under load)
+const until = async (fn, ms = 3000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 5)); };
 
 // The real bot/run.js over a fake guest channel: the call library and Chrome are faked, the line protocol is not.
 function fixture() {
@@ -44,7 +46,7 @@ test('call worker: link, speak with WAV, cancel and leave cross the channel; sta
   assert.deepEqual(f.lines().find((m) => m.type === 'spoke'), { type: 'spoke', seq: 0, result: 'cancelled' });
 
   f.feed(JSON.stringify({ type: 'leave' }));
-  await tick();
+  await until(() => f.lines().at(-1)?.state === 'left' && f.exited() === 1);
   assert.equal(f.lines().at(-1).state, 'left');
   assert.equal(f.exited(), 1);
 });

@@ -12,7 +12,7 @@ const PENDING_LIMIT = 5;
 const ID = '([A-Za-z0-9_-]{1,64})';
 const ROUTE = new RegExp(`^/api/desktop/${ID}/(handover|revoke|state|screenshot|share/stop|share/${ID}/approve|request|actions/${ID}/(?:approve|reject))$`);
 
-const hashOf = (e) => createHash('sha256').update(JSON.stringify([e.id, e.name, e.args, e.desktop_id, e.call_id, e.scope, e.expires_at])).digest('hex');
+const hashOf = (e) => createHash('sha256').update(JSON.stringify([e.id, e.name, e.args, e.desktop_id, e.call_id, e.scope, e.origin, e.expires_at])).digest('hex');
 const sameOrigin = (req) => {
   if (req.headers['x-rfactory-action'] !== '1') return false;
   try { return new URL(req.headers.origin).host === req.headers.host; } catch { return false; }
@@ -25,10 +25,10 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
   const running = new Map();
   const live = (e) => clock() < Date.parse(e.expires_at);
   const sweep = () => { for (const [id, e] of pending) if (!live(e)) pending.delete(id); };
-  async function enqueue({ name, args, running: r, reason }) {
+  async function enqueue({ name, args, running: r, reason, origin: page = null }) {
     sweep();
     if (pending.size >= PENDING_LIMIT) throw new Error('queue-full');
-    const entry = { id: randomUUID(), name, args: structuredClone(args), desktop_id: r.desktop_id, call_id: r.call_id, scope: r.scope, reason,
+    const entry = { id: randomUUID(), name, args: structuredClone(args), desktop_id: r.desktop_id, call_id: r.call_id, scope: r.scope, origin: page, reason,
       proposed_at: new Date(clock()).toISOString(), expires_at: new Date(clock() + LIFETIME).toISOString() };
     entry.hash = hashOf(entry);
     pending.set(entry.id, entry);
@@ -48,7 +48,9 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
     if (entry.name === 'propose_share') return { status: 409, error: 'use-share-approve' };
     pending.delete(id);
     try {
-      const hosts = entry.args.url ? [origin(entry.args.url)].filter(Boolean) : [];
+      // hosts: the one origin the action targets (an open's own url; otherwise the page it was proposed on, shown to the approver); never a live handover's hosts
+      const target = entry.name === 'desktop_open' ? origin(entry.args.url) : entry.origin;
+      const hosts = target ? [target] : [];
       const result = await track(desktopId, entry.name, () => run(entry.name, entry.args, { running: { scope: entry.scope, call_id: entry.call_id, desktop_id: desktopId }, hosts }));
       return result?.ok === false ? { status: 502, error: 'action-failed' } : { status: 200, ok: true };
     } catch { return { status: 502, error: 'action-failed' }; }
@@ -64,34 +66,33 @@ function createDesktopQueue({ roles, run, clock = Date.now }) {
     try { return await fn(); } finally { running.delete(desktopId); }
   }
   const list = (desktopId) => { sweep(); return [...pending.values()].filter((e) => e.desktop_id === desktopId)
-    .map(({ id, name, args, reason, hash, expires_at }) => ({ id, name, args, reason, hash, expires_at })); };
+    .map(({ id, name, args, reason, hash, expires_at, origin: page }) => ({ id, name, args, origin: page, reason, hash, expires_at })); };
   return { enqueue, approve, reject, take, drop: (id) => pending.delete(id), list, running: (id) => running.get(id) || null, track };
 }
 
 // runner: { list() -> {status, body: {desktops, alert}} }. run/startShare/stopShare/cancel/destroy reach the guest through the runner.
 // writesEnabled and isAllowed are the gateway's mandatory scope checks (core/src/gateway.js); the phase is 'desktop' because this module is mounted only then. Both fail closed when missing.
-function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = async () => false, runner, run, startShare, stopShare, cancel, destroy, openVnc, brain, redactor, snapshot, clock = Date.now }) {
+function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = async () => false, runner, run, startShare, stopShare, login, cancel, destroy, openVnc, brain, redactor, snapshot, clock = Date.now }) {
   const sessions = createSessions({ isApprover: (user) => roles.has(user, 'approver'), cancel: cancel || destroy, destroy, clock });
   const pageText = new Map();
   const shares = new Map(); // desktop_id -> { share_id, url }; kept until the guest confirms the stop or the desktop is gone
+  const pages = new Map(); // desktop_id -> origin of the last page the guest opened: what a proposal is bound to
   const shots = new Map(); // desktop_id -> { b64, type, at }: for approvers on the page only; a no-tools text brain cannot take an image
   const permitted = async (name, args) => writesEnabled === true && (await isAllowed(scopeName, name, args)) === true;
   const runDesktop = async (name, args, context) => {
     if (!(await permitted(name, args))) throw new Error('scope-not-allowed'); // also covers an approval that outlived a config change
     const result = await run(name, args, context);
+    if (name === 'desktop_open' && result?.ok !== false) pages.set(context.running.desktop_id, origin(args.url));
     if (typeof result?.content === 'string') pageText.set(context.running.desktop_id, result.content.slice(0, 4096));
     const type = typeof result?.image_base64 === 'string' && result.image_base64.length <= SHOT_MAX && SHOT_TYPES.find(([m]) => result.image_base64.startsWith(m));
     if (type) shots.set(context.running.desktop_id, { b64: result.image_base64, type: type[1], at: clock() });
     return result;
   };
-  // an approved action runs with the grant that is live now (never an older one); no live grant sends [] and the guest fails closed
-  const liveHosts = (id) => { const s = sessions.get(id); return s && !s.revoked && clock() < s.until ? s.hosts : []; };
-  const queue = createDesktopQueue({ roles, clock, run: (name, args, ctx) =>
-    runDesktop(name, args, name === 'desktop_open' ? ctx : { ...ctx, hosts: liveHosts(ctx.running.desktop_id) }) });
+  const queue = createDesktopQueue({ roles, clock, run: runDesktop });
   async function runnerState() {
     const { body } = await runner.list();
     const present = new Set((body.desktops || []).map((d) => d.desktop_id));
-    for (const map of [shares, shots, pageText]) for (const key of map.keys()) if (!present.has(key)) map.delete(key);
+    for (const map of [shares, shots, pageText, pages]) for (const key of map.keys()) if (!present.has(key)) map.delete(key);
     return { desktops: (body.desktops || []).filter((d) => d.scope === scopeName && !d.spare), alert: body.alert || null };
   }
   const find = async (id) => (await runnerState()).desktops.find((d) => d.desktop_id === id) || null;
@@ -118,7 +119,7 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
     const reason = sessions.check(session, running, name, args);
     if (reason === 'host-not-granted' || ((name === 'desktop_open' || share) && !origin(args.url))) return refused;
     if (reason || share) { // a share is never started here: it only becomes a proposal for the approval route
-      await queue.enqueue({ name, args, running, reason: reason || 'share-approval' });
+      await queue.enqueue({ name, args, running, reason: reason || 'share-approval', origin: pages.get(desktopId) || null });
       return { text: 'That action is waiting for approval.' };
     }
     const result = await queue.track(desktopId, name, () => runDesktop(name, args, { running, hosts: session.hosts }));
@@ -158,8 +159,16 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
       if (what === 'handover') {
         const minutes = body.minutes;
         if (!Number.isInteger(minutes) || minutes < 1 || minutes > 30) return json(res, 400, { error: 'invalid-minutes' });
+        // a stored preview login (profile id, set up by an admin on the runner) is filled by the runner when an approver hands over; the secret never passes through here
+        const profile = body.login;
+        if (profile !== undefined && (typeof profile !== 'string' || !/^[\w-]{1,64}$/.test(profile) || !login)) return json(res, 400, { error: 'invalid-login' });
         try {
           const s = sessions.grant(email, { scope: desk.scope, call_id: desk.call_id, desktop_id: id, actions: body.actions, hosts: body.hosts, until: clock() + minutes * 60000 });
+          if (profile) {
+            if (!(await permitted('desktop_login', { profile }))) { await sessions.revoke(id); return json(res, 403, { error: 'scope-not-allowed' }); }
+            try { await login({ desktop_id: id, profile, hosts: s.hosts }); }
+            catch { await sessions.revoke(id); return json(res, 502, { error: 'login-failed' }); } // no half-set-up handover
+          }
           return json(res, 200, { ok: true, until: s.until });
         } catch (e) { return json(res, e.message === 'session-active' ? 409 : e.message === 'approver-required' ? 403 : 400, { error: e.message }); }
       }

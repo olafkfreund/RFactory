@@ -139,3 +139,14 @@ test('every desktop_* action accepts hosts (and refuses a bad origin)', () => {
 test('profile-attach carries an action_id like every message the runner sends', () => {
   assert.doesNotThrow(() => encode({ type: 'profile-attach', key: 'a2V5', action_id: 'x1' }));
 });
+
+test('desktop_login carries an action_id and an optional preview login: one origin, 1 to 8 fields, nothing else', () => {
+  const login = { origin: 'https://a.test', fields: [{ target: '#u', value: 'v' }], submit: '#go' };
+  const out = [];
+  createDecoder((x) => out.push(x)).write(encode({ type: 'desktop_login', profile: 'p', action_id: 'a1', hosts: ['https://a.test'], login }));
+  assert.deepEqual(out[0].login, login);
+  for (const bad of [{ ...login, origin: 'https://a.test/x' }, { ...login, fields: [] }, { ...login, fields: Array(9).fill({ target: 't', value: 'v' }) },
+    { ...login, fields: [{ target: 't', value: 'v', extra: 1 }] }, { ...login, fields: [{ target: 't', value: 5 }] }, { ...login, submit: 5 }, { ...login, extra: 1 }, [], 'x']) {
+    assert.throws(() => encode({ type: 'desktop_login', profile: 'p', login: bad }), /invalid protocol/);
+  }
+});

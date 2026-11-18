@@ -40,10 +40,10 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       case 'share-stop': if (!share) throw new Error('no share'); await share.stop(); break;
       // The guest holds no credentials: the login comes from the runner-supplied resolver only.
       case 'desktop_login': {
-        const fill = resolveLogin && await resolveLogin(m.profile);
+        const fill = resolveLogin && await resolveLogin(m.profile, m.login);
         if (!fill) throw new Error('no login available');
         await fill(control);
-        break;
+        return undefined; // no page text back: the page may now show the account
       }
       default: throw new Error('unexpected message');
     }
@@ -54,7 +54,8 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
     handle(m) {
       if (m.type === 'cancel') {
         epoch++;
-        return control.cancel().then(() => profile.detach()).finally(() => send({ type: 'cancel-ack' }));
+        // Acknowledge only once Chrome is closed and the profile detached; any failure sends nothing and the runner destroys the VM.
+        return control.cancel().then(() => profile.detach()).then(() => send({ type: 'cancel-ack' }), () => {});
       }
       if (m.type === 'call-config') {
         if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
@@ -71,9 +72,12 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       return chain;
     },
     // Shutdown: Chrome, unmount, cryptsetup close, in that order.
-    async shutdown() { await control.cancel(); await profile.detach(); },
+    async shutdown() { try { await control.cancel(); } finally { await profile.detach(); } }, // the profile is closed even if Chrome would not
   };
 }
+
+// The guest stores no login: the runner's desktop_login message carries the one it resolved, and nothing else can fill.
+const resolveLogin = async (profile, login) => login && ((control) => control.login(login));
 
 function exec(cmd, args, { input } = {}) {
   return new Promise((resolve, reject) => {
@@ -107,7 +111,7 @@ function main() {
   net.createServer((socket) => {
     const send = (m) => socket.write(encode(m));
     sendCurrent = send;
-    const agent = createAgent({ control, profile, send,
+    const agent = createAgent({ control, profile, send, resolveLogin,
       share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() }, // throws without a worker: the action answers ok:false
       onCallConfig: (nonce, screen) => { if (!worker) worker = createCallWorker({ nonce, screen, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) }); },
       onCallIn: (m) => worker?.in(m) });
@@ -121,4 +125,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { createAgent };
+module.exports = { createAgent, resolveLogin };

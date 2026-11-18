@@ -59,3 +59,23 @@ test('client: mTLS call, VNC upgrade; a certificate from another CA is refused',
   await assert.rejects(createRunnerClient({ ...opts, key: k.f('rogue.key'), cert: k.f('rogue.crt') }).call('list', {}));
   assert.throws(() => createRunnerClient({ ...opts, url: 'http://localhost:1' }), /not-https/);
 });
+
+test('client: long runner operations get their own timeout; others keep the default', async () => {
+  const k = pki();
+  try {
+    const seen = {};
+    const request = (opts, cb) => {
+      seen[opts.path.slice(1)] = opts.timeout;
+      const res = new PassThrough(); res.statusCode = 200;
+      const req = new PassThrough(); req.destroy = () => {};
+      req.end = () => { cb(res); res.end('{}'); };
+      return req;
+    };
+    const client = createRunnerClient({ url: 'https://localhost:1', key: k.f('client.key'), cert: k.f('client.crt'), ca: k.f('ca.crt'), request });
+    for (const route of ['create', 'profile-attach', 'action', 'login', 'share-start']) await client.call(route, {});
+    assert.deepEqual(seen, { create: 30000, 'profile-attach': 150000, action: 45000, login: 45000, 'share-start': 45000 });
+    const short = createRunnerClient({ url: 'https://localhost:1', key: k.f('client.key'), cert: k.f('client.crt'), ca: k.f('ca.crt'), request, timeoutMs: 200000 });
+    await short.call('action', {});
+    assert.equal(seen.action, 200000);
+  } finally { fs.rmSync(k.dir, { recursive: true, force: true }); }
+});

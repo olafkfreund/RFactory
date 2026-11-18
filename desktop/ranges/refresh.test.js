@@ -11,12 +11,20 @@ test('ranges.json: each platform has a source or "not found"', () => {
     assert.match(entry.source, /^https:\/\//, name);
     assert.ok(Array.isArray(entry.cidrs) && Array.isArray(entry.udp) && Array.isArray(entry.tcp), name);
   }
-  for (const name of ['meet', 'zoom']) { // pinned from the providers' published pages, with an audit trail
+  for (const name of ['meet', 'zoom', 'teams']) { // pinned from the providers' published pages, with an audit trail
     assert.match(ranges[name].sha256, /^[0-9a-f]{64}$/, name);
     assert.match(ranges[name].fetched, /^\d{4}-\d{2}-\d{2}$/, name);
     assert.ok(ranges[name].cidrs.length && ranges[name].tcp[0] === 443, name);
   }
   assert.ok(ranges.meet.cidrs.includes('74.125.250.0/24') && ranges.zoom.cidrs.includes('170.114.0.0/16'));
+  // Teams: Microsoft's Optimize entry (UDP 3478-3481) and its Allow entry (tcp 443) for the same ranges
+  assert.deepEqual(ranges.teams.udp, [[3478, 3481]]);
+  assert.ok(ranges.teams.cidrs.includes('52.112.0.0/14') && ranges.teams.cidrs.some((c) => c.includes(':')));
+  assert.match(ranges.teams.source, /^https:\/\/endpoints\.office\.com\/endpoints\/worldwide\?clientrequestid=/);
+  for (const host of ranges.teams.probe) { // a probe host must lie inside a pinned IPv4 range
+    const n = (ip) => ip.split('.').reduce((a, b) => a * 256 + Number(b), 0);
+    assert.ok(ranges.teams.cidrs.filter((c) => !c.includes(':')).some((c) => { const [a, bits] = c.split('/'); const size = 2 ** (32 - Number(bits)); return n(host) >= n(a) && n(host) < n(a) + size; }), host);
+  }
   assert.deepEqual(ranges.slack, {
     cidrs: ['99.77.128.0/18'], udp: [3478, 22466], tcp: [443],
     source: 'https://slack.com/help/articles/36284146785427',

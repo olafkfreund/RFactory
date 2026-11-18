@@ -7,18 +7,21 @@
 # readable here as VERIFY_BRAIN_RECORD.
 # secrets-type-stored-refused: a request to type a key-shaped value (the AWS documentation example, not a secret) is refused by the redactor
 #   check in the request route; it is typed on a desktop the approver may drive, so the refusal is the redactor's, not a missing grant.
-# secrets-login-not-leaked: desktop_login has no route (the runner's action route takes only the five desktop_* tools), so the login is
-#   never started here; the script drives requests through the brain and looks for the login value in what the brain was given and in the
-#   runner and web logs. A fresh brain record line is required, so a record that is not being written fails instead of passing.
+# secrets-login-not-leaked: a real approved preview login. The fixture's /login page is opened, then the approver's handover names the stored
+#   login (VERIFY_LOGIN_PROFILE, the runner's previewLoginsFile: scope verify-scope, origin = VERIFY_FIXTURE_URL, fields #user and #pass,
+#   optional submit #go); the web server has the runner fill it in the guest, and the grant is ok only if that worked. The fixture reports
+#   only the LENGTHS typed, and the check requires both non-zero before it looks for the login value in what the brain was given and in the
+#   runner and web logs. A fresh brain record line is also required, so a record that is not being written fails instead of passing.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_APPROVER_COOKIE, VERIFY_FIXTURE_URL (an approved preview origin),
-# VERIFY_BRAIN_RECORD, VERIFY_LOGIN_FILE (a file holding the preview login value(s), one per line; read, never printed),
+# VERIFY_FIXTURE_CTL (the same server as this script sees it), VERIFY_LOGIN_PROFILE, VERIFY_BRAIN_RECORD,
+# VERIFY_LOGIN_FILE (a file holding the preview login value(s), one per line; read, never printed),
 # VERIFY_POD_USER (owner of the rfactory pod, to read the web container's log).
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap verify_exit EXIT
 need_root; need_cmds nix nix-store find curl jq grep
-need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_BRAIN_RECORD VERIFY_LOGIN_FILE VERIFY_POD_USER
+need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE VERIFY_FIXTURE_URL VERIFY_BRAIN_RECORD VERIFY_LOGIN_FILE VERIFY_POD_USER VERIFY_FIXTURE_CTL VERIFY_LOGIN_PROFILE
 TMP=$(mktemp -d)
 extra_cleanup() { rm -rf "$TMP"; }
 
@@ -38,12 +41,25 @@ if [ "$(jq -r '.text // empty' <<<"$r" 2>/dev/null)" = "I can't do that." ] && [
   pass secrets-type-stored-refused
 else fail secrets-type-stored-refused "reply: $r"; fi
 
-# 3. drive real requests through the brain, then look for the login in everything the brain was given and in the logs
+# 3. an approved login through the real path, then real requests through the brain, then look for the login in everything the brain was given and in the logs
 grep -v '^$' "$VERIFY_LOGIN_FILE" >"$TMP/patterns" || true
 [ -s "$TMP/patterns" ] || die "VERIFY_LOGIN_FILE holds no value"
+# the guest fills only the open page of the login's origin: open the login page first (the guest may still be starting)
+opened=
+for _ in 1 2 3 4 5 6; do
+  opened=$(act "$D" "$(jq -nc --arg u "$VERIFY_FIXTURE_URL/login" --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_open",url:$u,hosts:[$h]}')") || true
+  [ "$(jq -r '.ok // false' <<<"$opened" 2>/dev/null)" != true ] || break
+  sleep 10
+done
+[ "$(jq -r '.ok // false' <<<"$opened" 2>/dev/null)" = true ] || die "the login page did not open: $opened"
+curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/reset" >/dev/null
 before=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)
-g=$(grant "$D" 10 '["desktop_open","desktop_screenshot"]')
-[ "$(jq -r '.ok // false' <<<"$g")" = true ] || die "grant failed: $g"
+g=$(grant "$D" 10 '["desktop_open","desktop_screenshot"]' "$VERIFY_LOGIN_PROFILE")
+filled=$(curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits" | jq -c '.login' 2>/dev/null || echo unknown)
+if [ "$(jq -r '.ok // false' <<<"$g")" != true ] || [ "$(jq -r '(.user > 0) and (.pass > 0)' <<<"$filled" 2>/dev/null)" != true ]; then
+  fail secrets-login-not-leaked "the approved login was not filled (nothing to leak is not a pass): grant: $g; typed lengths: $filled"
+  finish
+fi
 ask "$D" "Open $VERIFY_FIXTURE_URL/ in the browser" >/dev/null || true
 ask "$D" "Take a screenshot" >/dev/null || true
 after=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)

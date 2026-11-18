@@ -13,7 +13,7 @@ let
 
   # Limits live in config, not in runner code (step 5 trap).
   runnerConfig = pkgs.writeText "rfactory-runner.json" (builtins.toJSON {
-    inherit (cfg) mtlsPort maxDesktops vcpu memMiB overlayGiB rateMbit egressBytes runtimeMaxSec
+    inherit (cfg) mtlsPort maxDesktops vcpu memMiB rateMbit egressBytes runtimeMaxSec
       guestRunner bootGraceMs protectedRanges dnsAllowlist scopeDomains scopePreviews upstreamResolvers verifyHooks;
     stateDir = "/var/lib/rfactory-desktop";
     runDir = "/run/rfactory-desktop";
@@ -21,6 +21,7 @@ let
     vmPath = lib.makeBinPath [ pkgs.coreutils pkgs.cloud-hypervisor ];
     dnsmasqBin = "${pkgs.dnsmasq}/bin/dnsmasq";
     rangesFile = "${cfg.src}/ranges/ranges.json";
+    previewLogins = cfg.previewLoginsFile != null;
   });
 
   # Per-VM tap setup hook: no bridge, one tap per VM, owned by the VM user.
@@ -90,15 +91,25 @@ in
     protectedRanges = mkOption { type = types.listOf types.str; default = [ ]; description = "Host addresses, cluster pod and service ranges and Factory hosts the guest must never reach (rule 2)."; };
     dnsAllowlist = mkOption {
       type = types.listOf types.str;
-      default = [ "meet.google.com" "google.com" "gstatic.com" "googleapis.com" "slack.com" "slack-edge.com" "zoom.us" ];
+      default = [
+        "meet.google.com" "google.com" "gstatic.com" "googleapis.com" "slack.com" "slack-edge.com" "zoom.us"
+        # Teams web join, from Microsoft's published endpoint list (Teams web app, Common auth and CDN names).
+        # TO CONFIRM in the first live Teams join: a name missing here shows as a failed lookup in the VM's resolver log.
+        "teams.microsoft.com" "teams.live.com" "teams.cloud.microsoft" "lync.com" "skype.com" "office.net"
+        "microsoftonline.com" "login.live.com" "msauth.net" "msftauth.net"
+      ];
       description = "Names every VM may resolve (the call platforms). Owner reviews this list; everything else gets no answer.";
     };
     scopeDomains = mkOption { type = types.attrsOf (types.listOf types.str); default = { }; description = "Extra resolvable names per scope."; };
     scopePreviews = mkOption { type = types.attrsOf (types.listOf types.str); default = { }; description = "Approved private ip:port previews per scope (never inside a protected range)."; };
     maxDesktops = mkOption { type = types.ints.positive; default = 3; description = "Spare counts toward this."; };
-    vcpu = mkOption { type = types.ints.positive; default = 2; };
-    memMiB = mkOption { type = types.ints.positive; default = 3072; };
-    overlayGiB = mkOption { type = types.ints.positive; default = 4; };
+    # Applied to each VM's own copy of the guest runner (runner.js withExtraArgs); the guest's /tmp tmpfs (4 GiB) is fixed in desktop/guest/default.nix.
+    vcpu = mkOption { type = types.ints.between 2 16; default = 2; };
+    memMiB = mkOption { type = types.ints.between 1024 65536; default = 3072; };
+    previewLoginsFile = mkOption {
+      type = types.nullOr types.str; default = null;
+      description = ''Runtime path (agenix or sops-nix) of a JSON file { "<scope>": { "<profile>": { "origin": "https://…", "fields": [ { "target": "css selector", "value": "…" } ], "submit": "css selector" } } }. The runner sends one entry to its guest for desktop login; no brain, log or store ever holds it.'';
+    };
     rateMbit = mkOption { type = types.ints.positive; default = 20; };
     egressBytes = mkOption { type = types.ints.positive; default = 1073741824; };
     runtimeMaxSec = mkOption { type = types.str; default = "3h"; };
@@ -143,7 +154,7 @@ in
           "tls-key:${cfg.tlsKeyFile}"
           "client-ca:${cfg.clientCaFile}"
           "profile-key:${cfg.profileKeyFile}"
-        ];
+        ] ++ lib.optional (cfg.previewLoginsFile != null) "preview-logins:${cfg.previewLoginsFile}";
         StateDirectory = "rfactory-desktop";
         RuntimeDirectory = "rfactory-desktop";
         RuntimeDirectoryPreserve = true;

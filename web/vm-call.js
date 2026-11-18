@@ -4,13 +4,13 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { randomUUID } = require('node:crypto');
 
-// meet.google.com, *.zoom.us, *.slack.com; anything else is refused before a VM exists
+// meet.google.com, *.zoom.us, *.slack.com, teams.microsoft.com, teams.live.com; anything else is refused before a VM exists
 function platformOf(link) {
   let u;
   try { u = new URL(link); } catch { return null; }
   if (u.protocol !== 'https:') return null;
   const h = u.hostname;
-  return h === 'meet.google.com' ? 'meet' : /(^|\.)zoom\.us$/.test(h) ? 'zoom' : /(^|\.)slack\.com$/.test(h) ? 'slack' : null;
+  return h === 'meet.google.com' ? 'meet' : /(^|\.)zoom\.us$/.test(h) ? 'zoom' : /(^|\.)slack\.com$/.test(h) ? 'slack' : h === 'teams.microsoft.com' || h === 'teams.live.com' ? 'teams' : null;
 }
 
 // The first stdin line is the call link (call.js writes it first); data after it stays buffered for the guest.

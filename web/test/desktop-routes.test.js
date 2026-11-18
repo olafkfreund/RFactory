@@ -10,14 +10,15 @@ const MEMBER = 'member@example.com', APPROVER = 'approver@example.com', ADMIN = 
 const roles = loadRoles({ RFACTORY_ALLOWED_EMAILS: `${MEMBER},${APPROVER},${ADMIN}`, RFACTORY_APPROVERS: APPROVER, RFACTORY_ADMINS: ADMIN });
 const HOST = 'https://preview.example.com';
 
-async function start(t, { writesEnabled = true, isAllowed = async () => true, stopFails = false, cancelFn, result = {}, withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null } = {}) {
+async function start(t, { writesEnabled = true, isAllowed = async () => true, stopFails = false, cancelFn, result = {}, withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null, loginFails = false } = {}) {
   const clock = { t: 1_000_000, now() { return this.t; } };
   let nextProposal = proposal;
-  const ran = [], shares = [], stops = [], prompts = [];
+  const ran = [], shares = [], stops = [], prompts = [], logins = [];
   const desktop = createDesktop({ roles, scopeName: 's1', writesEnabled, isAllowed, cancel: cancelFn, clock: () => clock.t,
     brain: { propose: async (snapshot) => { prompts.push(snapshot); return nextProposal; } }, redactor: makeRedactor(['stored-secret']),
     runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1', nonce: 'n1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
     run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true, ...(pageText ? { content: pageText } : {}), ...result }; },
+    login: async (x) => { logins.push(x); if (loginFails) throw new Error('x'); },
     startShare: async (x) => shares.push(x), stopShare: async (x) => { if (stopFails) throw new Error('x'); stops.push(x); }, destroy: async () => {} });
   const server = createApp({ roles, source: {}, brain: {}, desktop: withDesktop ? desktop : null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -25,7 +26,7 @@ async function start(t, { writesEnabled = true, isAllowed = async () => true, st
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (method, path, email, body, { csrf = true } = {}) => fetch(base + path, { method, body: body === undefined ? undefined : JSON.stringify(body),
     headers: { ...(email ? { 'X-Forwarded-Email': email } : {}), ...(csrf && method === 'POST' ? { 'x-rfactory-action': '1', origin: base } : {}) } });
-  return { call, desktop, clock, ran, shares, stops, prompts, propose: (value) => { nextProposal = value; } };
+  return { call, desktop, clock, logins, ran, shares, stops, prompts, propose: (value) => { nextProposal = value; } };
 }
 const grant = { actions: ['desktop_open', 'propose_share'], hosts: [HOST], minutes: 10 };
 
@@ -262,17 +263,28 @@ test('review: revoke goes through the cancel route first', async (t) => {
   assert.deepEqual(cancelled, ['d1']);
 });
 
-test('an approved click carries the live grant hosts, and none once the grant is gone', async (t) => {
+test('an individually approved click runs on exactly the origin of the page it was proposed on, with or without a handover', async (t) => {
   const s = await start(t);
-  const ctx = { scope: 's1', call_id: 'c1', desktop_id: 'd1' };
-  await s.desktop.queue.enqueue({ name: 'desktop_click', args: { target: '#a' }, running: ctx, reason: 'no-session' });
-  await s.desktop.queue.enqueue({ name: 'desktop_click', args: { target: '#b' }, running: ctx, reason: 'no-session' });
-  const [a, b] = s.desktop.queue.list('d1');
-  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
-  await s.call('POST', `/api/desktop/d1/actions/${a.id}/approve`, APPROVER, { hash: a.hash });
+  const ask = async () => { await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'click it' }); const l = s.desktop.queue.list('d1'); return l[l.length - 1]; };
+  const approve = (q) => s.call('POST', `/api/desktop/d1/actions/${q.id}/approve`, APPROVER, { hash: q.hash });
+  const open = { action: 'desktop_open', args: { url: `${HOST}/page` } };
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, { actions: ['desktop_open'], hosts: [HOST], minutes: 10 });
+  s.propose(open); await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'open' }); // runs under the handover and records the page
   await s.call('POST', '/api/desktop/d1/revoke', APPROVER, {});
-  await s.call('POST', `/api/desktop/d1/actions/${b.id}/approve`, APPROVER, { hash: b.hash });
-  assert.deepEqual(s.ran.map((r) => r.ctx.hosts), [[HOST], []]);
+  s.propose({ action: 'desktop_click', args: { target: '#a' } });
+  const a = await ask();
+  assert.equal(a.origin, HOST); // shown to the approver
+  assert.equal((await approve(a)).status, 200);
+  assert.deepEqual(s.ran.at(-1).ctx.hosts, [HOST]); // no handover is live; still bound to that one origin
+});
+
+test('a proposal made before any page was opened has no origin and runs with no hosts', async (t) => {
+  const s = await start(t, { proposal: { action: 'desktop_click', args: { target: '#a' } } });
+  await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'click' });
+  const [q] = s.desktop.queue.list('d1');
+  assert.equal(q.origin, null);
+  await s.call('POST', `/api/desktop/d1/actions/${q.id}/approve`, APPROVER, { hash: q.hash });
+  assert.deepEqual(s.ran[0].ctx.hosts, []);
 });
 
 test('typed request: approver only, CSRF, same request() path as speech', async (t) => {
@@ -306,7 +318,7 @@ test('profile admin routes: admin only, CSRF, actor and scope go to the runner',
   assert.equal((await go('GET', '/api/profiles', ADMIN)).status, 200);
   assert.equal((await go('POST', '/api/profiles', ADMIN, { name: 'work' })).status, 200);
   assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c', platform: 'zoom' })).status, 200);
-  assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c', platform: 'teams' })).status, 400);
+  assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c', platform: 'webex' })).status, 400);
   assert.equal((await go('POST', `/api/profiles/${pid}/attach`, ADMIN, { call_id: 'c d', platform: 'zoom' })).status, 400);
   await new Promise((r) => setTimeout(r, 60));
   assert.ok(beats >= 2, 'web heartbeats the attached desktop');
@@ -329,4 +341,20 @@ test('RFACTORY_BRAIN_RECORD wrapper appends each redacted brain input as a JSON 
   assert.equal(lines.length, 2);
   assert.ok(!fs.readFileSync(file, 'utf8').includes('stored-secret'));
   assert.equal(lines[1].request.includes('do'), true);
+});
+
+test('a handover can fill a stored preview login; the profile id is the only thing passed, and a failure leaves no handover', async (t) => {
+  const s = await start(t);
+  const post = (body) => s.call('POST', '/api/desktop/d1/handover', APPROVER, body);
+  assert.equal((await post({ ...grant, login: '../x' })).status, 400);
+  assert.equal((await s.call('POST', '/api/desktop/d1/handover', MEMBER, { ...grant, login: 'p1' })).status, 403);
+  assert.equal((await post({ ...grant, login: 'p1' })).status, 200);
+  assert.deepEqual(s.logins, [{ desktop_id: 'd1', profile: 'p1', hosts: [HOST] }]);
+  const bad = await start(t, { loginFails: true });
+  assert.equal((await bad.call('POST', '/api/desktop/d1/handover', APPROVER, { ...grant, login: 'p1' })).status, 502);
+  assert.equal((await (await bad.call('GET', '/api/desktop/d1/state', APPROVER)).json()).handover, null);
+  const off = await start(t, { writesEnabled: false }); // a stored login passes the same scope gate as every desktop action
+  assert.equal((await off.call('POST', '/api/desktop/d1/handover', APPROVER, { ...grant, login: 'p1' })).status, 403);
+  assert.deepEqual(off.logins, []);
+  assert.equal((await (await off.call('GET', '/api/desktop/d1/state', APPROVER)).json()).handover, null);
 });

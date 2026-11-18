@@ -812,3 +812,105 @@ test('share-target-changed from the guest ends the runner share, so a later cont
   await ctx.clock.advance(7000);
   assert.equal(ctx.lc.list().length, 1);
 });
+
+// ---- round 3: login, attach vs a gone client, sizing ----
+test('login: the runner resolves the stored login by scope and profile, sends it to its guest only, and answers ok or an error', async () => {
+  const entry = { origin: 'https://a.test', fields: [{ target: '#u', value: 'SECRET-USER' }], submit: '#go' };
+  const asked = [];
+  const ctx = agentSetup({ onWrite: (conn, m) => { if (m.type === 'desktop_login' || m.type === 'desktop_open') setImmediate(() => conn.emit('data', enc({ type: 'action-result', action_id: m.action_id, ok: true, content: 'page text' }))); },
+    deps: { resolveLogin: async (scope, profile) => { asked.push([scope, profile]); return scope === 's' && profile === 'demo' ? entry : null; } } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.deepEqual(await ctx.lc.login(desktop_id, { profile: 'demo', hosts: ['https://a.test'] }), { ok: true }); // no page text back
+  const sent = ctx.conns[0].out.at(-1);
+  assert.deepEqual([sent.type, sent.login, sent.hosts], ['desktop_login', entry, ['https://a.test']]);
+  assert.deepEqual([ctx.conns[0].out.at(-2).type, ctx.conns[0].out.at(-2).url], ['desktop_open', 'https://a.test']); // the login origin is opened first
+  assert.deepEqual(asked, [['s', 'demo']]);
+  assert.deepEqual(await ctx.lc.login(desktop_id, { profile: 'other', hosts: ['https://a.test'] }), { error: 'no-login' });
+  assert.deepEqual(await ctx.lc.login(desktop_id, { profile: 'demo', hosts: ['https://b.test'] }), { error: 'login-host' }); // the grant must cover the login's origin
+  assert.deepEqual(await ctx.lc.login(desktop_id, { profile: 'demo' }), { error: 'bad-message' });
+  assert.deepEqual(await ctx.lc.login('nope', { profile: 'demo', hosts: [] }), { error: 'no-desktop' });
+  // a stored entry that is not a valid login never reaches the guest
+  const bad = agentSetup({ deps: { resolveLogin: async () => ({ origin: 'https://a.test', fields: [] }) } });
+  const d2 = (await bad.lc.create({ call_id: 'b', scope: 's' })).desktop_id;
+  await tick(); await tick();
+  assert.deepEqual(await bad.lc.login(d2, { profile: 'x', hosts: ['https://a.test'] }), { error: 'bad-message' });
+  assert.equal(bad.conns[0].out.some((m) => m.type === 'desktop_login'), false);
+});
+
+test('login route: mapped to the lifecycle; the action route still refuses desktop_login', async () => {
+  const lc = { login: async (id, b) => (b.profile === 'x' ? { ok: true } : { error: 'no-login' }), action: async (id, m) => ({ error: m.type === 'desktop_login' ? 'bad-message' : 'x' }) };
+  const h = createHandler(lc, { tls: false });
+  assert.deepEqual(await post(h, 'login', { desktop_id: 'd', profile: 'x', hosts: [] }), [200, { ok: true }]);
+  assert.deepEqual(await post(h, 'login', { desktop_id: 'd', profile: 'y', hosts: [] }), [404, { error: 'no-login' }]);
+  assert.equal((await post(h, 'action', { desktop_id: 'd', message: { type: 'desktop_login', profile: 'x' } }))[0], 400);
+});
+
+test('production resolveLogin reads the credential file by scope and profile, and never throws or quotes the file', () => {
+  const { realDeps } = require('./runner');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-login-'));
+  const file = path.join(dir, 'preview-logins');
+  const entry = { origin: 'https://a.test', fields: [{ target: '#u', value: 'v' }] };
+  fs.writeFileSync(file, JSON.stringify({ s: { demo: entry } }));
+  const { resolveLogin } = realDeps({ loginsPath: file, ranges: {} });
+  assert.deepEqual(resolveLogin('s', 'demo'), entry);
+  assert.equal(resolveLogin('s', 'missing'), null);
+  assert.equal(resolveLogin('other', 'demo'), null);
+  fs.writeFileSync(file, '{ "s": SECRET');
+  assert.equal(resolveLogin('s', 'demo'), null);
+  assert.equal(realDeps({ ranges: {} }).resolveLogin('s', 'demo'), null);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('profile-attach: when the client is gone by the time the attach finishes, the new desktop is destroyed', async () => {
+  const destroyed = [];
+  const lc = { destroy: async (id, why) => { destroyed.push([id, why]); return { ok: true }; } };
+  let finish;
+  const profiles = { attach: () => new Promise((r) => { finish = () => r({ desktop_id: 'dd', id: 'p' }); }) };
+  const server = http.createServer(createHandler(lc, { tls: false, profiles }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const ac = new AbortController();
+    const req = fetch(`http://127.0.0.1:${server.address().port}/profile-attach`, { method: 'POST', body: '{}', signal: ac.signal }).catch(() => {});
+    while (!finish) await tick();
+    ac.abort(); await req;
+    await new Promise((r) => setTimeout(r, 50));
+    finish();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(destroyed, [['dd', 'client-gone']]);
+    // a client that stays gets its desktop
+    const kept = fetch(`http://127.0.0.1:${server.address().port}/profile-attach`, { method: 'POST', body: '{}' });
+    await new Promise((r) => setTimeout(r, 50));
+    finish();
+    assert.equal((await kept).status, 200);
+    assert.equal(destroyed.length, 1);
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('sizing: vcpu and memMiB reach the per-VM runner copy; the image defaults keep the original file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-size-'));
+  const runner = path.join(dir, 'microvm-run');
+  fs.writeFileSync(runner, "exec ch --cpus boot=2 --memory size=3072M,shared=off --net 'tap=rfdguest,num_queues=4'\n");
+  fs.mkdirSync(path.join(dir, 'a'));
+  assert.equal(withExtraArgs(runner, path.join(dir, 'a'), [], null, { vcpu: 2, memMiB: 3072 }), runner);
+  const copy = withExtraArgs(runner, path.join(dir, 'a'), [], null, { vcpu: 4, memMiB: 6144 });
+  assert.notEqual(copy, runner);
+  assert.equal(fs.readFileSync(copy, 'utf8'), "exec ch --cpus boot=4 --memory size=6144M,shared=off --net 'tap=rfdguest,num_queues=8'\n");
+  for (const bad of [{ vcpu: 1, memMiB: 3072 }, { vcpu: 2, memMiB: 512 }, { vcpu: 2.5, memMiB: 3072 }]) assert.throws(() => withExtraArgs(runner, path.join(dir, 'a'), [], null, bad), /unsafe VM size/);
+  fs.writeFileSync(runner, 'exec ch\n');
+  assert.throws(() => withExtraArgs(runner, path.join(dir, 'a'), [], null, { vcpu: 4, memMiB: 3072 }), /no boot=2/);
+  // production config passes the module's numbers through
+  fs.writeFileSync(runner, "runtime_args=\nexec ch --vsock 'cid=3,socket=notify.vsock' --cpus boot=2 --memory size=3072M --net 'tap=rfdguest,num_queues=4'\n");
+  const config = translateConfig({ mtlsPort: 1, maxDesktops: 1, rateMbit: 1, egressBytes: 1, runtimeMaxSec: 1, runDir: dir, guestRunner: runner, vcpu: 3, memMiB: 4096 }, { CREDENTIALS_DIRECTORY: '/c' });
+  assert.match(fs.readFileSync(config.vmArgv({ id: 'ab', cid: 5, tap: 'rfdab', sock: '/s', dir: path.join(dir, 'a'), extraArgv: [] })[0], 'utf8'), /boot=3 --memory size=4096M .*num_queues=6/);
+  assert.equal(config.loginsPath, null);
+  assert.equal(translateConfig({ mtlsPort: 1, maxDesktops: 1, rateMbit: 1, egressBytes: 1, runtimeMaxSec: 1, runDir: dir, guestRunner: runner, previewLogins: true }, { CREDENTIALS_DIRECTORY: '/c' }).loginsPath, '/c/preview-logins');
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('the module default DNS allowlist names the Teams web join (to confirm in the first live join) and overlayGiB is gone', () => {
+  const nix = fs.readFileSync(path.join(__dirname, '../nixos/runner.nix'), 'utf8');
+  for (const name of ['teams.microsoft.com', 'teams.live.com']) assert.ok(nix.includes(`"${name}"`), name);
+  assert.match(nix, /TO CONFIRM in the first live Teams join/);
+  assert.doesNotMatch(nix, /overlayGiB/);
+});

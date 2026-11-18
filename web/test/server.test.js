@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
-const { createApp } = require('../server.js');
+const { createApp, makeLogin } = require('../server.js');
 const { handleCall } = require('../public/app.js');
 const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
 const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
@@ -151,10 +151,19 @@ test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   for (const link of ['http://meet.google.com/abc-defg-hij', 'https://evil.example/abc-defg-hij',
     'https://meet.google.com:444/abc-defg-hij', 'https://u@meet.google.com/abc-defg-hij',
     'https://meet.google.com/abc-defg-hij/x', 'https://meet.google.com/abc-defg-hij?a=1',
-    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5]) {
+    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5,
+    'http://teams.microsoft.com/l/meetup-join/x', 'https://teams.microsoft.com/l/other/x', 'https://teams.microsoft.com/l/meetup-join/x#f',
+    'https://teams.microsoft.com.evil.example/l/meetup-join/x', 'https://teams.live.com/meet/', 'https://teams.live.com/other/1', 'https://x.teams.live.com/meet/1',
+    'https://teams.live.com/meet/1?p=a b', `https://teams.microsoft.com/l/meetup-join/${'a'.repeat(2100)}`]) {
     assert.equal((await post(get, { link })).status, 400, String(link));
   }
   assert.deepEqual(call.started, []);
+  for (const link of ['https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d', 'https://teams.live.com/meet/9300000000?p=abc', 'https://teams.microsoft.com/meet/1234567890123?p=AbC']) {
+    assert.equal((await post(get, { link })).status, 202, link);
+    assert.equal(call.started.at(-1), link); // passed on unchanged
+    await get('/api/call', { method: 'DELETE' });
+  }
+  call.started.length = 0; call.stopped.length = 0;
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 202);
   assert.deepEqual(call.started, ['https://meet.google.com/abc-defg-hij']);
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
@@ -282,4 +291,13 @@ test('server.js passes brain and redactor to createDesktop (a trailing // commen
   const code = call.slice(0, call.indexOf('openVnc')).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
   assert.match(code, /\bbrain,/);
   assert.match(code, /\bredactor,/);
+});
+
+test('the production login uses the runner login route and fails unless the guest answers ok:true', async () => {
+  const calls = [];
+  const mk = (body) => makeLogin(async (route, b) => { calls.push([route, b]); return body; });
+  await mk({ ok: true })({ desktop_id: 'd1', profile: 'p', hosts: ['https://x'], extra: 1 });
+  assert.deepEqual(calls, [['login', { desktop_id: 'd1', profile: 'p', hosts: ['https://x'] }]]);
+  await assert.rejects(mk({ ok: false })({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
+  await assert.rejects(mk({})({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
 });

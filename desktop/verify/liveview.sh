@@ -9,10 +9,13 @@
 # verify-scope; its desktop must be refused to the member), VERIFY_CHROME (a Chrome binary on this host).
 # liveview-revoke-5s: roles live in the pod's environment, so the member is removed from RFACTORY_ALLOWED_EMAILS and the web pod is recreated
 # with deploy/pod.sh (VERIFY_POD_SH, default $ROOT/deploy/pod.sh; no other unit is touched), as VERIFY_POD_USER, then put back.
+# Both times the pod gets its whole desktop configuration (lib.sh pod_env): RFACTORY_DESKTOP=1, RFACTORY_RUNNER_URL (default the runner URL
+# this script uses), and from this script's environment RFACTORY_APPROVERS, _ADMINS, _WRITES, _CONFIG, _CLAUDE_HOME and VERIFY_BRAIN_RECORD
+# (as RFACTORY_BRAIN_RECORD). The runner client certificate files must already be in $RFACTORY_CONFIG/desktop-runner/ (pod.sh checks).
 # Also: VERIFY_APPROVER_COOKIE (still a member after the removal, used to see the server is back), VERIFY_MEMBER_EMAIL (the member to
 # remove; not an approver or admin: roles-not-members would stop the server), VERIFY_ALLOWED_EMAILS (the current RFACTORY_ALLOWED_EMAILS
-# list, restored afterwards), VERIFY_POD_USER. deploy/pod.sh passes only the variables it names, so the pod's desktop settings must come
-# from the environment of the pod.sh you point VERIFY_POD_SH at; a restart that drops RFACTORY_DESKTOP fails the checks that follow.
+# list, restored afterwards), VERIFY_POD_USER. Set the pod's current RFACTORY_APPROVERS / RFACTORY_ADMINS (and the others above) in this
+# script's environment as well: a pod recreated without them loses its roles and its desktop routes, and the checks that follow fail.
 # The stream closes when the old server stops, so the time measured is from the restart returning; the 5 s membership timer itself is
 # covered by web/live-view.test.js.
 set -euo pipefail
@@ -25,7 +28,9 @@ need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_SERVER_URL VERIFY_MEMBER_COOKIE
 POD_SH=${VERIFY_POD_SH:-$ROOT/deploy/pod.sh}
 HOLD=$(mktemp)
 RESTORE=
-extra_cleanup() { [ -z "${HP:-}" ] || kill "$HP" 2>/dev/null || true; rm -f "$HOLD"; if [ -n "$RESTORE" ]; then as_pod_user RFACTORY_ALLOWED_EMAILS="$VERIFY_ALLOWED_EMAILS" "$POD_SH" up >/dev/null 2>&1 || fail liveview-restore-pod "the web pod was not put back with the full member list"; fi; }
+# pod_up <emails>: recreate the pod with the full verification configuration
+pod_up() { pod_env "$1"; as_pod_user "${POD_ENV[@]}" "$POD_SH" up; }
+extra_cleanup() { [ -z "${HP:-}" ] || kill "$HP" 2>/dev/null || true; rm -f "$HOLD"; if [ -n "$RESTORE" ]; then pod_up "$VERIFY_ALLOWED_EMAILS" >/dev/null 2>&1 || fail liveview-restore-pod "the web pod was not put back with the full member list"; fi; }
 LV=$ROOT/desktop/verify/liveview.js
 BASE=${VERIFY_SERVER_URL%/}
 WS=${BASE/#http/ws}
@@ -45,8 +50,8 @@ if [ "$r" = refused ]; then pass liveview-other-scope-refused; else fail livevie
 r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" page "$BASE/desktop.html?desktop_id=$D" || echo error)
 if [ "$r" = frame ]; then pass liveview-novnc-frame; else fail liveview-novnc-frame "$r"; fi
 
-# KeyEvent closes the stream and the guest screen does not change
-shot() { local b; b=$(act "$D" '{"type":"desktop_screenshot"}' | jq -er '.image_base64') || return 1; sha256sum <<<"$b" | cut -d' ' -f1; }
+# KeyEvent closes the stream and the guest screen does not change (the screenshot carries hosts, here none: the page is the blank one)
+shot() { local b; b=$(act "$D" '{"type":"desktop_screenshot","hosts":[]}' | jq -er '.image_base64') || return 1; sha256sum <<<"$b" | cut -d' ' -f1; }
 before=$(shot) || before="no-shot-before"
 r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" key "$URL" || echo error)
 sleep 2
@@ -63,7 +68,7 @@ sleep 5
 if ! grep -q '^open' "$HOLD"; then fail liveview-revoke-5s "the member's stream did not open before the revoke"
 else
   RESTORE=1
-  as_pod_user RFACTORY_ALLOWED_EMAILS="$new_list" "$POD_SH" up >/dev/null || die "deploy/pod.sh up failed"
+  pod_up "$new_list" >/dev/null || die "deploy/pod.sh up failed"
   t_up=$(date +%s%3N)
   for _ in $(seq 1 20); do kill -0 "$HP" 2>/dev/null || break; sleep 1; done
   closed=$(awk '/^closed/ {print $2}' "$HOLD")

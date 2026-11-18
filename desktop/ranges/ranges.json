@@ -93,7 +93,32 @@
     "fetched": "2026-11-18",
     "sha256": "2aac4c5fff85d6f91a3b9de14205c1e18e70f2dcf57761a2f4feaf0d7b6c81d7"
   },
-  "teams": "not found",
+  "teams": {
+    "cidrs": [
+      "52.112.0.0/14",
+      "52.122.0.0/15",
+      "2603:1063::/38"
+    ],
+    "udp": [
+      [
+        3478,
+        3481
+      ]
+    ],
+    "tcp": [
+      443
+    ],
+    "probe": [
+      "52.112.23.72",
+      "52.123.128.14"
+    ],
+    "source": "https://endpoints.office.com/endpoints/worldwide?clientrequestid=<uuid>",
+    "serviceArea": "Skype",
+    "category": "Optimize",
+    "fetched": "2026-11-18",
+    "sha256": "01da0d29fd8925ffd445bd95d8906613e68aeb29b09a11dc62b4cb12c596736e",
+    "note": "cidrs and udp from the Optimize entry (id 11); tcp 443 is the Allow entry (id 12, tcp 80,443) for the same ranges; probe hosts are api.flightproxy.teams.microsoft.com and teams.microsoft.com addresses inside them, because the first host of a range does not answer on tcp 443"
+  },
   "slack": {
     "cidrs": [
       "99.77.128.0/18"

@@ -36,10 +36,17 @@ test('"not found", empty and unknown platforms fail without probing', async () =
 
 test('the pinned meet and zoom entries pass preflight (and probe 443)', async () => {
   const pinned = require('../ranges/ranges.json');
-  for (const platform of ['meet', 'zoom']) {
+  for (const platform of ['meet', 'zoom', 'teams']) {
     const calls = [];
     const ok = await preflight(platform, pinned, async (h, p) => { calls.push([h, p]); return true; });
     assert.equal(ok.port, 443, platform);
     assert.equal(calls.length, 1);
   }
 });
+
+test('an entry with probe hosts probes those, not the first host of a range', async () => {
+  const calls = [];
+  await preflight('t', { t: { cidrs: ['52.112.0.0/14'], udp: [3478], tcp: [443], probe: ['52.112.23.72'] } }, async (h) => { calls.push(h); return true; });
+  assert.deepEqual(calls, ['52.112.23.72']);
+});
+

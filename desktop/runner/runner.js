@@ -24,6 +24,7 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     clear: async () => { lifecycle.clear(); return { ok: true }; },
     // host -> guest over the VM's control channel; any failure to deliver or answer is an error result (fail closed)
     action: (b) => lifecycle.action(String(b.desktop_id), b.message),
+    login: (b) => lifecycle.login(String(b.desktop_id), b), // the stored preview login, filled by the guest; the caller sends only a profile name and hosts
     'share-start': (b) => lifecycle.shareStart(String(b.desktop_id), b),
     'share-stop': (b) => lifecycle.shareStop(String(b.desktop_id), b),
     // Test-only faults (deviation 22): absent, so 404, unless the runner was configured with verifyHooks.
@@ -33,11 +34,18 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     ...(profiles ? {
       'profile-create': (b) => profiles.create(b.actor, b),
       'profile-list': async (b) => ({ profiles: profiles.list(b.actor, String(b.scope)) }),
-      'profile-attach': (b) => profiles.attach(b.actor, String(b.profile_id), String(b.scope), { call_id: b.call_id, platform: b.platform }),
+      'profile-attach': async (b, ctx) => {
+        const r = await profiles.attach(b.actor, String(b.profile_id), String(b.scope), { call_id: b.call_id, platform: b.platform });
+        // The web client gave up (its timeout or a closed connection): nobody will heartbeat or use this desktop, so end it now.
+        if (ctx.gone()) { await lifecycle.destroy(r.desktop_id, 'client-gone'); throw new Error('client gone'); }
+        return r;
+      },
       'profile-delete': async (b) => { await profiles.delete(b.actor, String(b.profile_id)); return { ok: true }; },
     } : {}),
   };
   return async (req, res) => {
+    let gone = false;
+    res.on?.('close', () => { if (!res.writableFinished) gone = true; });
     const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
     if (tls && !req.socket.authorized) return send(401, { error: 'client certificate required' });
     const name = req.url.slice(1);
@@ -51,8 +59,8 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     try { body = raw ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'bad json' }); }
     if (!body || typeof body !== 'object' || Array.isArray(body)) return send(400, { error: 'bad json' });
     try {
-      const result = await routes[name](body);
-      return send(result && result.error ? ({ capacity: 409, 'too-late': 409, 'bad-message': 400, 'no-desktop': 404 }[result.error] || 503) : 200, result);
+      const result = await routes[name](body, { gone: () => gone });
+      return send(result && result.error ? ({ capacity: 409, 'too-late': 409, 'bad-message': 400, 'no-desktop': 404, 'no-login': 404, 'login-host': 403 }[result.error] || 503) : 200, result);
     } catch (error) { return send(clientStatus(error), { error: error.message }); }
   };
 }
@@ -108,8 +116,11 @@ function addrFor(cid) {
 // microvm-run ignores its arguments and resets runtime_args=, so a per-VM copy carries what differs per VM: the extra
 // cloud-hypervisor args (a profile's --disk) and, with `identity`, this VM's own vsock cid and socket and tap in place of the
 // image's placeholders (guest/default.nix: cid 3, notify.vsock, tap rfdguest). The guest derives its address from its cid.
-function withExtraArgs(runner, dir, extra = [], identity = null) {
-  if (!extra.length && !identity) return runner;
+// Sizing (vcpu, memMiB) is applied the same way when it differs from what the image was built with (guest/default.nix: 2 and 3072).
+const IMAGE_SIZE = { vcpu: 2, memMiB: 3072 };
+function withExtraArgs(runner, dir, extra = [], identity = null, size = IMAGE_SIZE) {
+  const resized = size.vcpu !== IMAGE_SIZE.vcpu || size.memMiB !== IMAGE_SIZE.memMiB;
+  if (!extra.length && !identity && !resized) return runner;
   if (extra.some((a) => !/^[\w=,./:-]+$/.test(a))) throw new Error('unsafe VM argument');
   let text = fs.readFileSync(runner, 'utf8');
   const swap = (from, to) => {
@@ -125,6 +136,12 @@ function withExtraArgs(runner, dir, extra = [], identity = null) {
     if (!Number.isInteger(cid) || cid < 3 || !/^[\w-]+$/.test(tap) || !/^[\w./-]+$/.test(sock)) throw new Error('unsafe VM identity');
     swap('cid=3,socket=notify.vsock', `cid=${cid},socket=${sock}`);
     swap('tap=rfdguest', `tap=${tap}`);
+  }
+  if (resized) {
+    if (!Number.isInteger(size.vcpu) || size.vcpu < 2 || size.vcpu > 16 || !Number.isInteger(size.memMiB) || size.memMiB < 1024) throw new Error('unsafe VM size');
+    swap(`boot=${IMAGE_SIZE.vcpu}`, `boot=${size.vcpu}`);
+    swap(`num_queues=${2 * IMAGE_SIZE.vcpu}`, `num_queues=${2 * size.vcpu}`); // multi-queue net: two queues per vcpu
+    swap(`size=${IMAGE_SIZE.memMiB}M`, `size=${size.memMiB}M`);
   }
   const copy = path.join(dir, 'microvm-run');
   fs.writeFileSync(copy, text, { mode: 0o755 });
@@ -147,7 +164,8 @@ function translateConfig(raw, env = process.env) {
     workerBeatTimeoutMs: raw.workerBeatTimeoutMs ?? 30000, serverBeatTimeoutMs: raw.serverBeatTimeoutMs ?? 60000,
     idleMs: raw.idleMs ?? 600000, bootGraceMs: raw.bootGraceMs ?? 45000, cleanupRetries: raw.cleanupRetries ?? 3, backoffMs: raw.backoffMs ?? 1000,
     runDir: raw.runDir, vmUser: raw.vmUser, vmPath: raw.vmPath, dnsmasqBin: raw.dnsmasqBin,
-    vmArgv: ({ dir, extraArgv, cid, tap, sock }) => [withExtraArgs(raw.guestRunner, dir, extraArgv, { cid, tap, sock })],
+    vmArgv: ({ dir, extraArgv, cid, tap, sock }) => [withExtraArgs(raw.guestRunner, dir, extraArgv, { cid, tap, sock }, { vcpu: raw.vcpu ?? IMAGE_SIZE.vcpu, memMiB: raw.memMiB ?? IMAGE_SIZE.memMiB })],
+    loginsPath: raw.previewLogins ? path.join(creds, 'preview-logins') : null,
     profiles: { vmUser: raw.vmUser, dir: raw.profileDir || '/var/lib/rfactory-desktop/profiles', keyPath: path.join(creds, 'profile-key') },
     ranges,
     net: {
@@ -179,7 +197,16 @@ function realDeps(config) {
     if (input !== undefined) child.stdin.end(input);
   });
   const clock = { now: Date.now, setInterval, clearInterval, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
-  return { exec, clock, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
+  // The stored preview logins (a credential file, read at each use so a change needs no restart). A bad or missing file means no
+  // login; the error is dropped because a JSON parse error can quote the file.
+  const resolveLogin = (scope, profile) => {
+    if (!config.loginsPath) return null;
+    try {
+      const entry = JSON.parse(fs.readFileSync(config.loginsPath, 'utf8'))?.[scope]?.[profile];
+      return entry && typeof entry === 'object' ? entry : null;
+    } catch { return null; }
+  };
+  return { exec, clock, resolveLogin, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
     preflight: (platform) => preflight(platform, config.ranges, tcpConnect) };
 }
 

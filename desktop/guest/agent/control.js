@@ -73,7 +73,10 @@ function createControl({ chromium, launchOptions = {}, owner }) {
       };
       ctx.pages().forEach(watch);
       ctx.on('page', watch);
-      if (mine !== generation) { await ctx.close().catch(() => {}); throw new Error('cancelled'); }
+      if (mine !== generation) {
+        try { await ctx.close(); } catch { throw new Error('close-failed'); } // cancel() must not confirm a Chrome that is still running
+        throw new Error('cancelled');
+      }
       context = ctx;
       return ctx;
     })();
@@ -115,9 +118,17 @@ function createControl({ chromium, launchOptions = {}, owner }) {
     async click(target) { await (await page()).click(target, { timeout: 5000 }); },
     async type(target, text) { await (await page()).fill(target, text, { timeout: 5000 }); },
     async scroll(dy) { await (await page()).mouse.wheel(0, dy); },
+    // Fills a runner-supplied preview login, only into the page of the login's own origin. Errors are never logged (Playwright call logs can echo values).
+    async login({ origin, fields, submit }) {
+      const p = await page();
+      if (!allowed.has(origin) || originOf(p.url()) !== origin) throw new Error('login origin is not the open page');
+      for (const f of fields) await p.fill(f.target, f.value, { timeout: 5000 });
+      if (submit) await p.click(submit, { timeout: 5000 });
+    },
     pageText: async () => (await page()).locator('body').innerText().then(capText),
     screenshot: async () => (await page()).screenshot({ type: 'jpeg', quality: 40 }),
-    // Closes the context and stops anything in flight; gives up waiting after 2 s (runner then destroys the VM).
+    // Closes the context and stops anything in flight. Resolves only once Chrome is confirmed closed; rejects when the
+    // close fails or takes over 2 s, so the caller sends no acknowledgment and the runner destroys the VM.
     async cancel() {
       const ctx = context;
       const launching = starting;
@@ -126,8 +137,11 @@ function createControl({ chromium, launchOptions = {}, owner }) {
       allowed.clear();
       userDataDir = null;
       let t;
-      await Promise.race([Promise.all([ctx?.close(), launching].map((p) => Promise.resolve(p).catch(() => {}))), new Promise((r) => { t = setTimeout(r, CANCEL_MS); })]);
+      const settled = await Promise.race([Promise.allSettled([ctx?.close(), launching]), new Promise((r) => { t = setTimeout(() => r(null), CANCEL_MS); })]);
       clearTimeout(t);
+      if (!settled) throw new Error('chrome did not close in time');
+      // a launch that was cancelled is fine; one whose own Chrome would not close is not
+      if (settled[0].status === 'rejected' || settled[1].reason?.message === 'close-failed') throw new Error('chrome close failed');
     },
   };
 }

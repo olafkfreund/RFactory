@@ -15,6 +15,7 @@ function setup(over = {}) {
   const timers = [];
   const speaks = [];
   const call = Object.assign(new EventEmitter(), {
+    platform: over.platform || 'meet',
     speak: over.speak || (async (buf) => {
       const item = { buf, cancelled: false };
       item.done = new Promise((r) => { item.resolve = r; });
@@ -76,6 +77,20 @@ function avatarPage(calls, confirmations = [true], errors = 0) {
     return false;
   } };
 }
+
+test('a Teams link reaches join unchanged and the avatar camera is not checked by a Meet label', async () => {
+  const link = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d';
+  const calls = { order: [] };
+  const s = setup({ env: { RFACTORY_AVATAR: 'm01' }, platform: 'teams', page: avatarPage(calls, [false]), order: calls.order });
+  s.stdin.write(`${link}\n`);
+  await tick();
+  try {
+    assert.strictEqual(s.calls.joinOpts.link, link);
+    assert.deepStrictEqual(s.calls.camera, [true]); // a Meet-label check would have refused (confirmation false)
+    s.timers.find((t) => t.ms === 3000).fn(); await tick();
+    assert.ok(s.timers.some((t) => t.ms === 5000)); // past the camera check, polling
+  } finally { s.stdin.end(); await s.done; }
+});
 
 test('avatar injects after chat, retries a refused camera, then polls render errors', async () => {
   const calls = { order: [] };

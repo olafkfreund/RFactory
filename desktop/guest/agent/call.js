@@ -20,7 +20,9 @@ function createCallWorker({ nonce, screen = false, send, onExit = () => {}, deps
     },
     join: async (link, o) => {
       const call = await (deps.join || require('@vibeconferencing/calls').join)(link, o);
-      share = createShare({ context: host.context, callPage: call._inner.page, callNonce: nonce, send });
+      // Meet's button is clicked by share.js; other providers keep their labels in the library, so their own startShare clicks it
+      const clickShare = call.platform && call.platform !== 'meet' ? () => call.share.start() : undefined;
+      share = createShare({ context: host.context, callPage: call._inner.page, callNonce: nonce, clickShare, send });
       return call;
     },
   };

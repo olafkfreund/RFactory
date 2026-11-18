@@ -15,6 +15,10 @@ SCRIPT=$(basename "${BASH_SOURCE[1]:-verify}" .sh)
 FAILS=0
 REPORTED=0
 CREATED=() # desktop ids this script created; the only ones it destroys
+declare -A BEATS=() # desktop id -> pid of its server heartbeat loop
+CALLPIDS=() # call streams (callstream.js) this script started
+CALLFILES=()
+CONFIRMED=0 # set by owner_confirm: 1 when the owner said yes
 
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: ${2//$'\n'/ }"; FAILS=$((FAILS + 1)); REPORTED=1; }
@@ -39,7 +43,8 @@ api() {
 # WEB_COOKIE. Every call carries the CSRF header x-rfactory-action: 1 and an Origin equal to the server's host (web/desktop-routes.js).
 # The cookie goes in on stdin, not in argv, and is never printed.
 web() {
-  local base=${VERIFY_SERVER_URL%/} args
+  local base=${WEB_BASE:-$VERIFY_SERVER_URL} args # WEB_BASE: another web server (e2e.sh Teams from the pod)
+  base=${base%/}
   args=(-sS --max-time "${WEB_MAX:-60}" -X "$1" -H 'content-type: application/json' -H 'x-rfactory-action: 1' -H "origin: $base")
   [ -z "${3:-}" ] || args+=(--data "$3")
   printf 'cookie: %s\n' "${WEB_COOKIE:-}" | curl "${args[@]}" -H @- "$base$2"
@@ -54,9 +59,11 @@ admin() { WEB_COOKIE=$VERIFY_ADMIN_COOKIE web "$@"; }
 ask() { approver POST "/api/desktop/$1/request" "$(jq -nc --arg t "$2" '{text:$t}')"; }
 # queued_of <id> <action>: "<proposal id> <hash>" of the newest queued entry with that action name, empty when none
 queued_of() { state_of "$1" | jq -r --arg n "$2" '[.queued[]? | select(.name == $n)] | last // empty | "\(.id) \(.hash)"' 2>/dev/null || true; }
-# grant <id> <minutes> <actions-json>: a handover for the fixture origin (VERIFY_FIXTURE_URL); prints the web reply
+# grant <id> <minutes> <actions-json> [login-profile]: a handover for the fixture origin (VERIFY_FIXTURE_URL); prints the web reply.
+# A login profile names a stored preview login: the web server has the runner fill it, and the reply is ok only if that worked.
 grant() {
-  approver POST "/api/desktop/$1/handover" "$(jq -nc --argjson m "$2" --argjson a "$3" --arg h "$VERIFY_FIXTURE_URL" '{minutes:$m,actions:$a,hosts:[$h]}')"
+  approver POST "/api/desktop/$1/handover" "$(jq -nc --argjson m "$2" --argjson a "$3" --arg h "$VERIFY_FIXTURE_URL" --arg l "${4:-}" \
+    '{minutes:$m,actions:$a,hosts:[$h]} + (if $l == "" then {} else {login:$l} end)')"
 }
 # start_shared <id> <url>: asks for a share, approves the proposal as the approver; sets SHARE (the share id) on success, else SHAREERR and returns 1.
 # Needs a live grant with propose_share for the url's origin.
@@ -85,13 +92,34 @@ in_secs() { date -u -d "+$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
 
 # create_body <call_id> <scope>: the runner's create request; it refuses one without a platform
 create_body() { jq -nc --arg c "$1" --arg s "$2" --arg p "$PLATFORM" '{call_id:$c,scope:$s,platform:$p}'; }
-# new_desktop <call_id> <scope>: sets DID on success; on failure sets DERR to the runner's reply and returns 1
+# beat <id>: a server heartbeat every BEAT_SECS (10) until stop_beat or exit; the runner ends a VM with none (serverBeatTimeoutMs)
+beat() {
+  ( while sleep "${BEAT_SECS:-10}"; do api heartbeat "$(jq -nc --arg d "$1" '{desktop_id:$d}')" || true; done ) >/dev/null 2>&1 &
+  BEATS[$1]=$!
+}
+stop_beat() { [ -z "${BEATS[$1]:-}" ] || kill "${BEATS[$1]}" 2>/dev/null || true; unset "BEATS[$1]"; }
+# new_desktop <call_id> <scope>: sets DID on success; on failure sets DERR to the runner's reply and returns 1.
+# Keeps a server heartbeat running for the desktop; NO_BEAT=1 withholds it (a test of heartbeat loss, lifecycle.sh).
 new_desktop() {
   local out; DID=; DERR=
   out=$(api create "$(create_body "$1" "$2")") || { DERR=$out; return 1; }
   DID=$(jq -r '.desktop_id // empty' <<<"$out")
   [ -n "$DID" ] || { DERR=$out; return 1; }
   CREATED+=("$DID")
+  [ "${NO_BEAT:-0}" = 1 ] || beat "$DID"
+}
+# join_call <id>: join the call VERIFY_MEET_LINK through the runner's call stream (callstream.js; the web server's call does the same) and
+# wait for the bot's in-call state. Sets CALLERR and returns 1 otherwise, so nothing that needs a call can pass without one.
+join_call() {
+  need_env VERIFY_MEET_LINK
+  local f end; f=$(mktemp); CALLFILES+=("$f"); CALLERR=
+  RUNNER_URL=$RUNNER_URL node "$ROOT/desktop/verify/callstream.js" "$1" "$VERIFY_MEET_LINK" >"$f" 2>&1 &
+  CALLPIDS+=("$!")
+  end=$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))
+  until grep -q '"state":"in-call"' "$f" || ! kill -0 "$!" 2>/dev/null || [ $SECONDS -ge "$end" ]; do sleep 2; done
+  grep -q '"state":"in-call"' "$f" && return 0
+  CALLERR="no in-call state; stream said: $(grep -o '"state":"[a-z-]*"\|call-refused-[0-9]*\|runner-timeout' "$f" | tr '\n' ' ')"
+  return 1
 }
 
 desk_ids() { api list | jq -r '.desktops[].desktop_id'; }
@@ -125,14 +153,27 @@ owner_confirm() {
     printf '%s [y/N] ' "$2" >/dev/tty
     read -r -t 900 ans </dev/tty || true
   fi
-  if [ "$ans" = y ] || [ "$ans" = Y ]; then pass "$1"; else fail "$1" "the owner did not confirm: $2"; fi
+  if [ "$ans" = y ] || [ "$ans" = Y ]; then CONFIRMED=1; pass "$1"; else CONFIRMED=0; fail "$1" "the owner did not confirm: $2"; fi
+}
+# pod_env <allowed-emails>: sets POD_ENV, the environment for deploy/pod.sh up with everything this verification deployment needs: the member list
+# it was given, desktop mode and the runner URL, and whatever of roles, writes, config and the brain record this script's own environment sets.
+# A pod recreated without these loses the desktop routes (deploy/pod.sh passes only what it is given).
+pod_env() {
+  local v; POD_ENV=(RFACTORY_ALLOWED_EMAILS="$1" RFACTORY_DESKTOP=1 RFACTORY_RUNNER_URL="${RFACTORY_RUNNER_URL:-$RUNNER_URL}")
+  for v in RFACTORY_APPROVERS RFACTORY_ADMINS RFACTORY_WRITES RFACTORY_CONFIG RFACTORY_CLAUDE_HOME; do
+    [ -z "${!v:-}" ] || POD_ENV+=("$v=${!v}")
+  done
+  [ -z "${VERIFY_BRAIN_RECORD:-}" ] || POD_ENV+=(RFACTORY_BRAIN_RECORD="$VERIFY_BRAIN_RECORD")
 }
 
 runner_log() { journalctl -u rfactory-runner --no-pager -o cat "$@" 2>/dev/null; }
 
 verify_exit() {
   local rc=$?
-  local id
+  local id p
+  for id in "${!BEATS[@]}"; do stop_beat "$id"; done
+  for p in "${CALLPIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  [ "${#CALLFILES[@]}" = 0 ] || rm -f "${CALLFILES[@]}"
   for id in "${CREATED[@]}"; do api destroy "$(jq -nc --arg d "$id" '{desktop_id:$d}')" >/dev/null 2>&1 || true; done
   if declare -F extra_cleanup >/dev/null; then extra_cleanup || true; fi
   # a crash must not look like a pass
