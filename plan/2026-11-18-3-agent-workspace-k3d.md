@@ -511,6 +511,20 @@ and 27) and the scripts. This plan is self-contained.
     - Then: all five pods Ready, app `Synced/Healthy`, four Kyverno
       policies Ready. A cluster recreate or re-import repeats all three
       steps.
+26. **k10b first run: the guard never installed a probe's tables (lead).**
+    - Cause: `findVeth` finds the veth through the node's cni0 neighbour
+      entry. An idle pod has none: a probe held before `go_probe`, and
+      equally a paused VMI's launcher pod. The guard waited for five
+      lookups, then reported `guard-no-veth`.
+    - Shown live: one ping from agent-0 to the probe created the entry, and
+      the guard installed both tables within seconds.
+    - Fix (`desktop/guard/guard.js`): when the lookup is empty, the guard
+      sends one UDP datagram to the pod's discard port, so the node
+      resolves ARP, then looks again. The checks for exactly one MAC and
+      exactly one bridge port are unchanged, and an ambiguous answer is
+      never re-resolved (test).
+    - Guard image rebuilt (`guard:cmqinz9…@sha256:e8ca9bb9…`), imported
+      into both nodes with its digest ref and pinned.
 
 
 ## Steps

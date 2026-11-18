@@ -71,12 +71,17 @@ test('veth lookup retries five times, then refuses absence or ambiguity', async 
     if (file === 'ip') return JSON.stringify(++tries < 3 ? [] : [{ lladdr: '52:54:00:00:00:07' }]);
     return JSON.stringify([{ mac: '52:54:00:00:00:07', dev: 'veth123' }]);
   };
-  assert.deepEqual(await findVeth('10.42.1.7', run, async () => { waits++; }), { veth: 'veth123', mac: '52:54:00:00:00:07' });
+  const poked = [];
+  const pokeStub = async ip => { poked.push(ip); };
+  assert.deepEqual(await findVeth('10.42.1.7', run, async () => { waits++; }, pokeStub), { veth: 'veth123', mac: '52:54:00:00:00:07' });
   assert.equal(tries, 3); assert.equal(waits, 2);
+  assert.deepEqual(poked, ['10.42.1.7', '10.42.1.7']); // no neighbour entry yet: resolve it, then look again
   tries = 0;
-  await assert.rejects(findVeth('10.42.1.7', async () => { tries++; return '[]'; }, async () => {}), { code: 'guard-no-veth' });
+  await assert.rejects(findVeth('10.42.1.7', async () => { tries++; return '[]'; }, async () => {}, pokeStub), { code: 'guard-no-veth' });
   assert.equal(tries, 5);
-  await assert.rejects(findVeth('10.42.1.7', async file => JSON.stringify(file === 'ip' ? [{ lladdr: 'aa:bb:cc:dd:ee:ff' }, { lladdr: 'bb:cc:dd:ee:ff:00' }] : []), async () => {}), { code: 'guard-no-veth' });
+  poked.length = 0;
+  await assert.rejects(findVeth('10.42.1.7', async file => JSON.stringify(file === 'ip' ? [{ lladdr: 'aa:bb:cc:dd:ee:ff' }, { lladdr: 'bb:cc:dd:ee:ff:00' }] : []), async () => {}, pokeStub), { code: 'guard-no-veth' });
+  assert.deepEqual(poked, []); // an ambiguous answer is refused, never re-resolved
 });
 
 test('reconcile writes both tables, shapes ingress on the host veth, and ready waits for read-back', async () => {

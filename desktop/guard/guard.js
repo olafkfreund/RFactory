@@ -96,11 +96,21 @@ function renderTables(pod, entry, veth) {
   return { name, bridge: bridge.join('\n') + '\n', inet: inet.join('\n') + '\n' };
 }
 
-async function findVeth(ip, run, sleep = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+// one UDP datagram to the discard port makes the node resolve the pod's ARP entry: an idle pod (a paused VMI's launcher) has none
+function poke(ip) {
+  return new Promise(resolve => {
+    const socket = require('node:dgram').createSocket(net.isIP(ip) === 6 ? 'udp6' : 'udp4');
+    socket.on('error', () => { socket.close(); resolve(); });
+    socket.send(Buffer.alloc(1), 9, ip, () => { socket.close(); resolve(); });
+  });
+}
+
+async function findVeth(ip, run, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), resolveNeighbour = poke) {
   if (!net.isIP(ip)) throw new Error('invalid pod IP');
   for (let attempt = 0; attempt < 5; attempt++) {
     const neighbours = JSON.parse(await run('ip', ['-j', 'neigh', 'show', 'to', ip, 'dev', 'cni0']));
     const macs = [...new Set(neighbours.map(item => item.lladdr).filter(Boolean))];
+    if (!macs.length) await resolveNeighbour(ip);
     if (macs.length > 1) break;
     if (macs.length === 1) {
       const fdb = JSON.parse(await run('bridge', ['-j', 'fdb', 'show', 'br', 'cni0']));
