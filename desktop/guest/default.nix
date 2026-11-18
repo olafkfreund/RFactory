@@ -1,5 +1,6 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, config, ... }:
 let
+  kv = config.rfactory.guest.kubevirt;
   bridge = port: {
     wantedBy = [ "multi-user.target" ];
     serviceConfig.ExecStart = "${pkgs.socat}/bin/socat VSOCK-LISTEN:${toString port},fork TCP:127.0.0.1:${toString port}";
@@ -58,69 +59,84 @@ let
   '';
 in
 {
-  system.stateVersion = "25.05";
-  networking.hostName = "desktop-guest";
+  # k2: the KubeVirt guest (kubevirt.nix) sets this; the vsock image stays buildable until k13 removes it.
+  options.rfactory.guest.kubevirt = lib.mkEnableOption "the KubeVirt guest: TCP to the runner ClusterIP, no vsock, no microvm";
 
-  microvm = {
-    hypervisor = "cloud-hypervisor";
-    vcpu = 2;
-    mem = 3072;
-    vsock.cid = 3; # placeholder: the runner's per-VM copy of microvm-run swaps in the VM's own cid and socket
-    interfaces = [ { type = "tap"; id = "rfdguest"; inherit mac; } ]; # placeholder tap name, swapped the same way
-    storeOnDisk = true; # erofs of the guest closure; no host store share (Deviation 2)
-    writableStoreOverlay = null;
-    shares = [ ];
-    volumes = [ ];
-    # empty 4 GiB overlay on tmpfs
-  };
-  fileSystems."/tmp" = { fsType = "tmpfs"; options = [ "size=4G" "mode=1777" ]; };
+  config = lib.mkMerge [
+    {
+      system.stateVersion = "25.05";
+      networking.hostName = "desktop-guest";
 
-  users.groups.rfchrome.gid = 990;
-  users.users.rfchrome = { isSystemUser = true; uid = 990; group = "rfchrome"; home = "/var/lib/rfchrome"; createHome = true; };
+      users.groups.rfchrome.gid = 990;
+      users.users.rfchrome = { isSystemUser = true; uid = 990; group = "rfchrome"; home = "/var/lib/rfchrome"; createHome = true; };
 
-  networking.useDHCP = false;
-  networking.resolvconf.enable = false;
+      networking.useDHCP = false;
+      networking.resolvconf.enable = false;
 
-  # No SSH, no secrets.
-  services.openssh.enable = false;
+      # No SSH, no secrets.
+      services.openssh.enable = false;
 
-  systemd.services = {
-    xvfb = {
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig.ExecStart = "${pkgs.xorg-server}/bin/Xvfb :0 -screen 0 1280x800x24";
-    };
-    openbox = {
-      wantedBy = [ "multi-user.target" ];
-      after = [ "xvfb.service" ];
-      environment = xenv;
-      serviceConfig.ExecStart = "${pkgs.openbox}/bin/openbox";
-    };
-    x11vnc = {
-      wantedBy = [ "multi-user.target" ];
-      after = [ "xvfb.service" ];
-      serviceConfig.ExecStart = "${pkgs.x11vnc}/bin/x11vnc -display :0 -localhost -rfbport 5900 -viewonly -nopw -forever";
-    };
-    rfactory-identity = {
-      wantedBy = [ "multi-user.target" ];
-      before = [ "rfactory-agent.service" ];
-      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = identity; };
-    };
-    # The guest agent and call worker; it listens on 127.0.0.1:5000 and starts the call Chrome after call-config.
-    rfactory-agent = {
-      wantedBy = [ "multi-user.target" ];
-      after = [ "xvfb.service" "rfactory-identity.service" ];
-      requires = [ "rfactory-identity.service" ];
-      path = [ pkgs.socat pkgs.cryptsetup pkgs.util-linux pkgs.e2fsprogs ];
-      environment = xenv // {
-        CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable"; # the call Chrome (root, --no-sandbox, Deviation 18)
-        CONTROL_CHROME = "${controlChrome}";
-        CONTROL_UID = "990";
-        CONTROL_GID = "990";
+      systemd.services = {
+        xvfb = {
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig.ExecStart = "${pkgs.xorg-server}/bin/Xvfb :0 -screen 0 1280x800x24";
+        };
+        openbox = {
+          wantedBy = [ "multi-user.target" ];
+          after = [ "xvfb.service" ];
+          environment = xenv;
+          serviceConfig.ExecStart = "${pkgs.openbox}/bin/openbox";
+        };
+        # The guest agent and call worker; the vsock image listens on 127.0.0.1:5000, the KubeVirt guest dials the runner.
+        # It starts the call Chrome after call-config.
+        rfactory-agent = {
+          wantedBy = [ "multi-user.target" ];
+          after = [ "xvfb.service" ];
+          path = [ pkgs.socat pkgs.cryptsetup pkgs.util-linux pkgs.e2fsprogs ];
+          environment = xenv // {
+            CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable"; # the call Chrome (root, --no-sandbox, Deviation 18)
+            CONTROL_CHROME = "${controlChrome}";
+            CONTROL_UID = "990";
+            CONTROL_GID = "990";
+          };
+          serviceConfig.ExecStart = "${pkgs.nodejs_22}/bin/node ${agent}/desktop/guest/agent/index.js";
+        };
       };
-      serviceConfig.ExecStart = "${pkgs.nodejs_22}/bin/node ${agent}/desktop/guest/agent/index.js";
-    };
-    # vsock bridges, guest side listens on 5000 and 5900 only.
-    vsock-vnc = bridge 5900;
-    vsock-control = bridge 5000; # step 7's agent listens on 127.0.0.1:5000
-  };
+    }
+    (lib.mkIf (!kv) {
+      microvm = {
+        hypervisor = "cloud-hypervisor";
+        vcpu = 2;
+        mem = 3072;
+        vsock.cid = 3; # placeholder: the runner's per-VM copy of microvm-run swaps in the VM's own cid and socket
+        interfaces = [ { type = "tap"; id = "rfdguest"; inherit mac; } ]; # placeholder tap name, swapped the same way
+        storeOnDisk = true; # erofs of the guest closure; no host store share (Deviation 2)
+        writableStoreOverlay = null;
+        shares = [ ];
+        volumes = [ ];
+        # empty 4 GiB overlay on tmpfs
+      };
+      fileSystems."/tmp" = { fsType = "tmpfs"; options = [ "size=4G" "mode=1777" ]; };
+
+      systemd.services = {
+        x11vnc = {
+          wantedBy = [ "multi-user.target" ];
+          after = [ "xvfb.service" ];
+          serviceConfig.ExecStart = "${pkgs.x11vnc}/bin/x11vnc -display :0 -localhost -rfbport 5900 -viewonly -nopw -forever";
+        };
+        rfactory-identity = {
+          wantedBy = [ "multi-user.target" ];
+          before = [ "rfactory-agent.service" ];
+          serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = identity; };
+        };
+        rfactory-agent = {
+          after = [ "rfactory-identity.service" ];
+          requires = [ "rfactory-identity.service" ];
+        };
+        # vsock bridges, guest side listens on 5000 and 5900 only.
+        vsock-vnc = bridge 5900;
+        vsock-control = bridge 5000; # step 7's agent listens on 127.0.0.1:5000
+      };
+    })
+  ];
 }

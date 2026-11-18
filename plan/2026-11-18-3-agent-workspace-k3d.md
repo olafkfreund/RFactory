@@ -287,6 +287,67 @@ and 27) and the scripts. This plan is self-contained.
     - k8 must give the guard `NODE_NAME`, the desktop label
       `rfactory.io/desktop=true` and the ServiceAccount CA.
     - Kernel behaviour is proven only at k10b.
+15. **k2, k7, k8 and k9 results (workflow: coder, Opus review, fix
+    round; lead verified).**
+    - **k2, the guest:**
+      - Root is a tmpfs; only `/nix/store` is a read-only erofs (label
+        `rfroot`), because NixOS stage 2 needs writable `/etc`, `/var`
+        and `/run`. The writable budget is 4 GiB in total: root 3 GiB,
+        `/dev/shm` 512 MiB, `/run` 256 MiB.
+      - The runner sets the kernel arguments `rf.runner=<ClusterIP>` and
+        `rf.proxy=<ip>:<port>`.
+      - DHCP comes through networkd with the lease's DNS ignored;
+        `resolv.conf` points only at the proxy IP. The firewall has no
+        inbound rules, so DHCP renewals depend on KubeVirt's long lease.
+      - x11vnc runs `-connect_or_exit … -rfbport 0 -viewonly` after
+        `network-online`. It and the agent have
+        `StartLimitIntervalSec=0`.
+      - The agent dials 5000 and 5001 and redials after every close.
+      - The proxy credential is user `rf`, with the password from
+        `call-config.proxy.token`. Both Chromes use it; the control
+        Chrome refuses to start without it, and a repeated
+        `call-config` is harmless.
+      - The boot image (kernel, initrd, cmdline) and the disk image
+        (erofs) are docker archives for `k3d image import`.
+      - The old vsock image still evaluates, but it does not work at
+        runtime until k13 removes it.
+    - **k7, the reaper:** it fails closed on a missing or unparseable
+      Lease (all desktops deleted); on other API errors it skips only the
+      Lease check (the 3 h limit still applies). It re-reads the token
+      every call.
+    - **k8, the manifests:**
+      - Two Services: `rfactory-runner`, ClusterIP-only `10.43.250.10`
+        (5000, 5001, 5900), and `rfactory-runner-api`, NodePort `31843`
+        to 8443. The proxy has a fixed ClusterIP `10.43.250.11` and
+        public resolvers (`dnsPolicy: None`).
+      - Runner and proxy are pinned to `k3d-factory-server-0`, with
+        anti-affinity to desktops.
+      - Kyverno policies are limited to the namespace by webhook
+        `matchConditions`, so a Kyverno outage cannot block other
+        namespaces. `rfactory-no-host-privileged` is Pod-only (autogen
+        off).
+      - `rfactory-no-protected-netpol` also refuses empty `to`/`from`
+        and `namespaceSelector` peers. It exempts the seven static
+        infrastructure policies by name, and only when ArgoCD's
+        controller applies them (the API server and the guard sit on
+        the node network).
+      - Image fields are digest placeholders until k10. The owner
+        creates the TLS Secrets `rfactory-runner-tls` and
+        `rfactory-guard-tls`, never in Git.
+      - Launcher pods must carry `rfactory.io/role: desktop` (k3 sets
+        it).
+    - **k9, profiles:**
+      - The ConfigMap's `initialized` travels in the attach message.
+      - The guest checks the disk serial (the full id or its first 20
+        characters, the virtio limit; k10b confirms this) and reads the
+        first 16 MiB in-process.
+      - A crash between format and the flag update leaves the profile
+        refused until it is deleted (the safe default).
+    - **Known failing test until k3:** `runner.test.js` "serve wires
+      Profiles". `serve()` still builds the old profile constructor;
+      k3 rewrites that wiring.
+    - **Not run:** `kubectl apply --dry-run=client` on the manifests (the
+      session's permission check refused it). It runs at k10 instead.
 
 ## Steps
 

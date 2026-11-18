@@ -1,0 +1,92 @@
+# Namespace default deny, then only what the infrastructure pods need. Desktop
+# pods get one generated policy each from the runner (k4). Desktop launcher pods
+# carry the label rfactory.io/role=desktop (set by the runner on the VMI).
+#
+# The `rfactory-*` names below are the only ones Kyverno lets reach node or
+# service ranges (kyverno.yaml, rfactory-no-protected-netpol); keep them in sync.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-default-deny, namespace: rfactory-desktops}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Runner: accepts the guest-initiated channels from desktop pods only ...
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-runner-guest-channels, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-runner}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {rfactory.io/role: desktop}}}]
+      ports:
+        - {protocol: TCP, port: 5000}
+        - {protocol: TCP, port: 5001}
+        - {protocol: TCP, port: 5900}
+---
+# ... and the mTLS client API from anywhere (NodePort traffic arrives SNATed, so
+# no source can be named; mTLS is the control).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-runner-api, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-runner}}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{protocol: TCP, port: 8443}]
+---
+# Runner calls the guard (hostNetwork, node IP, 9443).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-runner-egress-guard, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-runner}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 172.18.0.0/16}}]
+      ports: [{protocol: TCP, port: 9443}]
+---
+# Kubernetes API for runner, proxy and reaper: the Service ClusterIP is DNATed to
+# the server node, so the node network on 6443 is what NetworkPolicy sees.
+# Verify the port on the live cluster (k10b).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-api-egress, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {rfactory.io/api-client: "true"}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 172.18.0.0/16}}]
+      ports: [{protocol: TCP, port: 6443}]
+---
+# Proxy: desktops reach CONNECT (3128) and the DNS responder (53) ...
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-proxy-ingress, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-proxy}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {rfactory.io/role: desktop}}}]
+      ports:
+        - {protocol: TCP, port: 3128}
+        - {protocol: TCP, port: 53}
+        - {protocol: UDP, port: 53}
+---
+# ... and it reaches the public internet except every private and always-protected
+# range (the proxy also checks each resolved address itself).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: rfactory-proxy-egress-public, namespace: rfactory-desktops}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: rfactory-proxy}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+        - ipBlock:
+            cidr: ::/0
+            except: [fc00::/7, fe80::/10]

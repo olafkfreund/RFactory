@@ -1,17 +1,20 @@
 'use strict';
 
-const net = require('node:net');
-const { spawn, execFile } = require('node:child_process');
+const fs = require('node:fs');
+const { execFile } = require('node:child_process');
 const { encode, createDecoder } = require('../../runner/protocol');
 const { createControl } = require('./control');
 const { createProfile } = require('./profile');
 const { startHeartbeat } = require('./heartbeat');
 const { createCallWorker } = require('./call');
+const { parseCmdline } = require('./cmdline');
+const { dial } = require('./transport');
 
 // Dispatches runner messages. `send(msg)` goes back on the control socket.
 // Actions run one at a time; `cancel` jumps the queue so it can stop one in flight.
 // share (optional, from share.js createShare) handles share-start/share-stop. onCallConfig(nonce) launches the call Chrome:
 // it is called once, only after the runner's call-config message, never before (the auto-select flag is fixed at launch).
+// call-config's optional proxy {addr, token} (the address is the kernel argument's; only the token is read) is the per-desktop proxy credential: onCallConfig(nonce, screen, proxyToken).
 function createAgent({ control, profile, send, resolveLogin, share, onCallConfig, onCallIn }) {
   let seq = 0;
   let chain = Promise.resolve();
@@ -30,7 +33,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
   async function run(m) {
     if (['desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot', 'desktop_login'].includes(m.type)) await control.applyHosts?.(m.hosts);
     switch (m.type) {
-      case 'profile-attach': control.setUserDataDir(await profile.attach(m.key)); break;
+      case 'profile-attach': control.setUserDataDir(await profile.attach(m.key, m)); break;
       case 'desktop_open': await control.open(m.url, m.hosts); break;
       case 'desktop_click': await control.click(m.target); break;
       case 'desktop_type': await control.type(m.target, m.text); break;
@@ -60,7 +63,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       if (m.type === 'call-config') {
         if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
         configured = true;
-        return Promise.resolve(onCallConfig(m.nonce, m.auto_select_screen === true)).catch(() => {});
+        return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token)).catch(() => {}); // a throw is caught too
       }
       if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
@@ -86,41 +89,40 @@ function exec(cmd, args, { input } = {}) {
   });
 }
 
-// Guest -> host heartbeat/call-end: node has no AF_VSOCK, so socat connects to host CID 2 port 5001.
-function hostLink() {
-  const child = spawn('socat', ['-', 'VSOCK-CONNECT:2:5001'], { stdio: ['pipe', 'ignore', 'inherit'] });
-  child.on('error', () => {});
-  child.stdin.on('error', () => {});
-  return (msg) => child.stdin.write(encode(msg));
-}
-
 function main() {
   const { chromium } = require('playwright-core');
-  const sendHost = hostLink();
+  // The guest dials out: the runner ClusterIP from the kernel command line, 5000 control and 5001 heartbeat (the runner accepts only its launcher pods' IPs).
+  const { runner, proxy: proxyAddr } = parseCmdline(fs.readFileSync('/proc/cmdline', 'utf8'));
+  const hostLink = dial({ host: runner, port: 5001 });
+  const sendHost = (msg) => hostLink.write(encode(msg));
   const profile = createProfile(exec);
   // CONTROL_CHROME is a wrapper that runs Chrome as the unprivileged rfchrome user; then the Chrome sandbox stays on.
   const owner = process.env.CONTROL_CHROME && { uid: Number(process.env.CONTROL_UID), gid: Number(process.env.CONTROL_GID) };
-  const control = createControl({ chromium, owner, launchOptions: process.env.CONTROL_CHROME
+  const control = createControl({ chromium, owner, proxyRequired: true, launchOptions: process.env.CONTROL_CHROME
     ? { executablePath: process.env.CONTROL_CHROME, headless: false, chromiumSandbox: true }
     : { executablePath: process.env.CHROME, headless: false, args: ['--no-sandbox'] } });
   startHeartbeat(sendHost);
   const agents = [];
   let worker = null, sendCurrent = () => {}; // one call worker per VM; a reconnected control channel finds it again
   process.on('SIGTERM', () => { try { sendHost({ type: 'call-end' }); } catch { /* host link down */ } Promise.all(agents.map((a) => a.shutdown())).finally(() => process.exit(0)); });
-  // socat in the guest forwards vsock 5000 to this loopback port.
-  net.createServer((socket) => {
+  dial({ host: runner, port: 5000, onConnect: (socket) => {
     const send = (m) => socket.write(encode(m));
     sendCurrent = send;
     const agent = createAgent({ control, profile, send, resolveLogin,
       share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() }, // throws without a worker: the action answers ok:false
-      onCallConfig: (nonce, screen) => { if (!worker) worker = createCallWorker({ nonce, screen, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) }); },
+      onCallConfig: (nonce, screen, token) => {
+        if (!token) return; // no proxy credential, no Chrome: neither can reach the web
+        const proxy = { server: `http://${proxyAddr.host}:${proxyAddr.port}`, username: 'rf', password: token };
+        control.setProxy(proxy);
+        if (!worker) worker = createCallWorker({ nonce, screen, proxy, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) });
+      },
       onCallIn: (m) => worker?.in(m) });
     agents.push(agent);
     const dec = createDecoder((m) => agent.handle(m));
     socket.on('data', (d) => dec.write(d));
     socket.on('end', () => dec.end());
     socket.on('error', () => {});
-  }).listen(5000, '127.0.0.1');
+  } });
 }
 
 if (require.main === module) main();

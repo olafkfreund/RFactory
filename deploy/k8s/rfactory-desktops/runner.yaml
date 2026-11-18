@@ -1,0 +1,83 @@
+# Runner: the only creator of desktop VMIs. mTLS cert/key/CA come from the Secret
+# rfactory-runner-tls, which the owner creates (never in Git).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rfactory-runner
+  namespace: rfactory-desktops
+  labels: {app.kubernetes.io/name: rfactory-runner}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # one runner at a time: it holds the Lease
+  selector:
+    matchLabels: {app.kubernetes.io/name: rfactory-runner}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rfactory-runner
+        rfactory.io/api-client: "true"
+    spec:
+      serviceAccountName: rfactory-runner
+      nodeSelector: {kubernetes.io/hostname: k3d-factory-server-0}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: {matchLabels: {rfactory.io/role: desktop}}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: runner
+          image: rfactory/runner@sha256:REPLACE
+          ports:
+            - {name: api, containerPort: 8443}
+            - {name: control, containerPort: 5000}
+            - {name: heartbeat, containerPort: 5001}
+            - {name: vnc, containerPort: 5900}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tls
+          secret: {secretName: rfactory-runner-tls}
+        - name: tmp
+          emptyDir: {}
+---
+# Guest-initiated channels. Fixed ClusterIP: the guest gets it as a kernel
+# argument and the guard allows it by `ct original ip daddr`. ClusterIP only, so
+# 5000/5001/5900 are never opened on a node. 10.43.250.10 was free on the
+# cluster when written; verify again before the first sync.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rfactory-runner
+  namespace: rfactory-desktops
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.250.10
+  selector: {app.kubernetes.io/name: rfactory-runner}
+  ports:
+    - {name: control, port: 5000, targetPort: control}
+    - {name: heartbeat, port: 5001, targetPort: heartbeat}
+    - {name: vnc, port: 5900, targetPort: vnc}
+---
+# Client API (mTLS) for the pod. k3d maps 127.0.0.1:<port> to this NodePort.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rfactory-runner-api
+  namespace: rfactory-desktops
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: rfactory-runner}
+  ports:
+    - {name: api, port: 8443, targetPort: api, nodePort: 31843}

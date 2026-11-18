@@ -25,9 +25,11 @@ function originOf(url) {
 
 // The control Chrome: one context, every request checked against the origins the runner opened.
 // Launch options (executablePath, args) are injected; `chromium` is playwright-core's.
-function createControl({ chromium, launchOptions = {}, owner }) {
+// proxyRequired: Chrome starts only after setProxy (the KubeVirt guest has no other way out).
+function createControl({ chromium, launchOptions = {}, owner, proxyRequired = false }) {
   const allowed = new Set();
   let userDataDir = null;
+  let proxy = null;
   let context = null;
   let starting = null;
   let generation = 0; // cancel bumps it: a launch that finishes after a cancel closes its own Chrome
@@ -36,6 +38,7 @@ function createControl({ chromium, launchOptions = {}, owner }) {
 
   async function start() {
     if (context) return context;
+    if (proxyRequired && !proxy) throw new Error('proxy not configured');
     starting ||= (async () => {
       const mine = generation;
       let dir = userDataDir;
@@ -43,7 +46,7 @@ function createControl({ chromium, launchOptions = {}, owner }) {
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-control-'));
         if (owner) fs.chownSync(dir, owner.uid, owner.gid); // Chrome runs as an unprivileged user
       }
-      const ctx = await chromium.launchPersistentContext(dir, { ...launchOptions, serviceWorkers: 'block' });
+      const ctx = await chromium.launchPersistentContext(dir, { ...launchOptions, ...(proxy ? { proxy } : {}), serviceWorkers: 'block' });
       // Chrome follows redirects inside the network stack without routing each hop (also for a
       // fulfilled 3xx), so follow them here and check every hop before it is requested.
       // shortcut: the page URL stays the first URL after an allowed redirect and redirected
@@ -107,6 +110,12 @@ function createControl({ chromium, launchOptions = {}, owner }) {
     setUserDataDir(dir) {
       if (context) throw new Error('control Chrome already running');
       userDataDir = dir;
+    },
+    // The proxy ({server, username, password}) for the control Chrome; before its launch only.
+    setProxy(p) {
+      if (context && JSON.stringify(p) === JSON.stringify(proxy)) return; // a redialled control channel repeats call-config
+      if (context) throw new Error('control Chrome already running');
+      proxy = p;
     },
     applyHosts,
     async open(url, hosts) {

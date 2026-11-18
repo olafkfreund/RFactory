@@ -185,17 +185,10 @@ test('agent: share-start and share-stop reach the share module; without one they
   assert.equal(bare[0].ok, false);
 });
 
-test('profile: a new device gets a filesystem, only when blkid says it is empty', async () => {
-  const run = async (code) => {
-    const log = [];
-    const exec = async (cmd, args) => { log.push(cmd); if (cmd === 'blkid' && code) throw Object.assign(new Error('x'), { code }); };
-    const r = await createProfile(exec).attach('aw==').then(() => null, (e) => e);
-    return { log, r };
-  };
-  assert.ok((await run(2)).log.includes('mkfs.ext4'));
-  assert.ok(!(await run(0)).log.includes('mkfs.ext4'));
-  const other = await run(4); // some other failure: never format
-  assert.ok(!other.log.includes('mkfs.ext4') && other.r && other.log.at(-1) === 'cryptsetup');
+test('profile: without the initialized:false flag nothing is ever formatted (deviation 4; see profile.test.js)', async () => {
+  const log = [];
+  await createProfile(async (cmd) => { log.push(cmd); }).attach('aw==');
+  assert.ok(!log.includes('mkfs.ext4') && !log.includes('blkid'));
 });
 
 test('agent: oversized or unencodable answers fail that action only', async () => {
@@ -342,4 +335,14 @@ test('login: the runner message supplies it; it fills only the open page of its 
   assert.deepEqual(calls, []);
   assert.deepEqual(sent.map((m) => [m.action_id, m.ok]), [['l2', false], ['l3', false], ['l4', false]]);
   assert.ok(!JSON.stringify(sent).includes('SECRET'));
+});
+
+test('agent: profile-attach passes profile_id and initialized through to the profile', async () => {
+  const seen = [];
+  const profile = { attach: async (key, opts) => { seen.push([key, opts]); return '/d'; }, detach: async () => {} };
+  const agent = createAgent({ control: { setUserDataDir() {} }, profile, send: () => {} });
+  await agent.handle({ type: 'profile-attach', key: 'k', profile_id: 'p1', initialized: false });
+  assert.deepEqual(seen[0][0], 'k');
+  assert.equal(seen[0][1].profile_id, 'p1');
+  assert.equal(seen[0][1].initialized, false);
 });

@@ -1,0 +1,9 @@
+# Applied once by the owner (kubectl apply -f namespace.yaml) and kept OUT of the
+# ArgoCD Application (see application.yaml `directory.exclude`), so deleting the
+# app never deletes the namespace or the profile PVCs (plan deviation 9).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rfactory-desktops
+  annotations:
+    argocd.argoproj.io/sync-options: Delete=false

@@ -1,36 +1,24 @@
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
 const { randomUUID, hkdfSync } = require('node:crypto');
-const { spawn } = require('node:child_process');
 
-function run(command, args, { input }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'] });
-    child.on('error', reject);
-    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(`${command} failed (${code})`)));
-    child.stdin.on('error', () => {});
-    child.stdin.end(input);
-  });
-}
+const ID = /^[0-9a-f-]{36}$/;
+const SIZE = '4Gi'; // fixed
+const CLASS = 'rfactory-profiles';
+const LABEL = { 'app.kubernetes.io/name': 'rfactory-profile' };
+const name = (id) => `rfprofile-${id}`;
 
+// k8s is the injected Kubernetes client (k3's desktop/runner/k8s.js), namespace already bound. Methods used, all async:
+//   createPvc(manifest) deletePvc(name)
+//   createConfigMap(manifest) getConfigMap(name) -> manifest|null  listConfigMaps(labelSelector) -> manifest[]
+//   updateConfigMap(name, manifest) deleteConfigMap(name)
+//   listVmis() -> VMI objects (spec.volumes[].persistentVolumeClaim.claimName is checked against the profile's PVC)
 class Profiles {
-  constructor({ dir, keyPath, isAdmin, startDesktop, destroyDesktop, sendControl, vmUser = 'rfactory-vm',
-    exec = run, now = () => Date.now() }) {
-    this.dir = dir;
-    this.keyPath = keyPath;
-    this.isAdmin = isAdmin;
-    this.startDesktop = startDesktop;
-    this.destroyDesktop = destroyDesktop;
-    this.sendControl = sendControl;
-    this.exec = exec;
-    this.vmUser = vmUser;
-    this.now = now;
+  constructor({ k8s, keyPath, isAdmin, startDesktop, destroyDesktop, sendControl, now = () => Date.now() }) {
+    Object.assign(this, { k8s, keyPath, isAdmin, startDesktop, destroyDesktop, sendControl, now });
     this.attached = new Map();
     this.deleting = new Set();
-    fs.mkdirSync(dir, { recursive: true, mode: 0o711 });
-    fs.chmodSync(dir, 0o711); // traverse only: the VM user can reach the one image it is given, and cannot list the others
   }
 
   // One key per profile, derived from the runner's master key (raw bytes), so a guest only ever holds its own profile's key.
@@ -40,15 +28,23 @@ class Profiles {
     return Buffer.from(hkdfSync('sha256', master, Buffer.alloc(0), `rfactory-profile:${id}`, 32));
   }
 
-  recordPath(id) { return path.join(this.dir, `${id}.json`); }
-  imagePath(id) { return path.join(this.dir, `${id}.img`); }
-  read(id) {
-    if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('profile not found');
-    try { return JSON.parse(fs.readFileSync(this.recordPath(id), 'utf8')); }
-    catch (error) {
-      if (error.code === 'ENOENT') throw new Error('profile not found');
-      throw error;
-    }
+  // The VMI spec parts for this profile's disk: the serial is the profile id, which the guest checks (deviation 4).
+  diskSpec(id) {
+    return { disk: { name: 'profile', serial: id, disk: { bus: 'virtio' } },
+      volume: { name: 'profile', persistentVolumeClaim: { claimName: name(id) } } };
+  }
+
+  static toRecord(cm) {
+    const d = cm.data;
+    return { id: d.id, scope: d.scope, purpose: d.purpose, approved_by: d.approved_by, created_at: d.created_at,
+      retention_days: Number(d.retention_days), initialized: d.initialized === 'true' };
+  }
+
+  async read(id) {
+    if (!ID.test(id)) throw new Error('profile not found');
+    const cm = await this.k8s.getConfigMap(name(id));
+    if (!cm) throw new Error('profile not found');
+    return Profiles.toRecord(cm);
   }
 
   authorized(actor, record) {
@@ -62,64 +58,69 @@ class Profiles {
       throw new TypeError('invalid profile');
     }
     const id = randomUUID();
-    const record = { id, scope, purpose, approved_by: actor.id,
-      created_at: new Date(this.now()).toISOString(), retention_days };
-    const image = this.imagePath(id);
+    const record = { id, scope, purpose, approved_by: actor.id, created_at: new Date(this.now()).toISOString(), retention_days };
+    const meta = { name: name(id), labels: LABEL };
     try {
-      const file = fs.openSync(image, 'wx', 0o600);
-      try { fs.ftruncateSync(file, 4 * 1024 ** 3); } finally { fs.closeSync(file); }
-      await this.exec('cryptsetup', ['luksFormat', '--batch-mode', '--key-file=-', image],
-        { input: this.keyFor(id) });
-      fs.writeFileSync(this.recordPath(id), JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+      await this.k8s.createPvc({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: meta,
+        spec: { storageClassName: CLASS, volumeMode: 'Filesystem', accessModes: ['ReadWriteOnce'], resources: { requests: { storage: SIZE } } } });
+      await this.k8s.createConfigMap({ apiVersion: 'v1', kind: 'ConfigMap',
+        // never in Git; ArgoCD must not prune it (deviation 9)
+        metadata: { ...meta, annotations: { 'argocd.argoproj.io/compare-options': 'IgnoreExtraneous' } },
+        data: { ...record, retention_days: String(retention_days), initialized: 'false' } });
       return record;
     } catch (error) {
-      fs.rmSync(image, { force: true });
-      fs.rmSync(this.recordPath(id), { force: true });
+      await Promise.allSettled([this.k8s.deleteConfigMap(name(id)), this.k8s.deletePvc(name(id))]);
       throw error;
     }
   }
 
-  list(actor, scope) {
-    return fs.readdirSync(this.dir).filter((name) => name.endsWith('.json'))
-      .map((name) => this.read(name.slice(0, -5)))
-      .filter((record) => record.scope === scope && this.authorized(actor, record));
+  async list(actor, scope) {
+    const cms = await this.k8s.listConfigMaps('app.kubernetes.io/name=rfactory-profile');
+    return cms.map(Profiles.toRecord)
+      .filter((r) => r.scope === scope && this.authorized(actor, r))
+      .map(({ initialized, ...r }) => r); // the format state is internal
   }
 
-  // call = { call_id, platform }; startDesktop({ call_id, platform, scope }, args) -> { desktop_id }; the lock is held (null) while it starts, then bound to the desktop.
+  // call = { call_id, platform }; startDesktop({ call_id, platform, scope }, { disk, volume }) -> { desktop_id }; the lock is held (null) while it starts, then bound to the desktop.
   async attach(actor, id, scope, call) {
-    const record = this.read(id);
+    const record = await this.read(id);
     if (record.scope !== scope || !this.authorized(actor, record)) throw new Error('profile access denied');
     if (this.deleting.has(id) || this.attached.has(id)) throw new Error('profile already attached');
     if (this.expired(record)) throw new Error('profile expired');
-    const key = this.keyFor(id).toString('base64'); // bytes survive JSON as base64; the guest decodes it
-    this.attached.set(id, null);
+    this.attached.set(id, null); // reserve before any await, so a concurrent attach is refused
     let desktopId = null;
     try {
-      await this.exec('chown', [this.vmUser, this.imagePath(id)], { input: '' }); // the VM runs unprivileged and must open this one image
-      ({ desktop_id: desktopId } = await this.startDesktop({ ...call, scope }, ['--disk', `path=${this.imagePath(id)}`]));
+      // an RWO PVC alone does not stop a second VMI on the node, and the lock is lost at a runner restart: ask the cluster
+      const used = (await this.k8s.listVmis()).some((v) => v.spec?.volumes?.some((x) => x.persistentVolumeClaim?.claimName === name(id)));
+      if (used) throw new Error('profile already attached');
+      ({ desktop_id: desktopId } = await this.startDesktop({ ...call, scope }, this.diskSpec(id)));
       this.attached.set(id, desktopId);
-      await this.sendControl(desktopId, { type: 'profile-attach', key });
-      return { ...record, desktop_id: desktopId };
+      const key = this.keyFor(id).toString('base64'); // bytes survive JSON as base64; the guest decodes it
+      await this.sendControl(desktopId, { type: 'profile-attach', key, profile_id: id, initialized: record.initialized });
+      // sendControl resolves only when the guest reports success, so a first format has finished here
+      if (!record.initialized) await this.initialized(id);
+      const { initialized, ...pub } = record; // the format state is internal
+      return { ...pub, desktop_id: desktopId };
     } catch (error) {
       // Keep the lock if VM destruction fails; its disk may still be in use.
-      try { if (desktopId) await this.destroyDesktop(desktopId); this.attached.delete(id); this.revoke(id); }
+      try { if (desktopId) await this.destroyDesktop(desktopId); this.attached.delete(id); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], 'profile attach cleanup failed'); }
       throw error;
     }
   }
 
+  async initialized(id) {
+    const cm = await this.k8s.getConfigMap(name(id));
+    await this.k8s.updateConfigMap(name(id), { ...cm, data: { ...cm.data, initialized: 'true' } });
+  }
+
   // A desktop ended (any reason): release whatever profile it held.
   release(desktopId) {
-    for (const [id, d] of this.attached) if (d === desktopId) { this.attached.delete(id); this.revoke(id); }
+    for (const [id, d] of this.attached) if (d === desktopId) this.attached.delete(id);
   }
 
   detach(id, desktopId) {
-    if (this.attached.get(id) === desktopId) { this.attached.delete(id); this.revoke(id); }
-  }
-
-  // Take the image back from the VM user; failure leaves it root-owned-or-VM-owned but never attachable by another scope (the lock decides that).
-  revoke(id) {
-    this.exec('chown', ['root', this.imagePath(id)], { input: '' }).catch(() => {});
+    if (this.attached.get(id) === desktopId) this.attached.delete(id);
   }
 
   expired(record) {
@@ -136,28 +137,29 @@ class Profiles {
         await this.destroyDesktop(desktopId);
         this.attached.delete(id);
       }
-      fs.rmSync(this.imagePath(id));
-      fs.rmSync(this.recordPath(id));
+      await this.k8s.deletePvc(name(id)); // the retained PV keeps only ciphertext; the owner removes it (deviation 9)
+      await this.k8s.deleteConfigMap(name(id));
     } finally { this.deleting.delete(id); }
   }
 
   async delete(actor, id) {
-    const record = this.read(id);
+    const record = await this.read(id);
     if (!this.authorized(actor, record)) throw new Error('profile access denied');
     await this.remove(id);
   }
 
   async expire() {
-    for (const record of this.listExpired()) {
+    for (const record of await this.listExpired()) {
       try { await this.remove(record.id); } catch (error) { console.error(`rfactory-runner: profile ${record.id} expiry: ${error.message}`); } // retried next tick
     }
   }
 
-  listExpired() {
+  async listExpired() {
+    const cms = await this.k8s.listConfigMaps('app.kubernetes.io/name=rfactory-profile');
     const out = [];
-    for (const name of fs.readdirSync(this.dir).filter((n) => n.endsWith('.json'))) {
-      try { const record = this.read(name.slice(0, -5)); if (this.expired(record)) out.push(record); } // one bad record must not stop the sweep
-      catch (error) { console.error(`rfactory-runner: profile ${name} unreadable: ${error.message}`); }
+    for (const cm of cms) {
+      try { const record = Profiles.toRecord(cm); if (this.expired(record)) out.push(record); } // one bad record must not stop the sweep
+      catch (error) { console.error(`rfactory-runner: profile ${cm.metadata?.name} unreadable: ${error.message}`); }
     }
     return out;
   }

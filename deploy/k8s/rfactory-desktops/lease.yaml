@@ -1,0 +1,7 @@
+# Created here so the runner needs no create right on leases. The runner owns
+# spec (holder, renewTime); the Application ignores it (application.yaml).
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: rfactory-runner
+  namespace: rfactory-desktops

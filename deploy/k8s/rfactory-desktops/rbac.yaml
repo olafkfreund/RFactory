@@ -1,0 +1,101 @@
+# Plan deviation 5, exactly.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: rfactory-runner, namespace: rfactory-desktops}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: rfactory-reaper, namespace: rfactory-desktops}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: rfactory-guard, namespace: rfactory-desktops}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: rfactory-proxy, namespace: rfactory-desktops}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: rfactory-runner, namespace: rfactory-desktops}
+rules:
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachineinstances]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachineinstances/unpause]
+    verbs: [update]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create, get, list, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [create, get, list, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, get, list, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [rfactory-runner]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: rfactory-runner, namespace: rfactory-desktops}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rfactory-runner}
+subjects: [{kind: ServiceAccount, name: rfactory-runner, namespace: rfactory-desktops}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: rfactory-reaper, namespace: rfactory-desktops}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [rfactory-runner]
+    verbs: [get]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachineinstances]
+    verbs: [list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: rfactory-reaper, namespace: rfactory-desktops}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rfactory-reaper}
+subjects: [{kind: ServiceAccount, name: rfactory-reaper, namespace: rfactory-desktops}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: rfactory-guard, namespace: rfactory-desktops}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: rfactory-guard, namespace: rfactory-desktops}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rfactory-guard}
+subjects: [{kind: ServiceAccount, name: rfactory-guard, namespace: rfactory-desktops}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: rfactory-proxy, namespace: rfactory-desktops}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: rfactory-proxy, namespace: rfactory-desktops}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rfactory-proxy}
+subjects: [{kind: ServiceAccount, name: rfactory-proxy, namespace: rfactory-desktops}]
