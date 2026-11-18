@@ -12,7 +12,13 @@ async function withProxy(proxy, chromium, launch) {
   if (!proxy) return launch();
   const pw = chromium || require('playwright-core').chromium;
   const original = pw.launchPersistentContext;
-  pw.launchPersistentContext = (dir, options) => original.call(pw, dir, { ...options, proxy });
+  pw.launchPersistentContext = async (dir, options) => {
+    const context = await original.call(pw, dir, { ...options, proxy });
+    // Playwright answers proxy auth by pausing requests; with no route it never resumes the request Chrome restarts after an
+    // ACCEPT_CH frame (Meet sends one), so the call page hung on about:blank (k14; playwright#40194). A pass-through route resumes it.
+    await context.route('**/*', (route) => route.continue());
+    return context;
+  };
   try { return await launch(); } finally { pw.launchPersistentContext = original; }
 }
 
@@ -67,4 +73,4 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
   };
 }
 
-module.exports = { createCallWorker };
+module.exports = { createCallWorker, withProxy };

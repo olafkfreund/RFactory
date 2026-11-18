@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { test } = require('node:test');
-const { createCallWorker } = require('./call');
+const { createCallWorker, withProxy } = require('./call');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 // waits for a condition rather than a fixed number of turns (the leave path is slower under load)
@@ -70,4 +70,20 @@ test('call worker: a long stdout line never splits a surrogate pair across call-
   assert.ok(pieces.length > 1);
   assert.ok(pieces.every((m) => !/[\ud800-\udbff]$/.test(m.chunk) && !/^[\udc00-\udfff]/.test(m.chunk)));
   assert.equal(pieces.map((m) => m.chunk).join(''), line);
+});
+
+test('withProxy: the launch gets the proxy and a pass-through route (Playwright parks a restarted request without one), then is undone', async () => {
+  const routes = [], seen = [];
+  const original = async (dir, options) => { seen.push(options); return { route: async (pattern, handler) => routes.push([pattern, handler]) }; };
+  const chromium = { launchPersistentContext: original };
+  const proxy = { server: 'http://10.43.0.9:3128', username: 'rf', password: 't' };
+  const ctx = await withProxy(proxy, chromium, () => chromium.launchPersistentContext('/d', { headless: false }));
+  assert.deepEqual(seen, [{ headless: false, proxy }]);
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0][0], '**/*');
+  let continued = 0;
+  await routes[0][1]({ continue: () => { continued++; } });
+  assert.equal(continued, 1);
+  assert.ok(ctx.route);
+  assert.equal(chromium.launchPersistentContext, original); // undone after the launch
 });
