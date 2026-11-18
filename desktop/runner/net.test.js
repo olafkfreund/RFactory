@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildRules, validatePreview } = require('./net');
+const { buildRules, buildDnsConf, validatePreview } = require('./net');
 
 const options = {
   table: 'rf_vm1', tap: 'rfvm1', source4: '10.77.0.2', source6: 'fd77::2',
@@ -25,7 +25,24 @@ test('rules follow network order 0–7 for both families', () => {
   assert.match(rules, /limit rate 10\/second log prefix "rfactory-drop: "\n    drop/);
   assert.match(rules, /ip daddr 99\.77\.128\.0\/18 udp dport 3478 accept/);
   assert.match(rules, /ip6 daddr 2001:db8:abcd::\/48 tcp dport 443 accept/);
-  assert.match(rules, /chain forward \{ type filter hook forward priority 0; policy drop;\n    iifname "rfvm1" jump guest\n    ct state established,related accept/);
+  assert.match(rules, /chain forward \{ type filter hook forward priority 0; policy accept;\n    iifname "rfvm1" jump guest\n    oifname "rfvm1" ct state established,related accept\n    oifname "rfvm1" drop/);
+});
+
+test('the per-VM table never sets a drop policy and never names another VM as a source', () => {
+  const rules = buildRules(options);
+  assert.equal(/policy drop/.test(rules), false);
+  assert.match(rules, /ip saddr 10\.77\.0\.2 oifname != "rfvm1" masquerade/);
+  assert.match(rules, /ip6 saddr != \{ fd77::2, fe80::\/10 \} meta nfproto ipv6 drop/);
+});
+
+test('buildDnsConf: no default server, one server and nftset line per allowlisted name, bad names refused', () => {
+  const conf = buildDnsConf({ table: 'rf_vm1', listen: ['10.77.0.1', 'fd77::1'], domains: ['meet.google.com'], upstreams: ['1.1.1.1'] });
+  assert.match(conf, /^no-resolv$/m);
+  assert.match(conf, /^listen-address=10\.77\.0\.1$/m);
+  assert.match(conf, /^server=\/meet\.google\.com\/1\.1\.1\.1$/m);
+  assert.match(conf, /^nftset=\/meet\.google\.com\/4#inet#rf_vm1#dns4,6#inet#rf_vm1#dns6$/m);
+  assert.equal(/^server=[^/]/m.test(conf), false);
+  assert.throws(() => buildDnsConf({ table: 'rf_vm1', listen: ['10.77.0.1'], domains: ['a.com\nserver=8.8.8.8'], upstreams: ['1.1.1.1'] }), /allowlist name/);
 });
 
 test('resolver is open only on TCP and UDP port 53 before its protected drop', () => {

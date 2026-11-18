@@ -2,24 +2,37 @@
 
 const https = require('node:https');
 const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { preflight } = require('./preflight');
 const { createLifecycle } = require('./lifecycle');
 const { connectGuest } = require('./vsock');
 const { openVnc: openGuestVnc } = require('./vnc');
+const { Profiles } = require('./profiles');
 
 const MAX_BODY = 16 * 1024;
 
 // mTLS client identity is checked by the TLS layer; `tls: true` makes the handler refuse unauthorised sockets too.
-function createHandler(lifecycle, { tls = true } = {}) {
+function createHandler(lifecycle, { tls = true, profiles = null } = {}) {
   const routes = {
     create: (b) => lifecycle.create(b),
     destroy: (b) => lifecycle.destroy(String(b.desktop_id), 'requested'),
     list: async () => ({ desktops: lifecycle.list(), ...lifecycle.status() }),
     heartbeat: async (b) => lifecycle.heartbeat(String(b.desktop_id)),
+    cancel: (b) => lifecycle.cancel(String(b.desktop_id)), // revoke: guest stops and acks, else the VM is destroyed
     clear: async () => { lifecycle.clear(); return { ok: true }; },
     // host -> guest over the VM's control channel; any failure to deliver or answer is an error result (fail closed)
     action: (b) => lifecycle.action(String(b.desktop_id), b.message),
     'share-start': (b) => lifecycle.shareStart(String(b.desktop_id), b),
     'share-stop': (b) => lifecycle.shareStop(String(b.desktop_id), b),
+    // Profile admin: the web server (mTLS) names the actor, { id, admin_scopes }; Profiles does the scope-admin checks.
+    ...(profiles ? {
+      'profile-create': (b) => profiles.create(b.actor, b),
+      'profile-list': async (b) => ({ profiles: profiles.list(b.actor, String(b.scope)) }),
+      'profile-attach': (b) => profiles.attach(b.actor, String(b.profile_id), String(b.scope), { call_id: b.call_id, platform: b.platform }),
+      'profile-delete': async (b) => { await profiles.delete(b.actor, String(b.profile_id)); return { ok: true }; },
+    } : {}),
   };
   return async (req, res) => {
     const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -37,7 +50,7 @@ function createHandler(lifecycle, { tls = true } = {}) {
     try {
       const result = await routes[name](body);
       return send(result && result.error ? (result.error === 'capacity' ? 409 : result.error === 'bad-message' ? 400 : 503) : 200, result);
-    } catch (error) { return send(500, { error: error.message }); }
+    } catch (error) { return send(/denied|admin required/.test(error.message) ? 403 : 500, { error: error.message }); }
   };
 }
 
@@ -66,18 +79,136 @@ function createUpgrade(lifecycle, { openVnc = openGuestVnc } = {}) {
   };
 }
 
+const UNITS = { s: 1, m: 60, h: 3600, d: 86400 };
+function seconds(value) {
+  if (Number.isFinite(value) && value > 0) return value;
+  const m = /^(\d+)([smhd]?)$/.exec(String(value));
+  if (!m || !Number(m[1])) throw new Error(`bad duration: ${value}`);
+  return Number(m[1]) * UNITS[m[2] || 's'];
+}
+
+// One /30 per cid in 10.77.0.0/16 (the host takes .1, the guest .2) and a fd77:<cid>::/64; the guest image uses the same values.
+function addrFor(cid) {
+  const block = cid * 4, a = block >> 8, b = block & 255, hex = cid.toString(16);
+  return { host4: `10.77.${a}.${b + 1}`, source4: `10.77.${a}.${b + 2}`, host6: `fd77:${hex}::1`, source6: `fd77:${hex}::2` };
+}
+
+// microvm-run ignores its arguments and resets runtime_args=, so a per-VM copy carries the extra cloud-hypervisor args (a profile's --disk).
+function withExtraArgs(runner, dir, extra = []) {
+  if (!extra.length) return runner;
+  if (extra.some((a) => !/^[\w=,./:-]+$/.test(a))) throw new Error('unsafe VM argument');
+  const text = fs.readFileSync(runner, 'utf8');
+  if (!/^runtime_args=$/m.test(text)) throw new Error('guest runner has no runtime_args hook');
+  const copy = path.join(dir, 'microvm-run');
+  fs.writeFileSync(copy, text.replace(/^runtime_args=$/m, () => `runtime_args='${extra.join(' ')}'`), { mode: 0o755 });
+  return copy;
+}
+
+// The module's JSON (strings, no functions) -> what createLifecycle and serve need. Missing required values fail here, loudly.
+function translateConfig(raw, env = process.env) {
+  for (const key of ['mtlsPort', 'maxDesktops', 'rateMbit', 'egressBytes', 'runtimeMaxSec', 'runDir', 'guestRunner']) {
+    if (raw[key] === undefined) throw new Error(`missing config: ${key}`);
+  }
+  const creds = env.CREDENTIALS_DIRECTORY;
+  if (!creds) throw new Error('CREDENTIALS_DIRECTORY is not set');
+  const ranges = raw.rangesFile ? JSON.parse(fs.readFileSync(raw.rangesFile, 'utf8')) : {};
+  return {
+    port: raw.mtlsPort, host: raw.host || '0.0.0.0',
+    tls: { cert: path.join(creds, 'tls-cert'), key: path.join(creds, 'tls-key'), ca: path.join(creds, 'client-ca') },
+    maxVms: raw.maxDesktops, rateMbit: raw.rateMbit, egressQuotaBytes: raw.egressBytes, runtimeMaxSec: seconds(raw.runtimeMaxSec),
+    workerBeatTimeoutMs: raw.workerBeatTimeoutMs ?? 30000, serverBeatTimeoutMs: raw.serverBeatTimeoutMs ?? 60000,
+    idleMs: raw.idleMs ?? 600000, bootGraceMs: raw.bootGraceMs ?? 45000, cleanupRetries: raw.cleanupRetries ?? 3, backoffMs: raw.backoffMs ?? 1000,
+    runDir: raw.runDir, vmUser: raw.vmUser, vmPath: raw.vmPath, dnsmasqBin: raw.dnsmasqBin,
+    vmArgv: ({ dir, extraArgv }) => [withExtraArgs(raw.guestRunner, dir, extraArgv)],
+    profiles: { vmUser: raw.vmUser, dir: raw.profileDir || '/var/lib/rfactory-desktop/profiles', keyPath: path.join(creds, 'profile-key') },
+    ranges,
+    net: {
+      addr: addrFor,
+      protectedRanges: ['127.0.0.0/8', '::1/128', ...(raw.protectedRanges || [])],
+      media: Object.values(ranges).filter((e) => e && typeof e === 'object' && e.cidrs && e.cidrs.length),
+      previews: raw.scopePreviews || {},
+      dns: { upstreams: raw.upstreamResolvers || [], platform: raw.dnsAllowlist || [], scopes: raw.scopeDomains || {} },
+    },
+  };
+}
+
+function tcpConnect(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port, timeout: timeoutMs });
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+// Real dependencies: argv-only exec (stderr kept in the error so cleanup can tell absence from failure).
+function realDeps(config) {
+  const exec = (argv, { input } = {}) => new Promise((resolve, reject) => {
+    const child = execFile(argv[0], argv.slice(1), { encoding: 'utf8', maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+      if (error) reject(Object.assign(new Error(`${argv[0]}: ${(stderr || error.message).trim()}`), { stderr }));
+      else resolve(stdout);
+    });
+    if (input !== undefined) child.stdin.end(input);
+  });
+  const clock = { now: Date.now, setInterval, clearInterval, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
+  return { exec, clock, fs: fs.promises, hasKvm: () => fs.existsSync('/dev/kvm'), readFile: (p) => fs.promises.readFile(p, 'utf8'),
+    preflight: (platform) => preflight(platform, config.ranges, tcpConnect) };
+}
+
 // Production entry: config.tls = {key, cert, ca} are file paths from the module option, never from the repo.
 async function serve(config, deps) {
-  const lifecycle = createLifecycle(config, { connectGuest, ...deps });
+  let profiles = null;
+  const lifecycle = createLifecycle(config, { connectGuest, ...deps, onDestroyed: (id) => profiles && profiles.release(id) });
   await lifecycle.reconcile();
   lifecycle.run();
+  let expiry = null;
+  if (config.profiles) {
+    profiles = new Profiles({
+      ...config.profiles,
+      isAdmin: (actor, scope) => Array.isArray(actor?.admin_scopes) && actor.admin_scopes.includes(scope),
+      startDesktop: async (call, extraArgv) => {
+        const r = await lifecycle.create(call, extraArgv);
+        if (r.error) throw new Error(`${r.error}: ${r.message || ''}`);
+        return r;
+      },
+      sendControl: async (id, message) => {
+        const r = await lifecycle.control(id, message);
+        if (r.error || r.ok === false) throw new Error(`profile unlock failed: ${r.error || 'guest refused'}`);
+      },
+      destroyDesktop: async (id) => { if (!(await lifecycle.destroy(id, 'profile')).ok) throw new Error('desktop destroy failed'); },
+    });
+    expiry = setInterval(() => profiles.expire().catch(() => {}), 3600000);
+    expiry.unref();
+  }
   const server = https.createServer({
     key: fs.readFileSync(config.tls.key), cert: fs.readFileSync(config.tls.cert), ca: fs.readFileSync(config.tls.ca),
     requestCert: true, rejectUnauthorized: true,
-  }, createHandler(lifecycle));
+  }, createHandler(lifecycle, { profiles }));
   server.on('upgrade', createUpgrade(lifecycle));
+  server.on('close', () => clearInterval(expiry));
   server.listen(config.port, config.host);
+  return { server, lifecycle, profiles };
+}
+
+// `node runner.js --config <json>`: translate, serve, and tear every VM down on SIGTERM or SIGINT.
+async function main(argv = process.argv.slice(2), env = process.env) {
+  const at = argv.indexOf('--config');
+  if (at < 0 || !argv[at + 1]) throw new Error('usage: runner.js --config <file>');
+  const config = translateConfig(JSON.parse(fs.readFileSync(argv[at + 1], 'utf8')), env);
+  const { server, lifecycle } = await serve(config, realDeps(config));
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    server.close();
+    await lifecycle.stop().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
   return { server, lifecycle };
 }
 
-module.exports = { createHandler, createUpgrade, serve };
+if (require.main === module) main().catch((error) => { console.error(`rfactory-runner: ${error.message}`); process.exit(1); });
+
+module.exports = { createHandler, createUpgrade, serve, main, translateConfig, addrFor, seconds, realDeps, withExtraArgs };

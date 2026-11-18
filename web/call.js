@@ -172,7 +172,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, redactor, cl
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
-    question.desktop = !!desktop && /^(?:open|click|type|scroll|screenshot|take a screenshot)\b/i.test(question.text);
+    question.desktop = !!desktop && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
     if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question'; // no write path here: 1b behaviour
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });

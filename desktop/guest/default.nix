@@ -6,6 +6,12 @@ let
   };
   xenv = { DISPLAY = ":0"; };
   agent = pkgs.callPackage ./agent.nix { };
+  # The control Chrome (pages from granted hosts) runs as this user, not root, with the Chrome sandbox on.
+  # Unverified until a VM run: the guest kernel must allow unprivileged user namespaces.
+  controlChrome = pkgs.writeShellScript "control-chrome" ''
+    export HOME=/var/lib/rfchrome
+    exec ${pkgs.util-linux}/bin/setpriv --reuid=990 --regid=990 --clear-groups ${pkgs.google-chrome}/bin/google-chrome-stable "$@"
+  '';
 in
 {
   system.stateVersion = "25.05";
@@ -23,6 +29,9 @@ in
     # empty 4 GiB overlay on tmpfs
   };
   fileSystems."/tmp" = { fsType = "tmpfs"; options = [ "size=4G" "mode=1777" ]; };
+
+  users.groups.rfchrome.gid = 990;
+  users.users.rfchrome = { isSystemUser = true; uid = 990; group = "rfchrome"; home = "/var/lib/rfchrome"; createHome = true; };
 
   # No SSH, no secrets.
   services.openssh.enable = false;
@@ -47,8 +56,13 @@ in
     rfactory-agent = {
       wantedBy = [ "multi-user.target" ];
       after = [ "xvfb.service" ];
-      path = [ pkgs.socat pkgs.cryptsetup pkgs.util-linux ];
-      environment = xenv // { CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable"; };
+      path = [ pkgs.socat pkgs.cryptsetup pkgs.util-linux pkgs.e2fsprogs ];
+      environment = xenv // {
+        CHROME = "${pkgs.google-chrome}/bin/google-chrome-stable"; # the call Chrome (root, --no-sandbox, Deviation 18)
+        CONTROL_CHROME = "${controlChrome}";
+        CONTROL_UID = "990";
+        CONTROL_GID = "990";
+      };
       serviceConfig.ExecStart = "${pkgs.nodejs_22}/bin/node ${agent}/desktop/guest/agent/index.js";
     };
     # vsock bridges, guest side listens on 5000 and 5900 only.

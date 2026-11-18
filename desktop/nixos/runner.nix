@@ -7,18 +7,20 @@ let
 
   # Deviation 9: p620 has no nft on PATH, so the runner gets pkgs.nftables explicitly.
   runnerPath = with pkgs; [
-    nftables iproute2 systemd cloud-hypervisor dnsmasq coreutils cryptsetup
+    nftables iproute2 procps systemd cloud-hypervisor dnsmasq coreutils cryptsetup
     cfg.tapHelper
   ];
 
   # Limits live in config, not in runner code (step 5 trap).
   runnerConfig = pkgs.writeText "rfactory-runner.json" (builtins.toJSON {
-    inherit (cfg) mtlsPort maxDesktops vcpu memMiB overlayGiB rateMbit egressBytes runtimeMaxSec;
+    inherit (cfg) mtlsPort maxDesktops vcpu memMiB overlayGiB rateMbit egressBytes runtimeMaxSec
+      guestRunner bootGraceMs protectedRanges dnsAllowlist scopeDomains scopePreviews upstreamResolvers;
     stateDir = "/var/lib/rfactory-desktop";
     runDir = "/run/rfactory-desktop";
-    dnsmasqConfDir = "/run/rfactory-desktop/dnsmasq.d";
     vmUser = "rfactory-vm";
-    guestFlake = "${cfg.src}/..#nixosConfigurations.desktop-guest";
+    vmPath = lib.makeBinPath [ pkgs.coreutils pkgs.cloud-hypervisor ];
+    dnsmasqBin = "${pkgs.dnsmasq}/bin/dnsmasq";
+    rangesFile = "${cfg.src}/ranges/ranges.json";
   });
 
   # Per-VM tap setup hook: no bridge, one tap per VM, owned by the VM user.
@@ -65,18 +67,6 @@ let
     }
   '';
 
-  dnsmasqConf = pkgs.writeText "rfactory-dnsmasq.conf" ''
-    # Answers only names the runner lists in dnsmasq.d (platform and preview allowlists).
-    bind-dynamic
-    interface=rfd*
-    except-interface=lo
-    no-resolv
-    no-hosts
-    no-poll
-    port=53
-    ${lib.concatMapStringsSep "\n" (s: "server=${s}") cfg.upstreamResolvers}
-    conf-dir=/run/rfactory-desktop/dnsmasq.d,*.conf
-  '';
 in
 {
   options.services.rfactory-runner = {
@@ -93,7 +83,17 @@ in
     tlsKeyFile = mkOption { type = types.str; description = "Runner server key (runtime path, agenix or sops-nix)."; };
     clientCaFile = mkOption { type = types.str; description = "CA that signs the server's client certificate."; };
     profileKeyFile = mkOption { type = types.str; description = "Profile LUKS key (runtime path, agenix or sops-nix)."; };
-    upstreamResolvers = mkOption { type = types.listOf types.str; default = [ "1.1.1.1" "9.9.9.9" ]; };
+    upstreamResolvers = mkOption { type = types.listOf types.str; default = [ "1.1.1.1" "9.9.9.9" ]; description = "Used only for allowlisted names; every VM has its own resolver."; };
+    guestRunner = mkOption { type = types.str; description = "Runtime path of the guest's microvm-run (config.microvm.declaredRunner of desktop-guest)."; };
+    bootGraceMs = mkOption { type = types.ints.unsigned; default = 45000; description = "Boot time allowed before the first heartbeat deadlines count."; };
+    protectedRanges = mkOption { type = types.listOf types.str; default = [ ]; description = "Host addresses, cluster pod and service ranges and Factory hosts the guest must never reach (rule 2)."; };
+    dnsAllowlist = mkOption {
+      type = types.listOf types.str;
+      default = [ "meet.google.com" "google.com" "gstatic.com" "googleapis.com" "slack.com" "slack-edge.com" "zoom.us" ];
+      description = "Names every VM may resolve (the call platforms). Owner reviews this list; everything else gets no answer.";
+    };
+    scopeDomains = mkOption { type = types.attrsOf (types.listOf types.str); default = { }; description = "Extra resolvable names per scope."; };
+    scopePreviews = mkOption { type = types.attrsOf (types.listOf types.str); default = { }; description = "Approved private ip:port previews per scope (never inside a protected range)."; };
     maxDesktops = mkOption { type = types.ints.positive; default = 3; description = "Spare counts toward this."; };
     vcpu = mkOption { type = types.ints.positive; default = 2; };
     memMiB = mkOption { type = types.ints.positive; default = 3072; };
@@ -128,24 +128,10 @@ in
       };
     };
 
-    systemd.services.rfactory-dnsmasq = {
-      description = "RFactory desktop resolver (nftset)";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "rfactory-nft-base.service" ];
-      partOf = [ "rfactory-runner.service" ];
-      serviceConfig = {
-        RuntimeDirectory = "rfactory-desktop/dnsmasq.d";
-        RuntimeDirectoryPreserve = true;
-        ExecStart = "${pkgs.dnsmasq}/bin/dnsmasq --keep-in-foreground --conf-file=${dnsmasqConf}";
-        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-        Restart = "on-failure";
-      };
-    };
-
     systemd.services.rfactory-runner = {
       description = "RFactory desktop runner";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "rfactory-nft-base.service" "rfactory-dnsmasq.service" ];
+      after = [ "network.target" "rfactory-nft-base.service" ];
       requires = [ "rfactory-nft-base.service" ];
       path = runnerPath;
       serviceConfig = {

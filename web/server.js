@@ -178,7 +178,9 @@ async function main() {
   let desktop = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
-    desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, brain, redactor,
+    desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
+      isAllowed: async () => true, // no per-scope action allowlist exists yet: the approver's handover hosts and the runner's network allowlist bound what can run
+      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, ...(name === 'desktop_open' ? { hosts: ctx.hosts } : {}) } }),
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });

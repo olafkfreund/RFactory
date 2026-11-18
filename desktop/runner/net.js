@@ -102,16 +102,22 @@ function buildRules({ table, tap, source4, source6, resolver4, resolver6, protec
     '  set dns4 { type ipv4_addr; flags interval,timeout; }',
     '  set dns6 { type ipv6_addr; flags interval,timeout; }',
     '  chain input { type filter hook input priority 0; policy accept;',
+    `    iifname ${tapName} icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept`, // a base-table accept does not skip this table
     `    iifname ${tapName} jump guest`,
     '  }',
-    '  chain forward { type filter hook forward priority 0; policy drop;',
+    // policy accept: this table must not decide for other VMs or unrelated forwarding; only this tap's traffic is denied by default
+    '  chain forward { type filter hook forward priority 0; policy accept;',
     `    iifname ${tapName} jump guest`,
-    '    ct state established,related accept',
+    `    oifname ${tapName} ct state established,related accept`,
+    `    oifname ${tapName} drop`,
+    '  }',
+    '  chain nat { type nat hook postrouting priority 100;',
+    `    ip saddr ${source4} oifname != ${tapName} masquerade`,
     '  }',
     '  chain guest {',
     '    # 0 anti-spoof and guest isolation',
     `    ip saddr != ${source4} meta nfproto ipv4 drop`,
-    `    ip6 saddr != ${source6} meta nfproto ipv6 drop`,
+    `    ip6 saddr != { ${source6}, fe80::/10 } meta nfproto ipv6 drop`,
     ...otherTaps.map(other => `    oifname ${interfaceName(other)} drop`),
     '    # 1 resolver',
     `    ip daddr ${resolver4} meta l4proto { tcp, udp } th dport 53 accept`,
@@ -153,4 +159,18 @@ function buildRules({ table, tap, source4, source6, resolver4, resolver6, protec
   return lines.join('\n') + '\n';
 }
 
-module.exports = { buildRules, validatePreview };
+// One dnsmasq per VM, bound to that tap's host addresses only. With no default server, a name that is not
+// allowlisted gets no answer; an allowlisted name is forwarded and its addresses go into this VM's nft sets.
+function buildDnsConf({ table, listen, domains, upstreams }) {
+  identifier(table);
+  const name = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+  const lines = ['bind-interfaces', 'no-resolv', 'no-hosts', 'no-poll', 'port=53', ...listen.map((a) => `listen-address=${address(a, net.isIP(a))}`)];
+  for (const domain of domains) {
+    if (!name.test(domain)) throw new Error(`invalid DNS allowlist name: ${domain}`);
+    for (const upstream of upstreams) lines.push(`server=/${domain}/${address(upstream, net.isIP(upstream))}`);
+    lines.push(`nftset=/${domain}/4#inet#${table}#dns4,6#inet#${table}#dns6`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+module.exports = { buildRules, buildDnsConf, validatePreview };

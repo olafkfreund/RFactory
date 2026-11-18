@@ -70,3 +70,11 @@ test('vm spawn: a kill while the desktop is being created still destroys it', as
   await tick();
   assert.deepEqual(f.destroyed, ['late1']);
 });
+
+test('vm spawn: the server heartbeat starts at create, before the guest channel opens', async () => {
+  const f = fake({ failOpens: 1000 });
+  const child = createVmSpawn({ runner: f.runner, scope: 's', retryMs: 0, tries: 1000, heartbeatMs: 2, sleep: () => new Promise((r) => setTimeout(r, 3)) })();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(f.beats.length > 0);
+  child.kill();
+});

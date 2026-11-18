@@ -270,3 +270,11 @@ test('vendored noVNC 1.6.0 is served as JavaScript and pinned by VERSION', async
   assert.equal((await get('/vendor/novnc/vendor/pako/lib/zlib/deflate.js')).status, 200);
   assert.match(fs.readFileSync(path.join(__dirname, '../public/vendor/novnc/VERSION'), 'utf8'), /1\.6\.0/);
 });
+
+test('server.js passes brain and redactor to createDesktop (a trailing // comment must not swallow them)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  const call = src.slice(src.indexOf('.createDesktop({'));
+  const code = call.slice(0, call.indexOf('openVnc')).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  assert.match(code, /\bbrain,/);
+  assert.match(code, /\bredactor,/);
+});

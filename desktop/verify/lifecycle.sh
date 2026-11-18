@@ -13,6 +13,15 @@ need_env VERIFY_CERT VERIFY_KEY VERIFY_CA
 MOUNTED=
 extra_cleanup() { if [ -n "$MOUNTED" ]; then umount "$MOUNTED" 2>/dev/null || true; MOUNTED=; fi; }
 
+# the runner refuses a create without a platform (media preflight); only slack has pinned ranges today
+new_desktop() {
+  local out; DID=; DERR=
+  out=$(api create "$(jq -nc --arg c "$1" --arg s "$2" --arg p "${VERIFY_PLATFORM:-slack}" '{call_id:$c,scope:$s,platform:$p}')") || { DERR=$out; return 1; }
+  DID=$(jq -r '.desktop_id // empty' <<<"$out")
+  [ -n "$DID" ] || { DERR=$out; return 1; }
+  CREATED+=("$DID")
+}
+
 HB=$(frame_b64 '{"type":"heartbeat"}')
 # hold <id> <seconds> <server 0|1> <worker 0|1>: keep the chosen heartbeats going until the desktop is gone or time runs out
 hold() {
@@ -38,8 +47,8 @@ fresh worker; case_hold lifecycle-worker-heartbeat "$DID" "${VERIFY_WAIT_WORKER:
 fresh server; wait_probe "$DID" 240 || die "probe did not answer"
 case_hold lifecycle-server-heartbeat "$DID" "${VERIFY_WAIT_SERVER:-150}" 0 1
 
-# idle: only server heartbeats; the reason is not observable, the outcome is (a worker timeout would also end it)
-fresh idle; case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1 0
+# idle: both heartbeats keep running (they are liveness, not activity), so only the idle rule can end it
+fresh idle; case_hold lifecycle-idle "$DID" "${VERIFY_WAIT_IDLE:-720}" 1 1
 
 fresh max; wait_probe "$DID" 240 || die "probe did not answer"
 lim=$(systemctl show -p RuntimeMaxUSec --value "rfactory-vm-$DID.service" 2>/dev/null || true)
@@ -62,7 +71,7 @@ if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-r
 fresh clean; id=$DID
 mount --bind "$RUN_DIR/$id" "$RUN_DIR/$id"; MOUNTED=$RUN_DIR/$id
 dres=$(api destroy "$(jq -nc --arg d "$id" '{desktop_id:$d}')" || true)
-cres=$(api create '{"call_id":"life-blocked","scope":"verify-scope"}' || true)
+cres=$(api create '{"call_id":"life-blocked","scope":"verify-scope","platform":"slack"}' || true)
 still=$(desk_ids | grep -cx "$id" || true)
 umount "$MOUNTED"; MOUNTED=
 api clear >/dev/null

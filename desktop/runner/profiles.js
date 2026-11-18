@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, hkdfSync } = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 function run(command, args, { input }) {
@@ -16,7 +16,7 @@ function run(command, args, { input }) {
 }
 
 class Profiles {
-  constructor({ dir, keyPath, isAdmin, startDesktop, destroyDesktop, sendControl,
+  constructor({ dir, keyPath, isAdmin, startDesktop, destroyDesktop, sendControl, vmUser = 'rfactory-vm',
     exec = run, now = () => Date.now() }) {
     this.dir = dir;
     this.keyPath = keyPath;
@@ -25,10 +25,19 @@ class Profiles {
     this.destroyDesktop = destroyDesktop;
     this.sendControl = sendControl;
     this.exec = exec;
+    this.vmUser = vmUser;
     this.now = now;
     this.attached = new Map();
     this.deleting = new Set();
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o711 });
+    fs.chmodSync(dir, 0o711); // traverse only: the VM user can reach the one image it is given, and cannot list the others
+  }
+
+  // One key per profile, derived from the runner's master key (raw bytes), so a guest only ever holds its own profile's key.
+  keyFor(id) {
+    const master = fs.readFileSync(this.keyPath);
+    if (master.length < 32) throw new Error('profile master key must be at least 32 bytes');
+    return Buffer.from(hkdfSync('sha256', master, Buffer.alloc(0), `rfactory-profile:${id}`, 32));
   }
 
   recordPath(id) { return path.join(this.dir, `${id}.json`); }
@@ -60,7 +69,7 @@ class Profiles {
       const file = fs.openSync(image, 'wx', 0o600);
       try { fs.ftruncateSync(file, 4 * 1024 ** 3); } finally { fs.closeSync(file); }
       await this.exec('cryptsetup', ['luksFormat', '--batch-mode', '--key-file=-', image],
-        { input: fs.readFileSync(this.keyPath) });
+        { input: this.keyFor(id) });
       fs.writeFileSync(this.recordPath(id), JSON.stringify(record), { flag: 'wx', mode: 0o600 });
       return record;
     } catch (error) {
@@ -76,26 +85,41 @@ class Profiles {
       .filter((record) => record.scope === scope && this.authorized(actor, record));
   }
 
-  async attach(actor, id, scope, desktopId) {
+  // call = { call_id, platform }; startDesktop({ call_id, platform, scope }, args) -> { desktop_id }; the lock is held (null) while it starts, then bound to the desktop.
+  async attach(actor, id, scope, call) {
     const record = this.read(id);
     if (record.scope !== scope || !this.authorized(actor, record)) throw new Error('profile access denied');
     if (this.deleting.has(id) || this.attached.has(id)) throw new Error('profile already attached');
     if (this.expired(record)) throw new Error('profile expired');
-    this.attached.set(id, desktopId);
+    const key = this.keyFor(id).toString('base64'); // bytes survive JSON as base64; the guest decodes it
+    this.attached.set(id, null);
+    let desktopId = null;
     try {
-      await this.startDesktop(desktopId, ['--disk', `path=${this.imagePath(id)}`]);
-      await this.sendControl(desktopId, { type: 'profile-attach', key: fs.readFileSync(this.keyPath, 'utf8') });
-      return record;
+      await this.exec('chown', [this.vmUser, this.imagePath(id)], { input: '' }); // the VM runs unprivileged and must open this one image
+      ({ desktop_id: desktopId } = await this.startDesktop({ ...call, scope }, ['--disk', `path=${this.imagePath(id)}`]));
+      this.attached.set(id, desktopId);
+      await this.sendControl(desktopId, { type: 'profile-attach', key });
+      return { ...record, desktop_id: desktopId };
     } catch (error) {
       // Keep the lock if VM destruction fails; its disk may still be in use.
-      try { await this.destroyDesktop(desktopId); this.attached.delete(id); }
+      try { if (desktopId) await this.destroyDesktop(desktopId); this.attached.delete(id); this.revoke(id); }
       catch (cleanupError) { throw new AggregateError([error, cleanupError], 'profile attach cleanup failed'); }
       throw error;
     }
   }
 
+  // A desktop ended (any reason): release whatever profile it held.
+  release(desktopId) {
+    for (const [id, d] of this.attached) if (d === desktopId) { this.attached.delete(id); this.revoke(id); }
+  }
+
   detach(id, desktopId) {
-    if (this.attached.get(id) === desktopId) this.attached.delete(id);
+    if (this.attached.get(id) === desktopId) { this.attached.delete(id); this.revoke(id); }
+  }
+
+  // Take the image back from the VM user; failure leaves it root-owned-or-VM-owned but never attachable by another scope (the lock decides that).
+  revoke(id) {
+    this.exec('chown', ['root', this.imagePath(id)], { input: '' }).catch(() => {});
   }
 
   expired(record) {
@@ -104,6 +128,7 @@ class Profiles {
 
   async remove(id) {
     if (this.deleting.has(id)) throw new Error('profile deletion in progress');
+    if (this.attached.get(id) === null) throw new Error('profile is starting'); // its VM is not known yet
     this.deleting.add(id);
     try {
       const desktopId = this.attached.get(id);
@@ -123,7 +148,9 @@ class Profiles {
   }
 
   async expire() {
-    for (const record of this.listExpired()) await this.remove(record.id);
+    for (const record of this.listExpired()) {
+      try { await this.remove(record.id); } catch (error) { console.error(`rfactory-runner: profile ${record.id} expiry: ${error.message}`); } // retried next tick
+    }
   }
 
   listExpired() {

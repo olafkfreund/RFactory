@@ -5,6 +5,16 @@ const os = require('node:os');
 const path = require('node:path');
 
 const CANCEL_MS = 2000;
+// A result frame is at most 64 KiB (protocol.js); leave room for the envelope and JSON escaping.
+const TEXT_MAX_BYTES = 48 * 1024;
+
+// Cuts text so its JSON encoding (what goes on the wire) is at most max bytes.
+function capText(text, max = TEXT_MAX_BYTES) {
+  let n = Math.min(text.length, max);
+  while (n > 0 && Buffer.byteLength(JSON.stringify(text.slice(0, n))) > max) n = Math.floor(n * 0.9);
+  if (n > 0 && /[\ud800-\udbff]/.test(text[n - 1])) n--; // never end on half a surrogate pair
+  return text.slice(0, n);
+}
 
 function originOf(url) {
   try {
@@ -15,18 +25,24 @@ function originOf(url) {
 
 // The control Chrome: one context, every request checked against the origins the runner opened.
 // Launch options (executablePath, args) are injected; `chromium` is playwright-core's.
-function createControl({ chromium, launchOptions = {} }) {
+function createControl({ chromium, launchOptions = {}, owner }) {
   const allowed = new Set();
   let userDataDir = null;
   let context = null;
   let starting = null;
+  let generation = 0; // cancel bumps it: a launch that finishes after a cancel closes its own Chrome
 
   const ok = (url) => url === 'about:blank' || allowed.has(originOf(url));
 
   async function start() {
     if (context) return context;
     starting ||= (async () => {
-      const dir = userDataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'rf-control-'));
+      const mine = generation;
+      let dir = userDataDir;
+      if (!dir) {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-control-'));
+        if (owner) fs.chownSync(dir, owner.uid, owner.gid); // Chrome runs as an unprivileged user
+      }
       const ctx = await chromium.launchPersistentContext(dir, { ...launchOptions, serviceWorkers: 'block' });
       // Chrome follows redirects inside the network stack without routing each hop (also for a
       // fulfilled 3xx), so follow them here and check every hop before it is requested.
@@ -57,10 +73,20 @@ function createControl({ chromium, launchOptions = {} }) {
       };
       ctx.pages().forEach(watch);
       ctx.on('page', watch);
+      if (mine !== generation) { await ctx.close().catch(() => {}); throw new Error('cancelled'); }
       context = ctx;
       return ctx;
     })();
     try { return await starting; } finally { starting = null; }
+  }
+
+  // The current grant's hosts apply to every action: replace the set and close pages outside it.
+  async function applyHosts(hosts) {
+    if (!Array.isArray(hosts)) throw new Error('hosts required');
+    allowed.clear();
+    for (const host of hosts) allowed.add(host);
+    if (!context) return;
+    for (const p of context.pages()) if (!p.__rfShare && !p.isClosed() && !ok(p.url())) await p.close().catch(() => {});
   }
 
   async function page() {
@@ -79,30 +105,31 @@ function createControl({ chromium, launchOptions = {} }) {
       if (context) throw new Error('control Chrome already running');
       userDataDir = dir;
     },
+    applyHosts,
     async open(url, hosts) {
       const origin = originOf(url);
       if (!origin || !Array.isArray(hosts) || !hosts.includes(origin)) throw new Error('origin not granted');
-      allowed.clear();
-      for (const host of hosts) allowed.add(host);
+      await applyHosts(hosts);
       await (await page()).goto(url);
     },
     async click(target) { await (await page()).click(target, { timeout: 5000 }); },
     async type(target, text) { await (await page()).fill(target, text, { timeout: 5000 }); },
     async scroll(dy) { await (await page()).mouse.wheel(0, dy); },
-    pageText: async () => (await page()).locator('body').innerText().then((text) => text.slice(0, 32 * 1024)),
+    pageText: async () => (await page()).locator('body').innerText().then(capText),
     screenshot: async () => (await page()).screenshot({ type: 'jpeg', quality: 40 }),
     // Closes the context and stops anything in flight; gives up waiting after 2 s (runner then destroys the VM).
     async cancel() {
       const ctx = context;
+      const launching = starting;
+      generation++;
       context = null;
       allowed.clear();
       userDataDir = null;
-      if (!ctx) return;
       let t;
-      await Promise.race([ctx.close().catch(() => {}), new Promise((r) => { t = setTimeout(r, CANCEL_MS); })]);
+      await Promise.race([Promise.all([ctx?.close(), launching].map((p) => Promise.resolve(p).catch(() => {}))), new Promise((r) => { t = setTimeout(r, CANCEL_MS); })]);
       clearTimeout(t);
     },
   };
 }
 
-module.exports = { createControl, originOf };
+module.exports = { createControl, originOf, capText };

@@ -34,10 +34,10 @@ test('profile: key only on stdin, mount options, close order', async () => {
   const log = [];
   const exec = async (cmd, args, opts = {}) => { log.push({ cmd, args, input: opts.input, env: opts.env }); };
   const p = createProfile(exec);
-  const dir = await p.attach('SECRET-KEY');
+  const dir = await p.attach(Buffer.from([0xff, 0x00, 0x80]).toString('base64'));
   assert.equal(dir, '/run/rfactory/profile/chrome');
-  assert.deepEqual(log[0], { cmd: 'cryptsetup', args: ['open', '--key-file=-', '/dev/vdb', 'rfprofile'], input: 'SECRET-KEY', env: undefined });
-  assert.ok(!JSON.stringify(log.map((l) => [l.args, l.env])).includes('SECRET-KEY'));
+  assert.deepEqual(log[0], { cmd: 'cryptsetup', args: ['open', '--key-file=-', '/dev/vdb', 'rfprofile'], input: Buffer.from([0xff, 0x00, 0x80]), env: undefined }); // raw bytes, not utf8
+  assert.ok(!JSON.stringify(log.map((l) => [l.args, l.env])).includes('/wA'));
   assert.equal(log.filter((l) => l.input !== undefined).length, 1);
   const mount = log.find((l) => l.cmd === 'mount');
   assert.deepEqual(mount.args, ['-o', 'nodev,nosuid,noexec', '/dev/mapper/rfprofile', '/run/rfactory/profile']);
@@ -183,4 +183,90 @@ test('agent: share-start and share-stop reach the share module; without one they
   const bare = [];
   await createAgent({ control: {}, profile: {}, send: (m) => bare.push(m) }).handle({ type: 'share-start', share_id: 's', url: 'https://a.test/', hosts: ['https://a.test'], action_id: 'b' });
   assert.equal(bare[0].ok, false);
+});
+
+test('profile: a new device gets a filesystem, only when blkid says it is empty', async () => {
+  const run = async (code) => {
+    const log = [];
+    const exec = async (cmd, args) => { log.push(cmd); if (cmd === 'blkid' && code) throw Object.assign(new Error('x'), { code }); };
+    const r = await createProfile(exec).attach('aw==').then(() => null, (e) => e);
+    return { log, r };
+  };
+  assert.ok((await run(2)).log.includes('mkfs.ext4'));
+  assert.ok(!(await run(0)).log.includes('mkfs.ext4'));
+  const other = await run(4); // some other failure: never format
+  assert.ok(!other.log.includes('mkfs.ext4') && other.r && other.log.at(-1) === 'cryptsetup');
+});
+
+test('agent: oversized or unencodable answers fail that action only', async () => {
+  const { capText } = require('./control');
+  const text = '日'.repeat(32 * 1024);
+  const capped = capText(text);
+  encode({ type: 'action-result', action_id: 'x'.repeat(40), ok: true, content: capped }); // fits the frame
+  const sent = [];
+  const agent = createAgent({ control: { scroll: async () => {}, pageText: async () => text }, profile: {}, send: (m) => { encode(m); sent.push(m); } });
+  await agent.handle({ type: 'desktop_scroll', dy: 1, action_id: 'big' }); // uncapped control: encode throws
+  await agent.handle({ type: 'desktop_scroll', dy: 1, action_id: 'next' });
+  assert.deepEqual(sent.map((m) => [m.action_id, m.ok]), [['big', false], ['next', false]]);
+  const ok = createAgent({ control: { scroll: async () => {}, pageText: async () => capped }, profile: {}, send: (m) => { encode(m); sent.push(m); } });
+  await ok.handle({ type: 'desktop_scroll', dy: 1, action_id: 'fits' });
+  assert.deepEqual(sent.at(-1).ok, true);
+});
+
+test('agent: after cancel, later actions run again', async () => {
+  const sent = [];
+  let hung;
+  const agent = createAgent({
+    control: { click: () => new Promise((_, reject) => { hung = reject; }), scroll: async () => {}, cancel: async () => { hung(new Error('closed')); } },
+    profile: { detach: async () => {} }, send: (m) => sent.push(m),
+  });
+  const first = agent.handle({ type: 'desktop_click', action_id: 'c', target: 'a' });
+  await new Promise((r) => setImmediate(r));
+  await agent.handle({ type: 'cancel' });
+  await first;
+  await agent.handle({ type: 'desktop_scroll', dy: 1, action_id: 'later' });
+  assert.deepEqual(sent.map((m) => m.type === 'action-result' ? [m.action_id, m.ok] : m.type), [['c', false], 'cancel-ack', ['later', true]]);
+});
+
+test('agent: click, type, scroll and screenshot carry the grant hosts; none fails closed', async () => {
+  const { createControl } = require('./control');
+  const seen = [];
+  const agent = createAgent({ control: { applyHosts: async (h) => seen.push(h), click: async () => {} }, profile: {}, send: () => {} });
+  await agent.handle({ type: 'desktop_click', target: 'a', hosts: ['https://b.test'] });
+  assert.deepEqual(seen, [['https://b.test']]);
+  await assert.rejects(createControl({ chromium: {} }).applyHosts(undefined));
+});
+
+test('control: cancel during a Chrome launch closes that Chrome; desktop_login applies the grant hosts', async () => {
+  const { createControl } = require('./control');
+  let release; let closed = 0;
+  const ctx = { addInitScript: async () => {}, route: async () => {}, pages: () => [], on() {}, close: async () => { closed++; } };
+  const control = createControl({ chromium: { launchPersistentContext: () => new Promise((r) => { release = () => r(ctx); }) } });
+  const opening = control.applyHosts(['https://a.test']).then(() => control.click('x')).catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  const cancelling = control.cancel();
+  release();
+  await cancelling; await opening;
+  assert.equal(closed, 1);
+  assert.equal(control.started, false);
+  const seen = [];
+  const agent = createAgent({ control: { applyHosts: async (h) => seen.push(h) }, profile: {}, send: () => {}, resolveLogin: async () => async () => {} });
+  await agent.handle({ type: 'desktop_login', profile: 'p', hosts: ['https://c.test'] });
+  assert.deepEqual(seen, [['https://c.test']]);
+});
+
+test('control: a replacement grant closes pages of the old hosts', browser, async (t) => {
+  const { createControl } = require('./control');
+  const serve = () => new Promise((resolve) => { const s = http.createServer((q, r) => { r.writeHead(200, { 'content-type': 'text/html' }); r.end('<p>x</p>'); }).listen(0, '127.0.0.1', () => resolve(s)); });
+  const [A, B] = [await serve(), await serve()];
+  const [ao, bo] = [A, B].map((s) => `http://127.0.0.1:${s.address().port}`);
+  const control = createControl({ chromium, launchOptions: { executablePath: CHROME, headless: true, args: ['--no-sandbox'] } });
+  t.after(async () => { await control.cancel(); A.close(); B.close(); });
+  await control.open(`${ao}/`, [ao]);
+  const urls = async () => (await control.pageText(), control.started);
+  await control.applyHosts([bo]); // the page on A is closed
+  await assert.rejects(control.click('p')); // no open page: a fresh blank one has nothing to click
+  await control.open(`${bo}/`, [bo]);
+  assert.equal(await control.pageText(), 'x');
+  assert.ok(await urls());
 });

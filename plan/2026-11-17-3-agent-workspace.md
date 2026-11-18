@@ -668,6 +668,76 @@ v1; Wayland in the guest.
     the queued entry's scope and call against the desktop. `vm-call.js`
     exposes `desktop_id` on the child.
 
+22. **Every step 17 check drivable (owner decision, 2026-11-18: "do your
+    recommendations for the scripts, we need this to work").** No check
+    stays `not drivable`; after the step 16 fixes:
+    - **Typed request route** `POST /api/desktop/:id/request {text}`
+      (approver only, CSRF and Origin as the other desktop routes): the same
+      `request()` path as a spoken request (brain proposal, validation,
+      handover or queue, share proposals). Also a text box on the desktop
+      page. Drives `secrets-type-stored-refused`, `handover-wrong-desktop`
+      (grant on D, request on D2 → refused), the share proposal and approval
+      in `share.sh`, and `e2e-handover-open` through the product.
+    - **Verify hooks in the runner, off by default:** config
+      `verifyHooks: true` (only in the step 17 test unit, never in the
+      module's default; the runner logs a warning at start when on) enables
+      `POST /verify/{fail-share-stop,auto-select-screen,drop-control}
+      {desktop_id}`. Drives `share-stop-fails`, `share-auto-select-screen`,
+      `share-control-down`. Without the flag the routes are 404 (tested).
+    - **Profiles** via the admin routes from the step 16 fixes, driving the
+      six `profiles-*` checks.
+    - **`liveview-revoke-5s`:** roles live in the pod's environment (#2
+      plan), so revoking a member is: remove them from
+      `RFACTORY_ALLOWED_EMAILS` and restart rfactory-web; the script checks
+      the open stream closes within 5 s and a new one is refused.
+    - **`e2e-bot-joins`:** the existing `POST /api/call` with
+      `RFACTORY_DESKTOP=1` joins from a VM (13c).
+    - **`secrets-login-not-leaked`:** a test brain command
+      (`RFACTORY_BRAIN_RECORD=<file>`, verify unit only) records each brain
+      input; the script greps it and the logs for the preview login.
+
+23. **Step 16 review fixes, round 1 (workflow: coder per cluster, Opus
+    review, second fix round; lead verified).** Two reviews (Codex, Opus)
+    found 7 and 6 P1s; all were confirmed. Runner: a production entry
+    (`main`, `translateConfig`, real deps; durations parsed), tap owned by
+    the VM user with host `.1/30` and `/64` and NAT; per-VM nft tables with
+    `policy accept` that deny only their own tap; a per-VM dnsmasq with one
+    `server=/d/` and `nftset=` per allowlisted name and no default server
+    (the global dnsmasq is removed; the default allowlist is the coder's
+    guess, for the owner to review); chunk indexes bounded and contiguous;
+    cleanup skips only confirmed absence; heartbeats are liveness, not
+    activity, and idle never fires while sharing; the share watchdog
+    follows channel 5000 and stays armed across a reconnect, so a lost
+    control channel during a share destroys the VM after 5 s; a `cancel`
+    route (guest `cancel`, destroy without `cancel-ack` in 2 s); previews
+    and DNS extras keyed by scope, a claimed spare rescoped; `create` takes
+    `platform` and refuses `preflight-failed`; `bootGraceMs` 45 s covers
+    both deadlines; the VM directory and socket are chowned to the VM user.
+    Profiles: per-profile LUKS keys by HKDF-SHA256 from the runner's master
+    key (bytes, base64 on the wire), runner routes `profile-create|list|
+    attach|delete`, an hourly expiry, the disk passed through a per-VM copy
+    of the guest runner (`microvm-run` ignores arguments), the one image
+    chowned to the VM user while attached. Guest: every action applies the
+    current grant's hosts and closes pages outside them (fails closed
+    without `hosts`); share-tab main-frame redirects refused; page text
+    capped at 48 KiB encoded and an unencodable answer fails only that
+    action; cancel is an epoch (later actions run) and closes a launching
+    Chrome; a new profile gets `mkfs.ext4` when `blkid` finds nothing; the
+    control Chrome runs as `rfchrome` with the Chrome sandbox (the call
+    Chrome stays as deviation 18). Web: the Containerfile copies
+    `vm-call.js` and `protocol.js`; desktop proposals and approvals are
+    gated on `writes_enabled`; share state stays visible with Stop until
+    the guest confirms; `propose_share` is a queued proposal only;
+    screenshots (bounded) are shown to members on the page at
+    `/api/desktop/:id/screenshot`, not given to the text brain; `vm-call`
+    heartbeats from create; revoke calls `cancel`, falling back to destroy.
+    **Open, round 2:** `protocol.js` lacks `hosts` on click, type, scroll,
+    screenshot and login, and the server sends hosts only with open; the
+    guest image hard-codes its cid and address while the runner gives each
+    VM its own; `vm-call.js`, `lib.sh` and `capacity.sh` send no
+    `platform`; Meet and Zoom have no pinned media ranges, so preflight
+    refuses them; web profile admin routes; deviation 22.
+
 ## Prerequisites (named revisions)
 
 | Needed by | Prerequisite | Where it is now |

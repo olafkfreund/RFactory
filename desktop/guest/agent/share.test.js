@@ -130,3 +130,18 @@ test('same-origin navigation, cross-origin link and popup each stop and report t
   await waitFor(() => events.length === 1);
   assert.deepEqual(events.pop(), { type: 'share-target-changed', share_id: 's1' });
 });
+
+test('a same-origin redirect away from the approved URL is refused', browser, async (t) => {
+  const f = await fixture(t);
+  const server = http.createServer((req, res) => {
+    if (req.url === '/approved') { res.writeHead(302, { location: '/private' }); return res.end(); }
+    res.end('private');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const events = [];
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'redir', clickShare: async () => {}, send: (m) => events.push(m) });
+  await assert.rejects(share.start({ share_id: 'r', url: `${origin}/approved`, hosts: [origin] }));
+  assert.equal(share.active, null);
+});

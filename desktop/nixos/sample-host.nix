@@ -14,5 +14,6 @@
     tlsKeyFile = "/run/secrets/rfactory-runner-key";
     clientCaFile = "/run/secrets/rfactory-runner-ca";
     profileKeyFile = "/run/secrets/rfactory-profile-key";
+    guestRunner = "/run/current-system/sw/bin/microvm-run"; # evaluation placeholder
   };
 }

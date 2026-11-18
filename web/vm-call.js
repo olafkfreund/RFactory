@@ -28,12 +28,13 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
       id = made.body.desktop_id;
       child.desktop_id = id;
       if (closed) return runner.destroy(id).catch(() => {}); // killed while the VM was being created
+      // the runner ends a VM with no server heartbeat after 60 s, and the guest channel can take up to 2 minutes to appear
+      beat = setInterval(() => runner.call('heartbeat', { desktop_id: id }).catch(() => {}), heartbeatMs);
       for (let n = 0; !sock; n++) { // the guest channel connects a few seconds after boot
         if (closed) return;
         try { sock = await runner.openCall(id); } catch (error) { if (n + 1 >= tries) throw error; await sleep(retryMs); }
       }
       if (closed) return sock.destroy();
-      beat = setInterval(() => runner.call('heartbeat', { desktop_id: id }).catch(() => {}), heartbeatMs);
       sock.on('close', () => close());
       sock.on('error', () => close());
       sock.pipe(child.stdout, { end: false });

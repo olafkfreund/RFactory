@@ -15,7 +15,7 @@ const { createCallWorker } = require('./call');
 function createAgent({ control, profile, send, resolveLogin, share, onCallConfig, onCallIn }) {
   let seq = 0;
   let chain = Promise.resolve();
-  let cancelled = false;
+  let epoch = 0; // cancel bumps it: actions queued before the cancel fail, later ones run
   let configured = false;
   const result = (id, ok, content) => {
     if (Buffer.isBuffer(content)) {
@@ -28,6 +28,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
   };
 
   async function run(m) {
+    if (['desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot', 'desktop_login'].includes(m.type)) await control.applyHosts?.(m.hosts);
     switch (m.type) {
       case 'profile-attach': control.setUserDataDir(await profile.attach(m.key)); break;
       case 'desktop_open': await control.open(m.url, m.hosts); break;
@@ -52,7 +53,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
   return {
     handle(m) {
       if (m.type === 'cancel') {
-        cancelled = true;
+        epoch++;
         return control.cancel().then(() => profile.detach()).finally(() => send({ type: 'cancel-ack' }));
       }
       if (m.type === 'call-config') {
@@ -63,7 +64,10 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
       const id = m.action_id || String(++seq);
-      chain = chain.then(() => { if (cancelled) throw new Error('cancelled'); return run(m); }).then((content) => result(id, true, content), () => result(id, false));
+      const mine = epoch;
+      // An answer that cannot be encoded fails this action only; the chain never stays rejected.
+      const answer = (ok, content) => { try { result(id, ok, content); } catch { if (ok) answer(false); } };
+      chain = chain.then(() => { if (epoch !== mine) throw new Error('cancelled'); return run(m); }).then((content) => answer(true, content), () => answer(false)).catch(() => {});
       return chain;
     },
     // Shutdown: Chrome, unmount, cryptsetup close, in that order.
@@ -90,7 +94,11 @@ function main() {
   const { chromium } = require('playwright-core');
   const sendHost = hostLink();
   const profile = createProfile(exec);
-  const control = createControl({ chromium, launchOptions: { executablePath: process.env.CHROME, headless: false, args: ['--no-sandbox'] } });
+  // CONTROL_CHROME is a wrapper that runs Chrome as the unprivileged rfchrome user; then the Chrome sandbox stays on.
+  const owner = process.env.CONTROL_CHROME && { uid: Number(process.env.CONTROL_UID), gid: Number(process.env.CONTROL_GID) };
+  const control = createControl({ chromium, owner, launchOptions: process.env.CONTROL_CHROME
+    ? { executablePath: process.env.CONTROL_CHROME, headless: false, chromiumSandbox: true }
+    : { executablePath: process.env.CHROME, headless: false, args: ['--no-sandbox'] } });
   startHeartbeat(sendHost);
   const agents = [];
   process.on('SIGTERM', () => { try { sendHost({ type: 'call-end' }); } catch { /* host link down */ } Promise.all(agents.map((a) => a.shutdown())).finally(() => process.exit(0)); });

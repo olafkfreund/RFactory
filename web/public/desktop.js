@@ -30,6 +30,8 @@ function render(doc, state, handlers, now = Date.now()) {
   doc.getElementById('running').textContent = state.running ? `Running: ${state.running}` : '';
   doc.getElementById('share').textContent = state.share ? `Sharing: ${state.share.url}` : 'Not sharing.';
   doc.getElementById('share-stop').hidden = !state.share;
+  const shot = doc.getElementById('shot'); // same-origin image, never markup
+  if (shot) { shot.hidden = !state.screenshot; if (state.screenshot) shot.setAttribute('src', `${API(state.desktop_id)}/screenshot?at=${state.screenshot.at}`); }
   const alert = doc.getElementById('alert');
   alert.hidden = !state.cleanup_alert;
   alert.textContent = state.cleanup_alert ? `Cleanup blocked: ${state.cleanup_alert}` : '';

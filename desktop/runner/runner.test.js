@@ -4,7 +4,10 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const http = require('node:http');
 const { createLifecycle } = require('./lifecycle');
-const { createHandler } = require('./runner');
+const { createHandler, withExtraArgs } = require('./runner');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -371,4 +374,244 @@ test('call stream: the socket is destroyed when the VM is destroyed or the guest
   assert.equal(ctx.lc.callAttach(b.desktop_id, s2), true);
   ctx.conns.at(-1).emit('close');
   assert.equal(s2.destroyed, true);
+});
+
+// ---- step 16 review fixes (runner side) ----
+const { translateConfig, addrFor, seconds, main } = require('./runner');
+
+test('content chunks: holes, repeats and huge indexes fail that action and never throw', async () => {
+  for (const idx of [[1], [0, 0], [5000], [-1], [0, 2]]) {
+    const ctx = agentSetup({ onWrite: (conn, m) => {
+      if (m.type !== 'desktop_screenshot') return;
+      setImmediate(() => conn.emit('data', Buffer.concat([...idx.map((index) => enc({ type: 'action-content', action_id: m.action_id, index, chunk: 'YQ==' })),
+        enc({ type: 'action-result', action_id: m.action_id, ok: true })])));
+    } });
+    const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+    await tick(); await tick();
+    assert.deepEqual(await ctx.lc.action(desktop_id, { type: 'desktop_screenshot' }), { error: 'bad-content' }, JSON.stringify(idx));
+  }
+});
+
+test('cleanup: only a confirmed absence is skipped; any other nft or tap failure retries, alerts and blocks', async () => {
+  for (const [argv0, message] of [['nft', 'nft: Operation not permitted'], ['ip', 'ip: RTNETLINK answers: Operation not permitted']]) {
+    const ctx = setup({ deps: { exec: async (argv) => { if (ctx.fail && argv[0] === argv0 && argv.includes('delete')) throw new Error(message); return ''; } } });
+    const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+    ctx.fail = true;
+    const done = ctx.lc.destroy(desktop_id);
+    await ctx.clock.advance(10000);
+    assert.equal((await done).ok, false, argv0);
+    assert.ok(ctx.lc.status().alert);
+  }
+  const ctx = setup({ deps: { exec: async (argv) => { if (argv[0] === 'nft' && argv.includes('delete')) throw new Error('nft: Error: No such file or directory'); return ''; } } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  assert.equal((await ctx.lc.destroy(desktop_id)).ok, true);
+});
+
+test('heartbeats are liveness: with both heartbeats running an unused desktop still expires as idle', async () => {
+  const ctx = await withWorker();
+  for (let s = 1; s <= 700; s++) { await ctx.clock.advance(1000); ctx.lc.heartbeat(ctx.lc.list()[0]?.desktop_id); if (s % 5 === 0) ctx.beat(); if (!ctx.lc.list().length) break; }
+  assert.equal(ctx.lc.list().length, 0);
+  assert.ok(ctx.calls.some((c) => c.argv[0] === 'systemctl' && c.argv[1] === 'stop'));
+});
+
+test('share watchdog follows the control channel (5000), not the heartbeat link', async () => {
+  let first = true; const inner = {};
+  const ctx = agentSetup({ onWrite: echoOk, deps: { connectGuest: (...a) => { if (first) { first = false; return inner.connect(...a); } return Promise.reject(new Error('down')); } } });
+  inner.connect = async () => { const conn = new EventEmitter(); conn.out = []; conn.destroy = () => conn.emit('close');
+    const d = dec((m) => conn.out.push(m)); conn.write = (buf) => { d.write(buf); echoOk(conn, conn.out.at(-1)); }; ctx.conns.push(conn); return conn; };
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  ctx.conns[0].emit('close'); // channel 5000 drops and does not come back; nothing else changes
+  await ctx.clock.advance(4000);
+  assert.equal(ctx.lc.list().length, 1);
+  await ctx.clock.advance(2000);
+  assert.equal(ctx.lc.list().length, 0);
+});
+
+test('cancel: an ack keeps the VM; no ack in 2 s destroys it; the route exists', async () => {
+  const ctx = agentSetup({ onWrite: (conn, m) => { if (m.type === 'cancel' && ctx.ack) setImmediate(() => conn.emit('data', enc({ type: 'cancel-ack' }))); } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  ctx.ack = true;
+  assert.deepEqual(await ctx.lc.cancel(desktop_id), { ok: true });
+  assert.equal(ctx.lc.list().length, 1);
+  ctx.ack = false;
+  const p = ctx.lc.cancel(desktop_id);
+  await ctx.clock.advance(1000);
+  await tick();
+  const timeout = new Promise((r) => setTimeout(r, 2200));
+  const r = await Promise.race([p, timeout.then(() => 'late')]);
+  assert.notEqual(r, 'late');
+  assert.equal(r.destroyed, true);
+  assert.equal(ctx.lc.list().length, 0);
+  const routes = []; await createHandler({ cancel: async (id) => { routes.push(id); return { ok: true }; } }, { tls: false })(
+    { url: '/cancel', method: 'POST', socket: {}, async *[Symbol.asyncIterator]() { yield '{"desktop_id":"ab"}'; } }, { writeHead() {}, end() {} });
+  assert.deepEqual(routes, ['ab']);
+});
+
+test('network: the tap belongs to the VM user and has the host address; previews and DNS names are per scope', async () => {
+  const written = {};
+  const config = { net: { ...baseConfig().net, addr: addrFor, dns: { upstreams: ['1.1.1.1'], platform: ['meet.google.com'], scopes: { a: ['a.example'] } },
+    previews: { a: ['10.50.0.7:8443'] } } };
+  const ctx = setup({ config, deps: { fs: { mkdir: async () => {}, rm: async () => {}, readdir: async () => [], writeFile: async (f, t) => { written[f] = t; } } } });
+  const a = await ctx.lc.create({ call_id: 'c1', scope: 'a' });
+  const b = await ctx.lc.create({ call_id: 'c2', scope: 'b' });
+  const tuntap = ctx.calls.find((c) => c.argv[1] === 'tuntap').argv;
+  assert.ok(tuntap.join(' ').endsWith('user rfactory-vm'));
+  assert.ok(ctx.calls.some((c) => c.argv[0] === 'ip' && c.argv[1] === 'addr' && c.argv[3].endsWith('/30')));
+  const rules = ctx.calls.filter((c) => c.argv[0] === 'nft' && c.input).map((c) => c.input);
+  assert.match(rules[0], /ip daddr 10\.50\.0\.7 tcp dport 8443 accept/);
+  assert.equal(/10\.50\.0\.7/.test(rules[1]), false);
+  assert.equal(/policy drop/.test(rules.join('')), false);
+  const conf = (id) => Object.entries(written).find(([f]) => f.includes(`/${id}/`))[1];
+  assert.match(conf(a.desktop_id), /server=\/a\.example\/1\.1\.1\.1/);
+  assert.equal(/a\.example/.test(conf(b.desktop_id)), false);
+  assert.match(conf(b.desktop_id), /meet\.google\.com/);
+  assert.ok(ctx.calls.some((c) => c.argv[0] === 'systemd-run' && c.argv.includes(`--unit=rfactory-dns-${a.desktop_id}`)));
+});
+
+test('a spare claimed by a scope with previews gets them in one nft transaction', async () => {
+  const config = { net: { ...baseConfig().net, previews: { a: ['10.50.0.7:8443'] } } };
+  const ctx = setup({ config });
+  const spare = await ctx.lc.createSpare();
+  const before = ctx.calls.filter((c) => c.argv[0] === 'nft').length;
+  await ctx.lc.create({ call_id: 'c1', scope: 'a' });
+  const swap = ctx.calls.filter((c) => c.argv[0] === 'nft')[before];
+  assert.match(swap.input, new RegExp(`^delete table inet rfd_${spare.desktop_id}\\n`));
+  assert.match(swap.input, /10\.50\.0\.7/);
+});
+
+test('preflight runs before a call joins and refuses with its message', async () => {
+  const seen = [];
+  const ctx = setup({ deps: { preflight: async (p) => { seen.push(p); if (p === 'meet') throw new Error('no pinned media ranges for meet'); } } });
+  assert.equal((await ctx.lc.create({ call_id: 'a', scope: 's' })).error, 'bad-request');
+  const refused = await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'meet' });
+  assert.deepEqual([refused.error, /no pinned media/.test(refused.message)], ['preflight-failed', true]);
+  assert.equal(ctx.lc.list().length, 0);
+  assert.ok((await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'slack' })).desktop_id);
+});
+
+test('boot grace delays both heartbeat deadlines', async () => {
+  const ctx = setup({ config: { bootGraceMs: 40000 } });
+  await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await ctx.clock.advance(65000); // past the 60 s server timeout, inside grace + 60 s
+  assert.equal(ctx.lc.list().length, 1);
+});
+
+test('production config: every lifecycle key is present and typed, durations parsed, functions built in code', () => {
+  const raw = { mtlsPort: 8443, maxDesktops: 3, rateMbit: 20, egressBytes: 1073741824, runtimeMaxSec: '3h', runDir: '/run/rfactory-desktop', guestRunner: '/x/microvm-run' };
+  const config = translateConfig(raw, { CREDENTIALS_DIRECTORY: '/creds' });
+  assert.doesNotThrow(() => createLifecycle(config, { exec: async () => '', clock: fakeClock(), fs: {} }));
+  assert.equal(config.runtimeMaxSec, 10800);
+  assert.equal(typeof config.vmArgv, 'function');
+  assert.equal(typeof config.net.addr, 'function');
+  assert.equal(config.tls.key, '/creds/tls-key');
+  assert.equal(seconds('90m'), 5400);
+  assert.throws(() => seconds('soon'));
+  assert.throws(() => translateConfig({ ...raw, guestRunner: undefined }, { CREDENTIALS_DIRECTORY: '/c' }), /guestRunner/);
+  const cids = [3, 4, 5, 16000].map((c) => addrFor(c).source4);
+  assert.equal(new Set(cids).size, 4);
+});
+
+test('main refuses a missing config instead of exiting 0 idle', async () => {
+  await assert.rejects(main(['--config', '/nonexistent/x.json'], { CREDENTIALS_DIRECTORY: '/c' }));
+  await assert.rejects(main([], {}), /usage/);
+});
+
+// ---- second fix round ----
+test('a share that lost 5000 stays armed across the reconnect and the VM is destroyed after 5 s', async () => {
+  const ctx = agentSetup({ onWrite: echoOk });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  ctx.conns[0].emit('close');
+  await ctx.clock.advance(2000); // reconnected at 1 s; the fresh guest agent has no worker, so the share cannot be stopped
+  assert.equal(ctx.conns.length, 2);
+  assert.equal(ctx.lc.list().length, 1);
+  await ctx.clock.advance(4000);
+  assert.equal(ctx.lc.list().length, 0);
+});
+
+test('the VM user owns the VM directory and the 5001 socket', async () => {
+  const { lc, calls } = setup();
+  const { desktop_id } = await lc.create({ call_id: 'a', scope: 's' });
+  const chown = calls.find((c) => c.argv[0] === 'chown').argv;
+  assert.deepEqual(chown, ['chown', 'rfactory-vm', `/run/rfactory-desktop/${desktop_id}`, `/run/rfactory-desktop/${desktop_id}/vsock.sock_5001`]);
+  assert.ok(calls.findIndex((c) => c.argv[0] === 'chown') < calls.findIndex((c) => c.argv[0] === 'systemd-run'));
+});
+
+test('a spare being claimed is not expired by the check while its rescope is awaited', async () => {
+  const config = { net: { ...baseConfig().net, previews: { a: ['10.50.0.7:8443'] } }, serverBeatTimeoutMs: 1500 };
+  let release; const gate = new Promise((r) => { release = r; });
+  const ctx = setup({ config, deps: { exec: async (argv, opt) => { ctx.calls.push({ argv, input: opt && opt.input }); if (argv[0] === 'nft' && opt && opt.input && opt.input.startsWith('delete table')) await gate; return ''; } } });
+  await ctx.lc.createSpare();
+  await ctx.clock.advance(5000);
+  const claim = ctx.lc.create({ call_id: 'c', scope: 'a' });
+  await tick();
+  await ctx.clock.advance(1000); // check() runs while rescope is pending
+  release();
+  const r = await claim;
+  assert.ok(r.desktop_id);
+  assert.equal(ctx.lc.list().length, 1);
+});
+
+test('an active share is not expired as idle', async () => {
+  const ctx = agentSetup({ onWrite: echoOk, deps: { listen: (sock, handler) => { ctx.handler = handler; return { close() {} }; } } });
+  const { desktop_id } = await ctx.lc.create({ call_id: 'a', scope: 's' });
+  const hb = new EventEmitter(); ctx.handler(hb);
+  await tick(); await tick();
+  assert.equal((await ctx.lc.shareStart(desktop_id, { share_id: 's1', url: 'https://x.test/p', hosts: ['https://x.test'] })).ok, true);
+  for (let s = 1; s <= 700; s++) { await ctx.clock.advance(1000); ctx.lc.heartbeat(desktop_id); if (s % 5 === 0) hb.emit('data', enc({ type: 'heartbeat' })); }
+  assert.equal(ctx.lc.list().length, 1);
+});
+
+test('create with extraArgv hands the disk to vmArgv (not appended as script arguments), spares are not used, and the HTTP body cannot set it', async () => {
+  const destroyed = [];
+  const seen = [];
+  const { lc, calls } = setup({ deps: { onDestroyed: (id) => destroyed.push(id) }, config: { vmArgv: (vm) => { seen.push(vm.extraArgv); return ['microvm-run']; } } });
+  await lc.createSpare();
+  const r = await lc.create({ call_id: 'c1', scope: 's1', extraArgv: ['--disk', 'path=/evil'] });
+  const plain = calls.filter((c) => c.argv[0] === 'systemd-run').at(-1).argv;
+  assert.ok(!plain.includes('path=/evil')); // body field ignored; claimed the spare
+  assert.equal(r.desktop_id, lc.list()[0].desktop_id);
+  const p = await lc.create({ call_id: 'c2', scope: 's1' }, ['--disk', 'path=/img']);
+  const run = calls.filter((c) => c.argv[0] === 'systemd-run').at(-1).argv;
+  assert.deepEqual(run.slice(-1), ['microvm-run']);
+  assert.deepEqual(seen.at(-1), ['--disk', 'path=/img']);
+  assert.deepEqual(seen[0], []);
+  await lc.destroy(p.desktop_id);
+  assert.deepEqual(destroyed, [p.desktop_id]);
+});
+
+test('withExtraArgs writes a per-VM runner whose runtime_args carries the disk; no extra args keeps the original', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-wea-'));
+  const runner = path.join(dir, 'microvm-run');
+  fs.writeFileSync(runner, "#!/bin/sh\nruntime_args=\n\nexec ch --api-socket s ${runtime_args:-}\n");
+  fs.mkdirSync(path.join(dir, 'vm'));
+  assert.equal(withExtraArgs(runner, path.join(dir, 'vm'), []), runner);
+  const copy = withExtraArgs(runner, path.join(dir, 'vm'), ['--disk', 'path=/var/lib/p/x.img']);
+  assert.notEqual(copy, runner);
+  assert.match(fs.readFileSync(copy, 'utf8'), /^runtime_args='--disk path=\/var\/lib\/p\/x\.img'$/m);
+  assert.equal(fs.statSync(copy).mode & 0o111, 0o111);
+  assert.throws(() => withExtraArgs(runner, path.join(dir, 'vm'), ['--disk', "path=x'; rm -rf /"]), /unsafe/);
+  fs.writeFileSync(runner, '#!/bin/sh\nexec ch\n');
+  assert.throws(() => withExtraArgs(runner, path.join(dir, 'vm'), ['--disk', 'path=/x']), /runtime_args/);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('profile routes exist only with profiles, and non-admin is 403', async () => {
+  const lc = { create: async () => ({}) };
+  const calls = [];
+  const profiles = { create: async (actor) => { if (!actor) throw new Error('admin required'); calls.push(actor); return { id: 'x' }; } };
+  const call = async (handler, name, body) => {
+    let code, out;
+    const req = Object.assign(require('node:stream').Readable.from([JSON.stringify(body)]), { method: 'POST', url: `/${name}`, socket: { authorized: true } });
+    await handler(req, { writeHead: (c) => { code = c; }, end: (o) => { out = o; } });
+    return code;
+  };
+  assert.equal(await call(createHandler(lc), 'profile-create', {}), 404);
+  const h = createHandler(lc, { profiles });
+  assert.equal(await call(h, 'profile-create', { actor: { id: 'a' } }), 200);
+  assert.equal(await call(h, 'profile-create', {}), 403);
 });

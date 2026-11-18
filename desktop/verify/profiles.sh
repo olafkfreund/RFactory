@@ -15,5 +15,6 @@ undriven profiles-second-attach-refused "$why"
 undriven "profiles-host-ciphertext:attached" "$why"
 undriven "profiles-host-ciphertext:killed" "$why"
 undriven profiles-delete-destroys-desktop "$why"
+undriven profiles-guest-has-vdb "$why (needs a live VM: /dev/vdb exists in the attached guest and rfactory-vm can open the image)"
 undriven profiles-expire-destroys-desktop "$why"
 finish

@@ -10,15 +10,15 @@ const MEMBER = 'member@example.com', APPROVER = 'approver@example.com', ADMIN = 
 const roles = loadRoles({ RFACTORY_ALLOWED_EMAILS: `${MEMBER},${APPROVER},${ADMIN}`, RFACTORY_APPROVERS: APPROVER, RFACTORY_ADMINS: ADMIN });
 const HOST = 'https://preview.example.com';
 
-async function start(t, { withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null } = {}) {
+async function start(t, { writesEnabled = true, isAllowed = async () => true, stopFails = false, cancelFn, result = {}, withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null } = {}) {
   const clock = { t: 1_000_000, now() { return this.t; } };
   let nextProposal = proposal;
   const ran = [], shares = [], stops = [], prompts = [];
-  const desktop = createDesktop({ roles, scopeName: 's1', clock: () => clock.t,
+  const desktop = createDesktop({ roles, scopeName: 's1', writesEnabled, isAllowed, cancel: cancelFn, clock: () => clock.t,
     brain: { propose: async (snapshot) => { prompts.push(snapshot); return nextProposal; } }, redactor: makeRedactor(['stored-secret']),
     runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1', nonce: 'n1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
-    run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true, ...(pageText ? { content: pageText } : {}) }; },
-    startShare: async (x) => shares.push(x), stopShare: async (x) => stops.push(x), destroy: async () => {} });
+    run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true, ...(pageText ? { content: pageText } : {}), ...result }; },
+    startShare: async (x) => shares.push(x), stopShare: async (x) => { if (stopFails) throw new Error('x'); stops.push(x); }, destroy: async () => {} });
   const server = createApp({ roles, source: {}, brain: {}, desktop: withDesktop ? desktop : null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -183,4 +183,81 @@ test('page text reaches the desktop brain redacted', async (t) => {
   await s.desktop.request('take a screenshot', 'd1', { items: [] });
   await s.desktop.request('take a screenshot', 'd1', { items: [] });
   assert.ok(!JSON.stringify(s.prompts.at(-1)).includes('stored-secret'));
+});
+
+const open = { url: `${HOST}/` };
+async function proposeShare(s, body = { actions: ['desktop_screenshot', 'propose_share'], hosts: [HOST], minutes: 10 }) {
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, body);
+  s.propose({ action: 'propose_share', args: open });
+  assert.equal((await s.desktop.request('share the page', 'd1', {})).text, 'That action is waiting for approval.');
+  const q = s.desktop.queue.list('d1')[0];
+  return s.call('POST', `/api/desktop/d1/share/${q.id}/approve`, APPROVER, { hash: q.hash });
+}
+
+test('review: writes disabled or a scope refusal blocks proposals and approvals (no runner call)', async (t) => {
+  for (const over of [{ writesEnabled: false }, { isAllowed: async () => false }]) {
+    const s = await start(t, over);
+    await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+    s.propose({ action: 'desktop_open', args: open });
+    assert.equal((await s.desktop.request('open it', 'd1', {})).text, "I can't do that.");
+    assert.equal(s.ran.length, 0);
+    assert.equal(s.desktop.queue.list('d1').length, 0);
+  }
+});
+
+test('review: propose_share becomes a proposal, never a direct start; approval starts it', async (t) => {
+  const s = await start(t);
+  const r = await proposeShare(s);
+  assert.equal(s.shares.length, 1);
+  assert.equal(r.status, 200);
+  assert.equal(s.ran.length, 0);
+});
+
+test('review: a share stays visible after the handover expires and a failed stop keeps it', async (t) => {
+  const s = await start(t, { stopFails: true });
+  await proposeShare(s);
+  s.clock.t += 11 * 60000;
+  let st = await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json();
+  assert.equal(st.share.url, `${HOST}/`);
+  assert.equal(st.handover, null);
+  assert.equal((await s.call('POST', '/api/desktop/d1/share/stop', MEMBER, {})).status, 502);
+  st = await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json();
+  assert.ok(st.share);
+});
+
+test('review: a confirmed stop clears the share; a second share while one is live is refused', async (t) => {
+  const s = await start(t);
+  await proposeShare(s);
+  s.clock.t += 11 * 60000;
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, { actions: ['propose_share'], hosts: [HOST], minutes: 10 });
+  s.propose({ action: 'propose_share', args: open });
+  await s.desktop.request('share', 'd1', {});
+  const q = s.desktop.queue.list('d1')[0];
+  assert.equal((await s.call('POST', `/api/desktop/d1/share/${q.id}/approve`, APPROVER, { hash: q.hash })).status, 409);
+  assert.equal((await s.call('POST', '/api/desktop/d1/share/stop', MEMBER, {})).status, 200);
+  assert.equal((await (await s.call('GET', '/api/desktop/d1/state', MEMBER)).json()).share, null);
+});
+
+test('review: a screenshot is bounded, typed, kept for the page only and not given to the brain', async (t) => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString('base64');
+  const s = await start(t, { result: { image_base64: jpeg } });
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, { actions: ['desktop_screenshot'], hosts: [], minutes: 10 });
+  await s.desktop.request('take a screenshot', 'd1', {});
+  const r = await s.call('GET', '/api/desktop/d1/screenshot', MEMBER);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await s.call('GET', '/api/desktop/d1/screenshot', OUT)).status, 403);
+  assert.ok(!JSON.stringify(s.prompts).includes(jpeg));
+  const bad = await start(t, { result: { image_base64: Buffer.from('<html>').toString('base64') } });
+  await bad.call('POST', '/api/desktop/d1/handover', APPROVER, { actions: ['desktop_screenshot'], hosts: [], minutes: 10 });
+  await bad.desktop.request('take a screenshot', 'd1', {});
+  assert.equal((await bad.call('GET', '/api/desktop/d1/screenshot', MEMBER)).status, 404);
+});
+
+test('review: revoke goes through the cancel route first', async (t) => {
+  const cancelled = [];
+  const s = await start(t, { cancelFn: async (id) => { cancelled.push(id); } });
+  await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant);
+  await s.call('POST', '/api/desktop/d1/revoke', APPROVER, {});
+  assert.deepEqual(cancelled, ['d1']);
 });

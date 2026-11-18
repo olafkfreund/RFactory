@@ -92,6 +92,8 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
             const response = await route.fetch({ url: next, maxRedirects: 0 });
             const location = response.status() >= 300 && response.status() < 400 && response.headers().location;
             if (!location) return await route.fulfill({ response });
+            // The page URL would stay the approved one while the content came from elsewhere.
+            if (route.request().isNavigationRequest() && route.request().frame() === page.mainFrame()) { changed(); return await route.abort(); }
             if (!['GET', 'HEAD'].includes(route.request().method())) return await route.abort();
             next = new URL(location, next).href;
           }
