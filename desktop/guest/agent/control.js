@@ -59,7 +59,7 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
           const method = route.request().method();
           let url = route.request().url();
           for (let hop = 0; hop < 10; hop++) {
-            if (!ok(url)) return await route.abort();
+            if (!ok(url)) { log(`refused ${hostOf(url)}: outside the granted hosts`); return await route.abort(); }
             const resp = await route.fetch({ url, maxRedirects: 0 });
             const location = resp.status() >= 300 && resp.status() < 400 && resp.headers().location;
             if (!location) return await route.fulfill({ response: resp });
@@ -67,7 +67,7 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
             url = new URL(location, url).href;
           }
           await route.abort();
-        } catch { await route.abort().catch(() => {}); }
+        } catch (error) { log(`request to ${hostOf(route.request().url())} failed: ${String(error?.message || error).split('\n')[0].slice(0, 200)}`); await route.abort().catch(() => {}); }
       });
       const watch = (page) => {
         page.on('framenavigated', (frame) => {
@@ -87,6 +87,9 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
   }
 
   // The current grant's hosts apply to every action: replace the set and close pages outside it.
+  // why a request was aborted reaches the journal (warning, forwarded to the serial console): host only, never the path or query
+  const hostOf = (u) => { try { return new URL(u).host; } catch { return '?'; } };
+  const log = (text) => console.error(`<4>rfactory-agent: ${text}`);
   async function applyHosts(hosts) {
     if (!Array.isArray(hosts)) throw new Error('hosts required');
     allowed.clear();

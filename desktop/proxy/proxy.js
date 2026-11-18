@@ -217,13 +217,25 @@ function limiter(burst, perSec, now = Date.now) {
 }
 
 function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, verbatim: true }),
-  connect = options => net.connect(options), forward = options => http.request(options), idleMs = 60000, maxConnections = 32, burst = 20, perSec = 10, now = Date.now }) {
+  connect = options => net.connect(options), forward = options => http.request(options), idleMs = 60000, maxConnections = 32, burst = 120, perSec = 40, cacheMs = 2000, now = Date.now }) {
+  // a page load opens dozens of CONNECTs at once (k10b: burst 20 answered 429 to Meet's own assets); the snapshot is shared for cacheMs
+  // so a higher per-IP rate does not multiply API reads
   if (!api || !Number.isInteger(idleMs) || idleMs < 1000 || !Number.isInteger(maxConnections) || maxConnections < 1) throw new Error('invalid proxy configuration');
   const active = new Map();
   const allow = limiter(burst, perSec, now);
   const forwarded = new WeakMap(); // socket -> checked entry; shortcut: valid for the connection's life, so a revoked entry lasts until idle close
+  let cached = null; // { at, promise }
+  function snapshot() {
+    const t = now();
+    if (!cached || cacheMs <= 0 || t - cached.at >= cacheMs) {
+      const promise = api.snapshot();
+      cached = { at: t, promise };
+      promise.catch(() => { if (cached?.promise === promise) cached = null; }); // a failed read is never reused
+    }
+    return cached.promise;
+  }
   async function entryFor(ip) {
-    const [pods, configMaps] = await api.snapshot();
+    const [pods, configMaps] = await snapshot();
     const live = pods.items.filter(p => p.status?.podIP === ip && UID.test(p.metadata?.uid));
     if (live.length !== 1) return null;
     const uid = live[0].metadata.uid;

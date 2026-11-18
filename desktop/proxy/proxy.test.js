@@ -193,11 +193,26 @@ test('in-cluster API lists live desktop pods and entries, and watches both resou
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('the API snapshot is shared for cacheMs, so a page load of many CONNECTs reads the API once; a failed read is not reused', async () => {
+  let reads = 0, t = 0, fail = false;
+  const base = api();
+  const counted = { ...base, snapshot: async () => { reads++; if (fail) throw new Error('api down'); return base.snapshot(); } };
+  const proxy = createProxy({ api: counted, now: () => t, resolve: async () => [{ address: '93.184.215.14' }] });
+  for (let i = 0; i < 60; i++) { const c = new Socket(); await proxy.handleConnect(request(), c, Buffer.alloc(0)); assert.doesNotMatch(c.text(), /^HTTP\/1\.1 429/, `connect ${i}`); c.destroy(); }
+  assert.equal(reads, 1);
+  t = 2000; fail = true;
+  const failed = new Socket(); await proxy.handleConnect(request(), failed, Buffer.alloc(0));
+  assert.match(failed.text(), /^HTTP\/1\.1 403/);
+  fail = false;
+  const next = new Socket(); await proxy.handleConnect(request(), next, Buffer.alloc(0));
+  assert.equal(reads, 3, 'the failed read was not cached');
+});
+
 test('a flood from one source IP is limited before any Kubernetes API call, per IP', async () => {
   let reads = 0;
   const base = api();
   const counted = { ...base, snapshot: async () => { reads++; return base.snapshot(); } };
-  const proxy = createProxy({ api: counted, burst: 5, perSec: 1, now: () => 0, resolve: async () => [{ address: '93.184.215.14' }] });
+  const proxy = createProxy({ api: counted, burst: 5, perSec: 1, cacheMs: 0, now: () => 0, resolve: async () => [{ address: '93.184.215.14' }] });
   for (let i = 0; i < 50; i++) await proxy.answerDns(dnsQuestion('www.example.com'), podIP);
   for (let i = 0; i < 50; i++) { const c = new Socket(); await proxy.handleConnect(request(), c, Buffer.alloc(0)); }
   assert.ok(reads <= 5, `${reads} API reads`);

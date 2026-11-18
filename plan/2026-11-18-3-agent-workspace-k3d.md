@@ -698,6 +698,22 @@ and 27) and the scripts. This plan is self-contained.
         CNI cache still name the binding it was made ready with.
         Heartbeat checks that binding too.
       - Both rulesets were checked with `nft -c` in the guard pod.
+    - **The marker page:** the guest log showed `page.goto: net::ERR_FAILED`.
+      - Ruled out:
+        - the guard table (correct);
+        - the proxy's own logic (`handleConnect` answers 200 in 74 ms
+          for the desktop's IP and token, run in the proxy pod);
+        - `route.fetch` (it does go through the context proxy, tested
+          locally with Chrome).
+      - The same local test with the real `proxy.js` found a second bug:
+        the per-IP limit (burst 20, 10/s) answered 429 to the page's own
+        assets.
+      - The proxy now shares its API snapshot for 2 s and allows burst 120
+        at 40/s. Tests cover one read per page load and a failed read never
+        being reused.
+      - The guest's route handler logs why it aborted a request: reason
+        and host only.
+      - The proxy and guest images were rebuilt.
 
 
 ## Steps
