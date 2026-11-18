@@ -24,7 +24,7 @@ async function withProxy(proxy, chromium, launch) {
 
 // Meet sometimes shows a guest a "Continue as guest" page before the name and "Ask to join"; the calls library (0.1.0-alpha.3)
 // does not know it, sees no lobby, join or call UI, and reports "denied" after its limbo grace (k14). This clicks through it,
-// then fills the name step that follows (too late for the library's own fill) and presses Join.
+// then fills the name step that follows (too late for the library's own fill); Join stays the library's to press.
 // shortcut: matches the English label only (the guest Chrome runs in English); upgrade if the library learns the page.
 const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === window.top) {
   const visible = (sel, re) => [...document.querySelectorAll(sel)].find((e) => e.offsetParent && re.test(e.textContent || ''));
@@ -40,10 +40,13 @@ const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === wi
     try { name = (await window.__vibeconfHostAsk('getBotName')) || name; } catch { /* the library's binding is missing: keep the default */ }
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, name);
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    // Join is the library's to press: its join loop reports "Error: join button not found" (and drops the call) unless it
+    // clicked it itself. Press it here only if it is still there after 5 s (the library pressed it while it was greyed out).
+    joined = true;
     setTimeout(() => {
       const join = visible('button, [role="button"]', /^\\s*(Join now|Ask to join)\\s*$/i);
-      if (join && !join.disabled && join.getAttribute('aria-disabled') !== 'true') { joined = true; join.click(); }
-    }, 500);
+      if (join && !join.disabled && join.getAttribute('aria-disabled') !== 'true') join.click();
+    }, 5000);
   }, 500);
   setTimeout(() => clearInterval(t), 300000);
 }`;
