@@ -66,7 +66,7 @@ test('dial: a write while no connection is up is dropped, not thrown', async () 
 test('call worker: the call Chrome launch gets the proxy, only for that launch', async () => {
   const proxy = { server: 'http://10.42.0.9:3128', username: 'rf', password: 'tok' };
   const seen = [];
-  const original = (dir, o) => { seen.push(o); return Promise.resolve({}); };
+  const original = (dir, o) => { seen.push(o); return Promise.resolve({ route: async () => {} }); };
   const chromium = { launchPersistentContext: original };
   let hostOpts;
   const worker = createCallWorker({ nonce: 'n', proxy, send: () => {}, env: {}, deps: {
