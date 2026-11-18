@@ -103,6 +103,7 @@ function renderTables(pod, entry, veth) {
 }
 
 const CNI_RESULTS = process.env.RF_CNI_RESULTS || '/var/lib/cni/results';
+const CNI_NETWORK = process.env.RF_CNI_NETWORK || 'cbr0'; // k3s flannel
 function readCniResults(dir = CNI_RESULTS) {
   return fs.readdirSync(dir).flatMap(file => { try { return [JSON.parse(fs.readFileSync(`${dir}/${file}`, 'utf8'))]; } catch { return []; } });
 }
@@ -113,7 +114,8 @@ async function findVeth(pod, { readResults = readCniResults, run, sleep = ms => 
   const uid = pod.metadata.uid, ip = pod.status?.podIP;
   if (!UID.test(uid) || !net.isIP(ip)) throw new Error('invalid pod identity');
   for (let attempt = 0; attempt < 5; attempt++) {
-    const mine = readResults().filter(r => r?.kind === 'cniCacheV1' && Array.isArray(r.cniArgs)
+    // each pod also has a loopback entry (cni-loopback, lo): only the pod network's eth0 entry names its port
+    const mine = readResults().filter(r => r?.kind === 'cniCacheV1' && r.networkName === CNI_NETWORK && r.ifName === 'eth0' && Array.isArray(r.cniArgs)
       && r.cniArgs.some(a => Array.isArray(a) && a[0] === 'K8S_POD_UID' && a[1] === uid));
     if (mine.length > 1) break;
     if (mine.length === 1) {

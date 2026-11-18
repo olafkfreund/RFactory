@@ -92,6 +92,11 @@ test('veth lookup: the CNI cache entry of this pod UID only; retries five times,
   const refuses = async (results, run = link) => assert.rejects(findVeth(pod, { readResults: () => results, run, sleep: async () => {} }), { code: 'guard-no-veth' });
   await refuses([]);
   await refuses([cniResult(), cniResult({ veth: 'veth999' })]); // two cache entries for one pod
+  const loopback = { kind: 'cniCacheV1', containerId: 'c0', ifName: 'lo', networkName: 'cni-loopback', cniArgs: cniResult().cniArgs,
+    result: { interfaces: [{ mac: '00:00:00:00:00:00', name: 'lo', sandbox: '/var/run/netns/cni-1' }], ips: [{ address: '127.0.0.1/8', interface: 0 }] } };
+  // the node keeps a loopback entry for every pod as well (seen on k3d-factory-agent-0): it never counts
+  assert.deepEqual(await findVeth(pod, { readResults: () => [loopback, cniResult()], run: link, sleep: async () => {} }), { veth: 'veth123', mac: '52:54:00:00:00:07' });
+  await refuses([{ ...cniResult(), networkName: 'other' }]);
   await refuses([cniResult({ ip: '10.42.1.8' })]); // the cache does not hold the pod's IP
   await refuses([cniResult({ veth: 'bad name; drop' })]);
   await refuses([{ ...cniResult(), result: { ...cniResult().result, interfaces: [{ name: 'cni0' }, { name: 'veth123' }, { name: 'veth124' }, { mac: '52:54:00:00:00:07', name: 'eth0', sandbox: 'x' }] } }]);

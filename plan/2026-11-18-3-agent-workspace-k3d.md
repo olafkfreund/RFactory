@@ -573,6 +573,11 @@ and 27) and the scripts. This plan is self-contained.
       - the veth present now on cni0.
 
       The pod cannot influence that file. The poke (deviation 26) is gone.
+
+      The cache also holds a loopback entry per pod (`cni-loopback`, `lo`),
+      found on the fourth run, so only `networkName` `cbr0` (k3s flannel,
+      `RF_CNI_NETWORK`) with `ifName` `eth0` counts. Verified in the live
+      guard pod against the reaper pod.
     - **Binding marker:** tables carry
       `comment "rfdesk-v3 <veth> <mac> <ips>"`. A table with any other
       comment, or half a pair, is stale: the pod is never ready
