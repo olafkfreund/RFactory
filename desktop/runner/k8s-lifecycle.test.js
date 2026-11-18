@@ -26,9 +26,9 @@ function setup(fail) {
     deleteVmi: () => step('deleteVmi', {}),
     listVmis: () => step('listVmis', []),
     getLease: () => step('getLease', { metadata: { name: 'rfactory-runner' }, spec: {} }),
-    updateLease: () => step('updateLease', {}),
+    updateLease: manifest => { leases.push(manifest); return step('updateLease', {}); },
   };
-  const beats = [];
+  const beats = [], leases = [];
   const clock = { now: () => now, sleep: async ms => { now += ms; }, setInterval: (fn, ms) => { timers.set(ms, fn); return fn; }, clearInterval: () => {} };
   const config = { maxVms: 3, runtimeMaxSec: 10800, workerBeatTimeoutMs: 30000, serverBeatTimeoutMs: 60000, idleMs: 600000,
     bootGraceMs: 45000, egressQuotaBytes: 1073741824,
@@ -38,7 +38,7 @@ function setup(fail) {
   const lc = createLifecycle(config, { k8s, clock, listenTcp: (port, handler) => { handlers.set(port, handler); return { close() {} }; },
     guard: async (_vm, action, body) => { beats.push({ action, body }); if (fail === `guard-${action}`) throw new Error(action); return action === 'ready' ? { ready: true } : { bytes: 0 }; },
     preflight: async () => {} });
-  return { lc, calls, manifests, handlers, timers, beats, config, k8s, setPod: value => { currentPod = value; }, advance: ms => { now += ms; } };
+  return { lc, calls, manifests, handlers, timers, beats, leases, config, k8s, setPod: value => { currentPod = value; }, advance: ms => { now += ms; } };
 }
 
 class Socket extends EventEmitter {
@@ -150,6 +150,7 @@ test('guard heartbeat changes from ten seconds to two while sharing and Lease re
   assert.ok(ctx.calls.includes('getLease'));
   await ctx.timers.get(10000)();
   assert.equal(ctx.calls.filter(x => x === 'updateLease').length, 2);
+  assert.match(ctx.leases[0].spec.renewTime, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/); // MicroTime, or the API server answers 400
   ctx.advance(10000); await ctx.lc.check();
   assert.equal(ctx.beats.filter(x => x.action === 'heartbeat').length, 1);
   ctx.lc.sharing(desktop_id, true);

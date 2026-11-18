@@ -403,10 +403,12 @@ function createLifecycle(config, deps) {
       conn.on('error', () => {});
     }
   }
+  // a Lease's renewTime is a MicroTime: the API server answers 400 to toISOString()'s three fraction digits
+  const microTime = ms => new Date(ms).toISOString().replace(/Z$/, '000Z');
   async function renewLease() {
     const lease = await deps.k8s.getLease();
     if (!lease) throw new Error('runner Lease is missing');
-    await deps.k8s.updateLease({ ...lease, spec: { ...lease.spec, renewTime: new Date(clock.now()).toISOString() } });
+    await deps.k8s.updateLease({ ...lease, spec: { ...lease.spec, renewTime: microTime(clock.now()) } });
   }
   async function leaseTick() {
     if (leaseBusy) return;

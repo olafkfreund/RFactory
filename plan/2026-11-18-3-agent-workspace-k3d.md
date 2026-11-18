@@ -545,6 +545,16 @@ and 27) and the scripts. This plan is self-contained.
       `net.sh` now prints the probe's bridge table when that happens, to
       settle it on the next run.
     - Guard image `guard:p238hmn…@sha256:d83e2315…`.
+28. **The runner never renewed its Lease (lead).**
+    - With the Lease applied, `spec` stayed empty: every PUT got 400.
+      `renewTime` is a MicroTime (six fraction digits), and
+      `toISOString()` writes three. The runner kept the error to itself
+      (blocked state, no log line).
+    - Impact: the reaper counts a Lease without `renewTime` as stale, so it
+      would have deleted every desktop.
+    - Fix: `lifecycle.js` writes six digits, and a test asserts the
+      format. Verified live, with a PUT from the runner pod.
+    - Runner image `runner:9k562yn…@sha256:136eb2b8…`.
 
 
 ## Steps
