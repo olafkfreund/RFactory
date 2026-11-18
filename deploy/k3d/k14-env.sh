@@ -56,7 +56,24 @@ on)
   if ! { [ -s "$STATE/fixture.pid" ] && kill -0 "$(cat "$STATE/fixture.pid")" 2>/dev/null; }; then
     FIXTURE_HOST=$FX_HOST nohup node "$ROOT/desktop/verify/fixture.js" "$FX_A" "$FX_B" >"$STATE/fixture.log" 2>&1 & echo $! >"$STATE/fixture.pid"
   fi
-  web_up "$STATE/config" RFACTORY_BRAIN_RECORD="$STATE/record/brain.jsonl"
+  # the owner's role lists, saved once so `off` restores them without the throwaway verify users
+  [ -s "$STATE/roles" ] || for v in RFACTORY_ALLOWED_EMAILS RFACTORY_APPROVERS RFACTORY_ADMINS; do
+    printf '%s=%q\n' "$v" "${!v:-$(env_of "$v")}"; done >"$STATE/roles"
+  chmod 600 "$STATE/roles"
+  # shellcheck disable=SC1091
+  . "$STATE/roles"
+  # $STATE/users (role email password per line, from k14-users.sh): approver, admin and member join the lists; nonmember never does
+  if [ -s "$STATE/users" ]; then
+    while read -r role email _; do
+      case $role in
+        approver) RFACTORY_ALLOWED_EMAILS+=,$email RFACTORY_APPROVERS+=${RFACTORY_APPROVERS:+,}$email ;;
+        admin) RFACTORY_ALLOWED_EMAILS+=,$email RFACTORY_ADMINS+=${RFACTORY_ADMINS:+,}$email ;;
+        member) RFACTORY_ALLOWED_EMAILS+=,$email ;;
+      esac
+    done <"$STATE/users"
+  fi
+  RFACTORY_ALLOWED_EMAILS=$RFACTORY_ALLOWED_EMAILS RFACTORY_APPROVERS=$RFACTORY_APPROVERS RFACTORY_ADMINS=$RFACTORY_ADMINS \
+    web_up "$STATE/config" RFACTORY_BRAIN_RECORD="$STATE/record/brain.jsonl"
   C=$CFG/desktop-runner
   cat >"$STATE/env" <<EOF
 export RUNNER_URL=https://127.0.0.1:18443 VERIFY_KUBE_CONTEXT=k3d-factory VERIFY_NODE_CLI=docker
@@ -80,7 +97,12 @@ off)
   for _ in $(seq 60); do [ -z "$(kc get deployment rfactory-runner -o jsonpath='{.spec.template.spec.volumes[?(@.name=="rfverify-logins")].name}')" ] && break; sleep 3; done
   kc rollout status deployment rfactory-runner --timeout=180s >/dev/null
   kc delete secret rfverify-preview-logins --ignore-not-found >/dev/null
+  if [ -s "$STATE/roles" ]; then
+    # shellcheck disable=SC1091
+    . "$STATE/roles"; export RFACTORY_ALLOWED_EMAILS RFACTORY_APPROVERS RFACTORY_ADMINS
+  fi
   web_up "$CFG"
+  rm -f "$STATE/roles"
   echo "PASS k14-env off: ArgoCD auto-sync on, runner back to git, web pod on $(jq -r .name "$CFG/scope.json")"
   ;;
 status)
