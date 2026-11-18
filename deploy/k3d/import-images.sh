@@ -6,6 +6,8 @@
 #   - `k3d image import` reports success but imports nothing when the cluster has no shared image volume: use ctr.
 #   - `ctr import` names only repo:tag, but kubelet looks a tag@digest pin up as repo@digest: add that ref.
 #   - kubelet's image GC removes images no pod uses (the guest images, between desktops): label them pinned.
+#   - pinned images are never reclaimed: each import removes the older versions of the same image, or the node fills up and
+#     kubelet taints every node disk-pressure (deviation 32). Roll back by re-importing from an older commit.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 NODES=${K3D_NODES:-k3d-factory-server-0 k3d-factory-agent-0}
@@ -21,6 +23,9 @@ for i in "${IMAGES[@]}"; do
     [ -n "$dg" ] || { echo "$i: $ref not found on $n after import" >&2; exit 1; }
     docker exec "$n" ctr -n k8s.io images tag --force "$ref" "${ref%:*}@$dg" >/dev/null
     for r in "$ref" "${ref%:*}@$dg"; do docker exec "$n" ctr -n k8s.io images label "$r" io.cri-containerd.pinned=pinned >/dev/null; done
+    old=$(docker exec "$n" ctr -n k8s.io images ls | awk -v repo="${ref%:*}" -v keep="$dg" \
+      'index($1, repo ":") == 1 || index($1, repo "@") == 1 { if ($3 != keep) print $1 }')
+    [ -z "$old" ] || { echo "$i: removing older versions on $n: $(echo "$old" | wc -l) refs" >&2; echo "$old" | xargs docker exec "$n" ctr -n k8s.io images rm >/dev/null; }
   done
   echo "$i $ref@$dg"
 done

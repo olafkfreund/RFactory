@@ -637,6 +637,20 @@ and 27) and the scripts. This plan is self-contained.
         port is the host's and the runner certificate's `127.0.0.1` name
         still matches.
       - `RFACTORY_RUNNER_URL=https://127.0.0.1:18443`.
+32. **Incident: both nodes disk-pressure, about 15:17 to 16:05 (lead).**
+    - The seventh k10b run's real desktop stayed `Scheduling`: both nodes
+      carried `node.kubernetes.io/disk-pressure` (k3d image disk 90%). New
+      pods across the shared cluster stayed Pending (about 15).
+    - Cause: every guard and runner rebuild was imported and labelled
+      `io.cri-containerd.pinned`, so kubelet's GC could reclaim none of
+      the dozen old versions.
+    - Fix: removed every rfactory version the manifests no longer pin,
+      then `crictl rmi --prune` (unused images; they pull again on
+      demand). The nodes went to 75–80% and the taints cleared.
+    - Reported on the agent bus. The host's docker build cache (about
+      90 GB reclaimable) is the owner's and was not touched.
+    - `import-images.sh` now removes the older versions of each image it
+      imports.
 
 
 ## Steps
