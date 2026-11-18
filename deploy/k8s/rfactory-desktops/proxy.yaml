@@ -34,7 +34,7 @@ spec:
           - {name: net.ipv4.ip_unprivileged_port_start, value: "0"}
       containers:
         - name: proxy
-          image: docker.io/rfactory/proxy:0rnynaj14714hs0wy1sf40g3mybn2gfw@sha256:101e5ebebd870f4464424b08134e1b2e7775014ebca69a7f814a1f3e7367ab41
+          image: docker.io/rfactory/proxy:l1h6w0rz5b16z94grjadw222fdy0whzz@sha256:403ae8bdf73469fd6fbd82a6d8b45658ebb3a577e44a5e3139f285c3bc7aba7d
           imagePullPolicy: Never
           ports:
             - {name: connect, containerPort: 3128}
