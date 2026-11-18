@@ -472,6 +472,15 @@ and 27) and the scripts. This plan is self-contained.
       1 GiB egress destroy, and the 5 s share cutoff with the runner
       stopped. `net.sh` measures the 5 s cutoff on a probe as
       `net-share-cut-5s`.
+23. **k1a result (2026-11-18, the owner ran the gate script).**
+    - KubeVirt v1.9.1 was installed through factory-gitops#376 (all images
+      `tag@digest`; the two `virt-template` images pinned in #378) on the
+      upgraded cluster (Kubernetes 1.35.10, nixos_config#3071).
+    - The KubeVirt CR is Deployed, the `kubevirt` app is Synced and
+      Healthy, and both nodes expose `devices.kubevirt.io/kvm`.
+    - The demo VMI ran in 15 s on `k3d-factory-agent-0`, with `/dev/kvm`
+      in the launcher and `<domain type='kvm'>`.
+    - The scratch namespace was deleted. **PASS.**
 
 
 ## Steps
