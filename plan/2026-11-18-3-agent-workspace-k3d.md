@@ -200,6 +200,52 @@ and 27) and the scripts. This plan is self-contained.
     newest KubeVirt release whose published support matrix includes
     Kubernetes 1.31.5, recorded with the matrix link and image digests.
     A cluster upgrade is out of scope.
+11. **Packet path, final form (Codex's re-check of e7238c6, after
+    approval; it replaces the rule details of deviation 2).**
+    - **Placement:**
+      - Desktop VMIs run only on `k3d-factory-agent-0` (a nodeSelector).
+      - The runner and the proxy run only on `k3d-factory-server-0`
+        (nodeSelector, plus anti-affinity with desktops).
+      - The proxy is also reached through a fixed ClusterIP, passed as a
+        kernel argument like the runner's.
+
+      So every legitimate desktop flow is **routed** through the
+      gateway, and never bridged to a same-node pod.
+    - **Bridge table** per desktop:
+      - `prerouting`, `iifname <veth>`: anti-spoofing (MAC, IPv4 and
+        IPv6 source), and ARP only for the pod's own IP;
+      - `forward`, `iifname <veth>` and `oifname <veth>`: drop all IP.
+        Nothing a desktop needs is bridged, so same-node pod traffic
+        cannot bypass the inet rules.
+    - **Inet table** per desktop, with no packet mark. The bridge
+      anti-spoofing guarantees the source.
+      - `forward`, egress, `ip saddr <podIP>` (and IPv6), in this order:
+        1. `alive` and `deadline` present, else drop;
+        2. the shared quota, over the limit → drop;
+        3. accept `ct original ip daddr` equal to the runner ClusterIP
+           on 5000, 5001 or 5900, or the proxy ClusterIP on its port;
+        4. the always-protected drop;
+        5. accept the media ipBlocks and approved previews;
+        6. drop.
+      - `forward`, ingress, `ip daddr <podIP>`:
+        1. `alive` and `deadline` present, else drop;
+        2. `ct state established,related` accept;
+        3. drop.
+
+        Replies are identified by conntrack state and destination; no
+        zone or mark is needed.
+      - `input`, `ip saddr <podIP>`: drop (nothing on the node itself is
+        for desktops).
+    - **Proxy token transport:**
+      - `desktop/runner/protocol.js` `call-config` gains `proxy: {addr,
+        token}`, in k3;
+      - the guest handler passes it to the call worker and the control
+        Chrome, both launched with the proxy and credentials, in k2;
+      - a test shows both Chromes are given them.
+    - **Order:** `net.sh`'s k10b checks are written in k12, which now runs
+      before k10.
+    - k10b adds one check: a desktop cannot reach a pod on its own node
+      by pod IP.
 
 ## Steps
 
