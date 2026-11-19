@@ -410,3 +410,14 @@ test('empty stdin exits cleanly', async () => {
   assert.strictEqual(await s.done, 0);
   assert.strictEqual(s.calls.close, 0);
 });
+
+test('stop waits for the page to confirm the leave before it closes the browser', async () => {
+  const order = [];
+  const page = avatarPage({ order });
+  const s = await joined({ page, order });
+  page.waitForFunction = async (fn, arg, opts) => { order.push(`left-wait ${opts.timeout} closed=${s.calls.close}`); };
+  s.msg({ type: 'leave' }); await s.done;
+  assert.ok(order.indexOf('leave') < order.indexOf('left-wait 8000 closed=0'), order.join(','));
+  assert.equal(s.calls.close, 1);
+});
+

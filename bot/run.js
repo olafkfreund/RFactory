@@ -122,6 +122,15 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     }
   }
 
+  // The platform sends the leave after the click, asynchronously; closing Chrome at once drops it, and Teams then keeps a
+  // ghost participant for minutes (k14). Wait, bounded under web's 10 s kill, for the page to show the call was left.
+  async function leftConfirmed() {
+    const page = call._inner && call._inner.page;
+    if (!page || typeof page.waitForFunction !== 'function') return;
+    const left = () => /leave by mistake|rejoin|you left|left the (meeting|call)|meeting (has )?ended|call ended/i.test((document.body && document.body.innerText) || '');
+    try { await page.waitForFunction(left, null, { timeout: 8000 }); } catch { log('leave not confirmed by the page within 8 s'); }
+  }
+
   // The one stop path: abort join, clear timers, cancel playback, leave, close host, remove profile.
   function stop(reason, code = 0) {
     if (stopping) return stopping;
@@ -136,6 +145,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       await idleAvatar();
       await cancelAll();
       if (call) { try { await call.leave(); } catch (e) { log(`leave failed: ${e.message}`); } }
+      if (call) await leftConfirmed();
       if (host) { try { await host.close(); } catch (e) { log(`host close failed: ${e.message}`); } }
       if (dir) { try { await d.rm(dir); } catch (e) { log(`profile removal failed: ${e.message}`); } }
       if (!TERMINAL.includes(state)) sendState('left');

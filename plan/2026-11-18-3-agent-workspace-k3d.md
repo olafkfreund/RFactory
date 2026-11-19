@@ -896,6 +896,15 @@ and 27) and the scripts. This plan is self-contained.
     proxy, the guest's Playwright setup); with `onecdn.static.microsoft`
     added, the pre-join page loads. Microsoft telemetry hosts (aria,
     events.data, cspv2) stay refused. Test in k8s.test.js.
+44. **The bot waits for the platform to confirm its leave (lead, k14
+    Teams e2e).** After a call ended, Teams kept the bot listed for
+    minutes. The bot clicked Leave and closed Chrome in the same
+    tenth of a second, and its VM went with it, so Teams never got the
+    leave (reproduced: the library's leave works when Chrome stays up
+    4 s). `bot/run.js` stop now waits, bounded at 8 s (under web's 10 s
+    kill), for the page to show the call was left. It applies to the
+    pod bot as well. Test in bot/test/run.test.js; guest images and
+    command line re-pinned.
 
 
 ## Steps
