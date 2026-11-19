@@ -9,8 +9,10 @@
 # Environment: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_SERVER_URL (no path), VERIFY_ADMIN_COOKIE (an admin's session cookie, name=value),
 # VERIFY_OTHER_SCOPE (a scope other than the web server's). Optional: VERIFY_SCOPE (the web server's scope, default verify-scope), VERIFY_WAIT_EXPIRY (3700 s).
 # profiles-expire-destroys-desktop backdates the profile's record and waits for the runner's hourly expiry sweep, so the script runs over an hour.
-# profiles-rollback-keeps-data asks the owner on the terminal to delete the ArgoCD Application rfactory-desktops (the namespace stays) and sync it
-# again: the script never touches the argocd namespace.
+# profiles-rollback-keeps-data deletes the ArgoCD Application rfactory-desktops (cascade: its workloads go, the namespace stays), recreates it from
+# its saved spec and syncs it at this branch's pushed HEAD, then puts back k14 test mode's runner settings (deploy/k3d/k14-env.sh runner). It
+# refuses unless HEAD's manifests carry the images that are live, so the rehearsal never rolls the cluster to other images (the Application's
+# own targetRevision may be older while test mode pauses auto-sync). In the argocd namespace it touches only that one Application.
 # shellcheck disable=SC2016
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
@@ -22,7 +24,54 @@ VERIFY_SCOPE=${VERIFY_SCOPE:-verify-scope}
 MARKER=rfmark-$(cat /proc/sys/kernel/random/uuid)
 LUKS=4c554b53babe # "LUKS" 0xba 0xbe
 PROFILES=() # profile ids this script created; the only ones it deletes
-extra_cleanup() { local p; for p in "${PROFILES[@]}"; do admin DELETE "/api/profiles/$p" >/dev/null 2>&1 || true; done; }
+APP=rfactory-desktops APPJSON='' APPGONE=''
+argo_app() { kubectl --context "$KCTX" -n argocd "$@"; }
+# app_sync <revision>: one sync of the Application at that revision; waits until THAT operation (a new startedAt, the same revision, nothing
+# left pending) succeeded and the Application is healthy (Codex: the previous operation's Succeeded must not count)
+app_sync() {
+  local end=$((SECONDS + 600)) prev st
+  prev=$(argo_app get application "$APP" -o jsonpath='{.status.operationState.startedAt}' 2>/dev/null) || prev=
+  argo_app patch application "$APP" --type merge -p "$(jq -nc --arg r "$1" '{operation:{initiatedBy:{username:"profiles.sh"},sync:{revision:$r,prune:true}}}')" >/dev/null || return 1
+  while [ $SECONDS -lt "$end" ]; do
+    st=$(argo_app get application "$APP" -o json 2>/dev/null | jq -r --arg p "$prev" --arg r "$1" '
+      if .operation != null or (.status.operationState.startedAt // "") == $p or (.status.operationState.operation.sync.revision // "") != $r then "pending"
+      else "\(.status.operationState.phase) \(.status.health.status)" end') || st=
+    [ "$st" = "Succeeded Healthy" ] && return 0
+    case $st in Failed*|Error*) return 1 ;; esac
+    sleep 5
+  done
+  return 1
+}
+# app_restore: a rehearsal that died after the delete leaves no Application: wait out a delete still running (its finalizer), recreate it from
+# the saved spec and sync it, with the test settings
+app_restore() {
+  local end=$((SECONDS + 600))
+  [ -n "$APPGONE" ] && [ -n "$APPJSON" ] || return 0
+  while [ -n "$(argo_app get application "$APP" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)" ]; do
+    [ $SECONDS -lt "$end" ] || return 1; sleep 5
+  done
+  argo_app get application "$APP" >/dev/null 2>&1 || argo_app create -f - <<<"$APPJSON" >/dev/null || return 1
+  app_sync "$(jq -r .spec.source.targetRevision <<<"$APPJSON")" && K14_CONTEXT=$KCTX "$ROOT/deploy/k3d/k14-env.sh" runner >/dev/null && APPGONE=''
+}
+extra_cleanup() {
+  local p
+  app_restore || echo "CLEANUP the Application $APP may be missing or unsynced: recreate it and sync (saved spec was in this run's APPJSON)" >&2
+  for p in "${PROFILES[@]}"; do admin DELETE "/api/profiles/$p" >/dev/null 2>&1 || true; done
+}
+# live_matches_head: the images and guest settings that run now are exactly what HEAD's deploy/k8s/rfactory-desktops says, and HEAD is pushed
+live_matches_head() {
+  local d=$ROOT/deploy/k8s/rfactory-desktops live git v
+  git -C "$ROOT" diff --quiet HEAD -- "$d" || { echo "uncommitted changes in $d"; return 1; }
+  git -C "$ROOT" fetch -q origin 2>/dev/null; git -C "$ROOT" merge-base --is-ancestor HEAD '@{u}' 2>/dev/null || { echo "HEAD is not pushed"; return 1; }
+  live=$(kc get deployments,daemonsets -o jsonpath='{range .items[*].spec.template.spec.containers[*]}{.image}{"\n"}{end}' | sort -u)
+  git=$(grep -ho 'image: *[^ ]*' "$d"/*.yaml | sed 's/image: *//; s/"//g' | sort -u)
+  [ "$live" = "$git" ] || { echo "live images differ from HEAD: live [$(tr '\n' ' ' <<<"$live")] git [$(tr '\n' ' ' <<<"$git")]"; return 1; }
+  for v in RF_GUEST_BOOT_IMAGE RF_GUEST_DISK_IMAGE RF_GUEST_CMDLINE; do
+    live=$(kc get deployment rfactory-runner -o jsonpath="{.spec.template.spec.containers[0].env[?(@.name==\"$v\")].value}")
+    # the whole value, exactly (Codex: a substring of the manifest let a truncated command line pass)
+    [ -n "$live" ] && [ "$live" = "$(sed -n "s/^ *- {name: $v, value: \"\(.*\)\"}$/\1/p" "$d/runner.yaml")" ] || { echo "live $v differs from HEAD"; return 1; }
+  done
+}
 
 # mk_profile <name>: sets P to a new profile's id, else dies
 mk_profile() {
@@ -134,25 +183,34 @@ for _ in $(seq 12); do gone_pvc_cm "$P3" && break; sleep 5; done
 if desk_gone "$D4" && gone_pvc_cm "$P3"; then pass profiles-expire-destroys-desktop
 else fail profiles-expire-destroys-desktop "desktop $D4 ($(desk_leftovers "$D4")) or the profile objects remained ${VERIFY_WAIT_EXPIRY:-3700} s after the record was backdated"; fi
 
-# rollback rehearsal: the owner deletes the ArgoCD Application (the namespace stays) and syncs it again; the PVC and the record are the same
+# rollback rehearsal: the Application is deleted (its workloads go, the namespace stays), recreated and synced; the PVC and the record are the same
 mk_profile "verify-rollback"; P4=$P
 attach "$P4" profiles-call-5; D5=$AD
 [ -n "$D5" ] || die "attach for the rollback rehearsal failed: $ATTACHED"
 api destroy "$(jq -nc --arg d "$D5" '{desktop_id:$d}')" >/dev/null || true; wait_gone "$D5" 90 || die "$D5 did not go"
 uid0=$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}'); cm0=$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}')
 rt0=$(kc get deployment rfactory-runner -o jsonpath='{.metadata.uid}' 2>/dev/null) || rt0=
-ans=
-if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-  printf 'Rollback rehearsal: delete the ArgoCD Application rfactory-desktops now (the namespace stays), wait until its workloads are gone, sync it again,\nthen answer. Profile %s (PVC rfprofile-%s) must survive. Done? [y/N] ' "$P4" "$P4" >/dev/tty
-  read -r -t 1800 ans </dev/tty || true
+head=$(git -C "$ROOT" rev-parse HEAD)
+if ! why=$(live_matches_head); then fail profiles-rollback-keeps-data "not rehearsed: $why (commit and push the live pins first)"
+else
+  APPJSON=$(argo_app get application "$APP" -o json | jq -c --arg r "$head" '{apiVersion, kind, metadata: (.metadata | {name, namespace, labels, annotations, finalizers}
+    | .annotations |= ((. // {}) | del(."kubectl.kubernetes.io/last-applied-configuration", ."argocd.argoproj.io/refresh"))), spec: (.spec | .source.targetRevision = $r)}')
+  [ "$(jq -r '.metadata.finalizers // [] | index("resources-finalizer.argocd.argoproj.io") != null' <<<"$APPJSON")" = true ] \
+    || die "the Application has no resources finalizer: a delete would not remove its workloads"
+  APPGONE=1
+  argo_app delete application "$APP" --wait=true --timeout=600s >/dev/null || die "delete the Application $APP"
+  gone=$(kc get deployment rfactory-runner -o name 2>/dev/null || true)
+  ns=$(kubectl --context "$KCTX" get namespace "$NS" -o name 2>/dev/null || true)
+  app_restore || die "recreate and sync the Application $APP at $head"
+  if [ -n "$gone" ] || [ -z "$ns" ]; then fail profiles-rollback-keeps-data "after the delete: runner Deployment '$gone' still there, namespace '$ns'"
+  elif ! kc rollout status deployment/rfactory-runner --timeout=300s >/dev/null 2>&1; then fail profiles-rollback-keeps-data "runner Deployment not back after the sync"
+  elif [ -z "$rt0" ] || [ "$(kc get deployment rfactory-runner -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$rt0" ]; then fail profiles-rollback-keeps-data "runner Deployment uid unchanged: the Application was not deleted and recreated"
+  elif [ "$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$uid0" ] \
+    && [ "$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}' 2>/dev/null)" = "$cm0" ] && [ "$(magic "$P4")" = "$LUKS" ]; then
+    pass "profiles-rollback-keeps-data (Application deleted and synced at ${head:0:7})"
+  else fail profiles-rollback-keeps-data "PVC or record changed or missing after the rehearsal (pvc was $uid0, record $cm0)"; fi
+  wait_api 90 || die "runner API does not answer after the rehearsal"
 fi
-if [ "$ans" != y ] && [ "$ans" != Y ]; then fail profiles-rollback-keeps-data "the owner did not confirm the rehearsal"
-elif ! kc rollout status deployment/rfactory-runner --timeout=300s >/dev/null 2>&1; then fail profiles-rollback-keeps-data "runner Deployment not back after the sync"
-elif [ -z "$rt0" ] || [ "$(kc get deployment rfactory-runner -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$rt0" ]; then fail profiles-rollback-keeps-data "runner Deployment uid unchanged: the Application was not deleted and recreated"
-elif [ "$(kc get pvc "rfprofile-$P4" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$uid0" ] \
-  && [ "$(kc get configmap "rfprofile-$P4" -o jsonpath='{.metadata.uid} {.data.initialized}' 2>/dev/null)" = "$cm0" ] && [ "$(magic "$P4")" = "$LUKS" ]; then
-  pass profiles-rollback-keeps-data
-else fail profiles-rollback-keeps-data "PVC or record changed or missing after the rehearsal (pvc was $uid0, record $cm0)"; fi
 
 echo "info volumes kept (Retain) behind this namespace's profile claims, delete them yourself: $(kubectl --context "$KCTX" get pv -o json \
   | jq -r --arg ns "$NS" '[.items[] | select(.spec.claimRef.namespace == $ns and ((.spec.claimRef.name // "") | startswith("rfprofile-"))) | .metadata.name] | join(" ")')"

@@ -847,6 +847,22 @@ and 27) and the scripts. This plan is self-contained.
     leaves the origin, and strips `path` before the entry reaches the
     guest. Changes the 2026-11-17 plan's "opens its origin" to "opens
     its origin at the entry's optional path".
+41. **profiles.sh rehearses the rollback itself (owner request,
+    2026-11-19: "fix this so we do not have problems with this in the
+    future").** The rehearsal asked the owner on the terminal to delete
+    and resync the ArgoCD Application. With k14 test mode on, the
+    Application's `targetRevision` is older than the live pins, so a
+    resync by hand would have rolled the cluster to other images and
+    dropped the runner's test settings. The script now refuses unless
+    HEAD (pushed) carries exactly the live images and guest settings,
+    saves the Application with `targetRevision` = HEAD, deletes it
+    (cascade through the resources finalizer; the namespace, profile
+    PVCs, ConfigMaps and TLS Secrets are not tracked and stay),
+    recreates and syncs it, and puts the test settings back with the new
+    `deploy/k3d/k14-env.sh runner`. Cleanup recreates and syncs the
+    Application if the script dies after the delete. In the argocd
+    namespace it touches only that Application. The owner's terminal
+    step is gone.
 
 
 ## Steps
