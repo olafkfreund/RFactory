@@ -7,12 +7,10 @@ Fixes found during k14 are listed in the plan, deviations 39 and 40.
 
 ## Verdict: **not yet complete**
 
-Every scripted check that has run passes, after the fixes in deviations 39 and 40.
-Still open, both owner-gated:
+Every scripted check that has run passes, after the fixes in deviations 39 to 42 and the docker-disk move
+(nixos_config #3109). Still open, owner-gated:
 
 - `e2e.sh` Teams half: needs the owner in a Teams meeting (4 checks not run).
-- `profiles.sh` rollback rehearsal: scripted and approved, blocked by the
-  saturated docker disk (open findings).
 
 ## Images under test
 
@@ -41,7 +39,7 @@ matching `targetRevision` bump.
 | `share.sh` | 6/6 | Owner watched the Meet. `share-control-down` cut 14 s after the channel was dropped (5 s cutoff plus teardown). |
 | `liveview.sh` | 7/7 | Revoke closes the stream within 5 s; second viewer 409. |
 | `e2e.sh` | Meet 5/5, Teams 0/4 | Teams half not run (owner). |
-| `profiles.sh` | 7/8 | All but the rollback rehearsal pass, the hour-long expiry included. The rehearsal (now scripted, deviation 41) could not start twice: its profile desktop booted too slowly while the docker disk was saturated (see open findings). |
+| `profiles.sh` | 8/8 | 7/8 on the first run; the rollback rehearsal (now scripted, deviation 41) could not start while the docker disk was saturated. After the move to NVMe (nixos_config #3109) it passed in 112 s: the Application deleted and synced at f20fa92, the profile's PVC, record and LUKS header unchanged. |
 
 ### Manual capacity checks (real desktops)
 
@@ -93,16 +91,12 @@ limits density, not CPU: three desktops reserve about 19 GiB.
 
 ## Open findings
 
-- **The docker disk is the bottleneck.** Docker's root, and with it the
-  whole k3d cluster (k3s datastore, images, local-path profile volumes,
-  VM disks), is on `/mnt/img_pool`: `sdd`, a 256 GB SATA SSD, 77 % full,
-  while both NVMe drives are idle. During factory Jobs (TFactory runs)
-  it writes about 60 MiB/s at 100 % busy; then API calls time out, a
-  profile volume waits about 60 s for local-path, and desktops boot
-  past the runner's 60 s control wait (`no-control`, `launcher pod did
-  not become ready`, `VMI did not reach Paused`). This is the likely
-  cause of the earlier intermittent boot failures (about 2 in 40).
-  Moving docker's root to NVMe is a p620 NixOS change (owner).
+- **Fixed: the docker disk was the bottleneck.** The whole k3d cluster lived in docker's volumes on `sdd`, a
+  256 GB SATA SSD, which wrote about 60 MiB/s at 100 % busy under factory Jobs: API timeouts, slow volume
+  provisioning, and desktops past the runner's 60 s window (the likely cause of the earlier boot failures,
+  about 2 in 40). nixos_config #3109 / #3110 (2026-11-19) moved the volumes (85 GB) to nvme0 by a bind mount;
+  the copy was checksum-verified, all 45 ArgoCD apps came back, and the profiles rehearsal then passed. Still
+  to watch: IO pressure during the next TFactory run.
 - A share whose whole-screen capture the guard refused is recorded as
   started; the capture stays blocked (fails safe), but the record is wrong.
 - The runner does not log why it destroyed a desktop.
