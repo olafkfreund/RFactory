@@ -40,22 +40,24 @@ runner_restart() {
   [ -n "$ok" ] || { echo "runner restart failed 20 times" >&2; exit 1; }
   kc rollout status deployment rfactory-runner --timeout=180s >/dev/null
 }
-# app_sync: a hard refresh, then one sync of rfactory-desktops at its targetRevision; waits for THAT operation (a new startedAt, nothing
-# pending) to succeed and the app to be healthy
+# app_sync: a hard refresh and a sync request, then waits for the outcome, whichever operation gets there (auto-sync may run its own
+# first, k14): nothing pending or running, Synced at the commit the branch has on GitHub now, and Healthy
 app_sync() {
-  local prev st end=$((SECONDS + 600))
+  local want rev st end=$((SECONDS + 600))
+  rev=$(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.spec.source.targetRevision}')
+  want=$(git -C "$ROOT" ls-remote origin "refs/heads/$rev" | cut -f1); [ -n "$want" ] || want=$rev # a commit pin is its own answer
   kubectl -n argocd annotate application rfactory-desktops argocd.argoproj.io/refresh=hard --overwrite >/dev/null
-  prev=$(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.status.operationState.startedAt}')
   kubectl -n argocd patch application rfactory-desktops --type merge \
-    -p '{"operation":{"initiatedBy":{"username":"k14-env"},"sync":{"prune":true}}}' >/dev/null
+    -p '{"operation":{"initiatedBy":{"username":"k14-env"},"sync":{"prune":true}}}' >/dev/null || true # refused while one runs: fine
   while [ $SECONDS -lt "$end" ]; do
-    st=$(kubectl -n argocd get application rfactory-desktops -o json | jq -r --arg p "$prev" '
-      if .operation != null or (.status.operationState.startedAt // "") == $p then "pending"
-      else "\(.status.operationState.phase) \(.status.health.status)" end')
-    case $st in "Succeeded Healthy") return 0 ;; Failed*|Error*) echo "sync: $st" >&2; exit 1 ;; esac
+    st=$(kubectl -n argocd get application rfactory-desktops -o json 2>/dev/null | jq -r --arg w "$want" '
+      if .operation != null or .status.operationState.phase == "Running" then "pending"
+      elif .status.sync.revision != $w then "behind"
+      else "\(.status.sync.status) \(.status.health.status)" end') || st=unreadable
+    case $st in "Synced Healthy") return 0 ;; esac
     sleep 3
   done
-  echo "sync did not finish in 600 s" >&2; exit 1
+  echo "not Synced and Healthy at ${want:0:7} after 600 s (last: $st)" >&2; exit 1
 }
 
 case ${1:-} in
