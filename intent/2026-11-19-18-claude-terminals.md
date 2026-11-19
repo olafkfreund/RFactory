@@ -99,6 +99,15 @@ with its own approval (open question 2).
   log kept by the place the session runs needs its own retention and
   access rule (open question 7).
 
+## Decisions (owner, 2026-11-19)
+
+1. **The Claude session runs as an AIFactory agent run (option b),**
+   started through CFactory as a #10-style approved action, with its live
+   log shown in the call as #12 shows the board. The desktop VM gets no
+   Claude login and no source token. The spec verifies option (b)'s
+   assumptions first; AIFactory's interface already lists a log reader
+   (`task_get_logs`) and a stop (`task_stop`).
+
 ## Open questions
 
 1. **Where does the Claude session run?**
@@ -114,8 +123,7 @@ with its own approval (open question 2).
      **Assumptions to verify first:** that AIFactory runs give an
      equivalent boundary, time and cost limits, a live log RFactory can
      read, and cancellation that ends everything the run started.
-   - I lean towards (b) if those assumptions hold; (a) is closer to a real
-     terminal.
+   - **Decided: (b)** (Decisions, 1).
 2. **What may it do without a second approval?** Read and run tests only,
    or also change files on a branch? Is opening a pull request a separate
    approval?
