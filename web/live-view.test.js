@@ -113,3 +113,22 @@ test('a membership lookup that throws closes the stream', async (t) => {
 test('the web image needs only the filter and view-only bridge from runner/vnc.js (no vsock)', () => {
   assert.deepEqual(Object.keys(require('../desktop/runner/vnc.js')).sort(), ['bridgeViewOnly', 'createFilter']);
 });
+
+test('a client that hangs up without a Close frame releases the runner connection (one viewer per desktop)', async (t) => {
+  // k14: a viewer that vanished (closed tab, dropped network) sent only a FIN; the web kept its runner stream, and every later viewer got 409
+  let guestClosed = false;
+  const g = net.createServer((s) => { s.on('close', () => { guestClosed = true; }); s.on('error', () => {}); });
+  await new Promise((r) => g.listen(0, '127.0.0.1', r));
+  t.after(() => g.close());
+  const s = await start(t, { fake: { port: g.address().port } });
+  const u = new URL(s.url('d1'));
+  const sock = net.connect(Number(u.port), u.hostname);
+  await new Promise((r) => sock.once('connect', r));
+  sock.write(`GET ${u.pathname} HTTP/1.1\r\nHost: ${u.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+    `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nX-Forwarded-Email: ${ME}\r\n\r\n`);
+  const head = await new Promise((r) => sock.once('data', (d) => r(d.toString())));
+  assert.match(head, /^HTTP\/1\.1 101/);
+  await until(() => s.opened.length === 1);
+  sock.end(); // FIN only, no WebSocket Close frame
+  await until(() => guestClosed);
+});

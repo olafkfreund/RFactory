@@ -78,6 +78,8 @@ function attachLiveView(server, { roles, isMember, openVnc, intervalMs = 5000, s
         if (!ok) bridge.close();
       }, intervalMs);
       socket.on('data', wsReader(bridge.fromClient, (p) => socket.write(wsFrame(10, p)), bridge.close));
+      // a client that vanishes sends only a FIN (no Close frame): 'end' then, or the runner stream and its one viewer slot stay taken (k14)
+      socket.on('end', bridge.close);
       socket.on('close', bridge.close);
     } catch { socket.destroy(); }
   });
