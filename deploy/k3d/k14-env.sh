@@ -82,6 +82,7 @@ export VERIFY_SERVER_URL=http://127.0.0.1:4180 VERIFY_SCOPE=verify-scope VERIFY_
 export VERIFY_FIXTURE_URL=http://$FX_HOST:$FX_A VERIFY_FIXTURE_CTL=http://$FX_HOST:$FX_A
 export VERIFY_LOGIN_PROFILE=fixture VERIFY_LOGIN_FILE=$STATE/login VERIFY_BRAIN_RECORD=$STATE/record/brain.jsonl VERIFY_POD_USER=$(id -un)
 export RFACTORY_CONFIG=$STATE/config RFACTORY_RUNNER_URL=https://127.0.0.1:18443
+export VERIFY_CHROME=$(command -v chromium || command -v google-chrome-stable || command -v google-chrome)
 # owner-supplied, per run: VERIFY_MEET_LINK VERIFY_TEAMS_LINK VERIFY_APPROVER_COOKIE VERIFY_MEMBER_COOKIE VERIFY_NONMEMBER_COOKIE VERIFY_ADMIN_COOKIE
 [ ! -r $STATE/owner.env ] || . $STATE/owner.env
 EOF

@@ -33,7 +33,8 @@ mapfile -t closure < <(nix-store -qR "$out")
 # -type f: a directory such as perl's HTTP/Cookies is not a cookie store. '*.pem' alone would match public CA bundles, so pem files
 # count only when they hold a private key.
 found=$(find "${closure[@]}" -type f \( -name Cookies -o -name 'Login Data' -o -name .netrc -o -name .git-credentials -o -name id_rsa -o -name id_ed25519 \
-  -o -name credentials.json -o -name .credentials.json -o -name auth.json -o -name '*.key' -o -name '*-key.pem' -o -name .env \) -not -path '*/node_modules/*' 2>/dev/null | head -20 || true)
+  -o -name credentials.json -o -name .credentials.json -o -name auth.json -o -name '*.key' -o -name '*-key.pem' -o -name .env \) -not -path '*/node_modules/*' \
+  -not -path '*-dns-root-data-*/root.key' 2>/dev/null | head -20 || true) # root.key there is DNSSEC's public root trust anchor (k14)
 pems=$(find "${closure[@]}" -type f -name '*.pem' -not -path '*/node_modules/*' -exec grep -l 'PRIVATE KEY' {} + 2>/dev/null | head -20 || true)
 found="$found$pems"
 if [ -z "$found" ]; then pass secrets-no-credential-files; else fail secrets-no-credential-files "found: $found"; fi
@@ -44,7 +45,7 @@ g0=$(grant "$D" 10 '["desktop_type","desktop_screenshot"]')
 [ "$(jq -r '.ok // false' <<<"$g0" 2>/dev/null)" = true ] || die "grant failed: $g0"
 ready=
 for _ in $(seq 48); do
-  [ "$(jq -r '.ok // false' <<<"$(act "$D" '{"type":"desktop_screenshot"}' 2>/dev/null)" 2>/dev/null)" != true ] || { ready=1; break; }
+  [ "$(jq -r '.ok // false' <<<"$(act "$D" '{"type":"desktop_screenshot","hosts":[]}' 2>/dev/null)" 2>/dev/null)" != true ] || { ready=1; break; }
   sleep 5
 done
 [ -n "$ready" ] || die "the guest never answered a screenshot"
