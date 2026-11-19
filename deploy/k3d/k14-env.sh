@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # k14 test mode for desktop/verify/*.sh on the k3d `factory` cluster (plan 2026-11-18-3-agent-workspace-k3d, deviation 37).
-# Usage: deploy/k3d/k14-env.sh on|off|runner|status
-#   on:  pauses ArgoCD auto-sync (root and rfactory-desktops, or it puts the runner back), gives the runner the verify hooks,
-#        the fixture previews and a generated preview login, starts the fixture on the rfverify bridge (10.250.0.1, private and
-#        outside every protected range), and restarts the web pod on scope verify-scope. Writes $STATE/env, which the scripts source.
-#   off: stops the fixture, turns ArgoCD auto-sync back on (self-heal restores the runner) and restarts the web pod as k11 left it.
+# Usage: deploy/k3d/k14-env.sh on|off|sync|status
+#   on:  gives the runner the verify hooks, the fixture previews and a generated preview login through two Secrets that are never in
+#        Git (rfverify-runner, rfverify-preview-logins; runner.yaml reads both as optional), restarts the runner, starts the fixture on
+#        the rfverify bridge (10.250.0.1, private and outside every protected range), and restarts the web pod on scope verify-scope.
+#        Writes $STATE/env, which the scripts source. ArgoCD keeps syncing: nothing it manages differs from Git (plan deviation 42).
+#   off: deletes the two Secrets, restarts the runner, stops the fixture and restarts the web pod as k11 left it.
+#   sync: deploys what is pushed now: a hard refresh and one sync of the rfactory-desktops Application, waited for (no 3 min poll).
 # Never on with desktops running; announce on the agent bus first (the runner and the web pod restart).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -30,19 +32,30 @@ web_up() { # <config dir> [extra env...]: the web pod with desktops on and the r
     RFACTORY_DESKTOP=1 RFACTORY_RUNNER_URL=https://127.0.0.1:18443 "$@" "$ROOT/deploy/pod.sh" up
 }
 
-runner_verify() { # the runner's test-mode settings: verify hooks, the fixture previews, the preview login Secret
-  local patch previews
-  previews=$(jq -nc --arg a "$FX_HOST:$FX_A" --arg b "$FX_HOST:$FX_B" '{"verify-scope":[$a,$b],"verify-other":[$a]}')
-  patch=$(jq -nc --arg p "$previews" '{spec:{template:{spec:{
-    volumes:[{name:"rfverify-logins",secret:{secretName:"rfverify-preview-logins"}}],
-    containers:[{name:"runner",env:[{name:"RF_VERIFY_HOOKS",value:"1"},{name:"RF_SCOPE_PREVIEWS",value:$p},
-      {name:"RF_PREVIEW_LOGINS_PATH",value:"/etc/rfactory/verify/logins.json"}],
-      volumeMounts:[{name:"rfverify-logins",mountPath:"/etc/rfactory/verify",readOnly:true}]}]}}}}')
-  # Kyverno's webhook flaps ("no endpoints") for a few seconds after policies change: retry
-  local ok=
-  for _ in $(seq 20); do kc patch deployment rfactory-runner --type strategic -p "$patch" >/dev/null && { ok=1; break; }; sleep 3; done
-  [ -n "$ok" ] || { echo "runner patch failed 20 times" >&2; exit 1; }
+
+# runner_restart: a new runner pod, so it reads the verify Secrets (or their absence); Kyverno's webhook flaps for a few seconds: retry
+runner_restart() {
+  local ok=''
+  for _ in $(seq 20); do kc rollout restart deployment rfactory-runner >/dev/null && { ok=1; break; }; sleep 3; done
+  [ -n "$ok" ] || { echo "runner restart failed 20 times" >&2; exit 1; }
   kc rollout status deployment rfactory-runner --timeout=180s >/dev/null
+}
+# app_sync: a hard refresh, then one sync of rfactory-desktops at its targetRevision; waits for THAT operation (a new startedAt, nothing
+# pending) to succeed and the app to be healthy
+app_sync() {
+  local prev st end=$((SECONDS + 600))
+  kubectl -n argocd annotate application rfactory-desktops argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+  prev=$(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.status.operationState.startedAt}')
+  kubectl -n argocd patch application rfactory-desktops --type merge \
+    -p '{"operation":{"initiatedBy":{"username":"k14-env"},"sync":{"prune":true}}}' >/dev/null
+  while [ $SECONDS -lt "$end" ]; do
+    st=$(kubectl -n argocd get application rfactory-desktops -o json | jq -r --arg p "$prev" '
+      if .operation != null or (.status.operationState.startedAt // "") == $p then "pending"
+      else "\(.status.operationState.phase) \(.status.health.status)" end')
+    case $st in "Succeeded Healthy") return 0 ;; Failed*|Error*) echo "sync: $st" >&2; exit 1 ;; esac
+    sleep 3
+  done
+  echo "sync did not finish in 600 s" >&2; exit 1
 }
 
 case ${1:-} in
@@ -60,11 +73,12 @@ on)
   jq -n --arg o "http://$FX_HOST:$FX_A" --arg u "$user" --arg p "$pass" \
     '{"verify-scope":{"fixture":{origin:$o,path:"/login",fields:[{target:"#user",value:$u},{target:"#pass",value:$p}],submit:"#go"}}}' \
     >"$STATE/logins.json"; chmod 600 "$STATE/logins.json"
-  kc delete secret rfverify-preview-logins --ignore-not-found >/dev/null
+  previews=$(jq -nc --arg a "$FX_HOST:$FX_A" --arg b "$FX_HOST:$FX_B" '{"verify-scope":[$a,$b],"verify-other":[$a]}')
+  kc delete secret rfverify-preview-logins rfverify-runner --ignore-not-found >/dev/null
   kc create secret generic rfverify-preview-logins --from-file=logins.json="$STATE/logins.json" >/dev/null
-  argo root '{"spec":{"syncPolicy":{"automated":null}}}'
-  argo rfactory-desktops '{"spec":{"syncPolicy":{"automated":null}}}'
-  runner_verify
+  kc create secret generic rfverify-runner --from-literal=RF_VERIFY_HOOKS=1 --from-literal=RF_SCOPE_PREVIEWS="$previews" \
+    --from-literal=RF_PREVIEW_LOGINS_PATH=/etc/rfactory/verify/logins.json >/dev/null
+  runner_restart
   docker network inspect "$FX_NET" >/dev/null 2>&1 || docker network create "$FX_NET" --subnet "$FX_SUBNET" --label rfactory.io/purpose=k14-fixture >/dev/null
   if ! { [ -s "$STATE/fixture.pid" ] && kill -0 "$(cat "$STATE/fixture.pid")" 2>/dev/null; }; then
     FIXTURE_HOST=$FX_HOST nohup node "$ROOT/desktop/verify/fixture.js" "$FX_A" "$FX_B" >"$STATE/fixture.log" 2>&1 & echo $! >"$STATE/fixture.pid"
@@ -107,35 +121,29 @@ EOF
   ;;
 off)
   [ ! -s "$STATE/fixture.pid" ] || { kill "$(cat "$STATE/fixture.pid")" 2>/dev/null || true; rm -f "$STATE/fixture.pid"; }
-  argo rfactory-desktops "$AUTO"
-  argo root "$AUTO"
-  kubectl -n argocd annotate application rfactory-desktops argocd.argoproj.io/refresh=hard --overwrite >/dev/null
-  # self-heal reverts the runner Deployment; the Secret is not in git, so it goes by hand
-  for _ in $(seq 60); do [ -z "$(kc get deployment rfactory-runner -o jsonpath='{.spec.template.spec.volumes[?(@.name=="rfverify-logins")].name}')" ] && break; sleep 3; done
-  kc rollout status deployment rfactory-runner --timeout=180s >/dev/null
-  kc delete secret rfverify-preview-logins --ignore-not-found >/dev/null
+  kc delete secret rfverify-runner rfverify-preview-logins --ignore-not-found >/dev/null
+  runner_restart
+  # test mode no longer pauses ArgoCD; this only undoes a pause left by the earlier test mode
+  argo rfactory-desktops "$AUTO"; argo root "$AUTO"
   if [ -s "$STATE/roles" ]; then
     # shellcheck disable=SC1091
     . "$STATE/roles"; export RFACTORY_ALLOWED_EMAILS RFACTORY_APPROVERS RFACTORY_ADMINS
   fi
   web_up "$CFG"
   rm -f "$STATE/roles"
-  echo "PASS k14-env off: ArgoCD auto-sync on, runner back to git, web pod on $(jq -r .name "$CFG/scope.json")"
+  echo "PASS k14-env off: verify Secrets gone, runner restarted, web pod on $(jq -r .name "$CFG/scope.json")"
   ;;
-runner)
-  # only the runner's test-mode settings again, after something reset the Deployment (profiles.sh's rollback rehearsal recreates it)
-  [ -s "$STATE/logins.json" ] || { echo "k14 test mode was never on ($STATE/logins.json missing)" >&2; exit 2; }
-  kc get secret rfverify-preview-logins >/dev/null 2>&1 || kc create secret generic rfverify-preview-logins --from-file=logins.json="$STATE/logins.json" >/dev/null
-  runner_verify
-  echo "PASS k14-env runner: verify settings on the runner"
+sync)
+  app_sync
+  echo "PASS k14-env sync: rfactory-desktops synced at $(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.status.sync.revision}')"
   ;;
 status)
   echo "argocd root: $(kubectl -n argocd get application root -o jsonpath='{.spec.syncPolicy.automated}')"
-  echo "argocd rfactory-desktops: $(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.spec.syncPolicy.automated}')"
-  echo "runner verify env: $(kc get deployment rfactory-runner -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{" "}{end}' | tr ' ' '\n' | grep -c '^RF_VERIFY_HOOKS$')"
+  echo "argocd rfactory-desktops: $(kubectl -n argocd get application rfactory-desktops -o jsonpath='{.spec.source.targetRevision} {.status.sync.status} {.status.health.status} at {.status.sync.revision}')"
+  echo "runner verify Secret: $(kc get secret rfverify-runner -o name 2>/dev/null || echo none)"
   echo "fixture: $({ [ -s "$STATE/fixture.pid" ] && kill -0 "$(cat "$STATE/fixture.pid")" 2>/dev/null && echo running; } || echo stopped)"
   echo "web scope: $(podman exec rfactory-web cat /etc/rfactory/scope.json 2>/dev/null | jq -r .name)"
   echo "desktops: $(desktops)"
   ;;
-*) echo "usage: $0 on|off|runner|status" >&2; exit 2 ;;
+*) echo "usage: $0 on|off|sync|status" >&2; exit 2 ;;
 esac

@@ -4,8 +4,8 @@
 # Owner-gated: run by the lead on p620 with the owner's OK and an agent-bus notice. Real desktops from the deployed runner (the guest's own agent
 # sends the worker heartbeat). The runner's timings are the in-cluster ones (worker 30 s, server 60 s, idle 600 s, runtime 3 h), so the whole
 # script takes over 3 hours: the runtime-limit desktop is created first and checked after the idle case, before the runner is disturbed.
-# Disturbs rfactory-runner (kill, rollout restart, killed and scaled to 0, then back): the owner must have ArgoCD auto-sync off for
-# rfactory-desktops (checked at start), or the runner comes back before the reaper acts. The runner needs RF_SCOPE_PREVIEWS for verify-scope
+# Disturbs rfactory-runner (kill, rollout restart, frozen and scaled to 0, then back). ArgoCD may keep syncing: the Deployment sets no
+# replicas, so self-heal leaves the scale to 0 alone (plan deviation 42). The runner needs RF_SCOPE_PREVIEWS for verify-scope
 # with grants for meet.google.com, apps.google.com and workspace.google.com (the signed-out Meet redirect chain). Run it alone: it ends with
 # a check that no rfdesk_ guard table is left on either node, and it kills the runner, which ends every desktop.
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_MEET_LINK (the call lifecycle-runner-restart keeps live). Optional waits (seconds):
@@ -17,7 +17,7 @@ set -euo pipefail
 trap verify_exit EXIT
 need_kube; need_cmds curl jq node base64
 need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_MEET_LINK
-# ArgoCD would put the runner back during the kill and reaper cases: run under deploy/k3d/k14-env.sh on, which pauses its auto-sync
+# ArgoCD keeps syncing during these cases: runner.yaml sets no `replicas`, so self-heal leaves the reaper case's scale to 0 alone
 # every desktop keeps its server heartbeat (lib.sh new_desktop) until the case disturbs it: stop_beat at the disturbance, not before
 SCALED=
 KEEPPID=

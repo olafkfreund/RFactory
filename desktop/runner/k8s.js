@@ -60,6 +60,7 @@ function createK8s({ fetcher = fetch, host = process.env.KUBERNETES_SERVICE_HOST
     watchPods: (selector, changed) => watch(`${core}/pods${selector ? `?labelSelector=${encodeURIComponent(selector)}` : ''}`, changed),
     getLease: () => request('GET', leases, undefined, { missing: true }),
     updateLease: manifest => request('PUT', leases, manifest),
+    createLease: manifest => request('POST', leases.slice(0, leases.lastIndexOf('/')), manifest),
   };
 }
 

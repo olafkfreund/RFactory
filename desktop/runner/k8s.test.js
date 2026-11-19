@@ -24,7 +24,7 @@ test('in-cluster client re-reads the token and uses resource paths, dry-run, unp
     fs.writeFileSync(tokenPath, 'two');
     await k8s.createPolicy({ kind: 'NetworkPolicy' });
     assert.equal(await k8s.unpauseVmi('rfdesk-ab12'), null);
-    await k8s.getLease(); await k8s.updateLease({ spec: { renewTime: 'now' } });
+    await k8s.getLease(); await k8s.updateLease({ spec: { renewTime: 'now' } }); await k8s.createLease({ kind: 'Lease' });
     assert.match(calls[0].url, /apis\/kubevirt.io\/v1\/namespaces\/rfactory-desktops\/virtualmachineinstances$/);
     assert.equal(calls[0].headers.Authorization, 'Bearer one');
     assert.match(calls[1].url, /networkpolicies\?dryRun=All$/);
@@ -34,6 +34,8 @@ test('in-cluster client re-reads the token and uses resource paths, dry-run, unp
     assert.equal(calls[3].method, 'PUT');
     assert.match(calls[4].url, /leases\/rfactory-runner$/);
     assert.equal(calls[5].method, 'PUT');
+    assert.equal(calls[6].method, 'POST'); // a missing Lease is created in the collection
+    assert.match(calls[6].url, /namespaces\/rfactory-desktops\/leases$/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

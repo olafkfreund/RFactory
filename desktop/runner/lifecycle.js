@@ -434,7 +434,12 @@ function createLifecycle(config, deps) {
   const microTime = ms => new Date(ms).toISOString().replace(/Z$/, '000Z');
   async function renewLease() {
     const lease = await deps.k8s.getLease();
-    if (!lease) throw new Error('runner Lease is missing');
+    // ArgoCD never applies a Lease (default resource exclusions), so the runner makes its own on a fresh cluster
+    if (!lease) {
+      await deps.k8s.createLease({ apiVersion: 'coordination.k8s.io/v1', kind: 'Lease', metadata: { name: 'rfactory-runner' },
+        spec: { holderIdentity: 'rfactory-runner', renewTime: microTime(clock.now()) } });
+      return;
+    }
     await deps.k8s.updateLease({ ...lease, spec: { ...lease.spec, renewTime: microTime(clock.now()) } });
   }
   async function leaseTick() {

@@ -7,7 +7,7 @@ metadata:
   namespace: rfactory-desktops
   labels: {app.kubernetes.io/name: rfactory-runner}
 spec:
-  replicas: 1
+  # no `replicas`: one by default, and ArgoCD's self-heal leaves a test's scale to 0 alone (k14 lifecycle)
   strategy: {type: Recreate}   # one runner at a time: it holds the Lease
   selector:
     matchLabels: {app.kubernetes.io/name: rfactory-runner}
@@ -56,12 +56,19 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 512Mi}
+          # k14 test mode only (deploy/k3d/k14-env.sh on): the verify hooks, fixture previews and preview login come from these
+          # two Secrets, which are never in Git; without them (production) nothing is added. ArgoCD never sees a difference.
+          envFrom:
+            - secretRef: {name: rfverify-runner, optional: true}
           volumeMounts:
             - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            - {name: rfverify-logins, mountPath: /etc/rfactory/verify, readOnly: true}
       volumes:
         - name: tls
           secret: {secretName: rfactory-runner-tls}
+        - name: rfverify-logins
+          secret: {secretName: rfverify-preview-logins, optional: true}
         - name: tmp
           emptyDir: {}
 ---

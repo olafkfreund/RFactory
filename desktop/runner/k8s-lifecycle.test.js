@@ -225,3 +225,18 @@ test('connects from one pod IP are rate-limited before the pod list', async () =
   assert.ok(ctx.calls.filter(c => c === 'listPods').length - before <= 20);
   await ctx.lc.stop();
 });
+
+test('a missing Lease is created once, then renewed', async () => {
+  const ctx = setup();
+  let lease = null; const made = [];
+  ctx.k8s.getLease = async () => lease;
+  ctx.k8s.createLease = async (m) => { made.push(m); lease = m; return m; };
+  ctx.lc.run();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(made.length, 1);
+  assert.equal(made[0].metadata.name, 'rfactory-runner');
+  assert.match(made[0].spec.renewTime, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
+  await ctx.timers.get(10000)();
+  assert.equal(made.length, 1);
+  await ctx.lc.stop();
+});

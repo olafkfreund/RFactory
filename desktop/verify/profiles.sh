@@ -10,9 +10,9 @@
 # VERIFY_OTHER_SCOPE (a scope other than the web server's). Optional: VERIFY_SCOPE (the web server's scope, default verify-scope), VERIFY_WAIT_EXPIRY (3700 s).
 # profiles-expire-destroys-desktop backdates the profile's record and waits for the runner's hourly expiry sweep, so the script runs over an hour.
 # profiles-rollback-keeps-data deletes the ArgoCD Application rfactory-desktops (cascade: its workloads go, the namespace stays), recreates it from
-# its saved spec and syncs it at this branch's pushed HEAD, then puts back k14 test mode's runner settings (deploy/k3d/k14-env.sh runner). It
-# refuses unless HEAD's manifests carry the images that are live, so the rehearsal never rolls the cluster to other images (the Application's
-# own targetRevision may be older while test mode pauses auto-sync). In the argocd namespace it touches only that one Application.
+# its saved spec (or lets the root app do it) and syncs it at this branch's pushed HEAD; k14 test mode's runner Secrets are untracked and stay. It
+# refuses unless HEAD's manifests carry the images that are live and HEAD is pushed, so the rehearsal never rolls the cluster to other
+# images. In the argocd namespace it touches only that one Application.
 # shellcheck disable=SC2016
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
@@ -50,8 +50,11 @@ app_restore() {
   while [ -n "$(argo_app get application "$APP" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)" ]; do
     [ $SECONDS -lt "$end" ] || return 1; sleep 5
   done
-  argo_app get application "$APP" >/dev/null 2>&1 || argo_app create -f - <<<"$APPJSON" >/dev/null || return 1
-  app_sync "$(jq -r .spec.source.targetRevision <<<"$APPJSON")" && K14_CONTEXT=$KCTX "$ROOT/deploy/k3d/k14-env.sh" runner >/dev/null && APPGONE=''
+  # the root app (auto-sync) may recreate it first: an existing one is fine
+  argo_app get application "$APP" >/dev/null 2>&1 || argo_app create -f - <<<"$APPJSON" >/dev/null 2>&1 \
+    || argo_app get application "$APP" >/dev/null 2>&1 || return 1
+  # k14 test mode's runner settings are untracked Secrets (rfverify-*), so the cascade leaves them and the new runner reads them
+  app_sync "$(jq -r .spec.source.targetRevision <<<"$APPJSON")" && APPGONE=''
 }
 extra_cleanup() {
   local p

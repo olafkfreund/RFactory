@@ -20,8 +20,7 @@ done
 
 kubectl apply -f "$ROOT/deploy/k8s/rfactory-desktops/namespace.yaml" >/dev/null
 echo "namespace $NS: applied"
-kubectl apply -f "$ROOT/deploy/k8s/rfactory-desktops/lease.yaml" >/dev/null # ArgoCD excludes Leases by default
-echo "lease rfactory-runner: applied"
+echo "lease rfactory-runner: the runner creates it itself"
 
 kubectl -n "$NS" create secret generic rfactory-runner-tls \
   --from-file=tls.crt=<(dec rfactory-runner-tls-crt) --from-file=tls.key=<(dec rfactory-runner-tls-key) \

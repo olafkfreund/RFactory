@@ -11,7 +11,7 @@ Run the steps in this order. Run every script from the repo root.
 |---|---|---|
 | 2 | `mk-tls.sh` | CA, certificates and the profile key, encrypted into agenix |
 | 3 | `import-images.sh` | builds the six images and loads them into both nodes |
-| 4 | `prep.sh` | the namespace, the Lease and the two TLS Secrets |
+| 4 | `prep.sh` | the namespace and the two TLS Secrets (the runner creates its own Lease) |
 | 5 | (a factory-gitops PR) | ArgoCD syncs the manifests |
 | 6 | `gate.sh` | the isolation gate; must be all PASS |
 | 7 | `k11.sh` | taints the desktop node, exposes the runner, starts the web pod |
@@ -138,7 +138,6 @@ It applies three things that ArgoCD does not own:
 
 - the namespace `rfactory-desktops`. It stays out of the app, so deleting the app never deletes
   the namespace or the profile PVCs;
-- the Lease `rfactory-runner`. ArgoCD excludes Leases by default, and the runner refuses every create without it;
 - the Secrets `rfactory-runner-tls` (`tls.crt`, `tls.key`, `ca.crt`, `client.crt`, `client.key`, `profile-key`)
   and `rfactory-guard-tls` (`tls.crt`, `tls.key`, `ca.crt`).
 
@@ -149,10 +148,10 @@ It is safe to repeat. It uses `RF_NIXOS_REPO` and `RF_AGE_IDENTITY` like `mk-tls
 
 The app lives in `factory-gitops` as `apps/rfactory-desktops/application.yaml`.
 Start from `deploy/k8s/rfactory-desktops/application.yaml` in this repo.
-In `factory-gitops`, `targetRevision` is a full commit SHA of this repo, not a branch.
-
-Every change is a pull request in `factory-gitops` that bumps `targetRevision` to the new commit.
-That includes each image pin from step 3. Push the commit here first.
+In `factory-gitops`, `targetRevision` follows this repo's branch while the feature is built (`feat/3-agent-workspace`),
+so a pushed commit deploys with no `factory-gitops` change: ArgoCD polls every 3 minutes, and `deploy/k3d/k14-env.sh sync`
+syncs at once and waits. When the branch merges, `targetRevision` goes to `main` in one `factory-gitops` pull request.
+Image pins from step 3 are commits here; never `kubectl set image`, which self-heal reverts.
 
 `factory-gitops` CI (`.github/workflows/manifest-validate.yml`) cannot read manifests in another repo.
 An Application that points elsewhere fails unless its name is listed in `is_external_declared()` with a tracking issue.
@@ -218,7 +217,7 @@ Overrides: `K11_NODE`, `K11_LB`, `K11_PORT`, `K11_NODEPORT`, `RFACTORY_CONFIG`. 
 | 25 | `ErrImageNeverPull` although the image is on the node | `ctr import` names only `repo:tag`; a `tag@digest` pin is looked up as `repo@digest` | `ctr images tag <repo:tag> <repo@digest>` |
 | 26 | guard reports `guard-no-veth` for an idle pod or a paused VM | the veth was found through the node's neighbour table; an idle pod has no entry | replaced in 29: the guard reads the CNI result cache |
 | 27 | protected targets answer `refused`, not `timeout` | kube-router (k3s NetworkPolicy) REJECTs in iptables filter before the guard's drop | guard chains run earlier: bridge forward at -200, inet forward and input at -10 |
-| 27 | every create refused: `runner Lease is missing` | ArgoCD excludes `coordination.k8s.io/Lease` by default | apply `lease.yaml` by hand (`prep.sh`) |
+| 27 | every create refused: `runner Lease is missing` | ArgoCD excludes `coordination.k8s.io/Lease` by default | fixed: the runner creates its Lease when missing (RBAC `create` on leases); `lease.yaml` is gone |
 | 27 | anti-spoofing checks cannot read node state | the scripts used `podman`; k3d nodes are docker | `VERIFY_NODE_CLI=docker` (`gate.sh` sets it) |
 | 28 | Lease `spec` stays empty; every renewal PUT gets 400 | `renewTime` is a MicroTime with six fraction digits; `toISOString()` writes three | the runner writes six digits. Unfixed, the reaper deletes every desktop |
 | 29 | a spoofed MAC connects; the bridge table reads `iifname "undefined"` | the guard read the fdb field `dev`; iproute2 calls it `ifname` | the guard takes the veth from `/var/lib/cni/results`, matched by pod UID |
@@ -248,10 +247,10 @@ kubectl taint node k3d-factory-agent-0 rfactory.io/desktops=true:NoSchedule-
 
 Remove the workloads: delete `apps/rfactory-desktops` from `factory-gitops` with a pull request.
 The app's finalizer removes the workloads, policies and StorageClass.
-The namespace, the Lease, the TLS Secrets, the profile PVCs and the profile ConfigMaps stay.
+The namespace, the Lease, the TLS Secrets, the k14 `rfverify-*` Secrets, the profile PVCs and the profile ConfigMaps stay.
 
 To go back one version instead: check out the older commit, run `import-images.sh` there
-(it replaces the newer images), and bump `targetRevision` back to that commit.
+(it replaces the newer images), and set `targetRevision` to that commit (or revert the commit on the branch).
 
 To remove KubeVirt as well, delete the KubeVirt CR first, then the `kubevirt` app.
 To remove profiles as well, delete the namespace and the retained PVs by hand. This destroys the profile data.

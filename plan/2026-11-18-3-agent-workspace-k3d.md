@@ -863,6 +863,31 @@ and 27) and the scripts. This plan is self-contained.
     Application if the script dies after the delete. In the argocd
     namespace it touches only that Application. The owner's terminal
     step is gone.
+42. **Deploys and test mode stop fighting ArgoCD (owner approved,
+    2026-11-19: "do all of it ... needs to work fast and without any
+    problems").** The owner asked whether ArgoCD should go; the review
+    found 43 of 45 apps healthy and the friction in our own setup.
+    - Test mode no longer pauses ArgoCD or patches the runner: the
+      runner Deployment reads an optional `envFrom` Secret
+      `rfverify-runner` and an optional Secret volume
+      `rfverify-preview-logins`, which `k14-env.sh on` creates and
+      `off` deletes (never in Git; production has neither). Nothing
+      ArgoCD manages differs from Git, so root and the app keep
+      auto-sync and self-heal.
+    - `runner.yaml` sets no `replicas`, so self-heal leaves lifecycle's
+      scale to 0 alone; the rollout-restart annotation was never
+      compared.
+    - The runner creates its Lease when it is missing (RBAC `create` on
+      leases; ArgoCD's default exclusions never apply one); `lease.yaml`
+      and `prep.sh`'s manual step are gone. Test in k8s-lifecycle.
+    - `factory-gitops` tracks this branch (`feat/3-agent-workspace`)
+      while it is built, so a pushed pin deploys without a gitops pull
+      request; `k14-env.sh sync` syncs at once and waits. It goes to
+      `main` when the branch merges. `kubectl set image` is no longer
+      used (self-heal would revert it).
+    - The three dead ArgoCD pods left by the v3.5.7 upgrade are deleted.
+    - Changes the 2026-11-18 plan's "pinned to a commit" for the
+      feature's lifetime and deviation 37's test mode.
 
 
 ## Steps
