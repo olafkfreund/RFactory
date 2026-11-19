@@ -158,7 +158,7 @@ if wait_gone "$id" 60; then pass lifecycle-manual-vmi-delete; else fail lifecycl
 # nothing at all is left
 left=$(desk_ids | tr '\n' ' '); for id in "${CREATED[@]}"; do left="$left$(desk_leftovers "$id")"; done
 for n in $NODES; do
-  t=$(gnft "$n" list tables 2>&1) && left="$left $(grep -o 'rfdesk_[0-9a-f-]*' <<<"$t" | sort -u | sed "s/^/table@$n:/" | tr '\n' ' ')" || left="$left unreadable@$n"
+  t=$(gnft "$n" list tables 2>&1) && left="$left $({ grep -o 'rfdesk_[0-9a-f-]*' <<<"$t" || true; } | sort -u | sed "s/^/table@$n:/" | tr '\n' ' ')" || left="$left unreadable@$n"
 done
 if [ -z "${left// /}" ]; then pass lifecycle-nothing-left; else fail lifecycle-nothing-left "still there: $left"; fi
 finish
