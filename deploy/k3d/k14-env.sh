@@ -83,6 +83,9 @@ export VERIFY_FIXTURE_URL=http://$FX_HOST:$FX_A VERIFY_FIXTURE_CTL=http://$FX_HO
 export VERIFY_LOGIN_PROFILE=fixture VERIFY_LOGIN_FILE=$STATE/login VERIFY_BRAIN_RECORD=$STATE/record/brain.jsonl VERIFY_POD_USER=$(id -un)
 export RFACTORY_CONFIG=$STATE/config RFACTORY_RUNNER_URL=https://127.0.0.1:18443
 export VERIFY_CHROME=$(command -v chromium || command -v google-chrome-stable || command -v google-chrome)
+# liveview.sh recreates the web pod with these (its revoke step drops the member, then restores the list)
+export VERIFY_ALLOWED_EMAILS='$RFACTORY_ALLOWED_EMAILS' RFACTORY_APPROVERS='$RFACTORY_APPROVERS' RFACTORY_ADMINS='$RFACTORY_ADMINS'
+export VERIFY_MEMBER_EMAIL='$(awk '$1 == "member" {print $2}' "$STATE/users" 2>/dev/null)'
 # owner-supplied, per run: VERIFY_MEET_LINK VERIFY_TEAMS_LINK VERIFY_APPROVER_COOKIE VERIFY_MEMBER_COOKIE VERIFY_NONMEMBER_COOKIE VERIFY_ADMIN_COOKIE
 [ ! -r $STATE/owner.env ] || . $STATE/owner.env
 EOF

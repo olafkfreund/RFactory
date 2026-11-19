@@ -60,6 +60,8 @@ else fail secrets-type-stored-refused "reply: $r"; fi
 # values under 8 characters match ordinary log text, so they are not searched for
 grep -v '^[[:space:]]*$' "$VERIFY_LOGIN_FILE" | awk 'length($0) >= 8' >"$TMP/patterns" || true
 [ -s "$TMP/patterns" ] || die "VERIFY_LOGIN_FILE holds no value of 8 or more characters"
+# one handover per desktop: step 1's grant is revoked first, or the login grant below answers session-active (k14)
+approver POST "/api/desktop/$D/revoke" >/dev/null || true
 # the guest fills only the open page of the login's origin: open the login page first (the guest may still be starting)
 opened=
 for _ in 1 2 3 4 5 6; do

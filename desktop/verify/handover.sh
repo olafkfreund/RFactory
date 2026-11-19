@@ -82,7 +82,10 @@ trap_page() {
   local h; h=$(hits)
   if [ "${4:-}" = refused ]; then
     if [ "$(jq -r '.ok // false' <<<"$OPENED" 2>/dev/null)" = true ] || ! fixture_reached; then fail "handover-blocked-$1" "the redirect was not refused, or A was never reached: open: $OPENED; hits: $h"; return; fi
-  else page_loaded || { fail "handover-blocked-$1" "page did not load: open: $OPENED; hits: $h"; return; }; fi
+  # a page that navigates itself before its load event (meta refresh, location, auto-submitted form) is closed mid-open when that
+  # navigation is refused, so open cannot answer ok (k14); for those, origin A having served it is the proof it loaded
+  elif [ -n "${3:-}" ]; then page_loaded || { fail "handover-blocked-$1" "page did not load: open: $OPENED; hits: $h"; return; }
+  else fixture_reached || { fail "handover-blocked-$1" "origin A was never reached: open: $OPENED; hits: $h"; return; }; fi
   if [ "$(jq -r .b <<<"$h")" = 0 ]; then pass "handover-blocked-$1"; else fail "handover-blocked-$1" "origin B got requests: $h"; fi
 }
 trap_page redirect /redirect '' refused # the main-frame redirect to B is refused, so the navigation fails
