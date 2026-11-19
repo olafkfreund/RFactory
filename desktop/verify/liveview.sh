@@ -74,7 +74,9 @@ if [ "$r" = frame ]; then pass liveview-novnc-frame; else fail liveview-novnc-fr
 # KeyEvent closes the stream and the guest screen does not change (the screenshot carries hosts, here none: the page is the blank one)
 shot() { local b; b=$(act "$D" "$(jq -nc --arg h "$VERIFY_FIXTURE_URL" '{type:"desktop_screenshot",hosts:[$h]}')" | jq -er '.image_base64') || return 1; sha256sum <<<"$b" | cut -d' ' -f1; }
 before=$(shot) || before="no-shot-before"
-r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" key "$URL" || echo error)
+# one viewer per desktop: the slot frees only once the guest's VNC has redialled after the last viewer (about 1-2 s, k14),
+# so an open that fails for that reason is retried; the KeyEvent is sent only on a stream that opened
+for _ in 1 2 3 4 5 6; do r=$(LV_COOKIE="$VERIFY_MEMBER_COOKIE" node "$LV" key "$URL" || echo error); [[ $r == error* ]] || break; sleep 3; done
 sleep 2
 after=$(shot) || after="no-shot-after"
 typed=$(curl -sS --max-time 10 "$VERIFY_FIXTURE_CTL/hits" | jq -r '.login.user // "unknown"' 2>/dev/null || echo unknown) # characters the focused input received
@@ -101,9 +103,12 @@ else fail liveview-second-viewer-409 "first viewer '$first' (want 101), second '
 # new one refused. The approver (still a member) opens a stream afterwards, so a refusal is not just a server that is down.
 new_list=$(tr ',' '\n' <<<"$VERIFY_ALLOWED_EMAILS" | tr -d ' ' | grep -vixF "$VERIFY_MEMBER_EMAIL" | paste -sd, -) || true
 if [ "$new_list" = "$(tr -d ' ' <<<"$VERIFY_ALLOWED_EMAILS")" ] || [ -z "$new_list" ]; then die "VERIFY_MEMBER_EMAIL is not in VERIFY_ALLOWED_EMAILS, or it is the only member"; fi
-LV_COOKIE=$VERIFY_MEMBER_COOKIE node "$LV" hold "$URL" >"$HOLD" &
-HP=$!
-sleep 5
+for _ in 1 2 3 4 5 6; do # the same slot wait as above: a stream that closed before it opened is retried
+  LV_COOKIE=$VERIFY_MEMBER_COOKIE node "$LV" hold "$URL" >"$HOLD" &
+  HP=$!
+  sleep 5
+  if grep -q '^open' "$HOLD" || kill -0 "$HP" 2>/dev/null; then break; fi
+done
 if ! grep -q '^open' "$HOLD"; then fail liveview-revoke-5s "the member's stream did not open before the revoke"
 else
   RESTORE=1
