@@ -10,7 +10,7 @@ Fixes found during k14 are listed in the plan, deviations 39 and 40.
 Every scripted check that has run passes, after the fixes in deviations 39 to 42 and the docker-disk move
 (nixos_config #3109). Still open, owner-gated:
 
-- Teams hearing (`e2e-teams-vm-answers`): the bot only hears through platform captions, and Teams' light client
+- Teams hearing (`e2e-teams-vm-answers`), issue #16: the bot only hears through platform captions, and Teams' light client
   keeps them disabled for anonymous guests. Either a tenant setting allows live captions for anonymous
   participants, or the bot needs its own speech-to-text (the calls library's "audio" listen source, wired for the
   headless bot). Owner decision.
@@ -116,3 +116,11 @@ limits density, not CPU: three desktops reserve about 19 GiB.
 Outputs, screenshots and the manual scripts are kept outside the repo in
 `~/.config/rfactory-verify/record/` (`share-2026-11-19`, `e2e-2026-11-19`,
 `runs-2026-11-19`); they hold no cookies or tokens.
+
+## After k14 (2026-11-19)
+
+Test mode is off (`deploy/k3d/k14-env.sh off`): the web pod runs its normal scope, the runner has no verify settings,
+the fixture and the `rfverify` network are gone, the four `verify-*@rfverify.test` Keycloak users are deleted, the
+nine released test profile volumes and their data are removed, and the throwaway test credentials are deleted. The
+k14 records stay in `~/.config/rfactory-verify/record/`. The final review of the k14 fixes (deviation 47) is folded in.
+
