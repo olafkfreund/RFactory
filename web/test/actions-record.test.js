@@ -67,3 +67,17 @@ test('append separates a truncated line and uses its own timestamp for recovery'
   await rec.append({ id: 'recover', state: 'uncertain' });
   assert.deepEqual(rec.unfinished(), []);
 });
+
+test('recovery separates unfinished shares from actions using real JSONL', async (t) => {
+  const { dir, rec } = setup(t);
+  const line = (entry) => `${JSON.stringify(entry)}\n`;
+  fs.writeFileSync(path.join(dir, '2026-11-16.jsonl'),
+    line({ id: 'action', state: 'executing' }) + line({ id: 'share', kind: 'share', state: 'starting' }) +
+    line({ id: 'finished', kind: 'share', state: 'running' }));
+  fs.writeFileSync(path.join(dir, '2026-11-17.jsonl'),
+    line({ id: 'finished', kind: 'share', state: 'stopped', reason: 'manual' }) +
+    line({ id: 'running', kind: 'share', state: 'running' }) +
+    line({ id: 'ignored', kind: 'share', state: 'executing' }));
+  assert.deepEqual(rec.unfinished().map((e) => e.id), ['action']);
+  assert.deepEqual(rec.unfinishedShares().map((e) => e.id), ['share', 'running']);
+});

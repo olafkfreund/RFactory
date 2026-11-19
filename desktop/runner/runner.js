@@ -30,6 +30,9 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     login: (b) => lifecycle.login(String(b.desktop_id), b), // the stored preview login, filled by the guest; the caller sends only a profile name and hosts
     'share-start': (b) => lifecycle.shareStart(String(b.desktop_id), b),
     'share-stop': (b) => lifecycle.shareStop(String(b.desktop_id), b),
+    'view-open': (b) => lifecycle.viewOpen(String(b.desktop_id), b),
+    'view-data': (b) => lifecycle.viewData(String(b.desktop_id), b),
+    'view-close': (b) => lifecycle.viewClose(String(b.desktop_id), b),
     // Test-only faults (deviation 22): absent, so 404, unless the runner was configured with verifyHooks.
     ...(verifyHooks ? Object.fromEntries(['fail-share-stop', 'auto-select-screen', 'drop-control']
       .map((hook) => [`verify/${hook}`, async (b) => lifecycle.verifyHook(String(b.desktop_id), hook)])) : {}),
@@ -53,10 +56,12 @@ function createHandler(lifecycle, { tls = true, profiles = null, verifyHooks = f
     if (tls && !webPeer(req.socket)) return send(401, { error: 'client certificate required' });
     const name = req.url.slice(1);
     if (req.method !== 'POST' || !Object.hasOwn(routes, name)) return send(404, { error: 'not found' });
-    let raw = '';
+    const maxBody = ['view-open', 'view-data', 'view-close'].includes(name) ? 64 * 1024 : MAX_BODY;
+    let raw = '', size = 0;
     for await (const chunk of req) {
+      size += chunk.length;
       raw += chunk;
-      if (raw.length > MAX_BODY) return send(413, { error: 'too large' });
+      if (size > maxBody) return send(413, { error: 'too large' });
     }
     let body;
     try { body = raw ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'bad json' }); }

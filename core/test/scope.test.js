@@ -159,3 +159,20 @@ test('write key settings are ignored when writes are disabled', () => {
     assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /writes-enabled-env/);
   } finally { f.cleanup(); }
 });
+
+test('shares_enabled needs both switches and the env alone cannot turn shares on', () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(f.load([], { RFACTORY_SHARES: 'off' }), f.scope); // absent means off
+    assert.throws(() => f.load([], { RFACTORY_SHARES: 'on' }), /shares-enabled-env/);
+    f.scope.shares_enabled = true;
+    assert.throws(() => f.load(), /shares-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_SHARES: 'off' }), /shares-enabled/);
+    assert.deepEqual(f.load([], { RFACTORY_SHARES: 'on' }), f.scope);
+    f.scope.shares_enabled = false;
+    assert.throws(() => f.load([], { RFACTORY_SHARES: 'on' }), /shares-enabled-env/);
+    assert.deepEqual(f.load([], { RFACTORY_SHARES: 'off' }), f.scope);
+    f.scope.shares_enabled = 'yes';
+    assert.throws(() => f.load(), /shares-enabled/);
+  } finally { f.cleanup(); }
+});

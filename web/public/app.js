@@ -167,10 +167,82 @@ async function loadActions(doc) {
   } catch { /* panels stay hidden */ }
 }
 
+// Share: one store per document, keyed by share id; call-level refusals use the key 'unavailable'.
+const shareStores = new WeakMap();
+const shareStoreOf = (doc) => { if (!shareStores.has(doc)) shareStores.set(doc, { items: new Map(), canApprove: false }); return shareStores.get(doc); };
+const SHARE_DONE = new Set(['stopped', 'rejected', 'expired', 'failed']); // a failed share is over too (review P3)
+
+function renderShare(doc) {
+  const store = shareStoreOf(doc);
+  const ul = doc.getElementById('share-list');
+  while (ul.firstChild) ul.removeChild(ul.firstChild);
+  for (const s of store.items.values()) {
+    const li = el(doc, 'li', undefined, 'card');
+    const button = (label, fn) => {
+      const b = el(doc, 'button', label, 'btn');
+      b.setAttribute('type', 'button');
+      b.addEventListener('click', fn);
+      return b;
+    };
+    if (s.reason !== undefined && s.state !== 'running') li.appendChild(el(doc, 'span', `Can't share the board right now: ${s.reason}`, 'action-text'));
+    else if (s.state === 'proposed') {
+      li.appendChild(el(doc, 'span', s.approval_text || `Share the live CFactory board of ${s.project}, refreshed every 30 seconds.`, 'action-text'));
+      li.appendChild(el(doc, 'div', `Proposed by ${s.proposed_by} (display name, not verified)`, 'evidence'));
+      if (store.canApprove) {
+        const row = el(doc, 'div', undefined, 'share-buttons');
+        row.appendChild(button('Approve', () => decideShare(doc, `${encodeURIComponent(s.id)}/approve`, s.hash)));
+        row.appendChild(button('Reject', () => decideShare(doc, `${encodeURIComponent(s.id)}/reject`, s.hash)));
+        li.appendChild(row);
+      }
+    } else {
+      li.appendChild(el(doc, 'span', s.state === 'running' ? 'Sharing: CFactory board' : `${s.state}: CFactory board`, 'action-text'));
+      const row = el(doc, 'div', undefined, 'share-buttons');
+      row.appendChild(button('Stop', () => decideShare(doc, 'stop')));
+      li.appendChild(row);
+    }
+    ul.appendChild(li);
+  }
+  doc.getElementById('share').hidden = !store.items.size;
+}
+
+function handleShare(doc, event) {
+  const s = event.share;
+  if (!s || typeof s !== 'object') return;
+  const store = shareStoreOf(doc);
+  const key = typeof s.id === 'string' ? s.id : 'unavailable';
+  if (s.state === 'proposed') for (const [k, v] of store.items) if (v.state === 'proposed' || k === 'unavailable') store.items.delete(k);
+  if (SHARE_DONE.has(s.state)) store.items.delete(key);
+  else store.items.set(key, { ...store.items.get(key), ...s });
+  renderShare(doc);
+}
+
+async function decideShare(doc, tail, hash) {
+  const status = doc.getElementById('share-status');
+  try {
+    const r = await fetch(`/api/shares/${tail}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : {}) });
+    const body = await r.json();
+    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+  } catch { status.textContent = 'Failed: network'; }
+}
+
+async function loadShares(doc) {
+  try {
+    const r = await fetch('/api/shares');
+    if (!r.ok) return; // 404 when shares are off: the panel stays hidden
+    const data = await r.json();
+    const store = shareStoreOf(doc);
+    store.canApprove = !!data.can_approve;
+    for (const s of [...data.pending, ...(data.running ? [data.running] : [])]) store.items.set(s.id, s);
+    renderShare(doc);
+  } catch { /* panel stays hidden */ }
+}
+
 // One call event at a time; every string lands via textContent.
 function handleCall(doc, event, now = Date.now()) {
   const set = (id, text) => { doc.getElementById(id).textContent = text; };
   if (event.type === 'action-pending' || event.type === 'action-updated') return handleAction(doc, event, now);
+  if (typeof event.type === 'string' && event.type.startsWith('share-')) return handleShare(doc, event);
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
@@ -216,8 +288,9 @@ if (typeof document !== 'undefined') {
   renderFooter(document);
   fetch('/api/config').then((res) => res.json()).then(({ commit }) => renderFooter(document, commit)).catch(() => {});
   wireCall(document);
+  loadShares(document);
   loadActions(document).then(() => setInterval(() => renderActions(document), 30000));
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
-if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter };
+if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares };

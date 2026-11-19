@@ -39,8 +39,13 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       case 'desktop_type': await control.type(m.target, m.text); break;
       case 'desktop_scroll': await control.scroll(m.dy); break;
       case 'desktop_screenshot': return control.screenshot();
-      case 'share-start': if (!share) throw new Error('no share'); await share.start(m); break;
-      case 'share-stop': if (!share) throw new Error('no share'); await share.stop(); break;
+      case 'share-start': if (!share) throw new Error('no share'); if (share.active?.view) await share.startShare(m.share_id); else await share.start(m); break;
+      // a stop names its share: another share's stop (a failed board share's cleanup) never ends this one (review P1)
+      case 'share-stop': if (!share) throw new Error('no share'); if (share.active && share.active.id !== m.share_id) throw new Error('not the active share');
+        if (share.active?.view) await share.stopShare(m.share_id); else await share.stop(); break;
+      case 'view-open': if (!share) throw new Error('no share'); encode(m); await share.openView(m); return;
+      case 'view-data': if (!share) throw new Error('no share'); encode(m); await share.updateView(m); return;
+      case 'view-close': if (!share) throw new Error('no share'); encode(m); await share.closeView(m.share_id); send({ type: 'view-closed', share_id: m.share_id, action_id: m.action_id }); return;
       // The guest holds no credentials: the login comes from the runner-supplied resolver only.
       case 'desktop_login': {
         const fill = resolveLogin && await resolveLogin(m.profile, m.login);
@@ -66,7 +71,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
         return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token)).catch(() => {}); // a throw is caught too
       }
       if (m.type === 'call-in') return onCallIn?.(m);
-      if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
+      if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed' || m.type === 'view-closed') return undefined;
       const id = m.action_id || String(++seq);
       const mine = epoch;
       // An answer that cannot be encoded fails this action only; the chain never stays rejected.
@@ -111,7 +116,9 @@ function main() {
     const send = (m) => socket.write(encode(m));
     sendCurrent = send;
     const agent = createAgent({ control, profile, send, resolveLogin,
-      share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() }, // throws without a worker: the action answers ok:false
+      share: { get active() { return worker?.share.active; }, start: (m) => worker.share.start(m), stop: () => worker.share.stop(),
+        openView: (m) => worker.share.openView(m), updateView: (m) => worker.share.updateView(m), closeView: (id) => worker.share.closeView(id),
+        startShare: (id) => worker.share.startShare(id), stopShare: (id) => worker.share.stopShare(id) }, // throws without a worker: the action answers ok:false
       onCallConfig: (nonce, screen, token) => {
         if (!token) return; // no proxy credential, no Chrome: neither can reach the web
         const proxy = { server: `http://${proxyAddr.host}:${proxyAddr.port}`, username: 'rf', password: token };

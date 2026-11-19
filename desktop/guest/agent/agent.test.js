@@ -185,6 +185,33 @@ test('agent: share-start and share-stop reach the share module; without one they
   assert.equal(bare[0].ok, false);
 });
 
+test('agent: a share-stop for another share id never ends the active share (review P1)', async () => {
+  const log = [], sent = [];
+  const share = { active: { id: 'page-share', view: null }, stop: async () => log.push('stop') };
+  const agent = createAgent({ control: {}, profile: {}, send: (m) => sent.push(m), share });
+  await agent.handle({ type: 'share-stop', share_id: 'board-share', action_id: 'a1' });
+  assert.deepEqual(log, []);
+  assert.equal(sent[0].ok, false);
+  await agent.handle({ type: 'share-stop', share_id: 'page-share', action_id: 'a2' });
+  assert.deepEqual(log, ['stop']);
+});
+
+test('agent: view messages reach the share module and view-close answers view-closed', async () => {
+  const sent = [], calls = [];
+  const data = { project: 'factory', at: '2026-11-19T00:00:00.000Z',
+    columns: Object.fromEntries(['backlog', 'ready', 'in_progress', 'blocked', 'done'].map((key) => [key, { total: 0, shown: 0, omitted: 0 }])), cards: [] };
+  const share = { openView: async (m) => calls.push(['open', m.share_id]), updateView: async (m) => calls.push(['data', m.share_id]),
+    closeView: async (id) => calls.push(['close', id]) };
+  const agent = createAgent({ control: {}, profile: {}, share, send: (m) => { encode(m); sent.push(m); } });
+  await agent.handle({ type: 'view-open', share_id: 's', nonce: 'n', view: 'board', data, action_id: 'a' });
+  await agent.handle({ type: 'view-data', share_id: 's', data, action_id: 'b' });
+  await agent.handle({ type: 'view-close', share_id: 's', action_id: 'c' });
+  assert.deepEqual(calls, [['open', 's'], ['data', 's'], ['close', 's']]);
+  assert.deepEqual(sent.find((m) => m.type === 'view-closed'), { type: 'view-closed', share_id: 's', action_id: 'c' });
+  await agent.handle({ type: 'view-data', share_id: 's', data: { ...data, cards: [{}] }, action_id: 'bad' });
+  assert.equal(sent.at(-1).ok, false);
+});
+
 test('profile: without the initialized:false flag nothing is ever formatted (deviation 4; see profile.test.js)', async () => {
   const log = [];
   await createProfile(async (cmd) => { log.push(cmd); }).attach('aw==');

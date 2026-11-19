@@ -66,9 +66,15 @@ function createLifecycle(config, deps) {
   function endCall(vm) { if (vm.callSock) vm.callSock.destroy(); vm.callSock = null; } // no worker behind it: let web/vm-call.js see the close
   function failPending(vm, error) { for (const p of vm.pending.values()) p.resolve({ error }); vm.pending.clear(); }
   function onAgentMessage(vm, m) {
+    if (m.type === 'view-closed') {
+      const p = vm.pending.get(m.action_id);
+      if (p?.kind === 'view-close' && p.share_id === m.share_id) { vm.pending.delete(m.action_id); p.resolve({ ok: true, type: 'view-closed', share_id: m.share_id }); }
+      return;
+    }
     if (m.type === 'action-content' || m.type === 'action-result') {
       const p = vm.pending.get(m.action_id);
       if (!p) return;
+      if (p.kind === 'view-close') return; // only view-closed confirms the page is gone
       if (m.type === 'action-content') {
         if (p.bad) return;
         p.size += m.chunk.length;
@@ -125,7 +131,7 @@ function createLifecycle(config, deps) {
     return new Promise((resolve) => {
       let timer;
       const done = (r) => { clearTimeout(timer); resolve(r); };
-      vm.pending.set(action_id, { chunks: [], count: 0, size: 0, resolve: done });
+      vm.pending.set(action_id, { chunks: [], count: 0, size: 0, resolve: done, kind: rest.type, share_id: rest.share_id });
       timer = setTimeout(() => { vm.pending.delete(action_id); resolve({ error: 'timeout' }); }, timeoutMs);
       try { vm.agent.write(frame); } catch { vm.pending.delete(action_id); done({ error: 'no-control' }); }
     });
@@ -193,6 +199,9 @@ function createLifecycle(config, deps) {
     if (r.ok) sharing(id, false); // a stop that did not land keeps the control-channel rule armed
     return r.ok ? r : { ...r, error: r.error && r.error !== 'timeout' ? r.error : 'share-stop-failed' };
   }
+  function viewOpen(id, { share_id, nonce, view, data }) { return toGuest(id, { type: 'view-open', share_id, nonce, view, data }); }
+  function viewData(id, { share_id, data, stale }) { return toGuest(id, { type: 'view-data', share_id, data, ...(stale === undefined ? {} : { stale }) }); }
+  function viewClose(id, { share_id }) { return toGuest(id, { type: 'view-close', share_id }, 5000); }
   // Verify hooks (deviation 22), reachable only when the runner is configured with verifyHooks.
   function verifyHook(id, hook) {
     const vm = vms.get(id);
@@ -352,7 +361,7 @@ function createLifecycle(config, deps) {
     return { desktop_id: id };
   }
 
-  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, ...(v.nonce ? { nonce: v.nonce } : {}) }));
+  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, sharing: !!v.sharing, ...(v.nonce ? { nonce: v.nonce } : {}) }));
 
   function heartbeat(id) {
     const vm = vms.get(id);
@@ -472,7 +481,7 @@ function createLifecycle(config, deps) {
     await Promise.all([...vms.keys()].map((id) => destroy(id, 'runner-stop')));
   }
 
-  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, login, verifyHook, shareStart, shareStop, callAttach, vncSock, check, reconcile, clear, run, stop,
+  return { create, createSpare, control, destroy, list, heartbeat, activity, sharing, action, login, verifyHook, shareStart, shareStop, viewOpen, viewData, viewClose, callAttach, vncSock, check, reconcile, clear, run, stop,
     cancel, status: () => ({ ...state, count: vms.size }) };
 }
 

@@ -15,6 +15,21 @@ const login = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && Object
   hosts([v.origin]) && Array.isArray(v.fields) && v.fields.length >= 1 && v.fields.length <= 8 &&
   v.fields.every((f) => f && typeof f === 'object' && Object.keys(f).length === 2 && string(f.target) && f.target.length <= 256 && string(f.value) && f.value.length <= 1024) &&
   optional((s) => string(s) && s.length <= 256)(v.submit);
+const exact = (v, keys) => !!v && typeof v === 'object' && !Array.isArray(v) &&
+  Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+const columns = ['backlog', 'ready', 'in_progress', 'blocked', 'done'];
+const count = (v) => Number.isSafeInteger(v) && v >= 0;
+const board = (v) => exact(v, ['project', 'at', 'columns', 'cards']) && string(v.project) && Array.from(v.project).length <= 80 &&
+  string(v.at) && !Number.isNaN(Date.parse(v.at)) && exact(v.columns, columns) &&
+  columns.every((key) => exact(v.columns[key], ['total', 'shown', 'omitted']) &&
+    Object.values(v.columns[key]).every(count)) && Array.isArray(v.cards) && v.cards.every((card) =>
+    exact(card, ['key', 'title', 'column', 'priority', 'tier', 'stages']) &&
+    string(card.key) && Array.from(card.key).length <= 16 && string(card.title) && Array.from(card.title).length <= 120 &&
+    columns.includes(card.column) && (card.priority === null || Number.isSafeInteger(card.priority)) &&
+    (card.tier === null || ['low', 'medium', 'hard'].includes(card.tier)) &&
+    exact(card.stages, ['plan', 'code', 'test']) && Object.values(card.stages).every((stage) =>
+      ['none', 'queued', 'running', 'done', 'failed', 'unknown'].includes(stage))) &&
+  Buffer.byteLength(JSON.stringify(v)) <= 48 * 1024;
 const schemas = Object.freeze({
   heartbeat: {},
   'call-end': {},
@@ -37,6 +52,10 @@ const schemas = Object.freeze({
   'call-out': { chunk: string, end: boolean },
   'share-start': { share_id: string, url: string, hosts, action_id: optional(string) },
   'share-stop': { share_id: string, action_id: optional(string) },
+  'view-open': { share_id: string, nonce: string, view: (v) => v === 'board', data: board, action_id: optional(string) },
+  'view-data': { share_id: string, data: board, stale: optional((v) => typeof v === 'boolean'), action_id: optional(string) },
+  'view-close': { share_id: string, action_id: optional(string) },
+  'view-closed': { share_id: string, action_id: optional(string) },
 });
 const identity = new Set(['call_id', 'scope', 'desktop_id']);
 

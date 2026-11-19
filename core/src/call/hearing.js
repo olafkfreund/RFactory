@@ -6,6 +6,8 @@ const WAKE = /\b(?:r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ie
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
 // a change request must START with a change verb (optionally "please" / "can you"); "run the standup" stays a standup
 const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
+// a share request starts with show/display/share/put up and names "board" ("show me what's blocked" stays a question)
+const SHARE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|put up)\b(?=.*\bboard\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
 
 function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
@@ -35,7 +37,7 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
         block.offset = block.text.length;
         block.answeredText = block.text;
         onAddressed({
-          kind: LEAVE.test(addressed) ? 'leave' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
+          kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
           text: addressed, speaker: block.speaker, id,
         });
       }, quietMs);

@@ -1,0 +1,11 @@
+body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #fff; color: #111; }
+#rf-board { padding: 12px; }
+.rf-banner { font-weight: 600; padding: 8px 12px; background: #eef; border-radius: 4px; margin-bottom: 12px; }
+.rf-banner.rf-stale { background: #fed; }
+.rf-columns { display: flex; gap: 12px; align-items: flex-start; }
+.rf-column { flex: 1; min-width: 0; background: #f4f4f4; border-radius: 4px; padding: 8px; }
+.rf-column h2 { font-size: 14px; margin: 0 0 8px; }
+.rf-card { background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 6px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.rf-key { font-size: 12px; color: #555; }
+.rf-meta { font-size: 12px; color: #555; }
+.rf-more { font-size: 12px; color: #555; }

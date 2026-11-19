@@ -444,3 +444,86 @@ test('desktop mode routes an open request to the desktop proposal and speaks its
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
 });
+
+async function shareCall(opts) {
+  const clock = fakeClock();
+  const children = [], spoken = [];
+  const manager = createCallManager({ ...opts, source: { snapshot: async () => ({ items: [] }) },
+    brain: { turn: async () => { throw new Error('brain must not be asked'); } }, tts: { voice: 'v', say: async (s) => Buffer.from(s) },
+    redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'],
+    spawn: () => {
+      const c = new EventEmitter(); c.pid = 7; c.stdin = new EventEmitter();
+      c.stdin.write = (l) => { spoken.push(l); const m = JSON.parse(l.startsWith('{') ? l : '{}');
+        if (m.type === 'speak') setImmediate(() => c.stdout.emit('data', `${JSON.stringify({ type: 'spoke', seq: m.seq, result: 'done' })}\n`)); return true; };
+      c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {}; c.stderr = new EventEmitter();
+      children.push(c); return c;
+    } });
+  await manager.start('link');
+  const said = () => spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s)).filter((m) => m.type === 'speak')
+    .map((m) => Buffer.from(m.wav, 'base64').toString());
+  const heard = async (text) => {
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: Math.random(), speaker: 'Eve', text, final: true })}\n`);
+    clock.tick(1500); await flush(); await flush();
+  };
+  return { manager, children, said, heard };
+}
+
+function fakeShares(result) {
+  const s = { requests: [], started: [], ended: 0, subs: new Set(),
+    request: async (...args) => { s.requests.push(args); return result; },
+    startCall: async (...args) => { s.started.push(args); }, endCall: async () => { s.ended++; },
+    subscribe: (fn) => { s.subs.add(fn); return () => s.subs.delete(fn); } };
+  return s;
+}
+
+test('share utterance goes to shares.request; the refusal is spoken and replayed as an event; endCall on stop', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const reason = 'no desktop for this call';
+    const shares = fakeShares({ status: 409, text: `I can't share the board right now: ${reason}.` });
+    const f = await shareCall({ shares });
+    assert.deepEqual(shares.started, [[1, { desktop: null }]]);
+    await f.heard('RFactory, show the board');
+    assert.equal(shares.requests.length, 1);
+    assert.ok(f.said().includes(`I can't share the board right now: ${reason}.`));
+    assert.deepEqual(f.manager.current().filter((e) => e.type === 'share-unavailable'), [{ type: 'share-unavailable', share: { reason } }]);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+    assert.equal(shares.ended, 1);
+  } finally { process.kill = original; }
+});
+
+test('share events are spoken only in the call that asked and are forwarded with replay', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const shares = fakeShares({ status: 202, text: "I'd like to share the CFactory board. Approve it on the RFactory page.", share: { id: 's1' } });
+    const f = await shareCall({ shares });
+    await f.heard('RFactory, show the board');
+    assert.ok(f.said().some((s) => /share the CFactory board/.test(s)));
+    const fire = (event) => { for (const fn of shares.subs) fn(event); };
+    fire({ type: 'share-updated', share: { id: 'other', state: 'running' } }); // not this call's share
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running' } });
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running' } }); // a 30 s refresh says running again
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running', stale: true } }); // and a failed one
+    await flush(); await flush();
+    assert.equal(f.said().filter((s) => s === 'Sharing the board.').length, 1); // spoken once (review P2)
+    fire({ type: 'share-updated', share: { id: 's1', state: 'stopped', reason: 'manual' } });
+    await flush(); await flush();
+    assert.equal(f.said().filter((s) => s === 'Stopped sharing.').length, 1);
+    assert.deepEqual(f.manager.current().filter((e) => e.type.startsWith('share-')).map((e) => e.share.id), ['other', 's1']);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+    const count = f.said().length;
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running' } });
+    await flush();
+    assert.equal(f.said().length, count);
+  } finally { process.kill = original; }
+});
+
+test('with shares off a share utterance is answered "Sharing is turned off here."', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const f = await shareCall({});
+    await f.heard('RFactory, show the board');
+    assert.ok(f.said().includes('Sharing is turned off here.'));
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});

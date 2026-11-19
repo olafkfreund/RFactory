@@ -165,3 +165,21 @@ test('routing order: leave, action, standup, question', () => {
     assert.equal(addressed[0].kind, kind, text);
   }
 });
+
+test('share: show/display/put up the board is a share request, checked after leave and before action', () => {
+  const kinds = {
+    'show the board': 'share',
+    'can you put up the board': 'share',
+    'please display the board': 'share',
+    "show me what's blocked": 'question',
+    'move FCT-9 to done': 'action',
+    'run the standup': 'standup',
+    'leave the call': 'leave',
+  };
+  for (const [text, kind] of Object.entries(kinds)) {
+    const { clock, addressed, heard } = setup();
+    heard('a', `RFactory, ${text}`);
+    clock.tick(1500);
+    assert.equal(addressed[0].kind, kind, text);
+  }
+});

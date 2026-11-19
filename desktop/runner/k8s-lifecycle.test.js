@@ -79,6 +79,17 @@ test('paused VMI, UID and pod, owned policy and entries, guard ready, then unpau
   assert.equal(ctx.lc.list()[0].call_id, 'call-1');
 });
 
+test('list reports sharing per desktop', async () => {
+  const ctx = setup();
+  const { desktop_id } = await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
+  assert.equal(ctx.lc.list()[0].sharing, false);
+  ctx.lc.sharing(desktop_id, true);
+  assert.equal(ctx.lc.list()[0].sharing, true);
+  ctx.lc.sharing(desktop_id, false);
+  assert.equal(ctx.lc.list()[0].sharing, false);
+  await ctx.lc.stop();
+});
+
 test('reverse VNC has one viewer, filters input, and accepts a reconnect', async () => {
   const ctx = setup();
   const { desktop_id } = await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
