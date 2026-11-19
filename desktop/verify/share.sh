@@ -61,10 +61,10 @@ if [ "$(jq -r '.ok // false' <<<"$fh")" = true ] && [ "$(jq -r '.error // empty'
   && [ "$(jq -r '.ok // false' <<<"$r2")" = true ] && [ "$left" = none ]; then pass share-stop-fails
 else fail share-stop-fails "hook: $fh; first stop: $r1; record kept: ${kept:-no}; second stop: $r2; record after: $left"; fi
 
-# the shared page navigates away after 3 s: the guest sends share-target-changed and the share stops
+# the shared page navigates away 12 s after it loads: the guest sends share-target-changed and the share stops
 if start_shared "$D" "$VERIFY_FIXTURE_URL/away"; then
-  sleep 6
-  owner_confirm share-navigation-stops "The shared page navigated away 3 s after the share began. Did the share stop (nothing shared in the Meet)?"
+  sleep 12
+  owner_confirm share-navigation-stops "The shared page navigated away about 12 s after it loaded. Did the share stop (nothing shared in the Meet)?"
 else fail share-navigation-stops "share did not start: $SHAREERR"; fi
 web_stop "$D" >/dev/null || true
 

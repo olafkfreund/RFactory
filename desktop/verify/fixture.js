@@ -40,7 +40,7 @@ http.createServer((req, res) => {
     case '/mark': res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': `rfmark=${new URL(req.url, 'http://x').searchParams.get('v') || 'none'}; Max-Age=86400; Path=/` }); res.end('marked'); break; // plaintext marker for profiles.sh
     case '/retitle': html(res, `<script>setTimeout(() => { document.title = 'changed'; fetch('/retitled'); }, 1000)</script>shared page`); break;
     case '/retitled': state.retitled = true; res.end('{}'); break;
-    case '/away': html(res, `<script>setTimeout(() => { location.href = '/landing-a'; }, 3000)</script>shared page`); break; // a share page that navigates
+    case '/away': html(res, `<script>setTimeout(() => { location.href = '/landing-a'; }, 12000)</script>shared page`); break; // a share page that navigates; 12 s, past a share start in the VM (k14: 3 s was shorter than the start, so the start was refused)
     case '/login': html(res, `<input id="user"><input id="pass" type="password"><button id="go" type="button">go</button><script>
       const n = (e) => e.value.length, tell = () => fetch('/login-state?u=' + n(user) + '&p=' + n(pass));
       user.oninput = pass.oninput = tell; go.onclick = () => fetch('/login-submitted');
