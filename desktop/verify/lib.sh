@@ -126,7 +126,9 @@ join_call() {
   end=$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))
   until grep -q '"state":"in-call"' "$f" || ! kill -0 "$!" 2>/dev/null || [ $SECONDS -ge "$end" ]; do sleep 2; done
   grep -q '"state":"in-call"' "$f" && return 0
-  CALLERR="no in-call state; stream said: $(grep -o '"state":"[a-z-]*"\|call-refused-[0-9]*\|runner-timeout' "$f" | tr '\n' ' ')"
+  CALLERR="no in-call state; stream said: $(grep -o '"state":"[a-z-]*"\|"code":"[^"]*"\|"message":"[^"]*"\|call-refused-[0-9]*\|runner-timeout' "$f" | tr '\n' ' ')"
+  # the whole stream, for the lead (no secrets: states, codes and the bot's own log lines)
+  [ -z "${VERIFY_STREAM_DIR:-}" ] || cp "$f" "$VERIFY_STREAM_DIR/stream-$1.jsonl" 2>/dev/null || true
   return 1
 }
 
