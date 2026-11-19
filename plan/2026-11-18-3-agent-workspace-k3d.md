@@ -820,6 +820,25 @@ and 27) and the scripts. This plan is self-contained.
     - Not code: Google Meet refuses VM guest joins for about an hour
       after dozens in a short time ("You can't join this video call"),
       while a local browser still joins; tests space bot joins.
+    - lifecycle test fixes: reaper-alone now freezes the runner (SIGSTOP
+      from its node) before the scale to 0, because a force delete still
+      sends SIGTERM and the runner's teardown ended the desktop first
+      (be73fcc; rerun: egress cut at 53 s, reaper deleted it at 60 s);
+      nothing-left read a clean node as unreadable (`grep -o` exit 1
+      under pipefail) (6ff6950).
+    - capacity's two owner_confirm items were run by hand on real
+      desktops (scripts and output in the verify record): a desktop's
+      paced UDP to a pinned media address stopped at the quota
+      (1,073,740,478 bytes counted) and the desktop was gone 6 s later
+      with no list entry, VMI or guard table, while the reaper logged
+      nothing; a desktop sharing in the Meet (observer saw the share)
+      stopped egress 0.4 s after the runner's scale to 0. The runner
+      does not log a destroy reason, so "by the runner, for
+      egress-quota" is by elimination.
+    - Probe note: an unpaced sender gets about 2 Mbit/s through the
+      20 Mbit/s police (64 KB burst), and ncat's large datagrams
+      fragment so almost none reassemble; send one 1400-byte datagram
+      per write, paced.
 40. **A stored preview login may name the path of its form (lead, from
     Fable's trace of k14 secrets.sh).** The runner opened the login's
     origin root before `desktop_login`, so a form not at `/` could never
