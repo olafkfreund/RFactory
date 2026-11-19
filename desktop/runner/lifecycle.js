@@ -112,7 +112,7 @@ function createLifecycle(config, deps) {
     if (!vm.nonce || !vm.agent) return;
     vm.configSent = true; // first message on every control connection; the guest keeps one worker and ignores repeats
     vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.proxy ? { proxy: vm.proxy } : {}),
-      ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}) }));
+      ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}), ...(vm.avatar ? { avatar: vm.avatar } : {}) }));
   }
   const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
   async function toGuest(id, message, timeoutMs = 30000, corrupt = false) {
@@ -321,7 +321,7 @@ function createLifecycle(config, deps) {
     await live();
     await deps.k8s.unpauseVmi(vmiName);
   }
-  async function start(call_id, scope, diskSpec, platform) {
+  async function start(call_id, scope, diskSpec, platform, avatar) {
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     // Reserve the slot synchronously (no await before vms.set): two concurrent creates cannot both pass.
     if (vms.size >= config.maxVms) return { error: 'capacity', message: 'no desktop slot is free' };
@@ -329,7 +329,7 @@ function createLifecycle(config, deps) {
     const now = clock.now();
     const vm = { id, sock: id, created: now,
       lastWorker: now + (config.bootGraceMs || 0), lastServer: now + (config.bootGraceMs || 0), lastActivity: now, call_id, scope,
-      pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec };
+      pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec, avatar };
     vms.set(id, vm);
     try { await boot(vm, platform); } catch (error) {
       await destroy(id, 'boot-failed');
@@ -340,8 +340,9 @@ function createLifecycle(config, deps) {
   }
 
   // diskSpec (a profile's disk and volume) comes only from in-process callers, never from the HTTP body.
-  async function create({ call_id, scope, platform }, diskSpec = null) {
+  async function create({ call_id, scope, platform, avatar }, diskSpec = null) {
     if (typeof call_id !== 'string' || typeof scope !== 'string' || !call_id || !scope) return { error: 'bad-request' };
+    if (avatar !== undefined && !(typeof avatar === 'string' && /^[a-z0-9]{1,16}$/.test(avatar))) return { error: 'bad-request', message: 'bad avatar' };
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     if (deps.preflight) { // the pinned media ranges must answer before any call joins: a clear refusal, never an unusable call
       if (typeof platform !== 'string' || !platform) return { error: 'bad-request', message: 'platform is required' };
@@ -349,7 +350,7 @@ function createLifecycle(config, deps) {
     }
     const cold = [...vms.values()].find(v => v.spare && v.cold);
     if (cold) vms.delete(cold.id);
-    return start(call_id, scope, diskSpec, platform);
+    return start(call_id, scope, diskSpec, platform, avatar);
   }
 
   // A spare only reserves capacity; its VMI is created when it is claimed (the platform and scope policy cannot be fixed before).

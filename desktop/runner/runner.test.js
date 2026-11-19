@@ -790,3 +790,13 @@ test('profile-attach: when the client is gone by the time the attach finishes, t
   } finally { server.closeAllConnections(); server.close(); }
 });
 
+
+test('create refuses a bad avatar and puts a good one in call-config', async () => {
+  const ctx = setup({ onWrite: echoOk });
+  for (const avatar of ['Ada', '../x', 'a'.repeat(17), '', 7, null]) {
+    assert.equal((await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'meet', avatar })).error, 'bad-request', String(avatar));
+  }
+  const r = await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'meet', avatar: 'ada1' });
+  const conn = await ctx.control(r.desktop_id);
+  assert.equal(conn.out[0].avatar, 'ada1');
+});

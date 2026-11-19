@@ -109,3 +109,18 @@ test('vm spawn: platform comes from the link host; an unknown host fails before 
     assert.equal(created, false);
   }
 });
+
+test('vm spawn: the chosen avatar (opts.env.RFACTORY_AVATAR) reaches runner.create; none sends no key', async () => {
+  const seen = [];
+  for (const env of [{ RFACTORY_AVATAR: 'ada' }, {}]) {
+    const f = fake();
+    const create = f.runner.create;
+    f.runner.create = async (b) => { seen.push(b); return create(b); };
+    const child = createVmSpawn({ runner: f.runner, scope: 's' })('node', [], { env });
+    child.stdin.write(`${LINK}\n`);
+    await tick();
+    child.kill();
+  }
+  assert.equal(seen[0].avatar, 'ada');
+  assert.ok(!('avatar' in seen[1]));
+});
