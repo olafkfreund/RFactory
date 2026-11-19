@@ -25,66 +25,119 @@ So the intent's decisions (a read-only first slice; an AIFactory run started thr
 
 ## Design
 
+The read-only promise of intent decision 2 ("no edits, branches or pull requests") is enforced, not described:
+
+- the agent gets no tool that writes;
+- the source it reads is immutable;
+- the tests are run by the harness, never by the agent, on a fresh copy of the pinned commit;
+- nothing leaves the run except its log and report.
+
 ### 1. AIFactory: an `investigate` run kind (AIFactory repository, its own issue)
 
-A run with `kind: "investigate"` on create-and-run:
+**Inputs (from CFactory, fixed for the run):** the repository, the resolved commit SHA, the request text, the test command, and the limits. The test command comes from the project's configuration (`test_command`), never from speech. A project without one gets "no tests run".
 
-- **What it gets:** a fresh, disposable checkout of the repository at a ref (its default branch unless named). It **receives no GitHub token**: the checkout is made by the control plane with a read-only credential before the agent starts, and the agent's env has no `GITHUB_TOKEN`/`GH_TOKEN`. It cannot push, open PRs or call the GitHub API as the owner.
-- **What it may do:**
-  - **Allowed tools:** reading and searching (Read, Grep, Glob) and Bash, so it can run the tests.
-  - **Refused tools:** Write, Edit, NotebookEdit, and the AIFactory tools that create, start or merge.
-  - **Shell writes are possible but can't leave the run.** Bash can write files in the checkout: the boundary is that nothing written can leave. The checkout is discarded with the Job, there is no push credential, and egress stays as today.
-  - The spec does not claim the files are untouched, only that nothing is published.
-- **Its brief:** a fixed system preamble ("investigate and report; run the test command; do not try to change or publish anything"), then the approved request text.
-- **Output:** a report:
-  - the findings;
-  - for each test command run: the command, its exit code, and passed / failed / not run counts, parsed when the runner prints them, else "not parsed";
-  - the files and lines it relied on.
+**Checkout:**
+- The control plane, not the agent, clones the commit with a read-only credential.
+- It strips the remote URL and any credential from the Git configuration.
+- It deletes secret-bearing files before the agent sees anything: `.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc` / `.pypirc` / `.netrc` with tokens, `credentials*`, and files matching the scope's secret patterns.
+- It mounts the result **read-only** at `/src`.
 
-  The report goes in the task's result, beside the log.
-- **Limits:** a 30-minute `activeDeadlineSeconds` for this kind, and a token/turn cap that **aborts**, unlike `budgetUsd`. Kubejob only.
-- **Stop:** delete the Job (as today), and confirm the pod is gone before reporting stopped.
-- **Live log:**
-  - `GET /api/tasks/{id}/logs?after=<cursor>` returns new entries since a cursor, capped at 500 lines.
-  - RFactory polls it every 5 s. The WebSocket is not needed for this slice.
+**Agent tools:**
+- **Allowed:** Read, Grep, Glob on `/src`, and one tool, `run_tests`.
+- **Refused:** Bash, Write, Edit, NotebookEdit, web fetch and search, MCP servers, and every AIFactory tool that creates, starts or merges.
+- **`run_tests`** takes no arguments. The **harness** copies `/src` to a fresh scratch directory and runs the configured test command there, with its own time limit. It returns the exit code and parsed passed / failed / skipped counts (else "not parsed") with the last 200 lines. Each call starts from the pristine copy, so nothing the agent sees can come from changed source.
+
+**Environment (an allowlist, not a removal list):**
+- **Only:** the owner's Claude subscription credential, the run's own id, and its log token.
+- **Not:** `GITHUB_TOKEN` / `GH_TOKEN`, provider or storage keys, the project's MCP environment, seeded credential files (`build_backend.py:742`), or a service-account token (`automountServiceAccountToken: false`, no nested-job role).
+- The pod's env, mounted files and Git configuration are tested as built, not just two variable names.
+
+**Egress (an investigation-only NetworkPolicy, replacing today's task policy for this kind):**
+- **Allowed:** cluster DNS; the Claude API; AIFactory's own API on its service port (for logs and the report, with the run's token); and a package-registry proxy for the test command's dependencies (an allowlist: registry.npmjs.org, pypi.org, files.pythonhosted.org, proxy.golang.org, crates.io; extendable per project, CONNECT-only like #3's proxy).
+- **Refused:** everything else, including Postgres, other internal services and arbitrary HTTPS. The repository's code and test output have nowhere to upload to.
+
+**Limits:**
+- the 30-minute Job deadline;
+- an aborting usage cap: a token budget (default 2 M tokens) and a turn cap (default 200). Both abort, unlike `budgetUsd`, and both are shown on the RFactory page;
+- the test command's own time limit, inside `run_tests`;
+- one `investigate` run per project at a time.
+
+**Lease (stop on controller loss):**
+- RFactory renews the run's lease every 10 s through CFactory.
+- A watchdog in the pod ends the run when the lease is 60 s old.
+- The Job has a 10 s termination grace period and is deleted with foreground propagation.
+- AIFactory reports "stopped" only when the pod is gone, and "stop not confirmed" otherwise.
+- This covers an RFactory crash, a lost start response (the lease was never renewed), and a call that ends during dispatch.
+
+**Log and report:**
+- The harness and the agent write log entries to AIFactory's task log store through its API while the run is live. That is the defined source, not files in a worktree.
+- `GET /api/tasks/{id}/logs?after=<cursor>` returns entries after a cursor, at most 500 lines, run-authorised.
+- The report (findings, files and lines relied on, every `run_tests` result, the tested commit SHA) is stored on the task.
+- Log and report lines pass AIFactory's secret scrubbing before they are stored.
+- Retention and access are AIFactory's existing ones (intent decision 7).
 
 ### 2. CFactory: an `investigate` action (CFactory repository, its own issue)
 
-`POST /api/cards/{key}/actions/investigate {request, ref?, test_command?}`, with the MCP tool `cfactory_investigate_card`:
-
-- it is callable only with the write key (as `actions/code` is);
-- it creates the AIFactory run with `kind: "investigate"` for the card's repository and records it on the card (stage `investigate`, with its run id and state);
-- it returns `{ run_id }`.
-
-The card is the record of what was asked and approved (#10's model): RFactory makes a card "Investigate: <request>" in the call's project, then calls this action.
+- **The card.** `POST /api/cards/{key}/actions/investigate {request, sha, limits}`, write key only, with the MCP tool `cfactory_investigate_card`. RFactory first creates a **non-dispatching** card (no tier, `dispatch: none`), so creating it cannot start ordinary plan or code work.
+- **Pinning the commit.** The action resolves the scope's repository and checks that `sha` is on its default branch. It takes the project's `test_command` and creates the AIFactory run.
+- **Recording and lease.** It records stage `investigate` with the run id and state on the card, returns `{ run_id }`, and relays `POST .../investigate/{run_id}/lease` and `/stop`.
 
 ### 3. RFactory: hearing, approval, the shared log, the spoken result
 
-- **Hearing:** after `share` and before `action`, a new kind `investigate`, anchored at the start: "investigate", "find out", "look into", or "open a terminal … and …".
-- **Proposal and approval:** this reuses #10's action pipeline (allowlist, payload hash, approver-only approve, expiry, record). There are two new allowlisted tools:
-  - `investigate`: create the card, then call `cfactory_investigate_card`;
-  - `stop_investigation`: call AIFactory's stop through CFactory, or AIFactory directly with its id.
+**Hearing:** a new kind `investigate`, after `share` and before `action`, anchored at the start: "investigate", "find out", "look into", or "open a terminal … and …".
 
-  The approval text names the repository, the request and the limits: "Investigate in <repo>: <request>. Read-only, runs tests, at most 30 minutes."
-- **One per call.** A second request while one runs is answered "One investigation is already running."
-- **The live log in the call:** a second view on #12's share mechanism, `view: 'log'`. The viewer page gains a log layout: monospace text, the last 200 lines, "RFactory (AI) · Investigation · read-only · <repo> · as of hh:mm". The server polls AIFactory's log every 5 s and sends `view-data`.
-  - The lines are redacted (`redactor.logSafe`) and capped at 48 KiB, like the board.
-  - Sharing it is a #12 share with its own approval, which can be the same click: the approval text says "and show its log in the call".
-- **The result:** when the run ends, the bot speaks a short summary from the report through the brain. The brain receives the report as untrusted data (#1: no shell, no files): "The failing test is X, because Y; 41 passed, 1 failed." The page shows the report as text, never as HTML.
-- **Stop:** Stop on the page, the call ending, the 30-minute limit, or a lost controller each stop the run (`stop_investigation`) and close the view. If AIFactory cannot confirm the stop, that is shown and recorded, never assumed.
-- **Record:** #10's record gains `kind: 'investigation'` entries for every state: proposed, approved, rejected, expired, running, the test counts, stopped, failed, uncertain. They hold no log text and no report text beyond the counts.
+**The approved payload (hashed, #10's pipeline):**
+- the scope's repository;
+- the commit SHA resolved at proposal time;
+- the request text;
+- the project's test command (shown, not chosen by speech);
+- the limits (30 min, the token and turn caps);
+- whether the log is shown in the call.
+
+The approval text names them all, for example: "Investigate in notes-api @ 3f2a1c9: why the tests fail. Read-only; runs `npm test`; at most 30 minutes and 2 M tokens; show the log in the call."
+
+**At dispatch:** the payload is revalidated (scope, repository, SHA still on the default branch, limits). The approver role is #10's.
+
+**One per call, reserved atomically:** approving takes the call's single investigation slot synchronously, before any await. The slot is held through starting, running, stopping and any uncertain outcome. A second approval, or a request while the slot is held, is refused: "One investigation is already running."
+
+**The live log in the call:**
+- **A second view on #12's share,** `view: 'log'`, approved in the same click when the payload says so.
+- **Polling.** The server polls the cursor endpoint every 5 s.
+- **The viewer's log layout:** monospace text, the last 200 lines, and the banner "RFactory (AI) · Investigation · read-only · <repo> @ <sha> · as of hh:mm". It is marked stale when a poll fails.
+
+**Secrets:**
+- Lines are redacted again in RFactory (`redactor.logSafe`, plus a high-entropy and key-shape filter) before they are shown, before the report reaches the brain, and before anything is spoken. Each step re-redacts the whole text, not a fragment, so a secret split across two polls is caught on the joined text.
+- The brain receives the report as untrusted data (#1: no shell, no files).
+- The page renders text only.
+
+**The result:**
+- **Spoken:** a short summary, for example "The failing test is X, because Y; 41 passed, 1 failed at 3f2a1c9." Test counts come only from `run_tests` results, never from the agent's prose.
+
+**Stop:**
+- Stop on the page, call end, the 30-minute limit, a lost lease, or the slot's controller going away each stop the run and close the view.
+- An unconfirmed stop is shown and recorded as such.
+
+**Record (#10's daily record, kept 90 days):** `kind: 'investigation'` entries linking:
+- the request;
+- the approver's identity and the exact payload hash;
+- the run id and the tested commit SHA;
+- each `run_tests` result as counts;
+- the terminal state: completed, stopped (with reason), failed, expired, rejected or uncertain.
+
+No log text, and no report text beyond the counts.
 
 ## Alternatives rejected
 
 - **RFactory starts AIFactory directly**, without CFactory: smaller, but it breaks the intent's decision 1 and #10's single write path. A run is a write to AIFactory even when it changes no repository.
 - **TFactory regression for "run the tests"**: it runs only its own catalogue, never a repository's own suite.
 - **Planner-only (`--stop-after-planning`)**: not reachable from the API, still writes spec files, and runs no tests.
-- **Restricting Bash to a test-command allowlist**: brittle (a test runner runs arbitrary repository code anyway). The boundary is "nothing can be published", enforced by having no credential, a disposable checkout and today's egress.
+- **Bash for the agent with a command allowlist, or "nothing is published" as the boundary** (the first draft): Codex showed both are too weak. Bash can edit the source and the report would describe changed code (intent decision 2 says no edits). Today's task egress allows any HTTPS address, so repository code could upload the source. The design now gives the agent no write or shell tool, runs the tests in the harness on a pristine copy, and narrows egress to named destinations.
 - **The #3 desktop VM**: rejected by intent decision 1.
 
 ## Risks
 
-- **Repository code runs.** Running the tests executes the repository's own code in the Job, with public egress. That's acceptable for the call's own project, where it already runs in CI and AIFactory builds. The Job has no GitHub token and no Factory credentials beyond its own task.
+- **Repository code runs** when the harness runs the test command. It runs in the Job with no credential beyond the run's own log token, no service-account token, and egress limited to the Claude API, AIFactory's API and the registry proxy. A malicious dependency or test could still use those destinations, so the registry proxy is CONNECT-only to named hosts, and AIFactory's API accepts only this run's log and report writes with its token.
+- **The secret-file filter is a list,** not a proof. A secret in an unexpected file name is still readable by the agent; it is caught (if at all) by the redaction steps. The scope's own secret patterns extend the list.
 - **Prompt injection from repository content** can change what the agent investigates or reports. It cannot widen what the run may do (no write tools, no credential). The spoken summary goes through the brain as untrusted data, and the page renders text only.
 - **Secrets in logs or the report:** both are redacted before they are shown or spoken; the record holds neither.
 - **Cross-repo order.** RFactory's part is useless until AIFactory and CFactory ship theirs; each is behind its own switch (`investigate` disabled by default), and RFactory checks `cfactory_investigate_card` exists before offering it.
