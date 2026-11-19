@@ -690,8 +690,19 @@ test('login: the runner resolves the stored login by scope and profile, sends it
   assert.deepEqual(await ctx.lc.login(id, { profile: 'demo', hosts: ['https://a.test'] }), { ok: true }); // no page text back
   const sent = ctx.conn.out.at(-1);
   assert.deepEqual([sent.type, sent.login, sent.hosts], ['desktop_login', entry, ['https://a.test']]);
-  assert.deepEqual([ctx.conn.out.at(-2).type, ctx.conn.out.at(-2).url], ['desktop_open', 'https://a.test']); // the login origin is opened first
+  assert.deepEqual([ctx.conn.out.at(-2).type, ctx.conn.out.at(-2).url], ['desktop_open', 'https://a.test/']); // the login origin is opened first
   assert.deepEqual(asked, [['s', 'demo']]);
+  // a stored path names the page with the form: it is opened, and the guest's login does not carry it
+  entry.path = '/login';
+  assert.deepEqual(await ctx.lc.login(id, { profile: 'demo', hosts: ['https://a.test'] }), { ok: true });
+  assert.deepEqual([ctx.conn.out.at(-2).url, ctx.conn.out.at(-1).login.path], ['https://a.test/login', undefined]);
+  for (const path of ['//b.test/x', 'https://b.test/', 5]) { // a path that leaves the origin opens nothing
+    entry.path = path;
+    const before = ctx.conn.out.length;
+    assert.deepEqual(await ctx.lc.login(id, { profile: 'demo', hosts: ['https://a.test'] }), { error: 'bad-message' });
+    assert.equal(ctx.conn.out.length, before);
+  }
+  delete entry.path;
   assert.deepEqual(await ctx.lc.login(id, { profile: 'other', hosts: ['https://a.test'] }), { error: 'no-login' });
   assert.deepEqual(await ctx.lc.login(id, { profile: 'demo', hosts: ['https://b.test'] }), { error: 'login-host' }); // the grant must cover the login's origin
   assert.deepEqual(await ctx.lc.login(id, { profile: 'demo' }), { error: 'bad-message' });

@@ -39,7 +39,7 @@ on)
   if [ ! -s "$STATE/login" ]; then { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; } >"$STATE/login"; chmod 600 "$STATE/login"; fi
   { read -r user; read -r pass; } <"$STATE/login"
   jq -n --arg o "http://$FX_HOST:$FX_A" --arg u "$user" --arg p "$pass" \
-    '{"verify-scope":{"fixture":{origin:$o,fields:[{target:"#user",value:$u},{target:"#pass",value:$p}],submit:"#go"}}}' \
+    '{"verify-scope":{"fixture":{origin:$o,path:"/login",fields:[{target:"#user",value:$u},{target:"#pass",value:$p}],submit:"#go"}}}' \
     >"$STATE/logins.json"; chmod 600 "$STATE/logins.json"
   kc delete secret rfverify-preview-logins --ignore-not-found >/dev/null
   kc create secret generic rfverify-preview-logins --from-file=logins.json="$STATE/logins.json" >/dev/null

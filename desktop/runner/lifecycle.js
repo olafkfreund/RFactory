@@ -141,11 +141,17 @@ function createLifecycle(config, deps) {
     const vm = vms.get(id);
     if (!vm || vm.destroying || vm.spare) return { error: 'no-desktop' };
     if (typeof profile !== 'string' || !Array.isArray(hosts)) return { error: 'bad-message' };
-    const entry = deps.resolveLogin ? await deps.resolveLogin(vm.scope, profile) : null;
-    if (!entry) return { error: 'no-login' };
+    const stored = deps.resolveLogin ? await deps.resolveLogin(vm.scope, profile) : null;
+    if (!stored) return { error: 'no-login' };
+    const { path = '/', ...entry } = stored; // path: where the login form is on that origin; the guest gets the entry without it
     if (!hosts.includes(entry.origin)) return { error: 'login-host' };
-    try { encode({ type: 'desktop_login', profile, hosts, login: entry, action_id: 'check' }); } catch { return { error: 'bad-message' }; } // an invalid stored entry opens nothing
-    const opened = await toGuest(id, { type: 'desktop_open', url: entry.origin, hosts }); // the guest fills only a page already on the login's origin
+    let url;
+    try {
+      encode({ type: 'desktop_login', profile, hosts, login: entry, action_id: 'check' });
+      url = new URL(path, entry.origin);
+      if (typeof path !== 'string' || url.origin !== entry.origin) throw new Error('path');
+    } catch { return { error: 'bad-message' }; } // an invalid stored entry opens nothing
+    const opened = await toGuest(id, { type: 'desktop_open', url: url.href, hosts }); // the guest fills only a page already on the login's origin
     if (opened.error || opened.ok === false) return { error: opened.error || 'login-open-failed' };
     const r = await toGuest(id, { type: 'desktop_login', profile, hosts, login: entry });
     return r.error ? { error: r.error } : { ok: r.ok === true };

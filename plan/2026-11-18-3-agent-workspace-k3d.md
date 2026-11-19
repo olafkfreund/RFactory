@@ -781,6 +781,50 @@ and 27) and the scripts. This plan is self-contained.
     - k14's fixture runs on the `rfverify` docker bridge, 10.250.0.1:
       private, outside every protected range, reachable from the nodes.
       `deploy/k3d/k14-env.sh on|off|status` switches the test mode.
+39. **k14 live findings and fixes (lead; Codex gpt-6.1-sol and Fable
+    traced the hard ones; 2026-11-18/19).** The first real calls from a
+    desktop, each found live and fixed with a test that fails without it:
+    - runner crashed on a call stream: `setEncoding` on the upgraded
+      socket throws; a `StringDecoder` instead (51c8c60);
+    - guest DNS: `useNetworkd` turned on resolved, which ignored the
+      proxy's `/etc/resolv.conf`; resolved off in the KubeVirt guest
+      (3844a07);
+    - proxy auth parked Meet's navigation: Playwright never resumes a
+      request Chrome restarts after an `ACCEPT_CH` frame unless a route
+      exists (playwright#40194); the call Chrome gets a pass-through
+      route (9d20fa9, Codex and Fable);
+    - Meet's "Continue as guest" page, unknown to the calls library:
+      an init script clicks it and fills the name step; Join stays the
+      library's to press, or its join loop drops the call (378904b,
+      5c7a9a7, 125ad68);
+    - a share survived its page navigating away: `stop()` failed open;
+      it now ends the capture tracks, confirms the tab gone in Chrome's
+      target list, else ends the call (1d65b49, Fable), and the stopped
+      tracks fire `ended` so Meet ends the presentation (30b8049);
+    - the control Chrome quit when a refused page closed its last tab
+      (headed Chrome exits with its last window); a blank tab is opened
+      first and a closed Chrome is relaunched (99bbeb3);
+    - a live-view client hanging up without a Close frame kept the
+      desktop's one viewer slot: the web bridge also closes on `end`
+      (b19a849, Codex);
+    - the proxy logs every refusal (reason, source IP, host; never the
+      token) (00027f2).
+    - Test-side: `owner_confirm` can take answers from
+      `VERIFY_CONFIRM_DIR`, judged from an observer participant in the
+      call (owner's standing OK, 2026-11-19); `join_call` reports the
+      bot's error code; script fixes in share, secrets, handover and
+      liveview (f8fe89d, 0dc22d1, 0828f2b).
+    - Not code: Google Meet refuses VM guest joins for about an hour
+      after dozens in a short time ("You can't join this video call"),
+      while a local browser still joins; tests space bot joins.
+40. **A stored preview login may name the path of its form (lead, from
+    Fable's trace of k14 secrets.sh).** The runner opened the login's
+    origin root before `desktop_login`, so a form not at `/` could never
+    be filled (`login-failed`). A stored entry may carry `path`
+    (default `/`); the runner opens `origin + path`, refuses a path that
+    leaves the origin, and strips `path` before the entry reaches the
+    guest. Changes the 2026-11-17 plan's "opens its origin" to "opens
+    its origin at the entry's optional path".
 
 
 ## Steps
