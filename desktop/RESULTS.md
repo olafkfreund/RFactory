@@ -10,7 +10,10 @@ Fixes found during k14 are listed in the plan, deviations 39 and 40.
 Every scripted check that has run passes, after the fixes in deviations 39 to 42 and the docker-disk move
 (nixos_config #3109). Still open, owner-gated:
 
-- `e2e.sh` Teams half: needs the owner in a Teams meeting (4 checks not run).
+- Teams hearing (`e2e-teams-vm-answers`): the bot only hears through platform captions, and Teams' light client
+  keeps them disabled for anonymous guests. Either a tenant setting allows live captions for anonymous
+  participants, or the bot needs its own speech-to-text (the calls library's "audio" listen source, wired for the
+  headless bot). Owner decision.
 
 ## Images under test
 
@@ -38,7 +41,7 @@ matching `targetRevision` bump.
 | `secrets.sh` | 3/3 | |
 | `share.sh` | 6/6 | Owner watched the Meet. `share-control-down` cut 14 s after the channel was dropped (5 s cutoff plus teardown). |
 | `liveview.sh` | 7/7 | Revoke closes the stream within 5 s; second viewer 409. |
-| `e2e.sh` | Meet 5/5, Teams 0/4 | Teams half not run (owner). |
+| `e2e.sh` | Meet 5/5, Teams 3/4 | Teams (2026-11-19, six runs): joins, leaves and nothing-left pass after three fixes (deviations 43 to 45: the Teams CDN host, waiting for the leave to be confirmed, retrying captions). Hearing on Teams is open: on the light client an anonymous guest's Captions item stays disabled, even with the organiser's captions on, so the bot hears nothing. One run (run 4) did hear and answered aloud as an AI. |
 | `profiles.sh` | 8/8 | 7/8 on the first run; the rollback rehearsal (now scripted, deviation 41) could not start while the docker disk was saturated. After the move to NVMe (nixos_config #3109) it passed in 112 s: the Application deleted and synced at f20fa92, the profile's PVC, record and LUKS header unchanged. |
 
 ### Manual capacity checks (real desktops)
@@ -102,6 +105,11 @@ limits density, not CPU: three desktops reserve about 19 GiB.
 - The runner does not log why it destroyed a desktop.
 - Google Meet refuses VM guest joins for about an hour after dozens of
   joins in a short time; tests space their joins.
+- Teams admits a guest bot only after the organiser lets it in from the lobby (or the meeting lets guests bypass
+  it). The guest has no audio output device ("Couldn't find a speaker"); the bot speaks through the library's own
+  audio path, so this did not stop it answering in run 4.
+- The brain answers about the factory board only: "two plus two" got "I don't know". The e2e question tests
+  hearing and speaking, not the answer.
 
 ## Evidence
 
