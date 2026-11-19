@@ -63,7 +63,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       if (m.type === 'call-config') {
         if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
         configured = true;
-        return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token)).catch(() => {}); // a throw is caught too
+        return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token, m.avatar)).catch(() => {}); // a throw is caught too
       }
       if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed') return undefined;
@@ -112,11 +112,11 @@ function main() {
     sendCurrent = send;
     const agent = createAgent({ control, profile, send, resolveLogin,
       share: { start: (m) => worker.share.start(m), stop: () => worker.share.stop() }, // throws without a worker: the action answers ok:false
-      onCallConfig: (nonce, screen, token) => {
+      onCallConfig: (nonce, screen, token, avatar) => {
         if (!token) return; // no proxy credential, no Chrome: neither can reach the web
         const proxy = { server: `http://${proxyAddr.host}:${proxyAddr.port}`, username: 'rf', password: token };
         control.setProxy(proxy);
-        if (!worker) worker = createCallWorker({ nonce, screen, proxy, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) });
+        if (!worker) worker = createCallWorker({ nonce, screen, proxy, env: avatar ? { ...process.env, RFACTORY_AVATAR: avatar } : process.env, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) });
       },
       onCallIn: (m) => worker?.in(m) });
     agents.push(agent);

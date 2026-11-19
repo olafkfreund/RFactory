@@ -31,7 +31,7 @@ const schemas = Object.freeze({
   desktop_screenshot: { action_id: optional(string), hosts: optional(hosts) },
   desktop_login: { profile: string, action_id: optional(string), hosts: optional(hosts), login: optional(login) },
   'call-config': { nonce: string, proxy: optional(v => !!v && typeof v === 'object' && string(v.addr) && string(v.token) && v.token.length > 0 &&
-    Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean) },
+    Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean), avatar: optional(v => string(v) && /^[a-z0-9]{1,16}$/.test(v)) },
   // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
   'call-in': { chunk: string, end: boolean },
   'call-out': { chunk: string, end: boolean },

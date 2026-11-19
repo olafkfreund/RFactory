@@ -211,6 +211,20 @@ reviewers:
   the renderer steps the pose once per frame across surfaces and keeps at
   most 2; the chat line takes the commit from the bot's `env`.
 
+## Deviations after merge
+
+- **Avatar in desktop-VM calls (#20, 2026-11-19).** `web/call.js` hands the
+  chosen portrait to a local bot as `RFACTORY_AVATAR`; a call whose bot runs
+  in a #3 desktop VM never received it, because `web/vm-call.js` ignored the
+  spawn env and the runner's `call-config` carried only the nonce, the
+  screen flag and the proxy credential. Every k14 VM call showed the
+  initial (Meet) or a black tile (Teams). The id now goes web → runner
+  `create` (`/^[a-z0-9]{1,16}$/`, else `bad-request`) → `call-config`
+  (`avatar`, the same pattern) → the guest's call worker env; the bot's own
+  manifest check still decides whether it is a portrait. Implemented by the
+  coder, reviewed by the lead; the new tests fail on the old code (web 1,
+  desktop 4).
+
 ## Steps
 
 Integration branch `feat/13-talking-avatar` (main with Phase 3 merged).

@@ -27,7 +27,8 @@ function firstLine(stream) {
 // stdin/stdout are the worker's lines over the runner's call stream, so call.js drives it as it drives a pod child.
 // `kill` ends the VM (call.js uses it where a pod child gets a signal). runner: the mTLS client.
 function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryMs = 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  return () => {
+  return (_cmd, _args, opts) => {
+    const avatar = opts?.env?.RFACTORY_AVATAR; // call.js's chosen portrait; the guest bot validates it against its manifest
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
     let id = null, sock = null, beat = null, closed = false;
     const close = (why) => {
@@ -45,7 +46,7 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
       const platform = platformOf(await firstLine(child.stdin));
       if (closed) return;
       if (!platform) throw new Error('unsupported call link');
-      const made = await runner.create({ call_id: randomUUID(), scope, platform });
+      const made = await runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}) });
       if (made.status !== 200) throw new Error(`runner refused: ${made.body && made.body.error}`);
       id = made.body.desktop_id;
       child.desktop_id = id;

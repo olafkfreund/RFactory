@@ -94,3 +94,13 @@ test('desktop_login carries an action_id and an optional preview login: one orig
     assert.throws(() => encode({ type: 'desktop_login', profile: 'p', login: bad }), /invalid protocol/);
   }
 });
+
+test('call-config avatar: a short lowercase id is accepted, anything else is dropped', () => {
+  const messages = [], drops = [];
+  const decoder = createDecoder((m) => messages.push(m), (r) => drops.push(r));
+  decoder.write(encode({ type: 'call-config', nonce: 'n', avatar: 'ada1' }));
+  decoder.write(raw('{"type":"call-config","nonce":"n","avatar":"Ada"}'));
+  decoder.write(raw('{"type":"call-config","nonce":"n","avatar":5}'));
+  assert.deepEqual(messages.map((m) => m.avatar), ['ada1']);
+  assert.equal(drops.length, 2);
+});
