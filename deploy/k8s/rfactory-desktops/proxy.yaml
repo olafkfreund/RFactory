@@ -1,0 +1,73 @@
+# Egress proxy: CONNECT with per-desktop token, plus the DNS responder on 53
+# (non-root binding via the unprivileged-port sysctl).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rfactory-proxy
+  namespace: rfactory-desktops
+  labels: {app.kubernetes.io/name: rfactory-proxy}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: rfactory-proxy}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rfactory-proxy
+        rfactory.io/api-client: "true"
+    spec:
+      serviceAccountName: rfactory-proxy
+      nodeSelector: {kubernetes.io/hostname: k3d-factory-server-0}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: {matchLabels: {rfactory.io/role: desktop}}
+      # Public resolvers: under default-deny the proxy has no path to CoreDNS.
+      dnsPolicy: None
+      dnsConfig: {nameservers: [9.9.9.9, 1.1.1.1]}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+        sysctls:
+          - {name: net.ipv4.ip_unprivileged_port_start, value: "0"}
+      containers:
+        - name: proxy
+          image: docker.io/rfactory/proxy:2gbdkif80qhvq84s7xzcn02lhyj94z18@sha256:937c64f57943e239cdddb724ff0e5e524790530cfee7620e69cb9fc9154f1c4b
+          imagePullPolicy: Never
+          ports:
+            - {name: connect, containerPort: 3128}
+            - {name: dns-udp, containerPort: 53, protocol: UDP}
+            - {name: dns-tcp, containerPort: 53, protocol: TCP}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Fixed ClusterIP, passed to the guest as rf.proxy=<ip>:<port>; the guard allows
+# the proxy by it. 10.43.250.11 is next to the runner's; verify it is free
+# before the first sync.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rfactory-proxy
+  namespace: rfactory-desktops
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.250.11
+  selector: {app.kubernetes.io/name: rfactory-proxy}
+  ports:
+    - {name: connect, port: 3128, targetPort: connect}
+    - {name: dns-udp, port: 53, protocol: UDP, targetPort: dns-udp}
+    - {name: dns-tcp, port: 53, protocol: TCP, targetPort: dns-tcp}

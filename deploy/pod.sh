@@ -5,6 +5,9 @@
 # Config lives in $RFACTORY_CONFIG (default ~/.config/rfactory), all files mode 600:
 #   scope.json, cfactory-read-key, keycloak-client-secret, oauth2-cookie-secret
 # and the Claude login home in $RFACTORY_CLAUDE_HOME (default ~/.local/share/rfactory/claude-home).
+# Desktop VMs (#3) only when RFACTORY_DESKTOP=1: also RFACTORY_RUNNER_URL and the runner's mTLS client files in
+# $RFACTORY_CONFIG/desktop-runner/ (client.crt, client.key, ca.crt; mode 600, mounted read-only, never printed);
+# RFACTORY_BRAIN_RECORD is passed on only when set. With RFACTORY_DESKTOP unset the pod is as before.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 cfg=${RFACTORY_CONFIG:-$HOME/.config/rfactory}
@@ -30,10 +33,21 @@ up() {
   done
   case $(stat -c %s "$cfg/oauth2-cookie-secret") in 16|24|32) ;; *) echo "oauth2-cookie-secret must be 16, 24 or 32 bytes" >&2; exit 2;; esac
   [ -d "$claude_home" ] || { echo "missing $claude_home" >&2; exit 2; }
-  podman build -q -f "$here/web/Containerfile" -t rfactory-web "$here" >/dev/null
+  # AGPL §13 (#13): the image carries the clean, pushed commit it was built from
+  commit=$("$here/deploy/source-guard.sh" "$here")
+  "$here/deploy/source-guard.sh" --check-public "$commit"
+  podman build -q -f "$here/web/Containerfile" --build-arg RFACTORY_COMMIT="$commit" -t rfactory-web "$here" >/dev/null
+  rebuilt=$("$here/deploy/source-guard.sh" "$here")
+  [ "$rebuilt" = "$commit" ] || { echo "refusing to deploy: source changed during build" >&2; exit 2; }
   down
   podman secret create rfactory-cookie-secret "$cfg/oauth2-cookie-secret" >/dev/null
-  podman pod create --name "$pod" --userns=keep-id -p 127.0.0.1:4180:4180 >/dev/null
+  # a runner on the host's loopback (the k3d load balancer, #3) is reached through pasta's loopback forward:
+  # the pod's 127.0.0.1:<port> is the host's, so the runner certificate's 127.0.0.1 name still matches
+  net=()
+  if [ "${RFACTORY_DESKTOP:-}" = 1 ] && [[ ${RFACTORY_RUNNER_URL:-} =~ ^https://127\.0\.0\.1:([0-9]+)$ ]]; then
+    net=(--network "pasta:-T,${BASH_REMATCH[1]}")
+  fi
+  podman pod create --name "$pod" --userns=keep-id "${net[@]}" -p 127.0.0.1:4180:4180 >/dev/null
   # Phase 3: writes only when the write key file exists (600) and RFACTORY_WRITES is not "off".
   # Approvers must be named explicitly (intent: only the owner approves). To turn writes off,
   # run with RFACTORY_WRITES=off; the scope file's writes_enabled must then be false as well.
@@ -52,9 +66,27 @@ up() {
       -v "$cfg/cfactory-write-key:/run/rfactory/cfactory-write-key:ro,Z"
       -v rfactory-actions:/var/lib/rfactory/actions:U)
   fi
+  desktop=()
+  if [ -n "${RFACTORY_DESKTOP:-}" ]; then
+    [ "$RFACTORY_DESKTOP" = 1 ] || { echo "RFACTORY_DESKTOP must be 1 or unset" >&2; exit 2; }
+    : "${RFACTORY_RUNNER_URL:?set RFACTORY_RUNNER_URL (https://host:port of the desktop runner)}"
+    d=$cfg/desktop-runner
+    for f in client.crt client.key ca.crt; do
+      [ -f "$d/$f" ] || { echo "missing $d/$f" >&2; exit 2; }
+      [ "$(stat -c %a "$d/$f")" = 600 ] || { echo "$d/$f must be mode 600" >&2; exit 2; }
+    done
+    desktop=(-e RFACTORY_DESKTOP="$RFACTORY_DESKTOP" -e RFACTORY_RUNNER_URL="$RFACTORY_RUNNER_URL"
+      -e RFACTORY_RUNNER_CERT=/run/rfactory/desktop-runner/client.crt -e RFACTORY_RUNNER_KEY=/run/rfactory/desktop-runner/client.key
+      -e RFACTORY_RUNNER_CA=/run/rfactory/desktop-runner/ca.crt
+      -v "$d/client.crt:/run/rfactory/desktop-runner/client.crt:ro,Z" -v "$d/client.key:/run/rfactory/desktop-runner/client.key:ro,Z"
+      -v "$d/ca.crt:/run/rfactory/desktop-runner/ca.crt:ro,Z")
+    # verify only: the record lives in a host directory mounted at the same path, so the scripts can read it
+    [ -z "${RFACTORY_BRAIN_RECORD:-}" ] || desktop+=(-e RFACTORY_BRAIN_RECORD="$RFACTORY_BRAIN_RECORD"
+      -v "$(dirname "$RFACTORY_BRAIN_RECORD"):$(dirname "$RFACTORY_BRAIN_RECORD"):U,Z")
+  fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${roles[@]}" \
+    "${write[@]}" "${roles[@]}" "${desktop[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \

@@ -1,0 +1,18 @@
+# Requirements on the k3 VMI spec and k1a: the VMI sets resources.limits cpu+memory
+# (the quota refuses pods without all four values); the virt-launcher, containerDisk
+# and kernelBoot images are pinned by digest (rfactory-pinned-digests refuses tags),
+# so KubeVirt must be configured with image digests.
+# 3 desktops (maxDesktops). cpu/memory sized for 3 launchers plus the four
+# infrastructure pods; adjust with the measured guest size (k14).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rfactory-desktops
+  namespace: rfactory-desktops
+spec:
+  hard:
+    count/virtualmachineinstances.kubevirt.io: "3"
+    requests.cpu: "12"
+    limits.cpu: "16"
+    requests.memory: 24Gi
+    limits.memory: 28Gi

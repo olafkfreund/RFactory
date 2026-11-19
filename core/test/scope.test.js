@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { loadScope } = require('../src/scope.js');
 const { makeRedactor } = require('../src/redact.js');
+const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const key = `cfk_${'A'.repeat(16)}`;
 
@@ -38,6 +39,28 @@ test('loads CFactory and Claude CLI scope, collecting the key for redaction', ()
     f.scope.source.mcp_url = 'http://127.0.0.1:4180/mcp';
     f.scope.brain.approved_hash = 'a'.repeat(64);
     assert.deepEqual(f.load([]), f.scope);
+  } finally { f.cleanup(); }
+});
+
+test('avatar accepts anchored ids, non-empty choices and random, and rejects invalid values', () => {
+  const f = fixture();
+  try {
+    for (const avatar of ['m04', 'f20', ['m04', 'f20'], 'random']) {
+      f.scope.avatar = avatar;
+      assert.deepEqual(f.load().avatar, avatar);
+    }
+    for (const avatar of ['missing', [], ['m04', 'missing'], null, 42, {}, ['random']]) {
+      f.scope.avatar = avatar;
+      assert.throws(() => f.load(), /invalid-avatar/);
+    }
+    const anchors = portraits.m04.anchors;
+    try {
+      portraits.m04.anchors = null;
+      f.scope.avatar = 'm04';
+      assert.throws(() => f.load(), /invalid-avatar/);
+    } finally { portraits.m04.anchors = anchors; }
+    delete f.scope.avatar;
+    assert.equal(Object.hasOwn(f.load(), 'avatar'), false);
   } finally { f.cleanup(); }
 });
 
