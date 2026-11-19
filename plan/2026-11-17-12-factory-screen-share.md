@@ -165,6 +165,23 @@ dependencies").
   (`node --test 'guest/agent/viewer/*.test.js'`), with `desktop/`'s
   playwright-core installed (1.65.1, the bot's version).
 
+- **D5, wave B (2026-11-19).** Step 4 by the coder, step 6 by Codex,
+  reviewed by the lead. Step 4's own deviations, all kept: the record,
+  share and action composition moved from `main()` into an exported
+  `composeWrites()` so a test can run it without a live MCP; the
+  Containerfile COPY of `web/shares.js` came forward from step 8, because
+  `server.js` requires it and `containerfile.test.js` fails without it; a
+  scope without `shares_enabled` counts as off; the call keeps the share
+  ids it requested, so speech stays in the call that asked. Step 6
+  recorded #3 deviation 48 in `plan/2026-11-18-3-agent-workspace-k3d.md`.
+  **Contract fix (lead):** step 3 sent a failed refresh as the last frame
+  with `stale: true` added to the data, which step 6's exact board schema
+  refuses, so a stale board was never marked. `updateView(id, data,
+  { stale })` now carries it as its own flag, `view-data` gains an
+  optional boolean `stale`, and the guest passes it to the viewer. Tests
+  in shares.test.js, protocol.test.js and share.test.js. Step 7 maps the
+  third argument onto `view-data`'s `stale`.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and

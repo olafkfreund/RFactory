@@ -97,7 +97,8 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
         emit('share-updated', entry);
       } catch {
         if (!valid(entry, token) || entry.state !== 'running') return;
-        try { await entry.desktop.updateView(entry.payload.id, { ...entry.frame, stale: true }); }
+        // the last frame as it was, stale as its own flag: the guest's exact board schema refuses any extra key in data
+        try { await entry.desktop.updateView(entry.payload.id, entry.frame, { stale: true }); }
         catch { /* The last frame remains visible. */ }
         if (!valid(entry, token) || entry.state !== 'running') return;
         emit('share-updated', entry, { stale: true, as_of: entry.frame?.at });

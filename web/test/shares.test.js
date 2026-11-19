@@ -160,7 +160,7 @@ test('refresh uses one read at a time and keeps the last frame stale on failure'
   f.clock.advance(30 * 1000); await tick();
   assert.equal(count, 2);
   gate.resolve(Promise.reject(new Error('read failed')));
-  await until(() => f.calls.some((x) => x[0] === 'updateView' && x[2]?.stale));
+  await until(() => f.calls.some((x) => x[0] === 'updateView' && x[3]?.stale === true && !('stale' in x[2])));
   assert.equal(f.calls.find((x) => x[0] === 'updateView')[2].at, 'first');
   assert.ok(!JSON.stringify(f.events).includes('cards'));
   await f.manager.endCall();

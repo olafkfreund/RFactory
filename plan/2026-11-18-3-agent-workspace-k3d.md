@@ -965,6 +965,15 @@ and 27) and the scripts. This plan is self-contained.
       camera refusals..." failed one run (timing).
 
 
+48. **Factory board viewer messages (RFactory #12, step 6).** The control
+    protocol adds `view-open`, `view-data`, `view-close` and `view-closed` for
+    the built-in read-only CFactory board. The runner forwards them over the
+    existing TCP channel and permits a 64 KiB HTTP request body for these
+    routes only. The guest validates the board projection, serves the viewer
+    from its own fixed route, binds it to the existing share title and capture
+    guard, and refuses foreign or previously closed share ids. No network
+    grant or handover rule changes.
+
 ## Steps
 
 The live steps (k1a, k10, k10b, k11, k14) are mine and owner-gated on

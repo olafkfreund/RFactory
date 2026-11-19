@@ -70,7 +70,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
+function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, shares = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
   let busy = false;
   let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -123,6 +123,20 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
+      });
+      return;
+    }
+    if (shares && req.method === 'GET' && url === '/api/shares') {
+      return json(res, 200, { ...shares.list(), can_approve: roles.has(email, 'approver') });
+    }
+    const shr = shares && req.method === 'POST' && /^\/api\/shares\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
+    if (shr) {
+      if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
+      if (shr[3]) { req.resume(); shares.stop(email).then(reply, () => json(res, 500, { error: 'internal' })); return; }
+      readJson(req).then((body) => {
+        if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
+        return shares[shr[2]](shr[1], email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
       });
       return;
     }
@@ -187,6 +201,26 @@ function refuseKeyEnv(env) {
   if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
+// The record exists when writes or shares are on; only writes build a writer and the action manager.
+async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
+  let actions = null, shares = null;
+  if (!scope.writes_enabled && !scope.shares_enabled) return { actions, shares };
+  const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
+  record.prune();
+  setInterval(() => record.prune(), 86400000).unref();
+  if (scope.shares_enabled) {
+    shares = require('./shares.js').createShareManager({ board: () => source.boardView(), record, redactor, scope, approvers: roles, enabled: true });
+    await shares.recover();
+  }
+  if (scope.writes_enabled) {
+    const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
+    const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
+    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true });
+    await actions.recover();
+  }
+  return { actions, shares };
+}
+
 async function main() {
   refuseKeyEnv(process.env);
   const roles = require('@rfactory/core/src/roles.js').loadRoles(process.env);
@@ -198,22 +232,11 @@ async function main() {
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets);
   if (scope.source.kind !== 'cfactory' || scope.brain.kind !== 'claude-cli') throw new Error('unsupported-scope');
   const redactor = makeRedactor(secrets);
-  const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id });
+  const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id, redactor });
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  let actions = null;
-  if (scope.writes_enabled) {
-    const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
-    const record = require('./actions-record.js').createRecord({
-      dir: process.env.RFACTORY_ACTIONS_DIR || '/var/lib/rfactory/actions', redactor });
-    const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
-    record.prune();
-    setInterval(() => record.prune(), 86400000).unref();
-    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor,
-      scope, roles, enabled: true });
-    await actions.recover();
-  }
+  const { actions, shares } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
     const { createRunnerClient } = require('../desktop/runner/client.js');
@@ -239,10 +262,10 @@ async function main() {
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
-    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions, desktop,
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions, shares, desktop,
       ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, brain, roles, call, actions, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  createApp({ source, brain, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
@@ -255,4 +278,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
