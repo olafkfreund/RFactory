@@ -1,0 +1,10 @@
+{
+  "name": "@rfactory/desktop",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "playwright-core": "1.65.1"
+  },
+  "scripts": { "test": "node --test" }
+}

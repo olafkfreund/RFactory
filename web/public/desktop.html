@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RFactory · Desktop</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/desktop.css">
+</head>
+<body>
+<main class="content">
+  <div class="page-head">
+    <div>
+      <h1>Desktop <span id="desktop-name"></span></h1>
+      <p id="countdown" class="fine"></p>
+    </div>
+  </div>
+
+  <p id="status" class="status-line" role="status" aria-live="polite"></p>
+  <p id="alert" class="banner" role="alert" hidden></p>
+
+  <section class="panel">
+    <h2 class="panel-title">Live view <span id="live-status" class="fine"></span></h2>
+    <div id="screen"></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">Last screenshot</h2>
+    <img id="shot" alt="Last screenshot taken by the agent (untrusted page content)" hidden>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">Handover</h2>
+    <p id="handover" class="fine">No handover.</p>
+    <p id="running" class="fine"></p>
+    <div id="controls" hidden>
+      <label class="field">Actions (comma separated)
+        <input id="actions" class="call-input" type="text" value="desktop_open,desktop_click,desktop_type,desktop_scroll,desktop_screenshot" autocomplete="off">
+      </label>
+      <label class="field">Hosts (origins, comma separated)
+        <input id="hosts" class="call-input" type="text" placeholder="https://preview.example.com" autocomplete="off">
+      </label>
+      <label class="field">Minutes (1 to 30)
+        <input id="minutes" class="call-input" type="number" min="1" max="30" value="10">
+      </label>
+      <button id="grant" class="btn" type="button">Grant</button>
+      <button id="revoke" class="btn" type="button">Revoke</button>
+    </div>
+  </section>
+
+  <section class="panel" id="request-panel" hidden>
+    <h2 class="panel-title">Ask the agent</h2>
+    <label class="field">Request
+      <input id="request-text" class="call-input" type="text" maxlength="500" autocomplete="off">
+    </label>
+    <button id="request-send" class="btn" type="button">Send</button>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">Share</h2>
+    <p id="share" class="fine">Not sharing.</p>
+    <button id="share-stop" class="btn" type="button" hidden>Stop</button>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">Waiting for approval</h2>
+    <ul id="queued" class="queue"></ul>
+  </section>
+  <section class="panel" id="profiles-panel" hidden>
+    <h2 class="panel-title">Profiles (admin)</h2>
+    <ul id="profiles" class="queue"></ul>
+    <label class="field">New profile name
+      <input id="profile-name" class="call-input" type="text" maxlength="100" autocomplete="off">
+    </label>
+    <button id="profile-create" class="btn" type="button">Create</button>
+    <label class="field">Attach: call id
+      <input id="profile-call" class="call-input" type="text" autocomplete="off">
+    </label>
+    <label class="field">Attach: platform (meet, zoom, slack)
+      <input id="profile-platform" class="call-input" type="text" value="meet" autocomplete="off">
+    </label>
+  </section>
+</main>
+<script src="/desktop.js"></script>
+</body>
+</html>

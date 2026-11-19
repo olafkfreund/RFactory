@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { render, handleCall } = require('../public/app.js');
+const { render, handleCall, renderFooter } = require('../public/app.js');
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.text = ''; }
@@ -33,6 +33,16 @@ test('hostile title is text, never an element', () => {
   const ul = byId.done.querySelector('ul');
   assert.ok(!ul.all().some((n) => n.tag === 'img'));
   assert.ok(ul.textContent.includes('<img src=x onerror=alert(1)>'));
+});
+
+test('footer links to the source commit, or the repository when unset', () => {
+  const { doc, byId } = shim();
+  byId['source-footer'] = new Node('footer');
+  renderFooter(doc, 'abc123');
+  assert.equal(byId['source-footer'].textContent, 'RFactory is free software (AGPL-3.0). Source: github.com/olafkfreund/RFactory');
+  assert.equal(byId['source-footer'].querySelector('a').attrs.href, 'https://github.com/olafkfreund/RFactory/tree/abc123');
+  renderFooter(doc);
+  assert.equal(byId['source-footer'].querySelector('a').attrs.href, 'https://github.com/olafkfreund/RFactory');
 });
 
 test('href only for https://github.com/ urls', () => {

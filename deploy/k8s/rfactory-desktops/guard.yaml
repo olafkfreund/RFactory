@@ -1,0 +1,61 @@
+# One guard per node: hostNetwork + NET_ADMIN, nothing else. It is the only pod in
+# the namespace Kyverno lets use hostNetwork. NetworkPolicy does not apply to
+# hostNetwork pods, so it has no policy of its own. mTLS cert/key/CA come from the
+# Secret rfactory-guard-tls (owner creates it, never in Git).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rfactory-guard
+  namespace: rfactory-desktops
+  labels: {app.kubernetes.io/name: rfactory-guard}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: rfactory-guard}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rfactory-guard
+        rfactory.io/api-client: "true"
+    spec:
+      serviceAccountName: rfactory-guard
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations: [{operator: Exists}]
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: guard
+          image: docker.io/rfactory/guard:2xzswwwav87dkx74x6736nnc413gwcg3@sha256:cf072ecff2a27ebe6bd0667bc0671b6577bb1868c68f36428228f97f46970823
+          imagePullPolicy: Never
+          ports:
+            - {name: guard, containerPort: 9443, hostPort: 9443}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - {name: GUARD_PORT, value: "9443"}
+            - {name: GUARD_TLS_CERT, value: /etc/rfactory/tls/tls.crt}
+            - {name: GUARD_TLS_KEY, value: /etc/rfactory/tls/tls.key}
+            - {name: GUARD_CLIENT_CA, value: /etc/rfactory/tls/ca.crt}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [NET_ADMIN]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            # the CNI plugin's per-pod results (pod UID -> host veth, pod MAC): the guard's only source for a pod's port
+            - {name: cni-results, mountPath: /var/lib/cni/results, readOnly: true}
+      volumes:
+        - name: tls
+          secret: {secretName: rfactory-guard-tls}
+        - name: tmp
+          emptyDir: {}
+        - name: cni-results
+          hostPath: {path: /var/lib/cni/results, type: Directory}

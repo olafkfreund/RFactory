@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 const { createActionManager } = require('../actions.js');
+const { loadRoles } = require('@rfactory/core/src/roles.js');
 
 const KEY = 'cfk_abcdefghijklmnopqrstuvwx';
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -20,7 +21,7 @@ function setup(options = {}) {
   const brain = { propose: options.propose || (async () => ({ action: 'move_card', args: { card_key: 'FCT-9', status: 'ready' } })) };
   const writer = { apply: async (...args) => { calls.push(args); return options.result || { outcome: 'done (started)', detail: 'Work started.', card }; } };
   const manager = createActionManager({ readSource, writer, brain, record, redactor, clock,
-    scope: { writes_enabled: true, source: { repository_id: 1 } }, approvers: ['owner@example.com'],
+    scope: { writes_enabled: true, source: { repository_id: 1 } }, roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,admin@example.com', RFACTORY_APPROVERS: 'owner@example.com', RFACTORY_ADMINS: 'admin@example.com' }),
     enabled: options.enabled ?? true });
   manager.subscribe((event) => events.push(event));
   return { manager, card, clock, entries, events, calls, record, writer, readSource };
@@ -91,6 +92,14 @@ test('non-approver and wrong hash cannot approve or reject', async () => {
   assert.equal((await approve(f, action, 'owner@example.com', 'wrong')).status, 409);
   assert.equal((await f.manager.reject(action.id, 'other@example.com', action.hash)).status, 403);
   assert.equal((await f.manager.reject(action.id, 'owner@example.com', 'wrong')).status, 409);
+  assert.equal(f.manager.list().pending.length, 1);
+});
+
+test('an admin who is not an approver is refused on approve and reject', async () => {
+  const f = setup(); await f.manager.recover(); f.manager.startCall(1);
+  const action = await proposal(f);
+  assert.equal((await approve(f, action, 'admin@example.com')).status, 403);
+  assert.equal((await f.manager.reject(action.id, 'admin@example.com', action.hash)).status, 403);
   assert.equal(f.manager.list().pending.length, 1);
 });
 

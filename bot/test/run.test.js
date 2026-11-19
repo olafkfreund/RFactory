@@ -11,10 +11,11 @@ function setup(over = {}) {
   const stdin = new PassThrough();
   const out = [];
   const stdout = { write: (s) => { out.push(...s.split('\n').filter(Boolean).map((l) => JSON.parse(l))); } };
-  const calls = { leave: 0, close: 0, rm: [], chat: [], joinOpts: null, hostOpts: null };
+  const calls = { leave: 0, close: 0, rm: [], chat: [], camera: [], order: over.order || [], joinOpts: null, hostOpts: null };
   const timers = [];
   const speaks = [];
   const call = Object.assign(new EventEmitter(), {
+    platform: over.platform || 'meet',
     speak: over.speak || (async (buf) => {
       const item = { buf, cancelled: false };
       item.done = new Promise((r) => { item.resolve = r; });
@@ -22,15 +23,17 @@ function setup(over = {}) {
       speaks.push(item);
       return item;
     }),
-    leave: async () => { calls.leave++; },
-    chat: { send: async (t) => { calls.chat.push(t); if (over.chatFails) throw new Error('chat boom ' + SECRET); } },
-    _inner: { page: { evaluate: async () => (over.mic === undefined ? false : over.mic) } },
+    leave: async () => { calls.leave++; calls.order.push('leave'); },
+    chat: { send: async (t) => { calls.chat.push(t); calls.order.push('chat'); if (over.chatFails) throw new Error('chat boom ' + SECRET); } },
+    camera: { setOn: async (on) => { calls.camera.push(on); calls.order.push(`camera ${on}`); return over.setOn?.(on); } },
+    _inner: { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page },
   });
   const host = { close: async () => { calls.close++; } };
   const deps = {
     clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; } },
     mkdtemp: async (p) => p + 'X',
     rm: async (p) => { calls.rm.push(p); },
+    ...(over.readFile ? { readFile: over.readFile } : {}),
     playwrightHost: async (o) => { calls.hostOpts = o; return host; },
     join: over.join || (async (link, o) => {
       calls.joinOpts = { link, ...o };
@@ -38,7 +41,7 @@ function setup(over = {}) {
       return call;
     }),
   };
-  const done = run({ stdin, stdout, deps, env: {} });
+  const done = run({ stdin, stdout, deps, env: over.env || {} });
   const msg = (m) => stdin.write(JSON.stringify(m) + '\n');
   const states = () => out.filter((m) => m.type === 'state').map((m) => m.state);
   const logs = () => out.filter((m) => m.type === 'log').map((m) => m.message).join('\n');
@@ -58,9 +61,224 @@ test('joining and lobby via onState, then in-call; options as planned', async ()
   assert.strictEqual(s.calls.joinOpts.name, 'RFactory Bot (AI)');
   assert.strictEqual(s.calls.joinOpts.timeoutMs, 300000);
   assert.ok(s.calls.hostOpts.userDataDir.endsWith('X'));
-  assert.deepStrictEqual(s.calls.chat, ["RFactory Bot (AI) is listening; say 'RFactory' and a question."]);
+  assert.deepStrictEqual(s.calls.chat, ["RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory"]);
   assert.deepStrictEqual(s.out.find((m) => m.type === 'mic'), { type: 'mic', muted: false });
+  assert.deepStrictEqual(s.calls.camera, []);
   s.stdin.end(); await s.done;
+});
+
+function avatarPage(calls, confirmations = [true], errors = 0) {
+  return { evaluate: async (fn, arg) => {
+    const source = fn.toString();
+    if (arg) { calls.order.push('inject'); calls.scripts?.push(arg); return; }
+    if (source.includes('__rfAvatar?.idle')) { calls.order.push('idle'); return; }
+    if (source.includes('__rfAvatar?.errors')) return errors;
+    if (source.includes('Turn off camera')) return confirmations.shift() ?? false;
+    return false;
+  } };
+}
+
+test('a Teams link reaches join unchanged and the avatar camera is not checked by a Meet label', async () => {
+  const link = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d';
+  const calls = { order: [] };
+  const s = setup({ env: { RFACTORY_AVATAR: 'm01' }, platform: 'teams', page: avatarPage(calls, [false]), order: calls.order });
+  s.stdin.write(`${link}\n`);
+  await tick();
+  try {
+    assert.strictEqual(s.calls.joinOpts.link, link);
+    assert.deepStrictEqual(s.calls.camera, [true]); // a Meet-label check would have refused (confirmation false)
+    s.timers.find((t) => t.ms === 3000).fn(); await tick();
+    assert.ok(s.timers.some((t) => t.ms === 5000)); // past the camera check, polling
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('avatar injects after chat, retries a refused camera, then polls render errors', async () => {
+  const calls = { order: [] };
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage(calls, [false, true], 30), order: calls.order });
+  try {
+    await tick();
+    assert.deepStrictEqual(s.calls.camera, [true]);
+    assert.strictEqual(s.timers.find((t) => t.ms === 3000)?.cleared, false);
+    s.timers.find((t) => t.ms === 3000).fn(); await tick();
+    assert.deepStrictEqual(s.calls.camera, [true, true]);
+    s.timers.filter((t) => t.ms === 3000)[1].fn(); await tick();
+    s.timers.find((t) => t.ms === 5000).fn(); await tick();
+    assert.deepStrictEqual(s.calls.camera, [true, true, false]);
+    assert.ok(s.logs().includes('avatar failed: render'));
+    assert.ok(s.calls.order.indexOf('chat') < calls.order.indexOf('inject'));
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('unknown portrait and a bad hash leave speech working and camera off', async () => {
+  for (const over of [
+    { env: { RFACTORY_AVATAR: 'unknown' } },
+    { env: { RFACTORY_AVATAR: 'm01' }, readFile: async () => Buffer.from('wrong') },
+  ]) {
+    const s = await joined(over);
+    try {
+      assert.ok(s.logs().includes('avatar failed:'));
+      s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+      s.speaks[0].resolve({ cancelled: false }); await tick();
+      assert.strictEqual(s.out.find((m) => m.type === 'spoke').result, 'done');
+    } finally { s.stdin.end(); await s.done; }
+  }
+});
+
+test('three camera refusals turn it off; injection failure is logged without ending the call', async () => {
+  for (const failedInjection of [false, true]) {
+    const order = [];
+    const page = avatarPage({ order }, [false, false, false]);
+    if (failedInjection) {
+      const evaluate = page.evaluate;
+      page.evaluate = async (fn, arg) => { if (arg) throw new Error('inject boom'); return evaluate(fn, arg); };
+    }
+    const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page });
+    try {
+      await tick();
+      for (let i = 0; i < (failedInjection ? 0 : 3); i++) {
+        s.timers.filter((t) => t.ms === 3000)[i].fn(); await tick();
+      }
+      assert.deepStrictEqual(s.calls.camera, failedInjection ? [false] : [true, true, true, false]);
+      assert.ok(s.logs().includes(failedInjection ? 'avatar failed: inject boom' : 'avatar failed: camera refused'));
+      s.msg({ type: 'speak', seq: 7, wav: 'AAAA' }); await tick();
+      s.speaks[0].resolve({ cancelled: false }); await tick();
+      assert.strictEqual(s.out.find((m) => m.type === 'spoke').result, 'done');
+    } finally { s.stdin.end(); await s.done; }
+  }
+});
+
+test('failed camera commands wait three seconds before another attempt', async () => {
+  let failures = 0;
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order: [] }),
+    setOn: (on) => { if (on && failures++ < 2) throw new Error('refused'); } });
+  try {
+    assert.deepStrictEqual(s.calls.camera, [true]);
+    for (let i = 0; i < 3; i++) {
+      const timer = s.timers.filter((t) => t.ms === 3000)[i];
+      assert.ok(timer, `missing retry delay ${i}`);
+      timer.fn(); await tick();
+      assert.deepStrictEqual(s.calls.camera, i === 2 ? [true, true, true] : Array(i + 2).fill(true));
+    }
+    assert.ok(s.timers.some((t) => t.ms === 5000), 'camera was confirmed');
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('the injected commit appears in both chat and the avatar source line', async () => {
+  const calls = { order: [], scripts: [] };
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01', RFACTORY_COMMIT: 'abc' }, page: avatarPage(calls) });
+  try {
+    assert.ok(s.calls.chat[0].includes('/tree/abc'));
+    assert.ok(calls.scripts[0].includes('github.com/olafkfreund/RFactory/tree/abc'));
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('stop idles before cancel and leave, including cancel and a late speak handle', async () => {
+  const order = [];
+  const page = avatarPage({ order });
+  let release;
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page, order,
+    speak: () => new Promise((resolve) => { release = resolve; }) });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  s.msg({ type: 'cancel' }); await tick();
+  const h = { done: Promise.resolve({ cancelled: true }), cancel: async () => { order.push('cancel handle'); } };
+  release(h); await tick();
+  assert.ok(order.lastIndexOf('idle') < order.indexOf('cancel handle'));
+  const stopping = s.done;
+  s.msg({ type: 'leave' }); await stopping;
+  assert.ok(order.lastIndexOf('idle') < order.indexOf('leave'));
+});
+
+test('leave idles again before its own playback cancellation and leave', async () => {
+  const order = [];
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order }), order,
+    speak: async () => {
+      let resolve;
+      const done = new Promise((r) => { resolve = r; });
+      return { done, cancel: async () => { order.push('cancel handle'); resolve({ cancelled: true }); } };
+    } });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  s.msg({ type: 'cancel' }); await tick();
+  s.msg({ type: 'speak', seq: 2, wav: 'AAAA' }); await tick();
+  const beforeLeave = order.length;
+  s.msg({ type: 'leave' }); await s.done;
+  const leaveEvents = order.slice(beforeLeave);
+  assert.ok(leaveEvents.indexOf('idle') < leaveEvents.indexOf('cancel handle'));
+  assert.ok(leaveEvents.indexOf('cancel handle') < leaveEvents.indexOf('leave'));
+});
+
+test('cancel starts idle but cancels playback without waiting for it', async () => {
+  let releaseIdle;
+  const idlePending = new Promise((resolve) => { releaseIdle = resolve; });
+  const order = [];
+  const page = avatarPage({ order });
+  const evaluate = page.evaluate;
+  page.evaluate = (fn, arg) => fn.toString().includes('__rfAvatar?.idle') ? idlePending : evaluate(fn, arg);
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page, order });
+  try {
+    s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+    s.msg({ type: 'cancel' }); await tick();
+    assert.strictEqual(s.speaks[0].cancelled, true);
+    assert.deepStrictEqual(s.out.find((m) => m.type === 'spoke'), { type: 'spoke', seq: 1, result: 'cancelled' });
+  } finally {
+    releaseIdle();
+    s.stdin.end(); await s.done;
+  }
+});
+
+test('stop during portrait read, injection or retry prevents later camera turn-on', async () => {
+  for (const stage of ['read', 'inject', 'retry']) {
+    let release;
+    const pending = new Promise((resolve) => { release = resolve; });
+    const order = [];
+    const page = avatarPage({ order }, [false]);
+    if (stage === 'inject') {
+      const evaluate = page.evaluate;
+      page.evaluate = (fn, arg) => arg ? pending : evaluate(fn, arg);
+    }
+    const over = { env: { RFACTORY_AVATAR: 'm01' }, page,
+      ...(stage === 'read' ? { readFile: () => pending } : {}) };
+    const s = await joined(over);
+    await tick();
+    const before = s.calls.camera.length;
+    s.msg({ type: 'leave' }); await tick();
+    if (stage !== 'retry') release(stage === 'read' ? Buffer.from('wrong') : undefined);
+    await s.done; await tick();
+    assert.strictEqual(s.calls.camera.filter(Boolean).length, stage === 'retry' ? 1 : 0, stage);
+    assert.strictEqual(before, stage === 'retry' ? 1 : 0, stage);
+  }
+});
+
+test('an in-flight camera turn-on is shut off when stop begins', async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order: [] }),
+    setOn: (on) => on ? pending : undefined });
+  await tick();
+  assert.deepStrictEqual(s.calls.camera, [true]);
+  s.msg({ type: 'leave' }); await tick();
+  release(); await s.done; await tick();
+  assert.deepStrictEqual(s.calls.camera, [true, false]);
+});
+
+test('stdin end, stdin error, timer and terminal state idle before leave', async () => {
+  for (const trigger of [
+    (s) => s.stdin.end(), (s) => s.stdin.emit('error', new Error('closed')),
+    (s) => s.timers[0].fn(), (s) => s.call.emit('state', 'removed'),
+  ]) {
+    const order = [];
+    const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage({ order }), order });
+    trigger(s);
+    await s.done;
+    assert.ok(order.indexOf('idle') !== -1 && order.indexOf('idle') < order.indexOf('leave'));
+  }
+});
+
+test('avatar idle is harmless when join fails without a page', async () => {
+  const s = setup({ env: { RFACTORY_AVATAR: 'm01' }, page: null,
+    join: async () => { throw new Error('join failed'); } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n');
+  assert.strictEqual(await s.done, 1);
+  assert.deepStrictEqual(s.calls.camera, []);
 });
 
 test('heard passes id, speaker, text, final as-is', async () => {
@@ -192,3 +410,40 @@ test('empty stdin exits cleanly', async () => {
   assert.strictEqual(await s.done, 0);
   assert.strictEqual(s.calls.close, 0);
 });
+
+test('stop waits for the page to confirm the leave before it closes the browser', async () => {
+  const order = [];
+  const page = avatarPage({ order });
+  const s = await joined({ page, order });
+  page.waitForFunction = async (fn, arg, opts) => { order.push(`left-wait ${opts.timeout} closed=${s.calls.close}`); };
+  s.msg({ type: 'leave' }); await s.done;
+  const wait = order.find((o) => o.startsWith('left-wait'));
+  assert.ok(order.indexOf('leave') < order.indexOf(wait), order.join(','));
+  const [, ms, closed] = wait.match(/^left-wait (\d+) closed=(\d+)$/);
+  assert.ok(+ms >= 1000 && +ms <= 7000, `timeout ${ms} within the 7 s budget`); // web kills the bot 10 s after leave
+  assert.equal(closed, '0');
+  assert.equal(s.calls.close, 1);
+});
+
+test('the leave check needs the in-call control gone, not just "rejoin" somewhere on the page', async () => {
+  const order = [];
+  const page = avatarPage({ order });
+  let verdicts = [];
+  const pages = [
+    { hangup: true, text: 'chat: I may need to rejoin later' }, // still in the call: chat text must not confirm
+    { hangup: false, text: 'Did you leave by mistake? Rejoin the call' }, // Teams' left page
+  ];
+  const s = await joined({ page, order });
+  page.waitForFunction = async (fn) => {
+    const saved = globalThis.document;
+    try {
+      verdicts = pages.map((p) => {
+        globalThis.document = { querySelector: () => (p.hangup ? {} : null), body: { innerText: p.text } };
+        return fn();
+      });
+    } finally { globalThis.document = saved; }
+  };
+  s.msg({ type: 'leave' }); await s.done;
+  assert.deepEqual(verdicts, [false, true]);
+});
+

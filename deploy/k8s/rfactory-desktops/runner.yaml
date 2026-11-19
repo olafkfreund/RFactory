@@ -1,0 +1,105 @@
+# Runner: the only creator of desktop VMIs. mTLS cert/key/CA come from the Secret
+# rfactory-runner-tls, which the owner creates (never in Git).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rfactory-runner
+  namespace: rfactory-desktops
+  labels: {app.kubernetes.io/name: rfactory-runner}
+spec:
+  # no `replicas`: one by default, and ArgoCD's self-heal leaves a test's scale to 0 alone (k14 lifecycle)
+  strategy: {type: Recreate}   # one runner at a time: it holds the Lease
+  selector:
+    matchLabels: {app.kubernetes.io/name: rfactory-runner}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rfactory-runner
+        rfactory.io/api-client: "true"
+    spec:
+      serviceAccountName: rfactory-runner
+      nodeSelector: {kubernetes.io/hostname: k3d-factory-server-0}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: {matchLabels: {rfactory.io/role: desktop}}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: runner
+          image: docker.io/rfactory/runner:9j76hxw0l1rvld37wy7d0ssmg2w4z9ln@sha256:e5c8ea6382d76ff331b76a302b0d63752e53f72e678233126790ba71eb9bf75c
+          imagePullPolicy: Never
+          ports:
+            - {name: api, containerPort: 8443}
+            - {name: control, containerPort: 5000}
+            - {name: heartbeat, containerPort: 5001}
+            - {name: vnc, containerPort: 5900}
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+            # Host-specific always-protected ranges (the node, pod and service CIDRs are built
+            # into the policy generator): the whole 192.168.0.0/16 (p620's LAN and the Factory
+            # hosts sit inside it) and the Tailscale ranges. kyverno.yaml lists the same.
+            - name: RF_ALWAYS_PROTECTED
+              value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
+            # Guest images (k10 records the digests) and the kernel command line from
+            # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:b68b4ebb59e22cb042fbce84abdcc87ecc558d61fd3887e18b5d5cca914651e3"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:ca0d0b565e540ae60f569b7c0e2e93f357af58e86bf654b90c2e6728a174a4f2"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/hpdbk99f38cvg98qn1aakazr468z8xq1-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            # k14 test mode only (deploy/k3d/k14-env.sh on): three named keys from the Secret rfverify-runner, never in Git;
+            # without it (production) none is set. Named keys only, not envFrom: a Secret must not add any other variable
+            # (NODE_OPTIONS, RF_PLATFORM_NAMES...) to the runner (Opus review).
+            - {name: RF_VERIFY_HOOKS, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_VERIFY_HOOKS, optional: true}}}
+            - {name: RF_SCOPE_PREVIEWS, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_SCOPE_PREVIEWS, optional: true}}}
+            - {name: RF_PREVIEW_LOGINS_PATH, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_PREVIEW_LOGINS_PATH, optional: true}}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: rfverify-logins, mountPath: /etc/rfactory/verify, readOnly: true}
+      volumes:
+        - name: tls
+          secret: {secretName: rfactory-runner-tls}
+        - name: rfverify-logins
+          secret: {secretName: rfverify-preview-logins, optional: true}
+        - name: tmp
+          emptyDir: {}
+---
+# Guest-initiated channels. Fixed ClusterIP: the guest gets it as a kernel
+# argument and the guard allows it by `ct original ip daddr`. ClusterIP only, so
+# 5000/5001/5900 are never opened on a node. 10.43.250.10 was free on the
+# cluster when written; verify again before the first sync.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rfactory-runner
+  namespace: rfactory-desktops
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.250.10
+  selector: {app.kubernetes.io/name: rfactory-runner}
+  ports:
+    - {name: control, port: 5000, targetPort: control}
+    - {name: heartbeat, port: 5001, targetPort: heartbeat}
+    - {name: vnc, port: 5900, targetPort: vnc}
+---
+# Client API (mTLS) for the pod. k3d maps 127.0.0.1:<port> to this NodePort.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rfactory-runner-api
+  namespace: rfactory-desktops
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: rfactory-runner}
+  ports:
+    - {name: api, port: 8443, targetPort: api, nodePort: 31843}

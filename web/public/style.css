@@ -125,3 +125,4 @@ a.card-title:hover { text-decoration: underline; text-decoration-color: var(--c,
 .action-payload { margin: .4rem 0 0; padding: .45rem .6rem; background: var(--panel-2); border-radius: 8px;
   font: 500 .72rem/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .action-buttons { display: flex; gap: .5rem; margin-top: .5rem; }
+.footer { max-width: 78rem; margin: 0 auto; padding: 0 1.6rem 1.5rem; color: var(--muted); font: 500 .72rem var(--font-mono); }

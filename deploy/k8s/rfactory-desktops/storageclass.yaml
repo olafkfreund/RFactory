@@ -1,0 +1,8 @@
+# Profile PVCs. Same provisioner as k3s' local-path; Retain keeps the disk when a PVC goes.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rfactory-profiles
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer

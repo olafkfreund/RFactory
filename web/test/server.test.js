@@ -7,20 +7,22 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
-const { createApp } = require('../server.js');
+const { createApp, makeLogin } = require('../server.js');
 const { handleCall } = require('../public/app.js');
 const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
 const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const ME = 'owner@example.com';
+const { loadRoles } = require('@rfactory/core/src/roles.js');
+const rolesFor = (members, approvers = '', admins = '') => loadRoles({ RFACTORY_ALLOWED_EMAILS: members, RFACTORY_APPROVERS: approvers, RFACTORY_ADMINS: admins });
 const items = [{ id: 'AF-1', kind: 'card', title: 'a', state: 'done', evidence: [] },
   { id: 'AF-2', kind: 'card', title: 'b', state: 'unknown', evidence: [] }];
 const source = { snapshot: async () => ({ items, fetched_at: 'F', newest_update: 'N' }) };
 const fakeBrain = { label: () => 'fake', turn: async () => ({ text: 'ok' }) };
 
 async function start(t, opts) {
-  const server = createApp({ allowedEmails: [ME], ...opts });
+  const server = createApp({ roles: rolesFor(ME), ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -40,11 +42,16 @@ test('static files carry CSP, nosniff and no-store', async (t) => {
     const r = await get(p);
     assert.equal(r.status, 200);
     const csp = r.headers.get('content-security-policy');
-    assert.equal(csp, "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    assert.equal(csp, "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     assert.ok(!/script-src/.test(csp) && /default-src 'self'/.test(csp), 'scripts fall back to self only');
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(r.headers.get('cache-control'), 'no-store');
   }
+});
+
+test('page config returns the source commit', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain, commit: 'abc123' });
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: 'abc123' });
 });
 
 test('standup response has exactly the planned keys; deadline is passed to the brain', async (t) => {
@@ -144,10 +151,19 @@ test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   for (const link of ['http://meet.google.com/abc-defg-hij', 'https://evil.example/abc-defg-hij',
     'https://meet.google.com:444/abc-defg-hij', 'https://u@meet.google.com/abc-defg-hij',
     'https://meet.google.com/abc-defg-hij/x', 'https://meet.google.com/abc-defg-hij?a=1',
-    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5]) {
+    'https://meet.google.com/abc-defg-hij#f', 'https://meet.google.com/ABC-defg-hij', 'nope', 5,
+    'http://teams.microsoft.com/l/meetup-join/x', 'https://teams.microsoft.com/l/other/x', 'https://teams.microsoft.com/l/meetup-join/x#f',
+    'https://teams.microsoft.com.evil.example/l/meetup-join/x', 'https://teams.live.com/meet/', 'https://teams.live.com/other/1', 'https://x.teams.live.com/meet/1',
+    'https://teams.live.com/meet/1?p=a b', `https://teams.microsoft.com/l/meetup-join/${'a'.repeat(2100)}`]) {
     assert.equal((await post(get, { link })).status, 400, String(link));
   }
   assert.deepEqual(call.started, []);
+  for (const link of ['https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d', 'https://teams.live.com/meet/9300000000?p=abc', 'https://teams.microsoft.com/meet/1234567890123?p=AbC']) {
+    assert.equal((await post(get, { link })).status, 202, link);
+    assert.equal(call.started.at(-1), link); // passed on unchanged
+    await get('/api/call', { method: 'DELETE' });
+  }
+  call.started.length = 0; call.stopped.length = 0;
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 202);
   assert.deepEqual(call.started, ['https://meet.google.com/abc-defg-hij']);
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
@@ -208,7 +224,7 @@ function fakeActions() {
 }
 
 async function startActions(t, opts) {
-  const server = createApp({ allowedEmails: [ME, 'other@example.com'], source, brain: fakeBrain, approvers: [ME], ...opts });
+  const server = createApp({ roles: rolesFor(`${ME},other@example.com`, ME), source, brain: fakeBrain, ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const host = `127.0.0.1:${server.address().port}`;
@@ -246,4 +262,42 @@ test('approve route: missing header, foreign origin, non-approver and wrong hash
   const list = await (await get('/api/actions', { method: 'GET' })).json();
   assert.deepEqual(list, { pending: [], history: [], can_approve: true });
   assert.equal((await (await get('/api/actions', { method: 'GET', email: 'other@example.com' })).json()).can_approve, false);
+});
+
+test('an admin who is not an approver gets can_approve: false', async (t) => {
+  const get = await startActions(t, { actions: fakeActions(), roles: rolesFor(`${ME},admin@example.com`, ME, 'admin@example.com') });
+  assert.equal((await (await get('/api/actions', { method: 'GET', email: 'admin@example.com' })).json()).can_approve, false);
+});
+
+test('main() throws roles-not-members before listening when an approver is not a member', async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { RFACTORY_ALLOWED_EMAILS: ME, RFACTORY_APPROVERS: 'x@example.com' });
+  try { await assert.rejects(require('../server.js').main(), /roles-not-members/); }
+  finally { for (const k of ['RFACTORY_ALLOWED_EMAILS', 'RFACTORY_APPROVERS']) { if (k in saved) process.env[k] = saved[k]; else delete process.env[k]; } }
+});
+
+test('vendored noVNC 1.6.0 is served as JavaScript and pinned by VERSION', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain });
+  const r = await get('/vendor/novnc/core/rfb.js');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /^text\/javascript/);
+  assert.equal((await get('/vendor/novnc/vendor/pako/lib/zlib/deflate.js')).status, 200);
+  assert.match(fs.readFileSync(path.join(__dirname, '../public/vendor/novnc/VERSION'), 'utf8'), /1\.6\.0/);
+});
+
+test('server.js passes brain and redactor to createDesktop (a trailing // comment must not swallow them)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  const call = src.slice(src.indexOf('.createDesktop({'));
+  const code = call.slice(0, call.indexOf('openVnc')).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  assert.match(code, /\bbrain,/);
+  assert.match(code, /\bredactor,/);
+});
+
+test('the production login uses the runner login route and fails unless the guest answers ok:true', async () => {
+  const calls = [];
+  const mk = (body) => makeLogin(async (route, b) => { calls.push([route, b]); return body; });
+  await mk({ ok: true })({ desktop_id: 'd1', profile: 'p', hosts: ['https://x'], extra: 1 });
+  assert.deepEqual(calls, [['login', { desktop_id: 'd1', profile: 'p', hosts: ['https://x'] }]]);
+  await assert.rejects(mk({ ok: false })({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
+  await assert.rejects(mk({})({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
 });

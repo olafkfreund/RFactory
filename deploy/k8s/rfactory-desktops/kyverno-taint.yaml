@@ -1,0 +1,42 @@
+# Node k3d-factory-agent-0 is reserved for desktops. The lead applies the taint once (k11), by hand:
+#   kubectl taint node k3d-factory-agent-0 rfactory.io/desktops=true:NoSchedule
+# NoSchedule only (owner decision, k3d plan deviation 31): nothing running there is evicted; the node drains
+# as other pods are rescheduled. NoExecute would also evict ArgoCD, Kyverno and the factory apps at once.
+# Only desktop VMIs carry the matching toleration (the runner sets it in the VMI spec; KubeVirt copies it
+# to the launcher pod). The guard tolerates everything (operator Exists). KubeVirt's own agent-0 pods
+# (virt-handler) need a toleration too: give them `operator: Exists` in the KubeVirt CR placement, NOT this
+# key, because the policy below refuses the key outside desktop launcher pods.
+#
+# Cluster-wide, so it cannot use the namespace-only scope of kyverno.yaml. failurePolicy Fail is safe:
+# the matchCondition sends Kyverno only pods that carry the toleration, so an outage affects nothing else.
+# Limit: a blanket toleration (`operator: Exists` with no key) is not matched; system DaemonSets need it.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: rfactory-desktops-toleration
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+    policies.kyverno.io/description: >-
+      Only desktop launcher pods in rfactory-desktops may tolerate the taint rfactory.io/desktops.
+spec:
+  validationFailureAction: Enforce
+  failurePolicy: Fail
+  webhookConfiguration:
+    matchConditions:
+      - name: carries-desktops-toleration
+        expression: "object != null && has(object.spec.tolerations) && object.spec.tolerations.exists(t, has(t.key) && t.key == 'rfactory.io/desktops')"
+  rules:
+    - name: desktops-toleration-only-on-launchers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              operations: [CREATE, UPDATE]
+      validate:
+        cel:
+          expressions:
+            - message: only desktop launcher pods in rfactory-desktops may tolerate rfactory.io/desktops
+              expression: >-
+                request.namespace == 'rfactory-desktops' && has(object.metadata.labels) &&
+                'rfactory.io/role' in object.metadata.labels && object.metadata.labels['rfactory.io/role'] == 'desktop' &&
+                'kubevirt.io' in object.metadata.labels && object.metadata.labels['kubevirt.io'] == 'virt-launcher'

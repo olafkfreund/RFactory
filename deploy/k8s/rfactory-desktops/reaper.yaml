@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rfactory-reaper
+  namespace: rfactory-desktops
+  labels: {app.kubernetes.io/name: rfactory-reaper}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: rfactory-reaper}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rfactory-reaper
+        rfactory.io/api-client: "true"
+    spec:
+      serviceAccountName: rfactory-reaper
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: reaper
+          image: docker.io/rfactory/reaper:6l05yhi22i672mha1k1pcsy2vg6h797q@sha256:5e56c7861109089273f19fba3e72f152c7cae757cfc2af18dc458cfbd58befd1
+          imagePullPolicy: Never
+          env:
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}

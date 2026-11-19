@@ -9,6 +9,7 @@ const { checkFacts } = require('../facts.js');
 const SYSTEM_PROMPT = path.join(__dirname, 'claude-system-prompt.txt');
 const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
 const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
+const DESKTOP_SYSTEM_PROMPT = path.join(__dirname, 'claude-desktop-system-prompt.txt');
 const ARGV = ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
   '--no-session-persistence', '--output-format', 'json', '--system-prompt-file', SYSTEM_PROMPT];
 
@@ -71,7 +72,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
-  async function propose(snapshot, { deadline = clock() + 55000, request } = {}) {
+  async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false } = {}) {
     checkClaudeHome(home);
     const versionTime = Math.min(5000, deadline - clock());
     if (versionTime <= 0) throw new Error('brain-timeout');
@@ -92,7 +93,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       })), request: { content: { untrusted: true, text: redactor.toModel(request) } } });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
-      const { stdout, stderr } = await run([...ARGV.slice(0, -1), ACTION_SYSTEM_PROMPT],
+      const { stdout, stderr } = await run([...ARGV.slice(0, -1), desktop ? DESKTOP_SYSTEM_PROMPT : ACTION_SYSTEM_PROMPT],
         { cwd, input: prompt, timeout });
       let response;
       try { response = JSON.parse(stdout); }
