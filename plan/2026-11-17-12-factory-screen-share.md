@@ -137,6 +137,26 @@ dependencies").
     element on load and on every DOM change; step 5's tests check that no
     element outside the viewer's own is visible.
 
+- **D3, G2 met; #3 merged in its k3d form (2026-11-19).** #3 merged as
+  RFactory#17 (a066e09) with desktops as KubeVirt VMs, not microVMs, so
+  the gate holds and the integration branch is main merged into
+  `feat/12-factory-screen-share` (db4c6c5). What changes for the steps:
+  - Step 6: the guest↔runner channel is TCP to the runner's control port,
+    not vsock; its framing (`desktop/runner/protocol.js`, 64 KiB) and the
+    runner's 16 KiB request-body limit are as this plan assumed. The
+    share entry point is the guest's existing `share-start`/`share-stop`
+    (`desktop/guest/agent/share.js`), which since #3's deviation 46
+    reports a share only after the capture guard accepted it. The
+    deviation entry goes into #3's k3d plan,
+    `plan/2026-11-18-3-agent-workspace-k3d.md`, not the superseded
+    microVM plan.
+  - #3's own share flow (the brain's `propose_share` of a granted page,
+    `web/desktop-routes.js`) stays as it is. The guest allows one share at
+    a time, so a board share and a page share on the same desktop exclude
+    each other; the second one is refused and reported, never stacked.
+  - Images: a guest change is deployed by building and pinning the guest
+    images and pushing (#3 deviation 42), not by `kubectl set image`.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and
