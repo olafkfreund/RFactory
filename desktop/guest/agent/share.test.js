@@ -41,6 +41,12 @@ async function fixture(t) {
   return { context, callPage, origin, otherOrigin };
 }
 
+// what Chrome's auto-select does after the click: the call page captures, here with the given tab label and surface
+const pick = (nonce, surface = 'browser') => async (page) => page.evaluate(async ([label, kind]) => {
+  window.testLabel = label; window.testSurface = kind;
+  try { await navigator.mediaDevices.getDisplayMedia({ video: true }); } catch { /* the guard refused it */ }
+}, [titleFor(nonce), surface]);
+
 const waitFor = async (predicate) => {
   for (let i = 0; i < 50; i++) {
     if (predicate()) return;
@@ -52,7 +58,7 @@ const waitFor = async (predicate) => {
 test('tab binding refuses wrong label, window and monitor before returning a track', browser, async (t) => {
   const f = await fixture(t);
   const events = [];
-  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, send: (m) => events.push(m) });
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once'), send: (m) => events.push(m) });
   const started = await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
   assert.equal(started.window_title, titleFor('once'));
   assert.ok(started.target_id);
@@ -96,7 +102,7 @@ test('tab binding refuses wrong label, window and monitor before returning a tra
 
 test('stop closes the tab even when stopShare fails', browser, async (t) => {
   const f = await fixture(t);
-  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, stopShare: async () => { throw new Error('failed'); } });
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once'), stopShare: async () => { throw new Error('failed'); } });
   await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
   const page = share.active.page;
   await share.stop();
@@ -106,7 +112,7 @@ test('stop closes the tab even when stopShare fails', browser, async (t) => {
 
 test('stop ends the capture and closes the tab even when page.close() does nothing', browser, async (t) => {
   const f = await fixture(t);
-  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {} });
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once') });
   await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
   await f.callPage.evaluate(async () => {
     window.testLabel = 'tab:opaque-id'; window.testSurface = 'browser'; window.testStopped = false;
@@ -130,7 +136,7 @@ test('desktop click refuses a shared tab', async () => {
 test('same-origin navigation, cross-origin link and popup each stop and report target change', browser, async (t) => {
   const f = await fixture(t);
   const events = [];
-  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, send: (m) => events.push(m) });
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once'), send: (m) => events.push(m) });
   const start = () => share.start({ share_id: `s${events.length + 1}`, url: `${f.origin}/start`, hosts: [f.origin, f.otherOrigin] });
   await start();
   await share.active.page.evaluate(() => { location.href = '/other-path'; });
@@ -156,7 +162,7 @@ test('a same-origin redirect away from the approved URL is refused', browser, as
   t.after(() => server.close());
   const origin = `http://127.0.0.1:${server.address().port}`;
   const events = [];
-  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'redir', clickShare: async () => {}, send: (m) => events.push(m) });
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'redir', clickShare: pick('redir'), send: (m) => events.push(m) });
   await assert.rejects(share.start({ share_id: 'r', url: `${origin}/approved`, hosts: [origin] }));
   assert.equal(share.active, null);
 });
@@ -164,3 +170,18 @@ test('a same-origin redirect away from the approved URL is refused', browser, as
 test('callLaunchArgs: the verify hook points auto-select at the whole screen', () => {
   assert.deepEqual(callLaunchArgs('once', true), ['--auto-select-desktop-capture-source=Entire screen']);
 });
+
+test('start reports a share only when the capture guard accepted its capture', browser, async (t) => {
+  const f = await fixture(t);
+  const screen = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once', 'monitor') });
+  await assert.rejects(screen.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] }), /refused by the capture guard/);
+  assert.equal(screen.active, null);
+});
+
+test('start fails when no capture follows the click', browser, async (t) => {
+  const f = await fixture(t);
+  const none = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {}, captureMs: 300 });
+  await assert.rejects(none.start({ share_id: 's2', url: `${f.origin}/start`, hosts: [f.origin] }), /not confirmed/);
+  assert.equal(none.active, null);
+});
+

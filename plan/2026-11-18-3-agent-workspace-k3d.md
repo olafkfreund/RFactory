@@ -915,6 +915,17 @@ and 27) and the scripts. This plan is self-contained.
     More every 15 s, clicks Captions once enabled, reads on/off from the
     item's `aria-checked` (never turning captions off) and stops when
     on. Test in call.test.js; guest images and command line re-pinned.
+46. **Two runner and guest records made true (lead, k14 open findings).**
+    - The runner logs one line per destroy, `runner: destroy <id>
+      reason=<reason>` (k14: an egress-quota end was known only by
+      elimination). Test in k8s-lifecycle.test.js.
+    - Share `start()` waits (bounded, 10 s) for the capture guard's
+      verdict on its own capture and reports only an accepted share;
+      a refused one ("share refused by the capture guard") or none
+      ("share capture not confirmed") is an error, so a whole-screen
+      capture is no longer recorded as started. share.sh's
+      auto-select case now fails a reported start by itself. Tests in
+      share.test.js; guest images re-pinned.
 
 
 ## Steps

@@ -30,7 +30,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: runner
-          image: docker.io/rfactory/runner:bd0scxzvky2d84kyl191pfdb9ln51qbl@sha256:a2bd096eef51c3763e4331714b70b568130b910a4c6834d687f68e9ba6037737
+          image: docker.io/rfactory/runner:9j76hxw0l1rvld37wy7d0ssmg2w4z9ln@sha256:e5c8ea6382d76ff331b76a302b0d63752e53f72e678233126790ba71eb9bf75c
           imagePullPolicy: Never
           ports:
             - {name: api, containerPort: 8443}
@@ -46,9 +46,9 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:c6c52cac5486a4e580db7596dcb9cb3693ebb3976c6f8250855f3c6ea197420b"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:fbbd29927f963ecea3519b96374b22e9d7d34ac89f7c3fa1c26978f6974f80ca"}
-            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/jsg07ni85ap9lkz66j0lci8slcnggapg-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:ad505f48a75685580cdc1b129ef391df24dcb63c879a33d1815f67360883c16d"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:e2778051747d8deea7e7fb3bb10ec3e698f700aba3238c447b94142356976017"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/1sfybrph141c0r59yl5l7l8axvr76dwy-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -44,7 +44,8 @@ function installCaptureGuard() {
 const TEARDOWN_MS = 5000;
 const within = (promise) => Promise.race([promise, new Promise((resolve) => setTimeout(resolve, TEARDOWN_MS, 'timeout'))]);
 
-function createShare({ context, callPage, callNonce, clickShare, stopShare, send }) {
+// captureMs: how long start() waits, after the click, for the capture guard's verdict on this share's own capture
+function createShare({ context, callPage, callNonce, clickShare, stopShare, send, captureMs = 10000 }) {
   if (!callNonce) throw new Error('share nonce must be fixed before Chrome launch');
   const title = titleFor(callNonce);
   let active = null;
@@ -97,6 +98,8 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     const page = await context.newPage();
     page.__rfShare = true;
     const share = { id: share_id, page, url: parsed.href, origin: parsed.origin, title, targetId: null };
+    // settled by the capture guard's check of this share's capture (accepted or not); start() reports only an accepted one
+    share.verdict = new Promise((resolve) => { share.settle = resolve; });
     active = share;
     const changed = () => { if (active === share) void stop('share-target-changed'); };
     try {
@@ -148,13 +151,23 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       if (active !== share) throw new Error('share target changed');
       if (!(await matches(share, '', 'browser'))) throw new Error('share title not unique');
       if (!hookInstalled) {
-        await callPage.exposeBinding('__rfShareCheck', (_, label, surface) => active ? matches(active, label, surface) : false);
+        await callPage.exposeBinding('__rfShareCheck', async (_, label, surface) => {
+          const current = active;
+          const ok = current ? await matches(current, label, surface) : false;
+          if (current) current.settle(ok);
+          return ok;
+        });
         await callPage.addInitScript(installCaptureGuard);
         await callPage.evaluate(installCaptureGuard);
         hookInstalled = true;
       }
       await (clickShare ? clickShare(callPage) : callPage.getByRole('button', { name: /Share screen|Present now/i }).click());
       if (active !== share) throw new Error('share target changed'); // it navigated while the button was being pressed: no share to report
+      // k14: start() used to report success right after the click, also when the guard refused the capture (a whole
+      // screen): wait, bounded, for the guard's verdict on this share's capture
+      const verdict = await Promise.race([share.verdict, new Promise((resolve) => setTimeout(resolve, captureMs, 'timeout'))]);
+      if (active !== share) throw new Error('share target changed');
+      if (verdict !== true) throw new Error(verdict === 'timeout' ? 'share capture not confirmed' : 'share refused by the capture guard');
       return { share_id, nonce: callNonce, window_title: title, target_id: share.targetId };
     } catch (error) {
       await stop();

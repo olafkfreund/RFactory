@@ -75,9 +75,12 @@ if [ "$(jq -r '.ok // false' <<<"$ah")" != true ]; then fail share-auto-select-s
 elif ! join_call "$A"; then fail share-auto-select-screen "the VM did not join the call: $CALLERR"
 else
   ready "$A"
-  if start_shared "$A" "$VERIFY_FIXTURE_URL/"; then res="the share started"; else res="the share was refused: $SHAREERR"; fi
-  sleep 5
-  owner_confirm share-auto-select-screen "A second bot is in the Meet. Chrome was told to pick 'Entire screen' ($res). Is NOTHING shared by that bot (the track was stopped)?"
+  # the guest reports a refused capture as a failed start (deviation 46): a whole screen that "started" is a FAIL by itself
+  if start_shared "$A" "$VERIFY_FIXTURE_URL/"; then fail share-auto-select-screen "a whole-screen capture was reported as a started share"
+  else
+    sleep 5
+    owner_confirm share-auto-select-screen "A second bot is in the Meet. Chrome was told to pick 'Entire screen' and the share was refused ($SHAREERR). Is NOTHING shared by that bot?"
+  fi
 fi
 stop_beat "$A"
 api destroy "$(jq -nc --arg d "$A" '{desktop_id:$d}')" >/dev/null || true

@@ -33,6 +33,8 @@ function createLifecycle(config, deps) {
     const vm = vms.get(id);
     if (!vm) return Promise.resolve({ ok: true, already: true });
     if (vm.destroying) return vm.destroying; // idempotent
+    // one line per destroy, so why a desktop ended is on record (k14: an egress-quota end was known only by elimination)
+    (deps.log || console.log)(`runner: destroy ${id} reason=${reason}`);
     vm.destroying = (async () => {
       owners.delete(vm.sock);
       if (vm.agent) vm.agent.destroy();

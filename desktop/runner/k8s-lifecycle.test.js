@@ -12,7 +12,7 @@ const vmiUID = '11111111-1111-4111-8111-111111111111';
 const podUID = '22222222-2222-4222-8222-222222222222';
 const pod = { metadata: { uid: podUID, labels: { 'rfactory.io/role': 'desktop' } }, status: { podIP: '10.42.1.7', hostIP: '172.18.0.3' } };
 
-function setup(fail, { pausedAfter = 0 } = {}) {
+function setup(fail, { pausedAfter = 0, logs = [] } = {}) {
   let getVmis = 0;
   const calls = [], manifests = [], handlers = new Map(), timers = new Map();
   let now = 1000, currentPod = pod;
@@ -38,8 +38,8 @@ function setup(fail, { pausedAfter = 0 } = {}) {
       runnerIP: '10.43.250.10', proxyIP: '10.43.250.11', proxyPort: 3128, alwaysProtected: ['192.168.1.0/24'] } };
   const lc = createLifecycle(config, { k8s, clock, listenTcp: (port, handler) => { handlers.set(port, handler); return { close() {} }; },
     guard: async (_vm, action, body) => { beats.push({ action, body }); if (fail === `guard-${action}`) throw new Error(action); return action === 'ready' ? { ready: true } : { bytes: 0 }; },
-    preflight: async () => {} });
-  return { lc, calls, manifests, handlers, timers, beats, leases, config, k8s, setPod: value => { currentPod = value; }, advance: ms => { now += ms; } };
+    preflight: async () => {}, log: (line) => logs.push(line) });
+  return { lc, logs, calls, manifests, handlers, timers, beats, leases, config, k8s, setPod: value => { currentPod = value; }, advance: ms => { now += ms; } };
 }
 
 class Socket extends EventEmitter {
@@ -240,3 +240,12 @@ test('a missing Lease is created once, then renewed', async () => {
   assert.equal(made.length, 1);
   await ctx.lc.stop();
 });
+
+test('every destroy logs its desktop and reason once', async () => {
+  const ctx = setup();
+  const { desktop_id } = await ctx.lc.create({ call_id: 'call-1', scope: 'alpha', platform: 'meet' });
+  await Promise.all([ctx.lc.destroy(desktop_id, 'egress-quota'), ctx.lc.destroy(desktop_id, 'requested')]);
+  assert.deepEqual(ctx.logs.filter((l) => l.startsWith('runner: destroy')), [`runner: destroy ${desktop_id} reason=egress-quota`]);
+  await ctx.lc.stop();
+});
+
