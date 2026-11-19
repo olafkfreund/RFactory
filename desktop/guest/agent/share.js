@@ -20,7 +20,8 @@ function installCaptureGuard() {
       if (clone) track.clone = function () { return keep(clone.call(this)); };
       return track;
     };
-    window.__rfShareEnd = () => { for (const track of live) track.stop(); live.clear(); return true; };
+    // stop() fires no 'ended' (spec), and Meet ends a presentation on 'ended': without it Meet kept an empty presentation (k14)
+    window.__rfShareEnd = () => { for (const track of live) { track.stop(); track.dispatchEvent?.(new Event('ended')); } live.clear(); return true; };
     const guarded = async function (...args) {
       const stream = await original.apply(this, args);
       const track = stream.getVideoTracks()[0];
