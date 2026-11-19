@@ -182,6 +182,16 @@ dependencies").
   in shares.test.js, protocol.test.js and share.test.js. Step 7 maps the
   third argument onto `view-data`'s `stale`.
 
+- **D6, events for step 7 (lead, 2026-11-19).** `share-target-changed`
+  ends at the runner (it clears `sharing`), and the web server has no push
+  channel from the runner, so step 7's `onEvent` cannot be fed as the plan
+  assumed. The runner's `list` reports `sharing` per desktop, and the
+  adapter polls `list` every 5 s while a share is open: the desktop
+  missing → `desktop-gone`; `sharing: false` while the manager has it
+  `running` → `share-target-changed`. The cutoff itself stays in the guest
+  and the guard (#3); polling only tells the page and the record, within
+  5 s.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and
