@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 18
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
@@ -107,6 +107,16 @@ with its own approval (open question 2).
    Claude login and no source token. The spec verifies option (b)'s
    assumptions first; AIFactory's interface already lists a log reader
    (`task_get_logs`) and a stop (`task_stop`).
+2. **First slice: read-only.** The session investigates and runs tests on
+   the repository; no edits, branches or pull requests. Those come later,
+   each with its own approval.
+3. **Who:** anyone in the call may ask; only approvers approve.
+4. **Login and limits:** the owner's Claude subscription; at most 30
+   minutes and one session per call.
+5. **No follow-up questions** to a running session in the first slice.
+6. **Out of scope:** several sessions at once, repositories outside the
+   call's project, a terminal people type into.
+7. **Live log:** AIFactory's existing retention and access apply.
 
 ## Open questions
 
