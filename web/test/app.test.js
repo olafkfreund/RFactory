@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { render, handleCall, renderFooter } = require('../public/app.js');
+const { render, handleCall, renderFooter, loadShares } = require('../public/app.js');
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.text = ''; }
@@ -11,6 +11,7 @@ class Node {
   appendChild(c) { this.children.push(c); return c; }
   removeChild(c) { this.children.splice(this.children.indexOf(c), 1); }
   setAttribute(k, v) { this.attrs[k] = v; }
+  addEventListener() {}
   querySelector(tag) { return this.all().find((n) => n.tag === tag) || null; }
   all() { return this.children.flatMap((c) => [c, ...c.all()]); }
 }
@@ -106,4 +107,46 @@ test('action events render as text only, deduplicated by id, with the hash in th
   assert.equal(byId['actions-pending'].textContent, 'None');
   assert.ok(byId['actions-history'].textContent.includes('rejected'));
   assert.ok(!byId['actions-history'].all().some((n) => n.tag === 'img'));
+});
+
+function shareShim() {
+  const { doc, byId } = shim();
+  byId['share-list'] = new Node('ul'); byId['share-status'] = new Node('p'); byId.share = new Node('section');
+  byId.share.hidden = true;
+  return { doc, byId };
+}
+const buttons = (byId) => byId['share-list'].all().filter((n) => n.tag === 'button').map((n) => n.textContent);
+
+test('share panel: approval text with buttons for approvers, running with Stop, unavailable reason, hostile text stays text', async () => {
+  const { doc, byId } = shareShim();
+  const hostile = '<img src=x onerror=alert(1)>';
+  const share = { id: 's1', hash: 'h', state: 'proposed', project: 'Factory', proposed_by: hostile,
+    approval_text: 'Share the live CFactory board of Factory, refreshed every 30 seconds.' };
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [], running: null, history: [], can_approve: true }) });
+  try { await loadShares(doc); } finally { global.fetch = realFetch; }
+  assert.equal(byId.share.hidden, true);
+  handleCall(doc, { type: 'share-pending', share });
+  handleCall(doc, { type: 'share-pending', share }); // replay does not duplicate
+  assert.equal(byId.share.hidden, false);
+  assert.equal(byId['share-list'].children.length, 1);
+  assert.ok(byId['share-list'].textContent.includes('Share the live CFactory board of Factory, refreshed every 30 seconds.'));
+  assert.ok(byId['share-list'].textContent.includes(hostile));
+  assert.ok(!byId['share-list'].all().some((n) => ['img', 'script'].includes(n.tag)));
+  assert.deepEqual(buttons(byId), ['Approve', 'Reject']);
+  handleCall(doc, { type: 'share-updated', share: { ...share, state: 'running' } });
+  assert.ok(byId['share-list'].textContent.includes('Sharing: CFactory board'));
+  assert.deepEqual(buttons(byId), ['Stop']);
+  handleCall(doc, { type: 'share-updated', share: { ...share, state: 'stopped' } });
+  assert.equal(byId.share.hidden, true);
+  handleCall(doc, { type: 'share-unavailable', share: { reason: `no desktop for this call ${hostile}` } });
+  assert.ok(byId['share-list'].textContent.includes(`no desktop for this call ${hostile}`));
+  assert.deepEqual(buttons(byId), []);
+});
+
+test('share buttons are absent for a non-approver', () => {
+  const { doc, byId } = shareShim();
+  handleCall(doc, { type: 'share-pending', share: { id: 's1', hash: 'h', state: 'proposed', project: 'F', proposed_by: 'x' } });
+  assert.deepEqual(buttons(byId), []);
+  assert.ok(byId['share-list'].textContent.includes('Share the live CFactory board of F, refreshed every 30 seconds.'));
 });

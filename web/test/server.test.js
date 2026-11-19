@@ -301,3 +301,59 @@ test('the production login uses the runner login route and fails unless the gues
   await assert.rejects(mk({ ok: false })({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
   await assert.rejects(mk({})({ desktop_id: 'd1', profile: 'p', hosts: [] }), /login-failed/);
 });
+
+function fakeShares() {
+  const calls = [];
+  const s = { calls, list: () => ({ pending: [], running: null, history: [] }),
+    approve: async (id, email, hash) => { calls.push(['approve', id, email, hash]);
+      if (email !== ME) return { status: 403, text: 'Forbidden.' };
+      return hash === 'good' ? { status: 200, text: 'Sharing the board.' } : { status: 409, text: 'This share is no longer pending.' }; },
+    reject: async (...args) => { calls.push(['reject', ...args]); return { status: 200, text: 'Share rejected.' }; },
+    stop: async (email) => { calls.push(['stop', email]); return { status: 200, text: 'Stopped sharing.' }; } };
+  return s;
+}
+
+test('share routes are absent without a manager (404)', async (t) => {
+  const get = await startActions(t, {});
+  assert.equal((await get('/api/shares', { method: 'GET' })).status, 404);
+  assert.equal((await get('/api/shares/stop')).status, 404);
+});
+
+test('share approve and stop: header, origin, approver and hash are checked', async (t) => {
+  const shares = fakeShares();
+  const get = await startActions(t, { shares });
+  const path = '/api/shares/abc-1/approve';
+  for (const p of [path, '/api/shares/stop']) {
+    assert.equal((await get(p, { headers: { 'X-RFactory-Action': '0' } })).status, 403);
+    assert.equal((await get(p, { headers: { Origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await get(p, { headers: { Origin: '' } })).status, 403);
+  }
+  assert.deepEqual(shares.calls, []);
+  assert.equal((await get(path, { email: 'other@example.com', body: { hash: 'good' } })).status, 403);
+  assert.equal((await get(path, { body: { hash: 'bad' } })).status, 409);
+  assert.equal((await get(path, { body: {} })).status, 400);
+  assert.equal((await get(path, { body: { hash: 'good' } })).status, 200);
+  assert.equal((await get('/api/shares/abc-1/reject')).status, 200);
+  assert.equal((await get('/api/shares/stop', { email: 'other@example.com', body: {} })).status, 200); // any allowlisted user
+  assert.deepEqual(shares.calls.at(-1), ['stop', 'other@example.com']);
+  assert.deepEqual(await (await get('/api/shares', { method: 'GET' })).json(), { pending: [], running: null, history: [], can_approve: true });
+  assert.equal((await (await get('/api/shares', { method: 'GET', email: 'other@example.com' })).json()).can_approve, false);
+});
+
+test('writes off, shares on: the record is built and written, there is no writer or action manager', async () => {
+  const { composeWrites } = require('../server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-shares-'));
+  const redactor = makeRedactor([]);
+  const scope = { name: 'F', writes_enabled: false, shares_enabled: true, source: { kind: 'cfactory' } };
+  const file = path.join(dir, `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  fs.writeFileSync(file, `${JSON.stringify({ kind: 'share', id: 's1', state: 'running' })}\n`);
+  try {
+    const { actions, shares } = await composeWrites({ scope, source: { boardView: async () => ({}) }, brain: fakeBrain, redactor, roles: rolesFor(ME, ME), dir });
+    assert.equal(actions, null);
+    assert.ok(shares);
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(lines.at(-1) && [lines.at(-1).id, lines.at(-1).state, lines.at(-1).reason], ['s1', 'stopped', 'restart']);
+    const off = await composeWrites({ scope: { ...scope, shares_enabled: false }, source, brain: fakeBrain, redactor, roles: rolesFor(ME, ME), dir });
+    assert.deepEqual(off, { actions: null, shares: null });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

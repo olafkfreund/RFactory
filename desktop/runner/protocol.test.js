@@ -7,6 +7,26 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { MAX, encode, createDecoder, tag } = require('./protocol');
+const board = () => ({ project: 'factory', at: '2026-11-19T00:00:00.000Z',
+  columns: Object.fromEntries(['backlog', 'ready', 'in_progress', 'blocked', 'done'].map((key) => [key, { total: 0, shown: 0, omitted: 0 }])), cards: [] });
+
+test('view schemas accept their exact fields and refuse malformed board data', () => {
+  for (const message of [
+    { type: 'view-open', share_id: 's', nonce: 'n', view: 'board', data: board() },
+    { type: 'view-data', share_id: 's', data: board() },
+    { type: 'view-data', share_id: 's', data: board(), stale: true },
+    { type: 'view-close', share_id: 's' }, { type: 'view-closed', share_id: 's' },
+  ]) assert.doesNotThrow(() => encode(message));
+  assert.throws(() => encode({ type: 'view-open', share_id: 's', nonce: 'n', view: 'other', data: board() }), /invalid protocol/);
+  assert.throws(() => encode({ type: 'view-data', share_id: 's', data: { ...board(), cards: [{ title: 'bad' }] } }), /invalid protocol/);
+  assert.throws(() => encode({ type: 'view-data', share_id: 's', data: { ...board(), stale: true } }), /invalid protocol/); // stale is the message's flag, never in data
+  assert.throws(() => encode({ type: 'view-data', share_id: 's', data: board(), stale: 'yes' }), /invalid protocol/);
+  assert.throws(() => encode({ type: 'view-close' }), /invalid protocol/);
+  assert.throws(() => encode({ type: 'view-closed', share_id: 's', extra: true }), /invalid protocol/);
+  const oversize = Buffer.alloc(4); oversize.writeUInt32BE(MAX + 1);
+  const drops = []; createDecoder(() => assert.fail('oversize accepted'), (reason) => drops.push(reason)).write(oversize);
+  assert.deepEqual(drops, ['oversize']);
+});
 
 function raw(body) {
   const bytes = Buffer.from(body);

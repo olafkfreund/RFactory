@@ -5,6 +5,7 @@ const { createHearing } = require('@rfactory/core/src/call/hearing.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts } = require('@rfactory/core/src/facts.js');
 const { summarise } = require('@rfactory/core/src/items.js');
+const { createShareDesktop } = require('./share-desktop.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
@@ -12,21 +13,33 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null }) {
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null }) {
   const listeners = new Set();
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
+  const shareEvents = new Map(); // latest event per share id, replayed on reload
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
     if (['state', 'mic', 'voice', 'greeting'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
+    if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     for (const fn of listeners) fn(event);
   };
   if (actions) actions.subscribe((event) => {
     if (event.type === 'action-result') {
       if (call && callCount === event.action.generation && !call.stopping) queueSpeech(call, event.action.text);
     } else emit(event);
+  });
+  const failed = (reason) => `I can't share the board right now: ${reason}.`;
+  if (shares) shares.subscribe((event) => {
+    emit(event);
+    const c = call;
+    if (!c || c.stopping || !c.shares.has(event.share.id)) return; // spoken only in the call that asked
+    const { state, reason } = event.share;
+    if (event.type === 'share-unavailable') queueSpeech(c, failed(reason));
+    else if (state === 'running' && !c.announced.has(event.share.id)) { c.announced.add(event.share.id); queueSpeech(c, 'Sharing the board.'); } // once: refreshes also say running (review P2)
+    else if (state === 'stopped' && reason !== 'restart') queueSpeech(c, 'Stopped sharing.');
   });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
@@ -58,6 +71,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     c.stopping = (async () => {
       log(`stopping: ${reason}`);
       if (actions) await Promise.resolve().then(() => actions.endCall()).catch((error) => log(`actions end failed: ${error.message}`));
+      if (shares) await Promise.resolve().then(() => shares.endCall()).catch((error) => log(`shares end failed: ${error.message}`));
       send(c, { type: 'leave' });
       let timer = clock.setTimeout(() => killGroup(c, 'SIGTERM'), 10000);
       let force = clock.setTimeout(() => killGroup(c, 'SIGKILL'), 15000);
@@ -159,12 +173,27 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     await queueSpeech(c, text, generation);
   }
 
+  async function requestShare(c, item, generation) {
+    let result;
+    try { result = shares ? await shares.request(item.text, item.speaker) : { status: 403, text: 'Sharing is turned off here.' }; }
+    catch (error) {
+      if (c.generation === generation && !c.stopping) log(`share failed: ${error.message}`);
+      result = { status: 500, text: "Sorry, I can't do that right now." };
+    }
+    if (c.generation !== generation || c.stopping) return;
+    if (result.share) c.shares.add(result.share.id);
+    if (result.status === 403 || result.text.startsWith("I can't share the board right now: ")) {
+      emit({ type: 'share-unavailable', share: { reason: result.text.replace(/^I can't share the board right now: /, '').replace(/\.$/, '') } });
+    }
+    await queueSpeech(c, result.text, generation);
+  }
+
   function drain(c) {
     if (c.working || !c.queue.length || c.stopping) return;
     c.working = true;
     const question = c.queue.shift();
     const generation = c.generation;
-    (question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
+    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
       c.working = false;
       drain(c);
     });
@@ -173,7 +202,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
-    question.desktop = !!desktop && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
+    question.desktop = !!desktop && question.kind !== 'share' && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
     if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question'; // no write path here: 1b behaviour
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
@@ -224,7 +253,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0,
-      tts: callTts, voice: callTts.voice };
+      tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set() };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);
@@ -252,14 +281,19 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     });
     current.clear();
     actionEvents.clear();
+    shareEvents.clear();
     // startCall sets its generation synchronously; the returned promise only expires old pending items
-    if (actions) Promise.resolve(actions.startCall(++callCount)).catch((error) => log(`actions start failed: ${error.message}`));
+    const generation = ++callCount;
+    if (actions) Promise.resolve(actions.startCall(generation)).catch((error) => log(`actions start failed: ${error.message}`));
+    // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
+    const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
+    if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => log(`shares start failed: ${error.message}`));
     emit({ type: 'voice', voice: c.voice });
     emit({ type: 'state', state: 'joining' });
     child.stdin.write(`${link}\n`);
   }
 
-  return { get running() { return !!call; }, start, stop, current: () => [...current.values(), ...actionEvents.values()],
+  return { get running() { return !!call; }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 

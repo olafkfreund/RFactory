@@ -10,6 +10,7 @@ const { encode: enc, createDecoder: dec, encode } = require('./protocol');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createRunnerClient } = require('./client');
 
 const uid = (kind, i) => `${String(kind).repeat(8)}-0000-4000-8000-${String(i).padStart(12, '0')}`; // a 36-character UID
 const tick = () => new Promise((r) => setImmediate(r));
@@ -337,6 +338,33 @@ test('runner routes: action, share-start, share-stop map to the lifecycle; a bad
     assert.deepEqual(await post('share-stop', { desktop_id: 'd', share_id: 's' }), [503, { error: 'timeout' }]);
     assert.deepEqual(calls.map((c) => c[0]), ['action', 'action', 'start', 'stop']);
   } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('a 47 KiB board crosses client, runner and TCP framing; close waits for view-closed', async () => {
+  const ctx = await withWorker({ onWrite: (conn, message) => {
+    if (message.type === 'view-close') conn.reply({ type: 'view-closed', share_id: message.share_id, action_id: message.action_id });
+    else if (message.action_id) conn.reply({ type: 'action-result', action_id: message.action_id, ok: true });
+  } });
+  const board = { project: 'factory', at: '2026-11-19T00:00:00.000Z',
+    columns: Object.fromEntries(['backlog', 'ready', 'in_progress', 'blocked', 'done'].map((key) => [key, { total: 0, shown: 0, omitted: 0 }])), cards: [] };
+  while (Buffer.byteLength(JSON.stringify(board)) < 47 * 1024 - 250) {
+    board.cards.push({ key: `C${board.cards.length}`, title: 'board card '.repeat(9), column: 'backlog', priority: null, tier: null,
+      stages: { plan: 'none', code: 'none', test: 'none' } });
+    board.columns.backlog.total++; board.columns.backlog.shown++;
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(board)) > 46 * 1024);
+  const server = http.createServer(createHandler(ctx.lc, { tls: false }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-view-'));
+  const cert = path.join(dir, 'dummy'); fs.writeFileSync(cert, 'x');
+  try {
+    const client = createRunnerClient({ url: `https://127.0.0.1:${server.address().port}`, key: cert, cert, ca: cert, request: http.request });
+    assert.equal((await client.viewOpen({ desktop_id: ctx.id, share_id: 's', nonce: 'n', view: 'board', data: board })).status, 200);
+    assert.equal(ctx.conns[0].out.at(-1).type, 'view-open');
+    assert.equal((await client.viewData({ desktop_id: ctx.id, share_id: 's', data: board })).status, 200);
+    assert.deepEqual((await client.viewClose({ desktop_id: ctx.id, share_id: 's' })).body, { ok: true, type: 'view-closed', share_id: 's' });
+    assert.equal((await client.call('action', { desktop_id: ctx.id, padding: 'x'.repeat(17 * 1024) })).status, 413);
+  } finally { server.closeAllConnections(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('call stream: works on a socket that refuses setEncoding (the HTTP server\'s upgraded socket) and keeps a split UTF-8 character whole', async () => {

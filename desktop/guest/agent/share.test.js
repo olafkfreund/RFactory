@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { test } = require('node:test');
 const { createShare, titleFor, callLaunchArgs, installCaptureGuard } = require('./share');
+const { URL_BOARD } = require('./viewer/route');
+const board = () => ({ project: 'factory', at: '2026-11-19T00:00:00.000Z',
+  columns: Object.fromEntries(['backlog', 'ready', 'in_progress', 'blocked', 'done'].map((key) => [key, { total: 0, shown: 0, omitted: 0 }])), cards: [] });
 
 let chromium;
 try { ({ chromium } = require('playwright-core')); } catch { /* browser unavailable */ }
@@ -12,6 +15,60 @@ const browser = { skip: !chromium && 'playwright-core unavailable' };
 
 test('one nonce fixes the Chrome capture source at call launch', () => {
   assert.deepEqual(callLaunchArgs('once'), ['--auto-select-desktop-capture-source=RFactory share once']);
+});
+
+test('viewer opens without capture, updates, refuses foreign and closed ids, then confirms close', browser, async (t) => {
+  const f = await fixture(t);
+  const events = [];
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once'), send: (m) => events.push(m) });
+  await share.openView({ share_id: 's1', nonce: 'once', view: 'board', data: board() });
+  assert.equal(share.active.page.url(), URL_BOARD);
+  assert.equal(share.active.page.__rfShare, true);
+  assert.equal(await f.callPage.evaluate(() => !!window.__rfShareEnd), false);
+  assert.equal(await share.active.page.title(), titleFor('once'));
+  await assert.rejects(share.updateView({ share_id: 'foreign', data: board() }), /view not open/);
+  await share.closeView('foreign'); // idempotent: another id is a no-op (review P1)
+  assert.equal(share.active.id, 's1');
+  await share.updateView({ share_id: 's1', data: { ...board(), project: 'updated' } });
+  assert.match(await share.active.page.locator('body').innerText(), /updated/);
+  assert.doesNotMatch(await share.active.page.locator('.rf-banner').innerText(), /stale/);
+  await share.updateView({ share_id: 's1', data: board(), stale: true }); // a failed refresh: the last frame, marked stale
+  assert.match(await share.active.page.locator('.rf-banner').innerText(), /stale/);
+  await share.startShare('s1');
+  await share.stopShare('s1');
+  await share.closeView('s1');
+  assert.equal(share.active, null);
+  await assert.rejects(share.openView({ share_id: 's1', nonce: 'once', view: 'board', data: board() }), /invalid view/);
+  assert.deepEqual(events, []);
+});
+
+test('close is idempotent per id and stop names its share (review P1)', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once') });
+  await share.closeView('never-opened'); // cancelled before it opened: closed, not an error
+  await assert.rejects(share.openView({ share_id: 'never-opened', nonce: 'once', view: 'board', data: board() }), /invalid view/);
+  await share.stopShare('nothing'); // no share: nothing to stop
+  await share.openView({ share_id: 's1', nonce: 'once', view: 'board', data: board() });
+  await assert.rejects(share.stopShare('other'), /not the active share/);
+  await share.closeView('other'); // another id never touches the open view
+  assert.equal(share.active?.id, 's1');
+  await share.closeView('s1');
+  await share.closeView('s1'); // twice: still fine
+  assert.equal(share.active, null);
+});
+
+test('viewer navigation, popup and window close report target change', browser, async (t) => {
+  const f = await fixture(t);
+  const events = [];
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', send: (m) => events.push(m) });
+  for (const [i, change] of ['navigate', 'popup', 'close'].entries()) {
+    await share.openView({ share_id: `s${i}`, nonce: 'once', view: 'board', data: board() });
+    if (change === 'navigate') await share.active.page.evaluate(() => { location.href = '/other'; });
+    if (change === 'popup') await share.active.page.evaluate(() => { window.open('/board.html'); });
+    if (change === 'close') await share.active.page.close();
+    await waitFor(() => events.length === i + 1);
+    assert.deepEqual(events.at(-1), { type: 'share-target-changed', share_id: `s${i}` });
+  }
 });
 
 async function fixture(t) {

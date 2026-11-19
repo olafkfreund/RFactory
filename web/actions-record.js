@@ -45,7 +45,7 @@ function createRecord({ dir, clock = Date, redactor }) {
     }
   }
 
-  function unfinished() {
+  function lastEntries() {
     const last = new Map();
     for (const f of files()) {
       for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
@@ -55,10 +55,13 @@ function createRecord({ dir, clock = Date, redactor }) {
         if (e && e.id !== undefined) last.set(e.id, e);
       }
     }
-    return [...last.values()].filter((e) => e.state === 'executing');
+    return [...last.values()];
   }
 
-  return { append, prune, unfinished };
+  function unfinished() { return lastEntries().filter((e) => !e.kind && e.state === 'executing'); }
+  function unfinishedShares() { return lastEntries().filter((e) => e.kind === 'share' && ['starting', 'running'].includes(e.state)); }
+
+  return { append, prune, unfinished, unfinishedShares };
 }
 
 module.exports = { createRecord };

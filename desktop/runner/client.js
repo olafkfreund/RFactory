@@ -41,7 +41,8 @@ function createRunnerClient({ url, key, cert, ca, timeoutMs = 30000, request = h
       req.end();
     });
   }
-  return { call, openVnc: (id) => openStream('vnc', id), openCall: (id) => openStream('call', id), list: () => call('list'), create: (b) => call('create', b), destroy: (id) => call('destroy', { desktop_id: id }), cancel: (id) => call('cancel', { desktop_id: id }), clear: () => call('clear') };
+  return { call, openVnc: (id) => openStream('vnc', id), openCall: (id) => openStream('call', id), list: () => call('list'), create: (b) => call('create', b), destroy: (id) => call('destroy', { desktop_id: id }), cancel: (id) => call('cancel', { desktop_id: id }), clear: () => call('clear'),
+    viewOpen: (b) => call('view-open', b), viewData: (b) => call('view-data', b), viewClose: (b) => call('view-close', b) };
 }
 
 module.exports = { createRunnerClient };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomBytes } = require('node:crypto');
+const { viewerRoute, URL_BOARD, ORIGIN } = require('./viewer/route');
 
 const nonce = () => randomBytes(16).toString('hex');
 const titleFor = (value) => `RFactory share ${value}`;
@@ -49,6 +50,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
   if (!callNonce) throw new Error('share nonce must be fixed before Chrome launch');
   const title = titleFor(callNonce);
   let active = null;
+  const closed = new Set();
   let hookInstalled = false;
 
   async function matches(share, label, surface) {
@@ -86,6 +88,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     return stopping;
   }
   async function teardown(share, reason) {
+    if (share.view) closed.add(share.id);
     if (stopShare) void Promise.resolve().then(stopShare).catch(() => {});
     // Fail closed: end the capture in the call page first (it must not depend on the tab), then close the tab and check it in Chrome.
     // A capture or a tab that cannot be confirmed gone ends the call Chrome: a leftover tab keeps the title the next share is picked by.
@@ -99,14 +102,15 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     if (reason === 'share-target-changed') send?.({ type: reason, share_id: share.id });
   }
 
-  async function start({ share_id, url, hosts }) {
+  async function start({ share_id, url, hosts, nonce: viewNonce, view, data }, openOnly = false) {
     if (stopping) await stopping;
     if (active) throw new Error('share already active');
+    if (openOnly && (view !== 'board' || url !== URL_BOARD || viewNonce !== callNonce || closed.has(share_id))) throw new Error('invalid view');
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || !Array.isArray(hosts) || !hosts.includes(parsed.origin)) throw new Error('share origin not granted');
     const page = await context.newPage();
     page.__rfShare = true;
-    const share = { id: share_id, page, url: parsed.href, origin: parsed.origin, title, targetId: null };
+    const share = { id: share_id, page, url: parsed.href, origin: parsed.origin, title, targetId: null, view: openOnly ? view : null };
     // settled by the capture guard's check of this share's capture (accepted or not); start() reports only an accepted one
     share.verdict = new Promise((resolve) => { share.settle = resolve; });
     active = share;
@@ -133,6 +137,10 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
         }, { once: true });
       }, title);
       await page.route('**/*', async (route) => {
+        if (share.view) {
+          if (route.request().isNavigationRequest() && route.request().frame() === page.mainFrame() && route.request().url() !== share.url) changed();
+          return viewerRoute(route);
+        }
         try {
           let next = route.request().url();
           for (let hop = 0; hop < 10; hop++) {
@@ -159,6 +167,19 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       await page.goto(share.url);
       if (active !== share) throw new Error('share target changed');
       if (!(await matches(share, '', 'browser'))) throw new Error('share title not unique');
+      if (openOnly) {
+        await page.evaluate((board) => window.rfBoard.render(board, { stale: false }), data);
+        return { share_id, nonce: callNonce, window_title: title, target_id: share.targetId };
+      }
+      return await capture(share);
+    } catch (error) {
+      await stop();
+      throw error;
+    }
+  }
+
+  async function capture(share) {
+    try {
       if (!hookInstalled) {
         await callPage.exposeBinding('__rfShareCheck', async (_, label, surface) => {
           const current = active;
@@ -177,14 +198,39 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       const verdict = await Promise.race([share.verdict, new Promise((resolve) => setTimeout(resolve, captureMs, 'timeout'))]);
       if (active !== share) throw new Error('share target changed');
       if (verdict !== true) throw new Error(verdict === 'timeout' ? 'share capture not confirmed' : 'share refused by the capture guard');
-      return { share_id, nonce: callNonce, window_title: title, target_id: share.targetId };
+      share.capturing = true;
+      return { share_id: share.id, nonce: callNonce, window_title: title, target_id: share.targetId };
     } catch (error) {
       await stop();
       throw error;
     }
   }
 
-  return { start, stop, get active() { return active; } };
+  return { start, stop,
+    openView: ({ share_id, nonce, view, data }) => start({ share_id, nonce, view, data, url: URL_BOARD, hosts: [ORIGIN] }, true),
+    startShare: (share_id) => { if (!active?.view || active.id !== share_id || active.capturing) throw new Error('view not ready'); return capture(active); },
+    stopShare: async (share_id) => {
+      if (stopping) await stopping;
+      if (!active) return; // nothing to stop: cancelled before it opened, or already ended (review P1)
+      if (!active.view || active.id !== share_id) throw new Error('not the active share'); // never another share's capture
+      if (active.capturing) {
+        const ended = await within(callPage.evaluate(() => window.__rfShareEnd())).then((r) => r === true, () => false);
+        if (!ended) { await context.close().catch(() => {}); throw new Error('capture stop not confirmed'); }
+        active.capturing = false;
+      }
+    },
+    updateView: async ({ share_id, data, stale = false }) => {
+      if (!active?.view || active.id !== share_id) throw new Error('view not open');
+      await active.page.evaluate(([board, isStale]) => window.rfBoard.render(board, { stale: isStale }), [data, stale === true]);
+    },
+    // idempotent per share id (review P1): a view that never opened, or already ended (a target change), is closed;
+    // its id is remembered so a late view-open for it is refused; another share is never touched
+    closeView: async (share_id) => {
+      if (stopping) await stopping;
+      if (active?.view && active.id === share_id) await stop();
+      closed.add(share_id);
+    },
+    get active() { return active; } };
 }
 
 module.exports = { createShare, nonce, titleFor, callLaunchArgs, installCaptureGuard };

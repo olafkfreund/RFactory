@@ -18,6 +18,9 @@ function loadScope(file, env = process.env, secrets = []) {
   if (scope.writes_enabled !== false && scope.writes_enabled !== true) throw new Error('writes-enabled');
   if (scope.writes_enabled === true && env.RFACTORY_WRITES !== 'on') throw new Error('writes-enabled');
   if (scope.writes_enabled === false && env.RFACTORY_WRITES && env.RFACTORY_WRITES !== 'off') throw new Error('writes-enabled-env');
+  if (Object.hasOwn(scope, 'shares_enabled') && typeof scope.shares_enabled !== 'boolean') throw new Error('shares-enabled');
+  if (scope.shares_enabled === true && env.RFACTORY_SHARES !== 'on') throw new Error('shares-enabled');
+  if (scope.shares_enabled !== true && env.RFACTORY_SHARES && env.RFACTORY_SHARES !== 'off') throw new Error('shares-enabled-env');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
