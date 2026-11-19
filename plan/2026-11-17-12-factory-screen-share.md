@@ -231,6 +231,17 @@ dependencies").
   - Kept as noted, not changed: the adapter's 47 KiB test sends data
     that is not a valid board; the runner's test covers a valid one.
 
+- **D9, deploy and live test (2026-11-19).** Step 8: runner and guest
+  images pinned on this branch (fe253c9), factory-gitops #410 points
+  `rfactory-desktops` at this branch until #12 merges, `pod.sh` passes
+  `RFACTORY_SHARES` (b4b3afc), scope `shares_enabled: true`. Smoke checks:
+  `GET /api/shares` 200; approve without the action header 403; a
+  non-member 403, no identity 401; no board data in the web logs. A
+  non-approver 403 could not be shown live (both allowed accounts are
+  approvers); the unit tests cover it. Step 10: the owner ran the share
+  in a Meet and confirmed it works ("that is working"). The
+  non-approver, expiry and shares-off checks were not run live.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and
