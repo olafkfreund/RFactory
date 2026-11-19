@@ -11,8 +11,8 @@ Every scripted check that has run passes, after the fixes in deviations 39 and 4
 Still open, both owner-gated:
 
 - `e2e.sh` Teams half: needs the owner in a Teams meeting (4 checks not run).
-- `profiles.sh`: its rollback rehearsal deletes and resyncs the ArgoCD
-  Application `rfactory-desktops`, so it waits for the owner's OK.
+- `profiles.sh` rollback rehearsal: scripted and approved, blocked by the
+  saturated docker disk (open findings).
 
 ## Images under test
 
@@ -41,7 +41,7 @@ matching `targetRevision` bump.
 | `share.sh` | 6/6 | Owner watched the Meet. `share-control-down` cut 14 s after the channel was dropped (5 s cutoff plus teardown). |
 | `liveview.sh` | 7/7 | Revoke closes the stream within 5 s; second viewer 409. |
 | `e2e.sh` | Meet 5/5, Teams 0/4 | Teams half not run (owner). |
-| `profiles.sh` | not run | Owner OK needed (rollback rehearsal). |
+| `profiles.sh` | 7/8 | All but the rollback rehearsal pass, the hour-long expiry included. The rehearsal (now scripted, deviation 41) could not start twice: its profile desktop booted too slowly while the docker disk was saturated (see open findings). |
 
 ### Manual capacity checks (real desktops)
 
@@ -93,8 +93,16 @@ limits density, not CPU: three desktops reserve about 19 GiB.
 
 ## Open findings
 
-- Boot: about 2 in 40 boots the VMI did not reach `Paused` (it went
-  `Failed` and its container restarted); cause not found yet.
+- **The docker disk is the bottleneck.** Docker's root, and with it the
+  whole k3d cluster (k3s datastore, images, local-path profile volumes,
+  VM disks), is on `/mnt/img_pool`: `sdd`, a 256 GB SATA SSD, 77 % full,
+  while both NVMe drives are idle. During factory Jobs (TFactory runs)
+  it writes about 60 MiB/s at 100 % busy; then API calls time out, a
+  profile volume waits about 60 s for local-path, and desktops boot
+  past the runner's 60 s control wait (`no-control`, `launcher pod did
+  not become ready`, `VMI did not reach Paused`). This is the likely
+  cause of the earlier intermittent boot failures (about 2 in 40).
+  Moving docker's root to NVMe is a p620 NixOS change (owner).
 - A share whose whole-screen capture the guard refused is recorded as
   started; the capture stays blocked (fails safe), but the record is wrong.
 - The runner does not log why it destroyed a desktop.
