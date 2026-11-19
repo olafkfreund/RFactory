@@ -157,6 +157,14 @@ dependencies").
   - Images: a guest change is deployed by building and pinning the guest
     images and pushing (#3 deviation 42), not by `kubectl set image`.
 
+- **D4, wave A (2026-11-19).** Steps 1 and 3 by Codex, steps 2 and 5 by
+  the coder, each reviewed by the lead against this plan. Two details the
+  plan left open, now fixed: the viewer takes its data through
+  `window.rfBoard.render(data, {stale})`, which step 6 calls; and the
+  viewer check must quote its glob on this Node
+  (`node --test 'guest/agent/viewer/*.test.js'`), with `desktop/`'s
+  playwright-core installed (1.65.1, the bot's version).
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and

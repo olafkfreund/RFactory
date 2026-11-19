@@ -38,7 +38,7 @@ function mapCard(card) {
   };
 }
 
-function createCfactorySource({ mcpUrl, key, repositoryId, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
+function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
   let c = client;
   let reconnecting;
   async function within(promise, deadline) {
@@ -89,6 +89,12 @@ function createCfactorySource({ mcpUrl, key, repositoryId, client, clientFactory
       const items = (Array.isArray(cards) ? cards : []).filter((x) => x && repositoryOf(x, repos) === repositoryId).map(mapCard);
       const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
       return { items, fetched_at: new Date().toISOString(), newest_update };
+    },
+    async boardView() {
+      if (typeof redactor?.logSafe !== 'function') throw new Error('board-redactor-required');
+      const deadline = Date.now() + timeoutMs;
+      const [repos, { cards }] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]);
+      return require('../share/board.js').projectBoard(cards, repos, repositoryId, repos.repositories.find((r) => r.id === repositoryId)?.project || '', redactor, new Date().toISOString());
     },
     // Fresh read for the action path; read key only. Timeouts reject; an error payload gives { error }.
     async getCard(card_key) {
