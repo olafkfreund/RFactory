@@ -70,6 +70,8 @@ test('in-cluster runner config requires pinned guest images and host-specific pr
   assert.equal(config.k8s.runnerIP, '10.43.250.10');
   assert.equal(config.profiles.keyPath, '/etc/rfactory/tls/profile-key');
   assert.deepEqual(config.k8s.alwaysProtected, ['192.168.1.0/24', '100.90.1.2/32']);
+  // the Teams web client loads its code from this CDN; without it the join page never leaves the splash (k14)
+  assert.ok(config.net.dns.platform.includes('onecdn.static.microsoft'));
   assert.throws(() => inClusterConfig({ ...env, RF_GUEST_BOOT_IMAGE: 'boot:latest' }), /digest-pinned/);
   for (const bad of [undefined, 'console=ttyS0', 'init=/bin/sh', env.RF_GUEST_CMDLINE + ' rf.proxy=1.2.3.4:1']) assert.throws(() => inClusterConfig({ ...env, RF_GUEST_CMDLINE: bad }), /RF_GUEST_CMDLINE/);
   assert.throws(() => inClusterConfig({ ...env, RF_ALWAYS_PROTECTED: '[]' }), /ALWAYS_PROTECTED/);

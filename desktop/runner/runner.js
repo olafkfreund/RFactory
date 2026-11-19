@@ -209,6 +209,8 @@ function inClusterConfig(env) {
     'meet.google.com', 'google.com', 'gstatic.com', 'googleapis.com', 'slack.com', 'slack-edge.com', 'zoom.us',
     'teams.microsoft.com', 'teams.live.com', 'teams.cloud.microsoft', 'lync.com', 'skype.com', 'office.net',
     'microsoftonline.com', 'login.live.com', 'msauth.net', 'msftauth.net',
+    // the Teams web client's own code (k14: without it the join page never leaves the splash); telemetry hosts stay refused
+    'onecdn.static.microsoft',
   ]));
   return {
     port: 8443, host: '0.0.0.0', tls: { cert: '/etc/rfactory/tls/tls.crt', key: '/etc/rfactory/tls/tls.key', ca: '/etc/rfactory/tls/ca.crt' },

@@ -888,6 +888,14 @@ and 27) and the scripts. This plan is self-contained.
     - The three dead ArgoCD pods left by the v3.5.7 upgrade are deleted.
     - Changes the 2026-11-18 plan's "pinned to a commit" for the
       feature's lifetime and deviation 37's test mode.
+43. **The Teams web client's CDN is a platform host (lead, k14 Teams
+    e2e).** The bot's Teams join stayed on the Teams splash: Microsoft
+    now serves the web client's code from
+    `teams.public.onecdn.static.microsoft`, which the proxy refused.
+    Reproduced locally with the runner's exact host list (a local
+    proxy, the guest's Playwright setup); with `onecdn.static.microsoft`
+    added, the pre-join page loads. Microsoft telemetry hosts (aria,
+    events.data, cspv2) stay refused. Test in k8s.test.js.
 
 
 ## Steps
