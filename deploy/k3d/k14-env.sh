@@ -30,7 +30,9 @@ web_up() { # <config dir> [extra env...]: the web pod with desktops on and the r
 
 case ${1:-} in
 on)
-  [ "$(desktops)" = 0 ] || { echo "refusing: desktops are running" >&2; exit 2; }
+  # a runner that just restarted drops the first TLS connections: retry until it answers a number (k14)
+  for _ in $(seq 20); do n=$(desktops 2>/dev/null || true); [[ $n =~ ^[0-9]+$ ]] && break; sleep 3; done
+  [ "${n:-}" = 0 ] || { echo "refusing: desktops are running (or the runner did not answer): '${n:-}'" >&2; exit 2; }
   install -d -m 700 "$STATE" "$STATE/config" "$STATE/record"
   # the web config: a copy of the owner's, with scope verify-scope (the scripts' scope); secrets are copied, never printed
   cp -a "$CFG/." "$STATE/config/"
