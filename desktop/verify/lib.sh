@@ -255,8 +255,14 @@ answered() { [ "$1" = connected ] || [ "$1" = reply ] || [ "$1" = refused ]; }
 
 # owner_confirm <name> <question>: owner-only live checks (audio, share). Asks on the terminal; no terminal means FAIL.
 owner_confirm() {
-  local ans=
-  if { : </dev/tty; } 2>/dev/null; then # -r/-w pass without a controlling terminal; only an open proves one
+  local ans='' end
+  if [ -n "${VERIFY_CONFIRM_DIR:-}" ]; then
+    # the observer path (owner's standing OK, 2026-11-19): the question goes to <dir>/<name>.q, the lead answers in <dir>/<name>.a
+    # after looking at an observer participant's view of the call; no answer within 900 s is a no
+    rm -f "$VERIFY_CONFIRM_DIR/$1.a"; printf '%s\n' "$2" >"$VERIFY_CONFIRM_DIR/$1.q"
+    end=$((SECONDS + 900)); until [ -s "$VERIFY_CONFIRM_DIR/$1.a" ] || [ $SECONDS -ge "$end" ]; do sleep 1; done
+    ans=$(head -c1 "$VERIFY_CONFIRM_DIR/$1.a" 2>/dev/null || true)
+  elif { : </dev/tty; } 2>/dev/null; then # -r/-w pass without a controlling terminal; only an open proves one
     printf '%s [y/N] ' "$2" >/dev/tty
     read -r -t 900 ans </dev/tty || true
   fi
