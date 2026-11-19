@@ -502,8 +502,10 @@ test('share events are spoken only in the call that asked and are forwarded with
     const fire = (event) => { for (const fn of shares.subs) fn(event); };
     fire({ type: 'share-updated', share: { id: 'other', state: 'running' } }); // not this call's share
     fire({ type: 'share-updated', share: { id: 's1', state: 'running' } });
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running' } }); // a 30 s refresh says running again
+    fire({ type: 'share-updated', share: { id: 's1', state: 'running', stale: true } }); // and a failed one
     await flush(); await flush();
-    assert.equal(f.said().filter((s) => s === 'Sharing the board.').length, 1);
+    assert.equal(f.said().filter((s) => s === 'Sharing the board.').length, 1); // spoken once (review P2)
     fire({ type: 'share-updated', share: { id: 's1', state: 'stopped', reason: 'manual' } });
     await flush(); await flush();
     assert.equal(f.said().filter((s) => s === 'Stopped sharing.').length, 1);

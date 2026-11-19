@@ -27,7 +27,8 @@ test('viewer opens without capture, updates, refuses foreign and closed ids, the
   assert.equal(await f.callPage.evaluate(() => !!window.__rfShareEnd), false);
   assert.equal(await share.active.page.title(), titleFor('once'));
   await assert.rejects(share.updateView({ share_id: 'foreign', data: board() }), /view not open/);
-  await assert.rejects(share.closeView('foreign'), /view not open/);
+  await share.closeView('foreign'); // idempotent: another id is a no-op (review P1)
+  assert.equal(share.active.id, 's1');
   await share.updateView({ share_id: 's1', data: { ...board(), project: 'updated' } });
   assert.match(await share.active.page.locator('body').innerText(), /updated/);
   assert.doesNotMatch(await share.active.page.locator('.rf-banner').innerText(), /stale/);
@@ -39,6 +40,21 @@ test('viewer opens without capture, updates, refuses foreign and closed ids, the
   assert.equal(share.active, null);
   await assert.rejects(share.openView({ share_id: 's1', nonce: 'once', view: 'board', data: board() }), /invalid view/);
   assert.deepEqual(events, []);
+});
+
+test('close is idempotent per id and stop names its share (review P1)', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once') });
+  await share.closeView('never-opened'); // cancelled before it opened: closed, not an error
+  await assert.rejects(share.openView({ share_id: 'never-opened', nonce: 'once', view: 'board', data: board() }), /invalid view/);
+  await share.stopShare('nothing'); // no share: nothing to stop
+  await share.openView({ share_id: 's1', nonce: 'once', view: 'board', data: board() });
+  await assert.rejects(share.stopShare('other'), /not the active share/);
+  await share.closeView('other'); // another id never touches the open view
+  assert.equal(share.active?.id, 's1');
+  await share.closeView('s1');
+  await share.closeView('s1'); // twice: still fine
+  assert.equal(share.active, null);
 });
 
 test('viewer navigation, popup and window close report target change', browser, async (t) => {

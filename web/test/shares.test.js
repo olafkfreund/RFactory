@@ -98,20 +98,42 @@ for (const stage of ['board', 'openView', 'startShare']) {
       }
       gate.resolve({ at: 'now', cards: [] }); await tick(); await tick();
       assert.ok(!f.entries.some((x) => x.id === p.id && x.state === 'running'));
-      assert.ok(f.calls.some((x) => x[0] === 'stopShare' && x[1] === p.id));
-      assert.ok(f.calls.some((x) => x[0] === 'closeView' && x[1] === p.id));
+      // before openView nothing reached the desktop, so nothing is stopped or closed; after it, exactly once each;
+      // never a destroy (review P1: closing a view that was never opened, or twice, destroyed the desktop)
+      const stops = f.calls.filter((x) => x[0] === 'stopShare' && x[1] === p.id).length;
+      const closes = f.calls.filter((x) => x[0] === 'closeView' && x[1] === p.id).length;
+      assert.deepEqual([stops, closes], stage === 'board' ? [0, 0] : [1, 1]);
+      assert.ok(!f.calls.some((x) => x[0] === 'destroy'));
       if (cancel !== 'replacement') assert.equal(f.manager.list().running, null);
       await f.manager.endCall();
     });
   }
 }
 
-test('late openView closes again after Stop closed it', async () => {
+test('Stop during openView closes the view once and never destroys the desktop', async () => {
   const gate = deferred(); const f = setup({ openView: () => gate.promise }); const p = await ready(f);
   await approve(f, p); await until(() => f.calls.some((x) => x[0] === 'openView'));
   await f.manager.stop('member@example.com');
-  gate.resolve(); await until(() => f.calls.filter((x) => x[0] === 'closeView').length === 2);
+  gate.resolve(); await new Promise((r) => setTimeout(r, 20));
+  assert.equal(f.calls.filter((x) => x[0] === 'closeView').length, 1); // a second close timed out on the real guest (review P1)
+  assert.ok(!f.calls.some((x) => x[0] === 'destroy'));
   assert.ok(!f.entries.some((x) => x.state === 'running'));
+});
+
+test('Stop during the board read sends nothing to the desktop and never destroys it', async () => {
+  const gate = deferred(); const f = setup({ board: () => gate.promise }); const p = await ready(f);
+  await approve(f, p); await new Promise((r) => setTimeout(r, 10));
+  const r = await f.manager.stop('member@example.com');
+  assert.equal(r.status, 200);
+  gate.resolve({ project: 'Factory', at: new Date().toISOString(), cards: [] }); await new Promise((r2) => setTimeout(r2, 20));
+  assert.deepEqual(f.calls.map((x) => x[0]).filter((n) => n !== 'onEvent'), []);
+  assert.ok(f.entries.some((x) => x.state === 'stopped'));
+});
+
+test('a failed board read is unavailable, sends nothing to the desktop and never destroys it', async () => {
+  const f = setup({ board: async () => { throw new Error('cfactory down'); } }); const p = await ready(f);
+  await approve(f, p); await until(() => f.entries.some((x) => x.state === 'failed'));
+  assert.ok(!f.calls.some((x) => ['openView', 'stopShare', 'closeView', 'destroy'].includes(x[0])));
 });
 
 test('stopShare rejection still closes; two close timeouts destroy and fail', async () => {

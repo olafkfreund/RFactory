@@ -48,6 +48,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   }
 
   async function cleanup(entry) {
+    if (!entry.opened) return true; // nothing was sent to the desktop: nothing to stop or close (review P1)
     try { await entry.desktop.stopShare(entry.payload.id); } catch { /* Closing the viewer also ends capture. */ }
     let closed;
     try { closed = await entry.desktop.closeView(entry.payload.id); } catch { closed = 'timeout'; }
@@ -73,7 +74,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     entry.stopPromise = (async () => {
       try {
         const closed = await cleanup(entry);
-        await write(entry, closed && !failed ? 'stopped' : 'failed', { reason: closed ? reason : 'close-timeout' });
+        await write(entry, closed && !failed ? 'stopped' : 'failed', { reason, ...(closed ? {} : { close: 'timeout' }) });
         return closed;
       } finally {
         closing.delete(entry.stopPromise);
@@ -116,10 +117,11 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
       const data = await board();
       if (!valid(entry, token)) return;
       if (data?.error) throw new Error(data.error === 'too-large' ? 'the board is too large' : data.error);
+      entry.opened = true; // from here a stop must close the view (set before the send: a stop during it still closes)
       await entry.desktop.openView(entry.payload.id, entry.nonce, data);
-      if (!valid(entry, token)) { await cleanup(entry); return; }
+      if (!valid(entry, token)) return; // stopEntry owns the cleanup: closing twice timed out on the real guest (review P1)
       await entry.desktop.startShare(entry.payload.id, entry.nonce);
-      if (!valid(entry, token)) { await cleanup(entry); return; }
+      if (!valid(entry, token)) return;
       entry.frame = data;
       await write(entry, 'running', { approved_by: entry.approved_by });
       if (!valid(entry, token)) return;
@@ -128,7 +130,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
       entry.lifeTimer.unref?.();
       scheduleRefresh(entry, token);
     } catch (error) {
-      if (!valid(entry, token)) { await cleanup(entry); return; }
+      if (!valid(entry, token)) return; // a stop already cleaned up
       const reason = safe(error?.message || 'unavailable');
       await stopEntry(entry, reason, true);
       emit('share-unavailable', entry, { reason });
@@ -228,7 +230,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   }
 
   async function startCall(nextGeneration, options = {}) {
-    await endCall();
+    const ending = endCall(); // its synchronous part clears the old call before the new one is set (review P3)
     generation = nextGeneration;
     desktop = options.desktop;
     if (desktop) offEvent = desktop.onEvent((event) => {
@@ -237,6 +239,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
         stopEntry(active, event.type).catch(() => {});
       }
     });
+    await ending;
   }
 
   async function recover() {

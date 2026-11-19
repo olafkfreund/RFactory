@@ -208,6 +208,29 @@ dependencies").
   refuses rather than guesses when it is missing. Tests in
   share-desktop.test.js.
 
+- **D8, step 9 reviews (2026-11-19).** Codex (gpt-6.1-sol) and a fresh
+  Opus reviewed `origin/main...61be217` read-only; both found the first
+  bug below independently. Every finding was verified against the code;
+  each fix has a test that fails on the old code.
+  - P1: closing a view that was never opened (a Stop or a failed board
+    read before `openView`), or closing it twice, timed out against the
+    real guest, and the manager then destroyed the desktop, ending the
+    bot's call. The guest's `view-close` is idempotent per share id and
+    remembers the id (a late `view-open` is refused); the manager closes
+    only what it opened (`entry.opened`) and leaves the cleanup to
+    `stopEntry` alone.
+  - P1 (Opus): a failed board share's `share-stop` ended a running #3
+    page share, because the guest's `share-stop` ignored the id for page
+    shares. A `share-stop` now names the active share or is refused.
+  - P2: the adapter took the runner's `200 {ok:false}` (a guest refusal)
+    as success; it rejects it now. "Sharing the board." was spoken on
+    every 30 s refresh; it is spoken once per share.
+  - P3: a failed close keeps the stop reason and adds `close: 'timeout'`;
+    a failed share leaves the page's list; the new call's generation is
+    set before the old call is awaited, so there is no dead window.
+  - Kept as noted, not changed: the adapter's 47 KiB test sends data
+    that is not a valid board; the runner's test covers a valid one.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and

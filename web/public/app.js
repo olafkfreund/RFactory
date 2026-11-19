@@ -170,7 +170,7 @@ async function loadActions(doc) {
 // Share: one store per document, keyed by share id; call-level refusals use the key 'unavailable'.
 const shareStores = new WeakMap();
 const shareStoreOf = (doc) => { if (!shareStores.has(doc)) shareStores.set(doc, { items: new Map(), canApprove: false }); return shareStores.get(doc); };
-const SHARE_DONE = new Set(['stopped', 'rejected', 'expired']);
+const SHARE_DONE = new Set(['stopped', 'rejected', 'expired', 'failed']); // a failed share is over too (review P3)
 
 function renderShare(doc) {
   const store = shareStoreOf(doc);

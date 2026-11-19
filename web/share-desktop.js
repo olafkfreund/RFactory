@@ -16,7 +16,8 @@ function createShareDesktop({ runner, desktopId, clock = globalThis }) {
   };
   const send = async (route, body) => {
     const r = await runner.call(route, { desktop_id: id(), ...body });
-    if (r.status !== 200 || r.body?.error) throw new Error(`runner-refused: ${route}`);
+    // the runner relays a guest refusal as 200 {ok:false}: that is a failure, not a delivery (review P2)
+    if (r.status !== 200 || r.body?.error || r.body?.ok === false) throw new Error(`runner-refused: ${route}`);
     return r.body;
   };
   const emit = (event) => { for (const fn of listeners) fn(event); };

@@ -210,7 +210,9 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     openView: ({ share_id, nonce, view, data }) => start({ share_id, nonce, view, data, url: URL_BOARD, hosts: [ORIGIN] }, true),
     startShare: (share_id) => { if (!active?.view || active.id !== share_id || active.capturing) throw new Error('view not ready'); return capture(active); },
     stopShare: async (share_id) => {
-      if (!active?.view || active.id !== share_id) throw new Error('view not open');
+      if (stopping) await stopping;
+      if (!active) return; // nothing to stop: cancelled before it opened, or already ended (review P1)
+      if (!active.view || active.id !== share_id) throw new Error('not the active share'); // never another share's capture
       if (active.capturing) {
         const ended = await within(callPage.evaluate(() => window.__rfShareEnd())).then((r) => r === true, () => false);
         if (!ended) { await context.close().catch(() => {}); throw new Error('capture stop not confirmed'); }
@@ -221,9 +223,12 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       if (!active?.view || active.id !== share_id) throw new Error('view not open');
       await active.page.evaluate(([board, isStale]) => window.rfBoard.render(board, { stale: isStale }), [data, stale === true]);
     },
+    // idempotent per share id (review P1): a view that never opened, or already ended (a target change), is closed;
+    // its id is remembered so a late view-open for it is refused; another share is never touched
     closeView: async (share_id) => {
-      if (!active?.view || active.id !== share_id) throw new Error('view not open');
-      await stop();
+      if (stopping) await stopping;
+      if (active?.view && active.id === share_id) await stop();
+      closed.add(share_id);
     },
     get active() { return active; } };
 }

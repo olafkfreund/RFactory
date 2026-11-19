@@ -38,7 +38,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!c || c.stopping || !c.shares.has(event.share.id)) return; // spoken only in the call that asked
     const { state, reason } = event.share;
     if (event.type === 'share-unavailable') queueSpeech(c, failed(reason));
-    else if (state === 'running') queueSpeech(c, 'Sharing the board.');
+    else if (state === 'running' && !c.announced.has(event.share.id)) { c.announced.add(event.share.id); queueSpeech(c, 'Sharing the board.'); } // once: refreshes also say running (review P2)
     else if (state === 'stopped' && reason !== 'restart') queueSpeech(c, 'Stopped sharing.');
   });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
@@ -253,7 +253,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0,
-      tts: callTts, voice: callTts.voice, shares: new Set() };
+      tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set() };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);

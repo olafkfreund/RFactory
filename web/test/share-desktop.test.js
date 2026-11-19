@@ -96,3 +96,10 @@ test('openView refuses without the desktop\'s nonce instead of sending a guessed
   await assert.rejects(d.openView('s1', 'manager-nonce', board()), /no desktop nonce/);
   assert.equal(calls.length, 0);
 });
+
+test('a guest refusal relayed as 200 {ok:false} is a failure, not a delivery', async () => {
+  const { d } = setup({ call: async () => ({ status: 200, body: { ok: false } }) });
+  await assert.rejects(d.openView('s1', 'manager-nonce', board()), /runner-refused: view-open/);
+  await assert.rejects(d.updateView('s1', board()), /runner-refused: view-data/);
+});
+

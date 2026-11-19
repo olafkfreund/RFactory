@@ -40,7 +40,9 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       case 'desktop_scroll': await control.scroll(m.dy); break;
       case 'desktop_screenshot': return control.screenshot();
       case 'share-start': if (!share) throw new Error('no share'); if (share.active?.view) await share.startShare(m.share_id); else await share.start(m); break;
-      case 'share-stop': if (!share) throw new Error('no share'); if (share.active?.view) await share.stopShare(m.share_id); else await share.stop(); break;
+      // a stop names its share: another share's stop (a failed board share's cleanup) never ends this one (review P1)
+      case 'share-stop': if (!share) throw new Error('no share'); if (share.active && share.active.id !== m.share_id) throw new Error('not the active share');
+        if (share.active?.view) await share.stopShare(m.share_id); else await share.stop(); break;
       case 'view-open': if (!share) throw new Error('no share'); encode(m); await share.openView(m); return;
       case 'view-data': if (!share) throw new Error('no share'); encode(m); await share.updateView(m); return;
       case 'view-close': if (!share) throw new Error('no share'); encode(m); await share.closeView(m.share_id); send({ type: 'view-closed', share_id: m.share_id, action_id: m.action_id }); return;

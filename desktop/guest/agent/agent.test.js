@@ -185,6 +185,17 @@ test('agent: share-start and share-stop reach the share module; without one they
   assert.equal(bare[0].ok, false);
 });
 
+test('agent: a share-stop for another share id never ends the active share (review P1)', async () => {
+  const log = [], sent = [];
+  const share = { active: { id: 'page-share', view: null }, stop: async () => log.push('stop') };
+  const agent = createAgent({ control: {}, profile: {}, send: (m) => sent.push(m), share });
+  await agent.handle({ type: 'share-stop', share_id: 'board-share', action_id: 'a1' });
+  assert.deepEqual(log, []);
+  assert.equal(sent[0].ok, false);
+  await agent.handle({ type: 'share-stop', share_id: 'page-share', action_id: 'a2' });
+  assert.deepEqual(log, ['stop']);
+});
+
 test('agent: view messages reach the share module and view-close answers view-closed', async () => {
   const sent = [], calls = [];
   const data = { project: 'factory', at: '2026-11-19T00:00:00.000Z',
