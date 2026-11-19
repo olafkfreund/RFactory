@@ -20,7 +20,8 @@ const DESKTOP_STATIC = { // served only when desktop is enabled
 const NOVNC = /^\/vendor\/novnc\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.js$/; // pinned, vendored noVNC; never a CDN
 const HEADERS = {
   // Factory suite fonts come from Google Fonts (plan D8); scripts stay 'self' only
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  // img-src data:: noVNC draws JPEG-encoded screen updates through data: images; without it the live view stays black (k14)
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 };

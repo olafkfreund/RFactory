@@ -85,11 +85,11 @@ kc logs -l app.kubernetes.io/name=rfactory-runner --all-containers --since=24h -
 kc logs -l app.kubernetes.io/name=rfactory-guard --all-containers --since=24h >"$TMP/guard.log" 2>/dev/null || true
 kc logs -l app.kubernetes.io/name=rfactory-proxy --all-containers --since=24h >"$TMP/proxy.log" 2>/dev/null || true
 kc get events >"$TMP/events.log" 2>/dev/null || true
-as_pod_user podman logs rfactory-web >"$TMP/web.log" 2>&1 || true
+weblog=0; as_pod_user podman logs rfactory-web >"$TMP/web.log" 2>&1 && weblog=1 # read, possibly empty: the web app logs nothing in normal operation (k14)
 leaks=
 [ -s "$TMP/runner.log" ] || leaks="$leaks runner-log-empty-or-unreadable"
 for f in "$VERIFY_BRAIN_RECORD" "$TMP/replies" "$TMP/runner.log" "$TMP/guard.log" "$TMP/proxy.log" "$TMP/events.log" "$TMP/web.log"; do if grep -qFf "$TMP/patterns" "$f" 2>/dev/null; then leaks="$leaks $(basename "$f")"; fi; done
 if [ "$after" -le "$before" ]; then fail secrets-login-not-leaked "the brain record did not grow ($before to $after bytes): is RFACTORY_BRAIN_RECORD set on the web server?"
-elif [ -s "$TMP/web.log" ] && [ -s "$TMP/replies" ] && [ -z "$leaks" ]; then pass secrets-login-not-leaked
-else fail secrets-login-not-leaked "found in:${leaks:- nothing, but the web log or the replies were empty}"; fi
+elif [ "$weblog" = 1 ] && [ -s "$TMP/replies" ] && [ -z "$leaks" ]; then pass secrets-login-not-leaked
+else fail secrets-login-not-leaked "found in:${leaks:- nothing, but the web log could not be read or the replies were empty}"; fi
 finish

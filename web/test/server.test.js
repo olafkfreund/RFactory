@@ -42,7 +42,7 @@ test('static files carry CSP, nosniff and no-store', async (t) => {
     const r = await get(p);
     assert.equal(r.status, 200);
     const csp = r.headers.get('content-security-policy');
-    assert.equal(csp, "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    assert.equal(csp, "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     assert.ok(!/script-src/.test(csp) && /default-src 'self'/.test(csp), 'scripts fall back to self only');
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(r.headers.get('cache-control'), 'no-store');

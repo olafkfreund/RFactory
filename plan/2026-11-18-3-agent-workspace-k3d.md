@@ -809,6 +809,9 @@ and 27) and the scripts. This plan is self-contained.
       (b19a849, Codex);
     - the proxy logs every refusal (reason, source IP, host; never the
       token) (00027f2).
+    - the live view never drew a frame: the web CSP (`default-src 'self'`,
+      no `img-src`) refused the `data:` images noVNC decodes JPEG
+      updates through; `img-src 'self' data:` (scripts stay 'self').
     - Test-side: `owner_confirm` can take answers from
       `VERIFY_CONFIRM_DIR`, judged from an observer participant in the
       call (owner's standing OK, 2026-11-19); `join_call` reports the
