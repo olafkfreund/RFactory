@@ -224,7 +224,19 @@ function createProxy({ api, resolve = (name) => dns.lookup(name, { all: true, ve
   const active = new Map();
   const allow = limiter(burst, perSec, now);
   // one line per refusal (reason, source IP, requested host; never the token): k14 found a silent proxy undebuggable
-  const refused = (why, ip, host = '') => console.log(JSON.stringify({ refused: why, ip, host: String(host).slice(0, 256) }));
+  // the target is untrusted guest text, logged before it is validated: only a plain host:port is written (Codex: a CONNECT
+  // authority like user:token@host:443 would have put a guest-held secret in the host logs)
+  const safeTarget = (t) => (/^(?:[a-z0-9.-]{1,253}|\[[0-9a-f:.]{2,45}\]):\d{1,5}$/i.test(String(t)) ? String(t) : '<malformed>');
+  // the first refusal per (source, reason) is logged, then at most one line per 10 s with the count it stood for, so a guest
+  // looping CONNECTs cannot flood the shared proxy's log or its event loop (Opus review)
+  const quiet = new Map(); // `${ip} ${why}` -> { until, suppressed }
+  const refused = (why, ip, host = '') => {
+    const key = `${ip} ${String(why).slice(0, 40)}`, t = now(), q = quiet.get(key);
+    if (q && t < q.until) { q.suppressed++; return; }
+    if (quiet.size > 10000) quiet.clear();
+    console.log(JSON.stringify({ refused: why, ip, host: safeTarget(host), ...(q && q.suppressed ? { suppressed: q.suppressed } : {}) }));
+    quiet.set(key, { until: t + 10000, suppressed: 0 });
+  };
   const forwarded = new WeakMap(); // socket -> checked entry; shortcut: valid for the connection's life, so a revoked entry lasts until idle close
   let cached = null; // { at, promise }
   function snapshot() {

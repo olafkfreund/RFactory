@@ -74,10 +74,18 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     } finally { await cdp.detach().catch(() => {}); }
   }
 
-  async function stop(reason) {
+  // a teardown in flight: every stop() and the next start() wait for it (Codex: a second stop during a navigation's teardown
+  // returned at once, so Stop was acknowledged while the capture could still be running)
+  let stopping = null;
+  function stop(reason) {
+    if (stopping) return stopping;
     const share = active;
-    if (!share) return;
+    if (!share) return Promise.resolve();
     active = null;
+    stopping = teardown(share, reason).finally(() => { stopping = null; });
+    return stopping;
+  }
+  async function teardown(share, reason) {
     if (stopShare) void Promise.resolve().then(stopShare).catch(() => {});
     // Fail closed: end the capture in the call page first (it must not depend on the tab), then close the tab and check it in Chrome.
     // A capture or a tab that cannot be confirmed gone ends the call Chrome: a leftover tab keeps the title the next share is picked by.
@@ -92,6 +100,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
   }
 
   async function start({ share_id, url, hosts }) {
+    if (stopping) await stopping;
     if (active) throw new Error('share already active');
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || !Array.isArray(hosts) || !hosts.includes(parsed.origin)) throw new Error('share origin not granted');

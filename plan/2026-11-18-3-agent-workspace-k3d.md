@@ -858,8 +858,9 @@ and 27) and the scripts. This plan is self-contained.
     saves the Application with `targetRevision` = HEAD, deletes it
     (cascade through the resources finalizer; the namespace, profile
     PVCs, ConfigMaps and TLS Secrets are not tracked and stay),
-    recreates and syncs it, and puts the test settings back with the new
-    `deploy/k3d/k14-env.sh runner`. Cleanup recreates and syncs the
+    recreates and syncs it. (The test settings first came back through a
+    `k14-env.sh runner` step; since deviation 42 they are untracked
+    Secrets that the cascade leaves, so that step is gone.) Cleanup recreates and syncs the
     Application if the script dies after the delete. In the argocd
     namespace it touches only that Application. The owner's terminal
     step is gone.
@@ -926,6 +927,42 @@ and 27) and the scripts. This plan is self-contained.
       capture is no longer recorded as started. share.sh's
       auto-select case now fails a reported start by itself. Tests in
       share.test.js; guest images re-pinned.
+47. **Final review of the k14 range (3793afa..a0b7c47): Codex
+    (gpt-6.1-sol) and a fresh Opus, read-only; every finding verified
+    against the code, each fix with a test that fails on the old code.**
+    - P1 (Codex): a second share `stop()` during a navigation's
+      teardown returned at once, so Stop was acknowledged while the
+      capture could still run; an in-flight teardown is now shared, and
+      `start()` waits for it.
+    - P1 (Codex, confirmed by Opus): proxy refusal lines logged the raw
+      CONNECT target before validation; only a plain `host:port` is
+      logged now, anything else is `<malformed>`.
+    - P2 (Opus): `envFrom` let any Secret named `rfverify-runner` add any
+      variable to the runner (`NODE_OPTIONS`...); three named optional
+      `secretKeyRef` keys replace it.
+    - P2 (Opus): refusal logging is limited per source and reason (first
+      line, then one per 10 s with a `suppressed` count).
+    - P2 (Codex): the bot's leave check needs the in-call Leave control
+      gone as well as a left-page phrase (chat saying "rejoin" passed);
+      (Opus) the wait is what is left of a 7 s budget from the start of
+      stop, so cleanup ends before web's 10 s SIGTERM.
+    - P2 (Codex): `k14-env.sh off` from a shell that sourced the env
+      restored the test config, and an empty role list fell back to the
+      test lists; `on` saves the real config path, lists keep "empty".
+    - P2 (Codex, confirmed by Opus): secrets.sh read only the last 10
+      lines per pod (`kubectl logs -l`); `--tail=-1`, and an unreadable
+      log fails the check.
+    - P3 taken: the captions retry clicks only an explicit
+      `aria-checked="false"`; lifecycle.sh's cleanup thaws a frozen
+      runner. P3 recorded, not changed: Lease `create` cannot be limited
+      by name (nothing else in the namespace uses Leases); the guest's
+      pass-through route turns off Chrome's HTTP cache for the call
+      page; plain-HTTP preview refusals are not logged; owner checks
+      answered through `VERIFY_CONFIRM_DIR` are agent-answered under the
+      owner's standing OK (recorded per run in RESULTS.md); at merge,
+      factory-gitops goes back from the branch to `main`.
+    - Seen once, not reproduced in five runs: the bot test "three
+      camera refusals..." failed one run (timing).
 
 
 ## Steps

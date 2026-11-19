@@ -124,11 +124,16 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
 
   // The platform sends the leave after the click, asynchronously; closing Chrome at once drops it, and Teams then keeps a
   // ghost participant for minutes (k14). Wait, bounded under web's 10 s kill, for the page to show the call was left.
+  let stopStarted = Date.now();
   async function leftConfirmed() {
     const page = call._inner && call._inner.page;
     if (!page || typeof page.waitForFunction !== 'function') return;
-    const left = () => /leave by mistake|rejoin|you left|left the (meeting|call)|meeting (has )?ended|call ended/i.test((document.body && document.body.innerText) || '');
-    try { await page.waitForFunction(left, null, { timeout: 8000 }); } catch { log('leave not confirmed by the page within 8 s'); }
+    // the in-call Leave control is gone AND the page says the call was left: chat or captions saying "rejoin" can't pass (Codex)
+    const left = () => !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
+      && /leave by mistake|rejoin|you left|left the (meeting|call)|meeting (has )?ended|call ended/i.test((document.body && document.body.innerText) || '');
+    // what is left of a 7 s budget from the start of stop: host close and profile removal must finish before web's 10 s SIGTERM
+    const timeout = Math.max(1000, 7000 - (Date.now() - stopStarted));
+    try { await page.waitForFunction(left, null, { timeout }); } catch { log(`leave not confirmed by the page within ${timeout} ms`); }
   }
 
   // The one stop path: abort join, clear timers, cancel playback, leave, close host, remove profile.
@@ -136,6 +141,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (stopping) return stopping;
     stopping = Promise.resolve().then(async () => {
       if (code) exitCode = code;
+      stopStarted = Date.now();
       log(`stopping: ${reason}`);
       ac.abort();
       if (timer) d.clock.clearTimeout(timer);

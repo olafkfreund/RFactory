@@ -10,8 +10,10 @@
 # Never on with desktops running; announce on the agent bus first (the runner and the web pod restart).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-CFG=${RFACTORY_CONFIG:-$HOME/.config/rfactory}
 STATE=${K14_STATE:-$HOME/.config/rfactory-verify}
+CFG=${RFACTORY_CONFIG:-$HOME/.config/rfactory}
+# a shell that sourced $STATE/env has RFACTORY_CONFIG on the test copy: the real config is the one `on` saved (Codex)
+[ "$CFG" != "$STATE/config" ] || CFG=$(cat "$STATE/cfg" 2>/dev/null || echo "$HOME/.config/rfactory")
 NS=rfactory-desktops
 FX_NET=rfverify FX_SUBNET=10.250.0.0/24 FX_HOST=10.250.0.1 FX_A=18081 FX_B=18082
 AUTO='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
@@ -25,8 +27,8 @@ desktops() { curl -sS --max-time 10 --cacert "$CFG/desktop-runner/ca.crt" --cert
 web_up() { # <config dir> [extra env...]: the web pod with desktops on and the running member lists
   local cfg=$1; shift
   local allowed approvers admins
-  allowed=${RFACTORY_ALLOWED_EMAILS:-$(env_of RFACTORY_ALLOWED_EMAILS)}; approvers=${RFACTORY_APPROVERS:-$(env_of RFACTORY_APPROVERS)}
-  admins=${RFACTORY_ADMINS:-$(env_of RFACTORY_ADMINS)}
+  allowed=${RFACTORY_ALLOWED_EMAILS:-$(env_of RFACTORY_ALLOWED_EMAILS)}; approvers=${RFACTORY_APPROVERS-$(env_of RFACTORY_APPROVERS)}
+  admins=${RFACTORY_ADMINS-$(env_of RFACTORY_ADMINS)}
   [ -n "$allowed" ] || { echo "set RFACTORY_ALLOWED_EMAILS (no running rfactory-web to copy it from)" >&2; exit 2; }
   env RFACTORY_CONFIG="$cfg" RFACTORY_ALLOWED_EMAILS="$allowed" ${approvers:+RFACTORY_APPROVERS="$approvers"} ${admins:+RFACTORY_ADMINS="$admins"} \
     RFACTORY_DESKTOP=1 RFACTORY_RUNNER_URL=https://127.0.0.1:18443 "$@" "$ROOT/deploy/pod.sh" up
@@ -66,6 +68,7 @@ on)
   for _ in $(seq 20); do n=$(desktops 2>/dev/null || true); [[ $n =~ ^[0-9]+$ ]] && break; sleep 3; done
   [ "${n:-}" = 0 ] || { echo "refusing: desktops are running (or the runner did not answer): '${n:-}'" >&2; exit 2; }
   install -d -m 700 "$STATE" "$STATE/config" "$STATE/record"
+  printf '%s\n' "$CFG" >"$STATE/cfg"
   # the web config: a copy of the owner's, with scope verify-scope (the scripts' scope); secrets are copied, never printed
   cp -a "$CFG/." "$STATE/config/"
   jq '.name = "verify-scope"' "$CFG/scope.json" >"$STATE/config/scope.json"; chmod 600 "$STATE/config/scope.json"

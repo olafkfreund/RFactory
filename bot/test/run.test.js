@@ -417,7 +417,33 @@ test('stop waits for the page to confirm the leave before it closes the browser'
   const s = await joined({ page, order });
   page.waitForFunction = async (fn, arg, opts) => { order.push(`left-wait ${opts.timeout} closed=${s.calls.close}`); };
   s.msg({ type: 'leave' }); await s.done;
-  assert.ok(order.indexOf('leave') < order.indexOf('left-wait 8000 closed=0'), order.join(','));
+  const wait = order.find((o) => o.startsWith('left-wait'));
+  assert.ok(order.indexOf('leave') < order.indexOf(wait), order.join(','));
+  const [, ms, closed] = wait.match(/^left-wait (\d+) closed=(\d+)$/);
+  assert.ok(+ms >= 1000 && +ms <= 7000, `timeout ${ms} within the 7 s budget`); // web kills the bot 10 s after leave
+  assert.equal(closed, '0');
   assert.equal(s.calls.close, 1);
+});
+
+test('the leave check needs the in-call control gone, not just "rejoin" somewhere on the page', async () => {
+  const order = [];
+  const page = avatarPage({ order });
+  let verdicts = [];
+  const pages = [
+    { hangup: true, text: 'chat: I may need to rejoin later' }, // still in the call: chat text must not confirm
+    { hangup: false, text: 'Did you leave by mistake? Rejoin the call' }, // Teams' left page
+  ];
+  const s = await joined({ page, order });
+  page.waitForFunction = async (fn) => {
+    const saved = globalThis.document;
+    try {
+      verdicts = pages.map((p) => {
+        globalThis.document = { querySelector: () => (p.hangup ? {} : null), body: { innerText: p.text } };
+        return fn();
+      });
+    } finally { globalThis.document = saved; }
+  };
+  s.msg({ type: 'leave' }); await s.done;
+  assert.deepEqual(verdicts, [false, true]);
 });
 

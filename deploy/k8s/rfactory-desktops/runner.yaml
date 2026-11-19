@@ -46,9 +46,15 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:ad505f48a75685580cdc1b129ef391df24dcb63c879a33d1815f67360883c16d"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:e2778051747d8deea7e7fb3bb10ec3e698f700aba3238c447b94142356976017"}
-            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/1sfybrph141c0r59yl5l7l8axvr76dwy-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:b68b4ebb59e22cb042fbce84abdcc87ecc558d61fd3887e18b5d5cca914651e3"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:ca0d0b565e540ae60f569b7c0e2e93f357af58e86bf654b90c2e6728a174a4f2"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/hpdbk99f38cvg98qn1aakazr468z8xq1-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            # k14 test mode only (deploy/k3d/k14-env.sh on): three named keys from the Secret rfverify-runner, never in Git;
+            # without it (production) none is set. Named keys only, not envFrom: a Secret must not add any other variable
+            # (NODE_OPTIONS, RF_PLATFORM_NAMES...) to the runner (Opus review).
+            - {name: RF_VERIFY_HOOKS, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_VERIFY_HOOKS, optional: true}}}
+            - {name: RF_SCOPE_PREVIEWS, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_SCOPE_PREVIEWS, optional: true}}}
+            - {name: RF_PREVIEW_LOGINS_PATH, valueFrom: {secretKeyRef: {name: rfverify-runner, key: RF_PREVIEW_LOGINS_PATH, optional: true}}}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -56,10 +62,6 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 512Mi}
-          # k14 test mode only (deploy/k3d/k14-env.sh on): the verify hooks, fixture previews and preview login come from these
-          # two Secrets, which are never in Git; without them (production) nothing is added. ArgoCD never sees a difference.
-          envFrom:
-            - secretRef: {name: rfverify-runner, optional: true}
           volumeMounts:
             - {name: tls, mountPath: /etc/rfactory/tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}

@@ -81,13 +81,16 @@ fi
 { ask "$D" "Open $VERIFY_FIXTURE_URL/ in the browser" || true; ask "$D" "Take a screenshot" || true; } >"$TMP/replies" # what the page's user is shown
 after=$(wc -c <"$VERIFY_BRAIN_RECORD" 2>/dev/null || echo 0)
 # every runner pod (a restart leaves the old one), the guard and proxy pods, and the namespace events
-kc logs -l app.kubernetes.io/name=rfactory-runner --all-containers --since=24h --prefix >"$TMP/runner.log" 2>/dev/null || runner_log --since=24h >"$TMP/runner.log" || true
-kc logs -l app.kubernetes.io/name=rfactory-guard --all-containers --since=24h >"$TMP/guard.log" 2>/dev/null || true
-kc logs -l app.kubernetes.io/name=rfactory-proxy --all-containers --since=24h >"$TMP/proxy.log" 2>/dev/null || true
+# --tail=-1: with a selector kubectl shows only the last 10 lines per pod (Codex); a log that cannot be read is a FAIL, not a pass
+logread=
+kc logs -l app.kubernetes.io/name=rfactory-runner --all-containers --since=24h --tail=-1 --prefix >"$TMP/runner.log" 2>/dev/null || logread="$logread runner"
+kc logs -l app.kubernetes.io/name=rfactory-guard --all-containers --since=24h --tail=-1 >"$TMP/guard.log" 2>/dev/null || logread="$logread guard"
+kc logs -l app.kubernetes.io/name=rfactory-proxy --all-containers --since=24h --tail=-1 >"$TMP/proxy.log" 2>/dev/null || logread="$logread proxy"
 kc get events >"$TMP/events.log" 2>/dev/null || true
 weblog=0; as_pod_user podman logs rfactory-web >"$TMP/web.log" 2>&1 && weblog=1 # read, possibly empty: the web app logs nothing in normal operation (k14)
 leaks=
 [ -s "$TMP/runner.log" ] || leaks="$leaks runner-log-empty-or-unreadable"
+[ -z "$logread" ] || leaks="$leaks unreadable-logs:${logread// /,}"
 for f in "$VERIFY_BRAIN_RECORD" "$TMP/replies" "$TMP/runner.log" "$TMP/guard.log" "$TMP/proxy.log" "$TMP/events.log" "$TMP/web.log"; do if grep -qFf "$TMP/patterns" "$f" 2>/dev/null; then leaks="$leaks $(basename "$f")"; fi; done
 if [ "$after" -le "$before" ]; then fail secrets-login-not-leaked "the brain record did not grow ($before to $after bytes): is RFACTORY_BRAIN_RECORD set on the web server?"
 elif [ "$weblog" = 1 ] && [ -s "$TMP/replies" ] && [ -z "$leaks" ]; then pass secrets-login-not-leaked

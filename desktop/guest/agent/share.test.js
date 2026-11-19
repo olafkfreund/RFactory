@@ -185,3 +185,14 @@ test('start fails when no capture follows the click', browser, async (t) => {
   assert.equal(none.active, null);
 });
 
+test('a second stop during a teardown waits for it: the tab is gone when it returns', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once') });
+  await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
+  const page = share.active.page;
+  const first = share.stop('share-target-changed');
+  await share.stop();
+  assert.equal(page.isClosed(), true);
+  await first;
+});
+

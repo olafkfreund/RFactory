@@ -250,3 +250,34 @@ test('50 sequential forwards on one keep-alive socket all succeed with one API r
   assert.deepEqual(codes, Array(50).fill(200));
   assert.equal(reads, 1);
 });
+
+test('a refusal logs a plain host:port only, never other text from the guest\'s CONNECT target', async () => {
+  const lines = []; const log = console.log; console.log = (line) => lines.push(String(line));
+  try {
+    for (const url of ['user:FAKE_SECRET@example.com:443', 'example.com:443']) {
+      const proxy = createProxy({ api: api(), resolve: async () => [{ address: '93.184.215.14' }] });
+      await proxy.handleConnect(request(url, 'wrong'), new Socket(), Buffer.alloc(0));
+    }
+  } finally { console.log = log; }
+  const refusals = lines.filter((l) => l.includes('"refused"'));
+  assert.equal(refusals.length, 2);
+  assert.ok(!refusals.some((l) => l.includes('FAKE_SECRET')), refusals.join('\n'));
+  assert.match(refusals[0], /"host":"<malformed>"/);
+  assert.match(refusals[1], /"host":"example\.com:443"/);
+});
+
+
+test('refusals from one source and reason are logged once, then once per 10 s with the count they stood for', async () => {
+  let t = 1000;
+  const lines = []; const log = console.log; console.log = (line) => lines.push(String(line));
+  try {
+    const proxy = createProxy({ api: api(), resolve: async () => [{ address: '93.184.215.14' }], now: () => t });
+    for (let i = 0; i < 5; i++) await proxy.handleConnect(request('example.com:443', 'wrong'), new Socket(), Buffer.alloc(0));
+    t += 10001;
+    await proxy.handleConnect(request('example.com:443', 'wrong'), new Socket(), Buffer.alloc(0));
+  } finally { console.log = log; }
+  const refusals = lines.filter((l) => l.includes('"refused"')).map((l) => JSON.parse(l));
+  assert.equal(refusals.length, 2);
+  assert.equal(refusals[0].suppressed, undefined);
+  assert.equal(refusals[1].suppressed, 4);
+});

@@ -54,7 +54,8 @@ const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === wi
 // Teams gives an anonymous guest a disabled "Captions" item until captions are available in the meeting (k14: the light
 // client's More menu showed it aria-disabled; the library clicks it once at join and never again, so the bot stayed deaf).
 // While captions are off, this opens More every 15 s and clicks Captions once it is enabled; it reads on/off from the
-// item's own aria-checked (the light client's caption window is not the library's marker) and stops once they are on.
+// item's own aria-checked (the light client's caption window is not the library's marker), clicks only an explicit "false",
+// and stops once they are on.
 // shortcut: English-independent ids from the light client (2026-11-19); upgrade if the library learns to retry.
 const TEAMS_CAPTIONS = `if (/(^|\\.)teams\\.(microsoft|live)\\.com$|(^|\\.)teams\\.cloud\\.microsoft$/.test(location.hostname) && window === window.top) {
   const t = setInterval(() => {
@@ -66,7 +67,8 @@ const TEAMS_CAPTIONS = `if (/(^|\\.)teams\\.(microsoft|live)\\.com$|(^|\\.)teams
       if (!item) return;
       if (item.getAttribute('aria-checked') === 'true') { clearInterval(t); more.click(); return; } // on: done
       if (item.getAttribute('aria-disabled') === 'true') { more.click(); return; } // not available yet: close, retry
-      item.click(); clearInterval(t);
+      if (item.getAttribute('aria-checked') === 'false') item.click(); // only when it says off: never toggle unknown state off
+      clearInterval(t);
     }, 700);
   }, 15000);
 }`;

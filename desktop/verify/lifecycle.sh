@@ -11,6 +11,7 @@
 # Env: VERIFY_CERT VERIFY_KEY VERIFY_CA, VERIFY_MEET_LINK (the call lifecycle-runner-restart keeps live). Optional waits (seconds):
 # VERIFY_WAIT_WORKER (90), VERIFY_WAIT_SERVER (150), VERIFY_WAIT_IDLE (720), VERIFY_WAIT_MAX (11100, from creation), VERIFY_RUNTIME_MAX (10800), VERIFY_WAIT_REAPER (150),
 # VERIFY_BOOT_WAIT (60, after the guest agent has attached).
+# shellcheck disable=SC2016 # the remote commands are single-quoted on purpose: they expand in the node, not here
 set -euo pipefail
 # shellcheck source=desktop/verify/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -22,7 +23,14 @@ need_env VERIFY_CERT VERIFY_KEY VERIFY_CA VERIFY_MEET_LINK
 SCALED=
 KEEPPID=
 AGT=${NODES##* }
-extra_cleanup() { [ -z "$KEEPPID" ] || kill "$KEEPPID" 2>/dev/null || true; if [ -n "$SCALED" ]; then kc scale deployment rfactory-runner --replicas=1 >/dev/null 2>&1 || true; fi; }
+extra_cleanup() {
+  [ -z "$KEEPPID" ] || kill "$KEEPPID" 2>/dev/null || true
+  if [ -n "$SCALED" ]; then
+    # a script that died after freezing the runner must thaw it, or its Lease goes stale and the reaper ends every desktop (Opus)
+    [ -z "${RNODE:-}" ] || node_exec "$RNODE" sh -c 'p=$(ps -o pid,args | awk "/[r]unner\/runner\.js/ {print \$1}"); [ -z "$p" ] || kill -CONT $p' >/dev/null 2>&1 || true
+    kc scale deployment rfactory-runner --replicas=1 >/dev/null 2>&1 || true
+  fi
+}
 
 # hold <id> <seconds> <server 0|1>: keep the server heartbeat going until the desktop is gone or time runs out (the worker's comes from the guest)
 hold() {
@@ -130,7 +138,7 @@ if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-r
 # itself in 9 s); the reaper deletes it, egress cut first. The frozen process is SIGKILLed when its grace period ends.
 fresh reaper; id=$DID; settled "$id"
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-rnode=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].spec.nodeName}')
+rnode=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].spec.nodeName}'); RNODE=$rnode
 SCALED=1
 stop_beat "$id"
 node_exec "$rnode" sh -c 'p=$(ps -o pid,args | awk "/[r]unner\/runner\.js/ {print \$1}"); [ -n "$p" ] && kill -STOP $p' || die "freeze the runner on $rnode"
