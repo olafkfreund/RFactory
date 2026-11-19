@@ -125,14 +125,15 @@ kc rollout status deployment/rfactory-runner --timeout=180s >/dev/null || die "r
 wait_api 90 || die "runner API does not answer"
 if wait_gone "$id" 60; then pass lifecycle-runner-restart; else fail lifecycle-runner-restart "$id survived a runner restart: $(desk_leftovers "$id")"; fi
 
-# the reaper alone: the runner is killed (SIGKILL: a SIGTERM would make it destroy every desktop itself) and scaled to 0 before its replacement
-# starts, so nothing renews the Lease or the guard's permission; the reaper deletes it, egress cut first
+# the reaper alone: the runner is frozen (SIGSTOP from its node) and then scaled to 0, so nothing renews the Lease or the guard's permission
+# and the SIGTERM of the scale-down never runs its teardown (k14: a force delete still sends SIGTERM, and the runner destroyed the desktop
+# itself in 9 s); the reaper deletes it, egress cut first. The frozen process is SIGKILLed when its grace period ends.
 fresh reaper; id=$DID; settled "$id"
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-runner=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].metadata.name}')
+rnode=$(kc get pods -l app.kubernetes.io/name=rfactory-runner -o jsonpath='{.items[0].spec.nodeName}')
 SCALED=1
 stop_beat "$id"
-kc delete pod "$runner" --grace-period=0 --force --wait=false >/dev/null 2>&1 || die "kill runner pod"
+node_exec "$rnode" sh -c 'p=$(ps -o pid,args | awk "/[r]unner\/runner\.js/ {print \$1}"); [ -n "$p" ] && kill -STOP $p' || die "freeze the runner on $rnode"
 kc scale deployment rfactory-runner --replicas=0 >/dev/null || die "scale runner to 0"
 t0=$SECONDS; CUT_AT=; GONE_AT=
 uid=${PODUID[$id]:-}; [ -n "$uid" ] || die "no launcher pod UID for $id"
