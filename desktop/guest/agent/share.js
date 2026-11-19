@@ -12,6 +12,15 @@ function installCaptureGuard() {
     const media = MediaDevices.prototype;
     const original = media.getDisplayMedia; // the calls library's override is already installed by DOMContentLoaded
     if (original.__rfShareGuard) return;
+    // Every accepted capture track and its clones (Meet publishes clones), so the agent can end the capture without the shared tab.
+    const live = new Set();
+    const keep = (track) => {
+      live.add(track);
+      const clone = track.clone;
+      if (clone) track.clone = function () { return keep(clone.call(this)); };
+      return track;
+    };
+    window.__rfShareEnd = () => { for (const track of live) track.stop(); live.clear(); return true; };
     const guarded = async function (...args) {
       const stream = await original.apply(this, args);
       const track = stream.getVideoTracks()[0];
@@ -21,6 +30,7 @@ function installCaptureGuard() {
         stream.getTracks().forEach((item) => item.stop());
         throw new DOMException('Share target not approved', 'NotAllowedError');
       }
+      stream.getTracks().forEach(keep);
       return stream;
     };
     Object.defineProperties(guarded, { __rfShareGuard: { value: true }, __rfShareSource: { value: original } });
@@ -29,6 +39,9 @@ function installCaptureGuard() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
   else install();
 }
+
+const TEARDOWN_MS = 5000;
+const within = (promise) => Promise.race([promise, new Promise((resolve) => setTimeout(resolve, TEARDOWN_MS, 'timeout'))]);
 
 function createShare({ context, callPage, callNonce, clickShare, stopShare, send }) {
   if (!callNonce) throw new Error('share nonce must be fixed before Chrome launch');
@@ -46,12 +59,33 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     return !label.includes('RFactory share ') || label.includes(title);
   }
 
+  // Chrome's own target list is the proof that the tab is gone: Playwright's page.close() can hang, and a page it reports closed can still be open.
+  async function tabGone(share) {
+    if (!share.targetId) return share.page.isClosed();
+    const cdp = await context.browser().newBrowserCDPSession();
+    try {
+      const open = async () => (await cdp.send('Target.getTargets')).targetInfos.some((t) => t.targetId === share.targetId);
+      if (!(await open())) return true;
+      await cdp.send('Target.closeTarget', { targetId: share.targetId }).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return !(await open());
+    } finally { await cdp.detach().catch(() => {}); }
+  }
+
   async function stop(reason) {
     const share = active;
     if (!share) return;
     active = null;
     if (stopShare) void Promise.resolve().then(stopShare).catch(() => {});
-    await share.page.close().catch(() => {});
+    // Fail closed: end the capture in the call page first (it must not depend on the tab), then close the tab and check it in Chrome.
+    // A capture or a tab that cannot be confirmed gone ends the call Chrome: a leftover tab keeps the title the next share is picked by.
+    const ended = !hookInstalled || await within(callPage.evaluate(() => window.__rfShareEnd())).then((r) => r === true, () => false);
+    await within(share.page.close().catch(() => {}));
+    const gone = await within(tabGone(share)).then((r) => r === true, () => false);
+    if (!ended || !gone) {
+      console.error(`<3>rfactory-agent: share stop not confirmed (capture ended: ${ended}, tab gone: ${gone}); closing the call Chrome`);
+      await context.close().catch(() => {});
+    }
     if (reason === 'share-target-changed') send?.({ type: reason, share_id: share.id });
   }
 
@@ -65,6 +99,9 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
     active = share;
     const changed = () => { if (active === share) void stop('share-target-changed'); };
     try {
+      // The target id stays tied to this tab through navigations and title changes; taken first so stop() can always check the tab.
+      const cdp = await context.newCDPSession(page);
+      share.targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
       await page.addInitScript((locked) => {
         const enforce = () => {
           let element = document.querySelector('title');
@@ -108,9 +145,6 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       page.on('close', changed);
       await page.goto(share.url);
       if (active !== share) throw new Error('share target changed');
-      // The target id stays tied to this page even when a title script changes its DOM.
-      const cdp = await context.newCDPSession(page);
-      share.targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
       if (!(await matches(share, '', 'browser'))) throw new Error('share title not unique');
       if (!hookInstalled) {
         await callPage.exposeBinding('__rfShareCheck', (_, label, surface) => active ? matches(active, label, surface) : false);
@@ -119,6 +153,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
         hookInstalled = true;
       }
       await (clickShare ? clickShare(callPage) : callPage.getByRole('button', { name: /Share screen|Present now/i }).click());
+      if (active !== share) throw new Error('share target changed'); // it navigated while the button was being pressed: no share to report
       return { share_id, nonce: callNonce, window_title: title, target_id: share.targetId };
     } catch (error) {
       await stop();

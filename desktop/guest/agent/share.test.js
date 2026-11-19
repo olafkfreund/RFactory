@@ -104,6 +104,21 @@ test('stop closes the tab even when stopShare fails', browser, async (t) => {
   assert.equal(share.active, null);
 });
 
+test('stop ends the capture and closes the tab even when page.close() does nothing', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: async () => {} });
+  await share.start({ share_id: 's1', url: `${f.origin}/start`, hosts: [f.origin] });
+  await f.callPage.evaluate(async () => {
+    window.testLabel = 'tab:opaque-id'; window.testSurface = 'browser'; window.testStopped = false;
+    await navigator.mediaDevices.getDisplayMedia({ video: true });
+  });
+  const page = share.active.page;
+  page.close = async () => {}; // k14: stop() got past close() while the tab stayed open and shared
+  await share.stop();
+  assert.equal(await f.callPage.evaluate(() => window.testStopped), true);
+  assert.equal(page.isClosed(), true);
+});
+
 test('desktop click refuses a shared tab', async () => {
   const { createControl } = require('./control');
   const shared = { __rfShare: true, isClosed: () => false, on: () => {}, click: () => assert.fail('shared tab was clicked') };
