@@ -905,6 +905,16 @@ and 27) and the scripts. This plan is self-contained.
     kill), for the page to show the call was left. It applies to the
     pod bot as well. Test in bot/test/run.test.js; guest images and
     command line re-pinned.
+45. **The guest keeps trying to turn Teams captions on (lead, k14 Teams
+    e2e).** On the light Teams client an anonymous guest's More >
+    Captions item is `aria-disabled` until captions are available in the
+    meeting; the calls library clicks it once at join and never again,
+    so the bot stayed deaf (local two-participant probe: speech flowed,
+    no caption ever appeared, the item disabled). `call.js` adds
+    `TEAMS_CAPTIONS` beside `MEET_GUEST`: while captions are off it opens
+    More every 15 s, clicks Captions once enabled, reads on/off from the
+    item's `aria-checked` (never turning captions off) and stops when
+    on. Test in call.test.js; guest images and command line re-pinned.
 
 
 ## Steps

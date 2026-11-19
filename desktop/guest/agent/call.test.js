@@ -87,3 +87,33 @@ test('withProxy: the launch gets the proxy and a pass-through route (Playwright 
   assert.ok(ctx.route);
   assert.equal(chromium.launchPersistentContext, original); // undone after the launch
 });
+
+test('TEAMS_CAPTIONS retries a disabled Captions item and clicks it once it is enabled, never turning captions off', () => {
+  const { TEAMS_CAPTIONS } = require('./call');
+  const run = (state) => {
+    const clicks = [], intervals = [], timeouts = [];
+    let menuOpen = false;
+    const el = (id, attrs = {}) => ({ id, getAttribute: (n) => attrs[n] ?? null, click: () => { clicks.push(id); if (id === 'more') menuOpen = !menuOpen; } });
+    const more = el('more'), hangup = el('hangup');
+    const item = () => el('cc', { 'aria-disabled': state.disabled ? 'true' : 'false', 'aria-checked': state.on ? 'true' : 'false' });
+    const document = { querySelector: (s) => s === '#callingButtons-showMoreBtn' ? more : s === '#hangup-button' ? hangup : s === '#closed-captions-button' ? (menuOpen ? item() : null) : null };
+    let cleared = false;
+    const env = { location: { hostname: 'teams.microsoft.com' }, document, setInterval: (fn) => { intervals.push(fn); return 1; },
+      clearInterval: () => { cleared = true; }, setTimeout: (fn) => { timeouts.push(fn); } };
+    env.window = env; env.window.top = env;
+    new Function(...Object.keys(env), TEAMS_CAPTIONS)(...Object.values(env));
+    const tick = () => { intervals[0](); timeouts.splice(0).forEach((f) => f()); };
+    return { tick, clicks, cleared: () => cleared, state };
+  };
+  const a = run({ disabled: true, on: false });
+  a.tick();
+  assert.deepEqual(a.clicks, ['more', 'more']); // opened, saw it disabled, closed
+  assert.equal(a.cleared(), false);
+  a.state.disabled = false; a.tick();
+  assert.deepEqual(a.clicks.slice(2), ['more', 'cc']); // opened, clicked the enabled item
+  assert.equal(a.cleared(), true);
+  const b = run({ disabled: false, on: true });
+  b.tick();
+  assert.ok(!b.clicks.includes('cc')); // already on: never clicked off
+  assert.equal(b.cleared(), true);
+});

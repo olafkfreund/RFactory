@@ -51,6 +51,26 @@ const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === wi
   setTimeout(() => clearInterval(t), 300000);
 }`;
 
+// Teams gives an anonymous guest a disabled "Captions" item until captions are available in the meeting (k14: the light
+// client's More menu showed it aria-disabled; the library clicks it once at join and never again, so the bot stayed deaf).
+// While captions are off, this opens More every 15 s and clicks Captions once it is enabled; it reads on/off from the
+// item's own aria-checked (the light client's caption window is not the library's marker) and stops once they are on.
+// shortcut: English-independent ids from the light client (2026-11-19); upgrade if the library learns to retry.
+const TEAMS_CAPTIONS = `if (/(^|\\.)teams\\.(microsoft|live)\\.com$|(^|\\.)teams\\.cloud\\.microsoft$/.test(location.hostname) && window === window.top) {
+  const t = setInterval(() => {
+    const more = document.querySelector('#callingButtons-showMoreBtn');
+    if (!more || !document.querySelector('#hangup-button')) return; // not in the meeting yet
+    if (!document.querySelector('#closed-captions-button')) more.click(); // open the menu that holds the item
+    setTimeout(() => {
+      const item = document.querySelector('#closed-captions-button');
+      if (!item) return;
+      if (item.getAttribute('aria-checked') === 'true') { clearInterval(t); more.click(); return; } // on: done
+      if (item.getAttribute('aria-disabled') === 'true') { more.click(); return; } // not available yet: close, retry
+      item.click(); clearInterval(t);
+    }, 700);
+  }, 15000);
+}`;
+
 // The guest's call worker (plan 13c): bot/run.js with its stdin/stdout carried as call-in / call-out pieces.
 // The call Chrome gets callLaunchArgs(nonce) and the share (step 11) runs in that same Chrome.
 // deps (tests): run, playwrightHost, join. onExit() fires when the worker has finished.
@@ -63,6 +83,7 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
       host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] }));
       await host.context.addInitScript(MEET_GUEST);
+      await host.context.addInitScript(TEAMS_CAPTIONS);
       return host;
     },
     join: async (link, o) => {
@@ -104,4 +125,4 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
   };
 }
 
-module.exports = { createCallWorker, withProxy, MEET_GUEST };
+module.exports = { createCallWorker, withProxy, MEET_GUEST, TEAMS_CAPTIONS };
