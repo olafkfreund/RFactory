@@ -263,7 +263,7 @@ async function main() {
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions, shares, desktop,
-      ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
+      ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   createApp({ source, brain, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');

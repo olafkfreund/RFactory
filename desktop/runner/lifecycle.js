@@ -200,7 +200,7 @@ function createLifecycle(config, deps) {
     return r.ok ? r : { ...r, error: r.error && r.error !== 'timeout' ? r.error : 'share-stop-failed' };
   }
   function viewOpen(id, { share_id, nonce, view, data }) { return toGuest(id, { type: 'view-open', share_id, nonce, view, data }); }
-  function viewData(id, { share_id, data }) { return toGuest(id, { type: 'view-data', share_id, data }); }
+  function viewData(id, { share_id, data, stale }) { return toGuest(id, { type: 'view-data', share_id, data, ...(stale === undefined ? {} : { stale }) }); }
   function viewClose(id, { share_id }) { return toGuest(id, { type: 'view-close', share_id }, 5000); }
   // Verify hooks (deviation 22), reachable only when the runner is configured with verifyHooks.
   function verifyHook(id, hook) {
@@ -361,7 +361,7 @@ function createLifecycle(config, deps) {
     return { desktop_id: id };
   }
 
-  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, ...(v.nonce ? { nonce: v.nonce } : {}) }));
+  const list = () => [...vms.values()].map((v) => ({ desktop_id: v.id, call_id: v.call_id, scope: v.scope, spare: !!v.spare, sharing: !!v.sharing, ...(v.nonce ? { nonce: v.nonce } : {}) }));
 
   function heartbeat(id) {
     const vm = vms.get(id);

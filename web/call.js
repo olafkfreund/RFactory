@@ -5,6 +5,7 @@ const { createHearing } = require('@rfactory/core/src/call/hearing.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts } = require('@rfactory/core/src/facts.js');
 const { summarise } = require('@rfactory/core/src/items.js');
+const { createShareDesktop } = require('./share-desktop.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
@@ -12,7 +13,7 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null }) {
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null }) {
   const listeners = new Set();
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
@@ -284,8 +285,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     // startCall sets its generation synchronously; the returned promise only expires old pending items
     const generation = ++callCount;
     if (actions) Promise.resolve(actions.startCall(generation)).catch((error) => log(`actions start failed: ${error.message}`));
-    // step 7 passes the call's desktop adapter; until then there is none and a request is refused
-    if (shares) Promise.resolve(shares.startCall(generation, { desktop: null })).catch((error) => log(`shares start failed: ${error.message}`));
+    // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
+    const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
+    if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => log(`shares start failed: ${error.message}`));
     emit({ type: 'voice', voice: c.voice });
     emit({ type: 'state', state: 'joining' });
     child.stdin.write(`${link}\n`);

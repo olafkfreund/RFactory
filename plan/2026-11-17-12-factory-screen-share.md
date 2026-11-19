@@ -192,6 +192,22 @@ dependencies").
   and the guard (#3); polling only tells the page and the record, within
   5 s.
 
+- **D7, wave C (2026-11-19).** Step 7 by the coder, reviewed by the lead.
+  Its deviations, all kept: `lifecycle.viewData` forwarded no `stale`
+  (step 6), so D5 now reaches the guest; the view's `share-start` sends
+  `url: ''` and `hosts: []`, the protocol's required fields, which the
+  guest ignores while a view is open and refuses otherwise; `desktopId`
+  may be a function, because a VM call learns its desktop after spawn;
+  `server.js` passes the runner to the call manager, and the
+  Containerfile COPY of `web/share-desktop.js` came forward from step 8.
+  **Lead fix:** the share manager's per-share `nonce` is not the one the
+  guest checks: the guest binds a share to its call Chrome's launch nonce
+  and refuses any other ("invalid view"), so every real board share would
+  have failed (fakes on both sides hid it). The adapter takes the
+  desktop's own nonce from the runner's `list`, as #3's share does, and
+  refuses rather than guesses when it is missing. Tests in
+  share-desktop.test.js.
+
 ## Steps
 
 Baseline and integration: when G1 and G2 pass, merge main (with #3 and
