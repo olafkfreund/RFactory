@@ -346,3 +346,24 @@ test('agent: profile-attach passes profile_id and initialized through to the pro
   assert.equal(seen[0][1].profile_id, 'p1');
   assert.equal(seen[0][1].initialized, false);
 });
+
+test('control: a page closed for leaving the grant is never the last tab (headed Chrome quits with its last window), and a closed Chrome is relaunched', async () => {
+  const { createControl } = require('./control');
+  const order = [];
+  let launches = 0, onClose = null;
+  const outside = { url: () => 'https://b.test/', isClosed: () => false, on() {}, close: async () => { order.push('close'); } };
+  const blank = { url: () => 'about:blank', isClosed: () => false, on() {}, goto: async () => {}, click: async () => {} };
+  const ctx = {
+    addInitScript: async () => {}, route: async () => {}, pages: () => [outside],
+    newPage: async () => { order.push('newPage'); return blank; },
+    on(event, fn) { if (event === 'close') onClose = fn; },
+  };
+  const control = createControl({ chromium: { launchPersistentContext: async () => { launches++; return ctx; } } });
+  await control.applyHosts(['https://b.test']);
+  await control.click('x').catch(() => {}); // starts Chrome
+  await control.applyHosts(['https://a.test']); // b.test leaves the grant: its page is closed
+  assert.deepEqual(order, ['newPage', 'close']); // the blank tab comes first, so Chrome keeps a window
+  onClose(); // Chrome went away anyway
+  await control.click('x').catch(() => {});
+  assert.equal(launches, 2); // the next action launches a new Chrome instead of failing on the dead one
+});

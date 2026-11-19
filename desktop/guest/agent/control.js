@@ -35,6 +35,12 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
   let generation = 0; // cancel bumps it: a launch that finishes after a cancel closes its own Chrome
 
   const ok = (url) => url === 'about:blank' || allowed.has(originOf(url));
+  // Headed Chrome quits when its last window closes, which left every later action failing (k14 handover: a refused redirect
+  // closed the only tab). A blank tab is opened first, so closing a refused page never takes the browser down.
+  async function closePage(ctx, p) {
+    if (!ctx.pages().some((x) => x !== p && !x.isClosed())) await ctx.newPage().catch(() => {});
+    await p.close().catch(() => {});
+  }
 
   async function start() {
     if (context) return context;
@@ -71,7 +77,7 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
       });
       const watch = (page) => {
         page.on('framenavigated', (frame) => {
-          if (frame === page.mainFrame() && !ok(frame.url())) page.close().catch(() => {});
+          if (frame === page.mainFrame() && !ok(frame.url())) void closePage(ctx, page);
         });
       };
       ctx.pages().forEach(watch);
@@ -81,6 +87,7 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
         throw new Error('cancelled');
       }
       context = ctx;
+      ctx.on('close', () => { if (context === ctx) context = null; }); // Chrome gone anyway (crash, OOM): the next action launches a new one
       return ctx;
     })();
     try { return await starting; } finally { starting = null; }
@@ -95,7 +102,7 @@ function createControl({ chromium, launchOptions = {}, owner, proxyRequired = fa
     allowed.clear();
     for (const host of hosts) allowed.add(host);
     if (!context) return;
-    for (const p of context.pages()) if (!p.__rfShare && !p.isClosed() && !ok(p.url())) await p.close().catch(() => {});
+    for (const p of context.pages()) if (!p.__rfShare && !p.isClosed() && !ok(p.url())) await closePage(context, p);
   }
 
   async function page() {
