@@ -76,3 +76,17 @@ test('pod.sh with RFACTORY_DESKTOP refuses missing or loose runner files and a m
   assert.notEqual(run({ RFACTORY_DESKTOP: '1' }, { runnerFiles: true }).status, 0);
   assert.notEqual(run({ ...env, RFACTORY_DESKTOP: 'yes' }, { runnerFiles: true }).status, 0); // the web enables desktop only with 1
 });
+
+test('pod.sh forwards RFACTORY_SHARES and mounts the record when writes are off; refuses other values', () => {
+  const off = run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'on' });
+  assert.equal(off.status, 0);
+  assert.match(off.web, /-e RFACTORY_SHARES=on/);
+  assert.match(off.web, /-v rfactory-actions:\/var\/lib\/rfactory\/actions:U/);
+  const withWrites = run({ RFACTORY_SHARES: 'on', RFACTORY_APPROVERS: 'a@example.com' }, { writeKey: true });
+  assert.equal(withWrites.status, 0);
+  assert.equal(withWrites.web.split('rfactory-actions:/var/lib/rfactory/actions').length - 1, 1); // mounted once, by writes
+  const none = run({ RFACTORY_WRITES: 'off' });
+  assert.doesNotMatch(none.web, /RFACTORY_SHARES/);
+  assert.equal(run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'yes' }).status, 2);
+});
+

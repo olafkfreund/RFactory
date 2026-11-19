@@ -66,6 +66,17 @@ up() {
       -v "$cfg/cfactory-write-key:/run/rfactory/cfactory-write-key:ro,Z"
       -v rfactory-actions:/var/lib/rfactory/actions:U)
   fi
+  # #12: board shares only with RFACTORY_SHARES=on (and the scope's shares_enabled: true, which the web app checks);
+  # their record lives with the action record, so the volume is mounted here too when writes are off
+  share=()
+  if [ -n "${RFACTORY_SHARES:-}" ]; then
+    case $RFACTORY_SHARES in on | off) ;; *) echo "RFACTORY_SHARES must be on or off" >&2; exit 2 ;; esac
+    share=(-e RFACTORY_SHARES="$RFACTORY_SHARES")
+    if [ "$RFACTORY_SHARES" = on ] && [[ " ${write[*]} " != *" RFACTORY_WRITES=on "* ]]; then
+      podman volume exists rfactory-actions || podman volume create rfactory-actions >/dev/null
+      share+=(-v rfactory-actions:/var/lib/rfactory/actions:U)
+    fi
+  fi
   desktop=()
   if [ -n "${RFACTORY_DESKTOP:-}" ]; then
     [ "$RFACTORY_DESKTOP" = 1 ] || { echo "RFACTORY_DESKTOP must be 1 or unset" >&2; exit 2; }
@@ -86,7 +97,7 @@ up() {
   fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${roles[@]}" "${desktop[@]}" \
+    "${write[@]}" "${share[@]}" "${roles[@]}" "${desktop[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \
