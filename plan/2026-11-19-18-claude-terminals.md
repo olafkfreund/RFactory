@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 18
 spec: spec/2026-11-19-18-claude-terminals.md
 coders:
