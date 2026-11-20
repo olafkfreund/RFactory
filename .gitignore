@@ -1,0 +1,10 @@
+
+# graphify knowledge graph: share the built graph and report (owner request,
+# 2026-11-20), never the extraction cache or per-machine interpreter/root paths.
+!graphify-out/
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/graph.html
+!graphify-out/manifest.json
+!graphify-out/.graphify_labels.json
