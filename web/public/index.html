@@ -54,11 +54,14 @@
     <h2 class="panel-title">Call <span id="call-state" class="status-pill"><span class="dot"></span><span id="call-state-text">idle</span></span></h2>
     <div class="call-form">
       <input id="call-link" class="call-input" type="text" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" aria-label="Meet link">
+      <label for="call-listen">Listen</label>
+      <select id="call-listen"><option value="auto">Auto</option><option value="platform">Captions</option><option value="audio">Own transcription</option></select>
       <button id="call-join" class="btn" type="button">Join</button>
       <button id="call-leave" class="btn" type="button" disabled>Leave</button>
     </div>
     <p id="call-mic" class="fine"></p>
     <p id="call-voice" class="fine"></p>
+    <p id="call-hearing" class="fine" role="status" aria-live="polite"></p>
     <p id="call-error" class="status-line" role="status" aria-live="polite"></p>
     <ul id="call-log" class="call-log"></ul>
   </section>

@@ -60,6 +60,11 @@ Branch `feat/16-own-stt`, cut from `main` after this plan is approved. Each step
    - The manager uses the count for the 1:1 rule.
    - The 20 s `no-audio` timer starts only once `count >= 1`.
 
+### Deviations found during implementation
+
+1. **Step 6 (Codex): `web/Containerfile`'s explicit copy list** gains `web/stt.js` and `bot/stt-bridge.js`. Without it the web image would not ship them.
+2. **Step 6: in `audio` mode the manager logs the bot's `log` lines and its stderr by size only.** That follows "no text that could carry transcript content" strictly, and costs some debugging detail. `platform` calls log as before.
+
 ## Steps
 
 Checks run from the step worktree.
