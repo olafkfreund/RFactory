@@ -26,11 +26,12 @@ function setup(over = {}) {
     leave: async () => { calls.leave++; calls.order.push('leave'); },
     chat: { send: async (t) => { calls.chat.push(t); calls.order.push('chat'); if (over.chatFails) throw new Error('chat boom ' + SECRET); } },
     camera: { setOn: async (on) => { calls.camera.push(on); calls.order.push(`camera ${on}`); return over.setOn?.(on); } },
-    _inner: { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page },
+    _inner: { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page,
+      mediaPage: {}, getParticipants: async () => over.participants || [] },
   });
   const host = { close: async () => { calls.close++; } };
   const deps = {
-    clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; } },
+    clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; }, now: () => over.now?.value ?? 0 },
     mkdtemp: async (p) => p + 'X',
     rm: async (p) => { calls.rm.push(p); },
     ...(over.readFile ? { readFile: over.readFile } : {}),
@@ -40,6 +41,8 @@ function setup(over = {}) {
       o.onState('joining'); o.onState('lobby');
       return call;
     }),
+    ...(over.installSttBridge ? { installSttBridge: over.installSttBridge } : {}),
+    ...(over.SpeechGate ? { SpeechGate: over.SpeechGate } : {}),
   };
   const done = run({ stdin, stdout, deps, env: over.env || {} });
   const msg = (m) => stdin.write(JSON.stringify(m) + '\n');
@@ -445,5 +448,113 @@ test('the leave check needs the in-call control gone, not just "rejoin" somewher
   };
   s.msg({ type: 'leave' }); await s.done;
   assert.deepEqual(verdicts, [false, true]);
+});
+
+async function audioJoined(over = {}) {
+  let onAudio;
+  const order = over.order || [];
+  const gates = [];
+  class Gate {
+    constructor(callbacks) { this.callbacks = callbacks; this.pushes = []; gates.push(this); }
+    push(samples, at) { this.pushes.push({ samples: [...samples], at }); }
+    flush() { order.push('flush'); }
+    final(samples, at = 0, end = 25000) { this.callbacks.onFinal({ audio: samples, startAt: at, endAt: end }); }
+  }
+  const s = await joined({ ...over, order, env: { RFACTORY_LISTEN: 'audio', ...over.env }, SpeechGate: Gate,
+    installSttBridge: async (host, opts) => {
+      onAudio = opts.onAudio;
+      order.push('install');
+      return { bind: () => order.push('bind'), start: async () => order.push('tap start'),
+        stop: async () => { order.push('tap stop'); over.onStop?.(onAudio); } };
+    } });
+  return { ...s, gates, order, audio: (p) => onAudio(p) };
+}
+
+test('audio installs before join, starts after join and does not forward captions', async () => {
+  const s = await audioJoined();
+  s.call.emit('caption', { text: 'private' });
+  assert.deepStrictEqual(s.order.slice(0, 3), ['install', 'bind', 'tap start']);
+  assert.ok(s.calls.chat[0].includes("transcribes this call on RFactory's own servers"));
+  assert.ok(!s.out.some((m) => m.type === 'heard'));
+  s.stdin.end(); await s.done;
+});
+
+test('audio cuts echo by sample capture time, including a delayed chunk and the 800 ms tail', async () => {
+  const now = { value: 1000 };
+  const s = await audioJoined({ now });
+  s.audio({ stream: 'a', event: 'attached' });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  now.value = 1200;
+  s.speaks[0].resolve({ cancelled: false }); await tick();
+  s.audio({ stream: 'a', at: 1000.25, pcm: Int16Array.from([1, 2, 3, 4, 5, 6, 7, 8]) });
+  s.audio({ stream: 'a', at: 2000.125, pcm: Int16Array.from([1, 2, 3, 4]) });
+  assert.deepStrictEqual(s.gates[0].pushes, [{ samples: [1, 2, 3, 4], at: 999.75 }]);
+  assert.deepStrictEqual(s.gates.at(-1).pushes, [{ samples: [3, 4], at: 2000 }]);
+  s.stdin.end(); await s.done;
+});
+
+test('failed and cancelled speech close echo windows', async () => {
+  for (const fail of [true, false]) {
+    const now = { value: 1000 };
+    const s = await audioJoined({ now, ...(fail ? { speak: async () => { throw Error('failed'); } } : {}) });
+    s.audio({ stream: 'a', event: 'attached' });
+    s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+    if (!fail) { s.msg({ type: 'cancel' }); await tick(); }
+    now.value = 1801;
+    s.audio({ stream: 'a', at: 1801.0625, pcm: Int16Array.of(7) });
+    assert.deepStrictEqual(s.gates.at(-1).pushes.at(-1).samples, [7]);
+    s.stdin.end(); await s.done;
+  }
+});
+
+test('a 25 s segment uses 25 bounded lines and stop drops late audio before tap stop and leave', async () => {
+  const order = [];
+  const s = await audioJoined({ order, onStop: (audio) => audio({ stream: 'a', event: 'detached' }) });
+  s.audio({ stream: 'a', event: 'attached' });
+  s.gates[0].final(new Float32Array(400000).fill(0.5), 100, 25100);
+  const pieces = s.out.filter((m) => m.type === 'audio');
+  assert.strictEqual(pieces.length, 25);
+  assert.deepStrictEqual(pieces.map((p) => p.i), Array.from({ length: 25 }, (_, i) => i));
+  assert.ok(pieces.every((p) => Buffer.byteLength(JSON.stringify(p)) <= 65536 && p.n === 25));
+  s.msg({ type: 'leave' }); await s.done;
+  assert.ok(order.indexOf('tap stop') < order.indexOf('leave'));
+  assert.ok(!order.includes('flush'));
+  s.gates[0].final(Float32Array.of(0.5));
+  assert.strictEqual(s.out.filter((m) => m.type === 'audio').length, 25);
+});
+
+test('roster, no-audio and notice retry follow their timers', async () => {
+  const participants = [];
+  const s = await audioJoined({ participants, chatFails: true });
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'roster')[0], { type: 'roster', count: 0 });
+  assert.ok(!s.timers.some((t) => t.ms === 20000));
+  participants.push({ name: 'Ann', isSelf: false });
+  s.timers.find((t) => t.ms === 10000 && !t.cleared).fn(); await tick();
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'roster').at(-1), { type: 'roster', count: 1, name: 'Ann' });
+  s.timers.find((t) => t.ms === 20000).fn();
+  assert.ok(s.out.some((m) => m.type === 'hearing' && m.state === 'no-audio'));
+  for (const timer of s.timers.filter((t) => t.ms === 10000)) timer.fn();
+  await tick();
+  assert.ok(s.out.some((m) => m.type === 'hearing' && m.state === 'notice-failed'));
+  s.audio({ stream: 'a', event: 'attached' });
+  s.audio({ stream: 'a', at: 1, pcm: Int16Array.of(1) });
+  assert.ok(s.out.some((m) => m.type === 'hearing' && m.state === 'own'));
+  s.stdin.end(); await s.done;
+});
+
+test('audio leave during join discards the bridge without starting the tap', async () => {
+  let release, onAudio;
+  const order = [];
+  const s = setup({ env: { RFACTORY_LISTEN: 'audio' }, order,
+    installSttBridge: async (host, opts) => { onAudio = opts.onAudio; order.push('install');
+      return { bind: () => order.push('bind'), start: () => order.push('tap start'), stop: () => order.push('tap stop') }; },
+    join: async (link, opts) => { opts.onState('lobby'); await new Promise((r) => { release = r; }); return s.call; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  s.msg({ type: 'leave' });
+  onAudio({ stream: 'a', event: 'attached' });
+  release(); await s.done;
+  assert.ok(!order.includes('tap start'));
+  assert.ok(order.indexOf('tap stop') < order.indexOf('leave'));
+  assert.ok(!s.out.some((m) => m.type === 'audio'));
 });
 
