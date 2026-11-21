@@ -248,7 +248,14 @@ function handleCall(doc, event, now = Date.now()) {
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
     doc.getElementById('call-join').disabled = live;
     doc.getElementById('call-leave').disabled = !live;
+    if (doc.getElementById('call-listen')) doc.getElementById('call-listen').disabled = live;
   } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
+  else if (event.type === 'hearing') {
+    const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
+      own: 'Hearing: own transcription', 'no-audio': 'Hearing: own transcription (no audio received)',
+      'notice-failed': 'Hearing: own transcription (call notice failed)' };
+    if (states[event.state] && doc.getElementById('call-hearing')) set('call-hearing', states[event.state]);
+  }
   else if (event.type === 'voice') set('call-voice', `voice: ${event.voice}`);
   else if (event.type === 'greeting') set('call-error', event.result === 'done' ? 'greeting played (not confirmed heard)' : `greeting ${event.result}; the bot may not be heard`);
   else if (['question', 'answer', 'log'].includes(event.type)) {
@@ -275,7 +282,7 @@ function wireCall(doc) {
     error.textContent = '';
     try {
       const r = await fetch('/api/call', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ link: doc.getElementById('call-link').value.trim() }) });
+        body: JSON.stringify({ link: doc.getElementById('call-link').value.trim(), listen: doc.getElementById('call-listen').value }) });
       if (!r.ok) error.textContent = `Failed: ${(await r.json()).error}`;
     } catch { error.textContent = 'Failed: network'; }
   });
@@ -286,7 +293,11 @@ function wireCall(doc) {
 
 if (typeof document !== 'undefined') {
   renderFooter(document);
-  fetch('/api/config').then((res) => res.json()).then(({ commit }) => renderFooter(document, commit)).catch(() => {});
+  fetch('/api/config').then((res) => res.json()).then(({ commit, listen, sttConfigured }) => {
+    renderFooter(document, commit);
+    document.getElementById('call-listen').value = listen || 'auto';
+    if (!sttConfigured) document.getElementById('call-hearing').textContent = 'Hearing: captions (own transcription not configured)';
+  }).catch(() => {});
   wireCall(document);
   loadShares(document);
   loadActions(document).then(() => setInterval(() => renderActions(document), 30000));

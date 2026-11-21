@@ -8,6 +8,8 @@ const { makeRedactor } = require('../../core/src/redact.js');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+const audio = (seg, value = seg, extra = {}) => ({ type: 'audio', seg, i: 0, n: 1, at: seg * 800, end: seg * 800 + 200,
+  stream: 'person', data: Buffer.from([value, 0]).toString('base64'), ...extra });
 
 function fakeClock() {
   let time = 0, id = 0;
@@ -28,7 +30,7 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random, desktop } = {}) {
+function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random, desktop, stt, listen, language } = {}) {
   const clock = fakeClock();
   const children = [], events = [], kills = [], spoken = [], spawnOptions = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
@@ -51,7 +53,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random
   const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
     tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
-    maleTts, avatar, random, redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop });
+    maleTts, avatar, random, redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop, stt, listen, language });
   manager.subscribe((event) => events.push(event));
   const restore = () => { process.kill = originalKill; };
   const messages = () => spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s));
@@ -129,11 +131,74 @@ test('current replays the latest call indicators and clears them after stop', as
     await flush();
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' });
     assert.deepEqual(f.manager.current(), [
-      { type: 'voice', voice: 'espeak-ng' }, { type: 'state', state: 'in-call' },
+      { type: 'voice', voice: 'espeak-ng' }, { type: 'hearing', state: 'captions', notConfigured: true }, { type: 'state', state: 'in-call' },
       { type: 'mic', muted: false }, { type: 'greeting', result: 'done' },
     ]);
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
     assert.deepEqual(f.manager.current(), []);
+  } finally { f.restore(); }
+});
+
+test('audio overrides scope, excludes captions, and settles reverse completions in capture order', async () => {
+  const first = deferred(), second = deferred();
+  const languages = [];
+  const f = setup({ stt: { transcribe: (pcm, language) => { languages.push(language); return pcm[0] === 0 ? first.promise : second.promise; } }, language: 'en-GB' });
+  try {
+    await f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' });
+    assert.equal(f.spawnOptions[0].env.RFACTORY_LISTEN, 'audio');
+    assert.equal(f.spawnOptions[0].env.RFACTORY_LANGUAGE, 'en-GB');
+    f.children[0].output({ type: 'heard', id: 'caption', speaker: 'Wrong', text: 'RFactory, wrong?' });
+    f.children[0].output({ type: 'roster', count: 1, name: 'Alice' });
+    f.children[0].output(audio(0));
+    f.clock.tick(800);
+    f.children[0].output(audio(1));
+    await flush();
+    assert.deepEqual(languages, ['en', 'en']);
+    second.resolve({ text: 'what changed?' }); await flush();
+    f.clock.tick(1200);
+    assert.equal(f.events.filter((e) => e.type === 'question').length, 0);
+    first.resolve({ text: 'RFactory,' }); await flush();
+    assert.deepEqual(f.events.filter((e) => e.type === 'question').map((e) => [e.text, e.speaker]), [['what changed?', 'Alice']]);
+    assert.equal(f.manager.current().find((e) => e.type === 'roster').name, 'Alice');
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('audio pieces are bounded, duplicate pieces rejected, overflow counted and leave discards results', async () => {
+  const pending = deferred();
+  const signals = [];
+  const f = setup({ stt: { transcribe: (pcm, language, opts) => { signals.push(opts.signal); return pending.promise; } } });
+  try {
+    await f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' });
+    f.children[0].output(audio(0, 0, { i: 1, n: 2 })); // missing first piece
+    f.children[0].output(audio(0, 0, { n: 27 }));
+    f.children[0].output(audio(0, 0, { n: 2 }));
+    f.children[0].output(audio(0, 0, { n: 2 })); // duplicate i
+    f.children[0].output(audio(0, 0, { i: 1, n: 2 }));
+    f.children[0].output(audio(1));
+    f.children[0].output(audio(2)); // third concurrent request overflows
+    await flush();
+    assert.equal(signals.length, 2);
+    assert.ok(f.manager.current().find((e) => e.type === 'hearing').dropped >= 3);
+    const stopping = f.manager.stop();
+    assert.ok(signals.every((signal) => signal.aborted));
+    pending.resolve({ text: 'RFactory, should be ignored?' }); await flush();
+    f.clock.tick(5000);
+    assert.equal(f.events.filter((e) => e.type === 'question').length, 0);
+    f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('explicit audio requires configuration and auto falls back to captions', async () => {
+  const f = setup();
+  try {
+    await assert.rejects(f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' }), /stt-not-configured/);
+    await f.manager.start('https://teams.live.com/meet/123');
+    assert.equal(f.spawnOptions[0].env.RFACTORY_LISTEN, 'platform');
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions', notConfigured: true });
+    f.children[0].output(audio(0));
+    assert.equal(f.events.some((e) => e.type === 'question'), false);
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
 });
 
