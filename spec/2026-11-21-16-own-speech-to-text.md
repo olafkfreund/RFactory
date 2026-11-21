@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 16
 intent: intent/2026-11-21-16-own-speech-to-text.md
 ---
