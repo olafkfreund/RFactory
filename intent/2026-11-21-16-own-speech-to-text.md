@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 16
 author: olafkfreund
 ---
@@ -104,3 +104,13 @@ Three pieces are missing:
 
    *Recommendation:* the spec defines it from the k14 signals. Silence alone never counts as "captions broken".
 5. **Languages:** English first, or the scope's language from the start? *Recommendation:* the scope's language, English by default, with a clear refusal when the engine does not support a language. Decide this before the benchmark in question 1, because it changes the model.
+
+## Decisions (owner, 2026-11-21: "approved")
+
+The recommendations above are the answers:
+
+1. The engine and model are chosen by measurement on p620, as the smallest model that meets the bar on CPU.
+2. It runs as one cluster service, with no cloud-VM fallback.
+3. The audio is carried out of Chrome by a Playwright binding on `sttTap`.
+4. The spec defines how `auto` decides that captions are unavailable, from the k14 signals. Silence alone never counts.
+5. The language is the scope's language, English by default. This is decided before the benchmark.
