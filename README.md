@@ -14,6 +14,10 @@ Work follows intent → spec → plan: see `intent/`, `spec/`, `plan/`.
 
 Approvers and admins must also be members; otherwise the web app refuses to start (`roles-not-members`).
 
+## How the bot hears
+
+During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
+
 ## Licence
 
 RFactory is free software under the GNU Affero General Public License v3.0 only (`LICENSE`). Third-party parts and their licences are listed in `NOTICE.md`; upstream licence texts are in `LICENSES/`. This is not a legal review.
