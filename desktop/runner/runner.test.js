@@ -800,3 +800,14 @@ test('create refuses a bad avatar and puts a good one in call-config', async () 
   const conn = await ctx.control(r.desktop_id);
   assert.equal(conn.out[0].avatar, 'ada1');
 });
+
+test('create refuses a bad listen or language and puts good ones in call-config', async () => {
+  const ctx = setup({ onWrite: echoOk });
+  for (const extra of [{ listen: 'both' }, { listen: '' }, { language: 'EN' }, { language: 'en_GB' }, { language: 7 }, { language: 'a'.repeat(36) }]) {
+    assert.equal((await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'meet', ...extra })).error, 'bad-request', JSON.stringify(extra));
+  }
+  const r = await ctx.lc.create({ call_id: 'a', scope: 's', platform: 'meet', listen: 'audio', language: 'pt-BR' });
+  const conn = await ctx.control(r.desktop_id);
+  assert.equal(conn.out[0].listen, 'audio');
+  assert.equal(conn.out[0].language, 'pt-BR');
+});
