@@ -2,9 +2,19 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRedactor } = require('./redact.js');
+const { toWhisperLanguage } = require('./stt-languages.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const DESTINATIONS = new Set(['third-party', 'rfactory-host', 'other-machine']);
+const LISTEN = new Set(['auto', 'platform', 'audio']);
+
+// auto: Meet keeps its captions, the other platforms use own transcription when it is configured.
+function resolveListen({ listen = 'auto', platform, sttConfigured }) {
+  if (!LISTEN.has(listen)) throw new Error('invalid-listen');
+  if (listen === 'audio' && !sttConfigured) throw new Error('stt-not-configured');
+  if (listen !== 'auto') return listen;
+  return platform !== 'meet' && sttConfigured ? 'audio' : 'platform';
+}
 
 function loadScope(file, env = process.env, secrets = []) {
   const text = fs.readFileSync(file, 'utf8');
@@ -15,6 +25,8 @@ function loadScope(file, env = process.env, secrets = []) {
     if (!(scope.avatar === 'random' || validId(scope.avatar) ||
       (Array.isArray(scope.avatar) && scope.avatar.length > 0 && scope.avatar.every(validId)))) throw new Error('invalid-avatar');
   }
+  if (Object.hasOwn(scope, 'listen') && !LISTEN.has(scope.listen)) throw new Error('invalid-listen');
+  if (Object.hasOwn(scope, 'language') && !toWhisperLanguage(scope.language)) throw new Error('unsupported-language');
   if (scope.writes_enabled !== false && scope.writes_enabled !== true) throw new Error('writes-enabled');
   if (scope.writes_enabled === true && env.RFACTORY_WRITES !== 'on') throw new Error('writes-enabled');
   if (scope.writes_enabled === false && env.RFACTORY_WRITES && env.RFACTORY_WRITES !== 'off') throw new Error('writes-enabled-env');
@@ -51,4 +63,4 @@ function loadScope(file, env = process.env, secrets = []) {
   return scope;
 }
 
-module.exports = { loadScope };
+module.exports = { loadScope, resolveListen };
