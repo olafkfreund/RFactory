@@ -6,140 +6,170 @@ intent: intent/2026-11-21-16-own-speech-to-text.md
 
 # Spec: the bot hears the call itself (its own speech-to-text)
 
-`L` means the calls library, `bot/node_modules/@vibeconferencing/calls` (0.1.0-alpha.3). RFactory uses it as it is and does not patch it.
+`L` means the calls library, `bot/node_modules/@vibeconferencing/calls` (0.1.0-alpha.3, pinned). RFactory uses it as it is and does not patch it. Of `L`'s hearing code, RFactory reuses only:
+- the page tap (`inject/page-inject.js` `sttTap`);
+- the pure voice gate (`hearing/speech-gate.js` `SpeechGate`).
+
+It does **not** use `AudioTranscription`. That class:
+- emits rolling 50-turn snapshots without `final`;
+- flushes, and so transcribes, on `stop()` and on every `detached` event;
+- cannot cancel queued work (`hearing/caption-source.js:176-270`).
+
+## Owner decisions taken with this spec (2026-11-21)
+
+These change two of the approved intent's decisions. Both are recorded here for approval with the spec.
+
+- **D1, placement:** one speech-to-text service in the cluster, reached by RFactory's call manager. Audio travels over the bot's existing line channel, so the desktop VM gets no new network path. This keeps intent decision 2.
+  - A per-call engine was measured and rejected. A desktop VM has **2 vCPUs** (`desktop/RESULTS.md`), and `small` takes about 2.0 s an utterance pinned to 2 cores, competing with Chrome's 0.4–1.0 cores.
+- **D2, how `auto` chooses:** `auto` picks the source **once, at join, by platform**: Meet uses captions; Teams, Zoom and Slack use the bot's own transcription. Nothing switches mid-call, so no turn is lost or duplicated. This replaces the intent's switch while the call runs.
+  - The reviews showed that a mid-call handoff cannot promise both "no lost turns" and "no duplicates", and that an energy gate can mistake noise for missed captions.
 
 ## Measured on p620 (2026-11-21)
 
-These measurements decide the engine (intent decision 1).
+Setup: whisper.cpp 1.9.5 (nixpkgs) `whisper-server`, warm, English. Input: four synthetic espeak-ng utterances, 1.5–4.1 s, three of them starting with the wake word. Raw output is in the session scratchpad. It is recorded in the plan's first step.
 
-- **Host:** 128 cores, 251 GiB of RAM, AMD 7900 XTX (unused here).
-- **Engine:** whisper.cpp 1.9.5 from nixpkgs, `whisper-server`, warm, 8 threads, English.
-- **Input:** four synthetic espeak-ng utterances, 1.5–4.1 s, three of them starting with the wake word.
+| Model, cores | Latency per utterance | Wake word kept | Notes |
+|---|---|---|---|
+| base, 2 cores | 0.4–0.6 s | 2 of 3 | "R-Fectery stop" missed; "wheel", "renew" |
+| small `-ac 768`, 2 cores | 2.0–2.3 s | 3 of 3 | correct |
+| small `-ac 768`, 8 threads | 1.4–1.5 s (2.1 s on the first call) | 3 of 3 | correct, RSS 650 MB |
+| any model, `prompt="RFactory"` | — | **0 of 3** | the wake word is dropped |
 
-| Model | Latency per utterance | Wake word kept | Errors | RSS |
-|---|---|---|---|---|
-| base, `-ac 512` | 0.6–1.0 s | 2 of 3 ("R-Fectery stop" missed) | "wheel", "renew" | 250 MB |
-| **small, `-ac 768`** | **1.4–1.5 s** (2.1 s on the first call) | **3 of 3** ("Our factory, …") | "status **on** the build" | **650 MB** |
-| small, 16 threads, or q5_1 | 1.7–2.3 s | 3 of 3 | none | — |
-| any model with `prompt="RFactory"` | — | **0 of 3**: the wake word is dropped | — | — |
-
-**Findings:**
-- **Never pass "RFactory" as a prompt or keyword.** Whisper treats prompt words as already said and removes them, so the bot would never wake. `AudioTranscription`'s `keywords` therefore stays empty.
-- **Without a prompt**, `small` writes "Our factory", and `hearing.js`'s existing `WAKE` regex already accepts that (`core/src/call/hearing.js:3`).
-- **The fixed cost is the encoder's 30 s window.** `-ac 768` (about 15 s of audio context) brings it down. More threads and quantization barely help.
-- **The limit:** synthetic speech is not real speech. The real gate is the live-call bar in Verification.
+**What this means for the design:**
+- The engine is **small** on **8 threads** in the service.
+- It runs with **no prompt or keyword bias**. Without one, Whisper writes "Our factory", which `core/src/call/hearing.js:3` `WAKE` already accepts.
+- `-ac 768` trims the encoder's fixed 30-second window.
+- Synthetic speech is not real speech, so the live bar in Verification is the gate.
 
 ## Design
 
-### 1. The engine: whisper.cpp `small` (multilingual), one per call
+### 1. The service: `rfactory-stt`
 
-- **Model:** `ggml-small.bin`, multilingual (intent decision 5: the scope's language, English by default), fetched by hash at image build. It is never downloaded at call time.
-- **Process:** `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 127.0.0.1 --port <free>`.
-  - `bot/run.js` starts it the first time the call needs audio (see §3) and stops it when the call ends.
-  - It listens on loopback only, inside the call's own pod or desktop VM.
-- **Placement, a deviation from intent decision 2,** which said one cluster service, decided by measurement. The measurement says per call:
-  - **It fits:** one engine uses 650 MB, and a desktop VM uses about 2.35 of its 6 GiB in a call (`desktop/RESULTS.md`).
-  - **Isolation:** audio never leaves the call's own sandbox. The VM's network guard and egress cap stay exactly as they are, and no new network path or service needs authentication. whisper-server has no authentication of its own.
-  - **Separation:** calls cannot share engine state.
-  - **The cost:** 8 threads while someone is speaking, idle otherwise. Three concurrent calls use 24 of 128 cores. The images also grow by about 466 MB for the model.
-- **The engine adapter** (`bot/stt-engine.js`, new) implements `L`'s engine contract:
-  - `transcribe(Float32Array 16 kHz, {language}) → {text, ms}` encodes a WAV and `POST`s it to `/inference` with `response_format=json`, `temperature=0` and `language`. It sends **no prompt**.
-  - `ready()` waits for the server's health and runs one warm-up utterance, so the 2.1 s first call does not land on a real turn.
-  - Each request has a 10 s timeout, and a failure returns `transcription failed`. Neither the audio nor the text is logged.
+- **The Deployment:** one per cluster, in RFactory's namespace. It runs `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 0.0.0.0 --port 8080 -np --inference-path /inference/<secret>`.
+  - The model is the multilingual `ggml-small.bin`, built into the image by hash and never downloaded at run time.
+  - Requests are 8 CPU and 1.5 GiB; limits are 8 CPU and 2 GiB.
+- **Authentication:** whisper-server has none, so access needs both of the following.
+  - **The secret path.** `<secret>` is a 128-bit random value from a Kubernetes Secret, mounted only into `rfactory-stt` and the RFactory web server. A request to any other path gets 404.
+  - **A NetworkPolicy.** Ingress on 8080 is allowed only from the RFactory web server's pods. The policy also denies all egress, so the service cannot send audio or text anywhere.
+- **Logs:** `-np` stops the per-request prints. Container logs are checked to hold no transcript text (Verification 7).
+- **Concurrency:** whisper-server serves one request at a time. With about 1.5 s per utterance, three busy calls queue for a few seconds at worst. The plan measures the real queue and raises `replicas` if needed.
 
-### 2. Getting audio out of Chrome
+### 2. In the bot (`bot/run.js`, both deployments): cut speech, send segments
 
-- **The page side:** `L`'s `inject/page-inject.js` `sttTap`, which is dormant until started. It posts `window.postMessage({__botsInCalls, action:'stt-audio', payload:{stream, rate:16000, at, pcm:Int16Array}|{stream, event:'attached'|'detached'}})`. It taps **remote** audio only, never the bot's own microphone.
-- **Starting and stopping:** RFactory posts `{__botsInCalls, __fromExtension, action:'start-stt-tap'|'stop-stt-tap'}` into the media page, exactly as `L`'s Playwright host does for its own media actions (`L/hosts/playwright/index.js` `_media`).
-- **The bridge:** RFactory adds `bot/stt-bridge.js` (new). It calls `host.context.exposeBinding('__rfSttAudio', …)` and an init script that listens for `stt-audio` messages from the call's page and forwards them to the binding. It uses its own binding name and leaves `L`'s bindings alone. The `pcm` crosses as a base64 Int16 buffer, which keeps the transfer independent of how Playwright serializes a typed array.
-- **On the Node side,** a small `ipcMain`-shaped adapter (`on` and `removeListener` for `L`'s `STT_AUDIO_CHANNEL`) feeds `L`'s `AudioTranscription`, so `L`'s speech gate, segmenting and turn logic are reused unchanged.
-- **The gate keeps finals only:** `gateFactory: (cb) => new SpeechGate({ onFinal: cb.onFinal })`. Partials (every 1.5 s) would cost an engine call each and buy nothing, because `hearing.js` acts on whole turns.
+- **The listen source** reaches `bot/run.js` before join, in its environment: `RFACTORY_LISTEN` = `platform` | `audio`, plus `RFACTORY_LANGUAGE`.
+  - The call manager sets both when it spawns the bot in the pod (`web/call.js:250`).
+  - For the desktop VM, they travel in the runner's existing start message and the guest agent (`desktop/guest/agent/call.js`) passes them on. That message's `protocol.js` schema gains the two fields.
+  - `auto` is resolved by the call manager (§4), so the bot only ever sees `platform` or `audio`.
+- **With `platform`:** exactly today's behaviour.
+- **With `audio`,** before `join()`:
+  - `bot/stt-bridge.js` (new) calls `host.context.exposeBinding('__rfSttAudio', …)`.
+  - It also adds an init script. The script is fenced to `window === window.top` and listens for `L`'s `stt-audio` messages, so it does not depend on `L`'s `window.__rfAvatar`-style globals. It forwards each payload with the PCM as **base64 of its Int16 bytes**.
+  - The binding accepts only messages whose `source.page` is the call's media page and whose `source.frame` is that page's main frame. It checks that `rate` is 16000, that a chunk is at most 1 s of audio, and that at most 4 streams are open.
+  - The PCM is decoded into an `Int16Array` (aligned, little-endian) before it reaches the gate.
+- **After join:** the bot posts `{__botsInCalls:true, __fromExtension:true, action:'start-stt-tap'}` to the media page, as `L`'s host does for its own media actions (`hosts/playwright/index.js` `_media`).
+  - If no PCM arrives within 20 s while the platform reports a participant, the bot sends `{type:'hearing', state:'no-audio'}` and the page shows "Hearing: no audio from the call".
+- **Gating, one `SpeechGate` per stream** (`L` 0.8–25 s segments, 0.3 s padding, 0.6 s gap):
+  - **Echo:** frames whose capture time falls inside a playback window are dropped **before** the gate, so the bot's echo also never skews the gate's loudness estimate. The window runs from the bot sending `call.speak()` to 800 ms after its handle's `done`. Playback windows are kept in `play()` (`bot/run.js:163`) from before `call.speak()`.
+  - **Finals only:** the gate's `onPartial` is a no-op and only `onFinal` is used.
+- **Sending a final segment:**
+  - the bot encodes it as Int16 base64;
+  - it sends it as `{type:'audio', seg, i, n, at, end, stream, data}` pieces of at most 48 KiB each, under the 64 KiB line limit (`bot/run.js:13`, `desktop/runner/protocol.js:2`);
+  - a segment is at most 25 s, so at most 800 KB, in at most 17 pieces.
+- **Leaving, in this order:**
+  1. a `closing` flag stops all ingress and output;
+  2. the bot posts `stop-stt-tap`;
+  3. gates are discarded **without** `flush()`;
+  4. pieces not yet sent are dropped;
+  5. only then do `call.leave()` and the existing leave confirmation run.
 
-### 3. Listen sources and the `auto` fallback
+  Nothing is written to disk.
 
-- **The setting:** `listen` in the scope file is `auto` (the default), `platform` or `audio`. A per-call override on the call page applies to the next join.
-  - `core/src/scope.js` validates it.
-  - An unknown value is refused (`invalid-listen`), as other scope fields are.
-- **`platform`:** today's behaviour. Captions only, with no tap and no engine.
-- **`audio`:**
-  - the tap and the engine start at join, and the platform's caption events are ignored;
-  - on Teams, the 15-second captions retry in `desktop/guest/agent/call.js` (`TEAMS_CAPTIONS`) is not injected.
-- **`auto`:** captions first. At join, the tap runs with a **detector gate only**: `L`'s `SpeechGate`, with no engine.
-  - **The trigger:** RFactory switches to audio for the rest of the call when **two** closed speech segments, each at least 0.8 s, pass with **no caption event** arriving between a segment's start and 5 s after its end.
-  - **Teams:** the trigger also fires when the Captions item is still `aria-disabled` 30 s after join. That is the k14 signal, and `call.js` already reads it.
-  - **Silence never triggers it**, because a segment needs speech.
-  - **Once switched,** there is no switching back in that call, so turns are never duplicated. Up to two utterances may be lost before the switch. The page then says "Hearing: own transcription (captions unavailable)".
-- **What the page shows:** the live source, either "captions" or "own transcription".
+### 3. In the call manager (`web/call.js`): transcribe and hear
 
-### 4. Turns into `heard`
+- **Reassembly:** for each call, the manager reassembles `audio` pieces by `seg`. A segment over 25 s, more than 17 pieces, out-of-order indices or more than 2 incomplete segments are dropped and logged by size only.
+- **Transcription:** `web/stt.js` (new) `POST`s each complete segment to `http://rfactory-stt:8080/inference/<secret>` as a WAV, with `response_format=json`, `temperature=0`, `language=<code>` and **no prompt**.
+  - Each request has a 10 s timeout. At most 2 requests per call are in flight, and segments beyond that are dropped and counted.
+  - On leave, in-flight requests are aborted and incomplete segments dropped.
+- **Merging into turns:** segments from one call that arrive less than **1.5 s** apart (end to next start) share one turn id. The turn's text is the joined segment texts.
+  - The manager then calls `c.hearing.heard({ id: 'a' + n, speaker, text, final: true, source: 'audio' })`.
+  - `hearing.js` is **unchanged**. It already treats repeated updates to one id as a growing turn and acts after 1.5 s of quiet (`core/src/call/hearing.js:13-46`). A pause after "RFactory…" therefore stays in one turn, the way caption text settles today.
+- **Speaker names:** Teams' tap is one mixed stream, and Meet's tracks are speaker slots, not people.
+  - The speaker is `Participant`, unless the call has exactly one other participant and the platform's roster names them. That is `L`'s `oneToOneSpeaker()` rule, applied in the manager.
+  - Approvals never depend on the speaker (#10).
+- **Logs:** the manager never logs transcript text, only sizes, timings and counts.
 
-- **The mapping:** `AudioTranscription` emits turn snapshots (`turnId`, `speaker`, `text`). `bot/run.js` turns each **final** turn into `{type:'heard', id: 'a' + turnId, speaker, text, final: true}`. That is the same message the caption path sends (`bot/run.js:212`), so the parent process and `hearing.js` see the same shape.
-- **Speaker names:**
-  - **Teams:** the tap sees one mixed `mainAudio` stream, so the speaker is `Participant`.
-  - **Meet:** speaker slots are not people, so the speaker is also `Participant`.
+### 4. The listen setting
 
-  No platform signal is used to name people in this task. Approvals stay on the signed-in page (#10).
-- **No self-hearing:** while the bot is playing speech, and for 500 ms after `tts-ended`, segments are dropped. That covers echo from a participant's speakers. `run.js` already tracks playback through `call.speak` and its handles.
-- **`hearing.js`:** a turn marked `final` from the audio source is acted on at once. `hearing.js` passes the source through as `source: 'audio'`, so it does not wait out its 1.5 s quiet window, which exists to let caption text settle. Caption turns behave exactly as today.
+- **Scope fields** (`core/src/scope.js`, validated like the other fields):
+  - `listen`: `auto` | `platform` | `audio`, default `auto`; anything else is `invalid-listen`;
+  - `language`: a BCP-47 tag, default `en`, mapped to a Whisper code by its primary subtag. A language Whisper does not support gives `unsupported-language` at scope load.
+- **Per call:** the call page can override `listen` before join.
+- **Resolving `auto` (D2):** `meet` gives `platform`; `teams`, `zoom` and `slack` give `audio`. The manager sends the resolved value to the bot.
+- **On the call page:** "Hearing: captions" or "Hearing: own transcription", and the `no-audio` state.
+- **The Teams retry** (`desktop/guest/agent/call.js` `TEAMS_CAPTIONS`) is injected only when the source is `platform`.
+- **The join chat line** (`bot/run.js:20`) depends on the source:
+  - with `audio`: "…is listening and transcribes this call on RFactory's own servers…";
+  - with `platform`: unchanged.
 
-### 5. Privacy and logs
+  If sending it fails, it is retried once after 10 s, and the failure is shown on the page. Late joiners see it in the chat history.
 
-- **Audio:**
-  - it exists only in the tap's buffers, the gate and the engine request;
-  - on leave, `stop-stt-tap` is posted, every gate is dropped without `flush()` (`L`'s `stop()` flushes, which would transcribe the tail), pending engine requests are aborted, and the engine process is killed;
-  - nothing is written to disk.
-- **Logs:** `L`'s `AudioTranscription` logs each final transcript in plain text (`L/hearing/caption-source.js:245`). Its `log` callback is given a filter that keeps the timing and drops everything from `: "` onward. No transcript text reaches pod, VM or runner logs. A test asserts that.
-- **The transcript** follows the same path, retention and redaction as caption text today.
-- **Notice:** the join chat line (`bot/run.js:20`) becomes "RFactory Bot (AI) is listening and transcribes this call on its own servers; say 'RFactory' and a question. Source (AGPL-3.0): …".
+### 5. Packaging and deploy
 
-### 6. Packaging
-
-- **The pod image** (`deploy/images/default.nix`) and the **desktop VM** (`desktop/guest/default.nix`, `agent.nix`) gain `whisper-cpp` and the pinned `ggml-small.bin`.
-- **Image checks:** the existing `deploy/check-image.sh` gains a check that `whisper-server` and the model are present, and that the model's hash matches.
+- **The `rfactory-stt` image:** a Nix image build next to the existing images (`deploy/images/default.nix`) containing `whisper-cpp` and the pinned model, with `deploy/check-image.sh` covering it.
+- **Manifests:** the Deployment, Service, Secret, NetworkPolicy and its egress deny live in factory-gitops, with RFactory's other manifests.
+- **The bot and guest images** need no model and no new packages. They only gain the bridge code.
 - **The owner's OK** is needed before building or deploying on p620.
 
 ## Alternatives rejected
 
-- **One cluster STT service** (the intent's recommendation). Every call would need a new authenticated network path through the desktop VM's guard, and whisper-server has none. Per call, it fits in measured memory. *Deviation, for approval with this spec.*
-- **The `base` model:** fast, but it missed the wake word in 1 of 3 utterances and made more errors.
-- **A `keywords` or prompt bias:** it drops the wake word (measured, 0 of 3).
-- **faster-whisper:** it adds a Python runtime to both images. whisper.cpp is already in nixpkgs with a server.
-- **Capturing from a sound server:** the desktop VM has no audio output device, and it would mix in the bot's own voice.
+- **A per-call engine:**
+  - in the 2-vCPU desktop VM it costs about 2 s an utterance and competes with Chrome;
+  - giving the VMs more vCPUs lowers desktop density;
+  - `base` on 2 cores missed the wake word.
+- **A direct path from the VM to the service:** it opens the VM's network guard. The existing line channel already reaches the manager.
+- **`L`'s `AudioTranscription`:** the snapshots, flush and cancel problems above.
+- **A mid-call `auto` switch:** D2 above.
+- **A `keywords` or prompt bias:** it drops the wake word, as measured.
+- **faster-whisper:** a Python runtime in the image, where whisper.cpp is already in nixpkgs with a server.
+- **Capturing from a sound server:** the desktop VM has no audio output device, and it would capture the bot's own voice.
 - **Cloud STT:** ruled out by the intent.
-- **The GPU (Vulkan):** left to the owner. CPU meets the bar.
-- **Partial transcripts:** they cost CPU and change nothing in `hearing.js`.
+- **The GPU (Vulkan):** the owner's decision. CPU meets the bar.
 
 ## Risks
 
-- **Real voices, accents and noise** may score worse than synthetic speech. The live bar in Verification is the gate, and the fallback is the GPU or a larger model, decided by the owner.
-- **Teams' light client** may not expose `mainAudio` to the tap the way the full client does. Plan step 1 is a spike that proves the tap delivers audio on a k14 Teams call before anything else is built.
-- **`auto` loses up to two utterances** before it switches. On Teams the 30-second Captions-disabled rule switches earlier.
-- **CPU contention:** with many calls and long monologues, segments queue. `L` already skips superseded partials, and finals are serialised per stream. CPU and queueing are measured with the Factories running.
-- **The library's internals** (`stt-audio`, `start-stt-tap`, `AudioTranscription`) are not a stable API. The library version is pinned, and a test fails if these names change.
+- **Real voices** may score worse than synthetic speech. The live bar is the gate. The fallbacks are more threads, a GPU or a larger model, decided by the owner.
+- **Teams' light client** may not give the tap usable audio. Plan step 1 is a spike on a k14 Teams call that proves PCM arrives before anything else is built.
+- **Line-channel load:** 16 kHz Int16 is 32 KB/s while someone speaks, about 43 KB/s as base64. That goes only for finished segments, over the channel the runner already relays. The plan measures it on the VM path.
+- **Service queueing** with many busy calls. It is measured, and replicas are added if needed.
+- **`L`'s internals** (`stt-audio`, `start-stt-tap`, `SpeechGate`) are not a stable API. `L` is pinned, and a test fails if these names change.
 
 ## Verification
 
 **Unit tests** (node, fakes only):
-- **The engine adapter:** WAV encoding, no prompt sent, the timeout, and a failure.
-- **The bridge:** messages from the wrong page are ignored; base64 PCM is decoded; start and stop are posted.
-- **The `auto` trigger,** with a fake clock and fake gate:
-  - two silent-caption segments switch;
-  - one segment does not;
-  - silence never switches;
-  - the Teams disabled-item rule switches;
-  - there is no switching back.
-- **Mapping:** turns become `heard` with `final: true`.
-- **Echo:** segments during playback and up to 500 ms after it are dropped.
-- **`hearing.js`:** acts at once on an audio final, and caption timing is unchanged.
-- **Logs:** no transcript text in any log line.
-- **Leave:** no flush, requests aborted, the engine killed.
-- **Scope:** `listen` validation.
+- **The bridge:** messages from the wrong page or frame are refused; a base64 Int16 round trip keeps negative samples; rate, size and stream limits; start and stop are posted.
+- **The bot:** frames inside playback windows never reach the gate; segments are split into pieces of at most 48 KiB; leave posts `stop-stt-tap`, never flushes and sends nothing after `closing`; `no-audio` is sent after 20 s.
+- **The manager:**
+  - reassembly limits;
+  - the STT request (no prompt, the language, the timeout);
+  - segments under 1.5 s apart share one id, and a pause after "RFactory" stays one turn;
+  - leave aborts requests;
+  - no transcript in logs;
+  - the `oneToOneSpeaker` rule.
+- **Scope:** `listen` and `language` validation; `auto` resolution per platform.
+- **The guest:** `TEAMS_CAPTIONS` is injected only for `platform`.
 
 **On p620, with the owner's OK:**
-1. **A tap spike** on a k14 Teams call in the desktop VM: `stt-audio` chunks arrive.
-2. **Teams, desktop VM,** `auto` and `audio`: the bot answers a spoken, addressed question in **at least 5 of 6** runs on one fixed build.
-3. **Meet in the pod:** 5 of 5 in `audio`, and 5 of 5 in `auto` (captions, as today).
-4. **Latency:** from end of speech to the final `heard`, the median is **2.5 s or less** and p90 is **4 s or less**, read from `L`'s own timing log line. Time to the spoken answer is reported separately.
-5. **False triggers:** 5 minutes of conversation not addressed to the bot, plus 2 minutes of silence, cause **0** wake-ups.
-6. **Resources:** with the Factories running and 3 concurrent calls, each engine stays at **1 GB RSS or less**, and its CPU and queue delay are reported.
-7. **Privacy:** pod, VM and runner logs from those runs contain no transcript text (checked by grepping for the spoken phrases).
+1. **The tap spike** on a k14 Teams call in the desktop VM: `audio` pieces reach the manager.
+2. **Teams, desktop VM** (`auto`, which resolves to `audio`): the bot answers a spoken, addressed question in **at least 5 of 6** runs on one fixed build.
+3. **Meet in the pod:** 5 of 5 with `audio`, and 5 of 5 with `auto` (captions, as today).
+4. **Latency,** measured by the manager from a segment's `end` to the `heard` call: median **2.5 s or less**, p90 **4 s or less**. The time to the spoken answer is reported separately.
+5. **False triggers:**
+   - 5 minutes of talk not addressed to the bot, plus 2 minutes of silence, cause **0** wake-ups;
+   - during the bot's own answers, its echo causes **0** wake-ups.
+6. **Resources:** with the Factories running and 3 concurrent calls:
+   - `rfactory-stt` stays under its limits;
+   - queue delay is reported;
+   - the desktop VM's CPU is no worse than today's measurement plus 0.2 cores for the gate.
+7. **Privacy:**
+   - logs from the web server, the runner, the VM and `rfactory-stt` contain no transcript text, checked by grepping for both the spoken and the recognised phrases;
+   - after leave, no segment or request for the call remains.
