@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 28
 author: olafkfreund
 ---
@@ -208,3 +208,7 @@ New for this task:
     *Recommendation:* out of this task.
 16. **Two slices?** *Recommendation:* yes. The first ships once
     questions 7, 12 and 13 are answered.
+
+## Decisions (owner, 2026-11-23: "approved")
+
+The recommendation on each open question above is its answer.
