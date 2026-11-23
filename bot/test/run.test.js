@@ -535,21 +535,20 @@ test('short sound more than two seconds before speech is not joined', async () =
   s.msg({ type: 'leave' }); await s.done;
 });
 
-test('an echo cut discards an open short stretch before later speech', async () => {
-  const now = { value: 300 };
+test('an echo cut discards a dropped short stretch, so it is never joined across the bot speaking', async () => {
+  // review finding: the old test never had a dropped stretch before the cut, so it passed without the clearing line
+  const now = { value: 0 };
   const s = await audioJoined({ realGate: true, now });
   s.audio({ stream: 'a', event: 'attached' });
-  for (let i = 0; i < 4800; i += 320) s.audio({ stream: 'a', at: (i + 320) / 16, pcm: new Int16Array(320).fill(16000) });
-  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
-  s.audio({ stream: 'a', at: 320, pcm: new Int16Array(320).fill(16000) });
-  now.value = 400; s.speaks[0].resolve({ cancelled: false }); await tick();
-  for (let i = 0; i < 30400; i += 320) {
-    const pcm = new Int16Array(320).fill(i < 19200 ? 16000 : 0);
-    s.audio({ stream: 'a', at: 1400 + (i + 320) / 16, pcm });
-  }
+  const chunk = (endAt, loud) => s.audio({ stream: 'a', at: endAt, pcm: new Int16Array(320).fill(loud ? 16000 : 0) });
+  for (let t = 20; t <= 1000; t += 20) chunk(t, t <= 300);          // 300 ms speech, then silence: the gate drops it
+  now.value = 1000; s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  chunk(1020, true);                                                // inside the playback window: an echo cut
+  now.value = 1100; s.speaks[0].resolve({ cancelled: false }); await tick();   // window ends at 1900
+  for (let t = 1920; t <= 4400; t += 20) chunk(t, t > 2000 && t <= 3300);       // real speech 2000-3300 ms
   const pieces = s.out.filter((m) => m.type === 'audio');
   assert.strictEqual(new Set(pieces.map((p) => p.seg)).size, 1);
-  assert.ok(pieces[0].at >= 1100, `start ${pieces[0].at}`);
+  assert.ok(pieces[0].at >= 1600, `start ${pieces[0].at}: joined across the echo cut`);
   s.msg({ type: 'leave' }); await s.done;
 });
 

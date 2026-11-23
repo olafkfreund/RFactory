@@ -101,9 +101,9 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     const gate = gates.get(stream), state = recent.get(stream);
     const end = at + samples.length / 16;
     state.chunks.push({ samples: samples.slice(), at });
-    while (state.chunks.length && state.chunks[0].at + state.chunks[0].samples.length / 16 < end - 3000) state.chunks.shift();
-    if (state.chunks.length && state.chunks[0].at < end - 3000) {
-      const first = state.chunks[0], drop = Math.floor((end - 3000 - first.at) * 16);
+    while (state.chunks.length && state.chunks[0].at + state.chunks[0].samples.length / 16 < end - 4000) state.chunks.shift();
+    if (state.chunks.length && state.chunks[0].at < end - 4000) {
+      const first = state.chunks[0], drop = Math.floor((end - 4000 - first.at) * 16);
       first.samples = first.samples.subarray(drop);
       first.at += drop / 16;
     }
@@ -158,7 +158,8 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   }
 
   function discardOpen(gate) {
-    for (const [stream, current] of gates) if (current === gate) { recent.get(stream).short = null; break; }
+    // an echo cut ends any join: nothing from before or during the bot's own speech may reach a later segment
+    for (const [stream, current] of gates) if (current === gate) { const st = recent.get(stream); st.short = null; st.chunks = []; break; }
     const final = gate.onFinal;
     gate.onFinal = () => {};
     try { gate.flush(); } finally { gate.onFinal = final; }
