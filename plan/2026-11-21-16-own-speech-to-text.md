@@ -26,7 +26,7 @@ Branch `feat/16-own-stt`, cut from `main` after this plan is approved. Each step
   - **the gate:** `SpeechGate` (`hearing/speech-gate.js`). Its `push(chunk, at)` takes the time of the chunk's **first** sample.
 
   It does not use `AudioTranscription`.
-- **The engine:** one cluster service, `rfactory-stt`. It runs `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 0.0.0.0 --port 8080 -np --inference-path /inference/<secret>`, with the multilingual small model pinned by hash.
+- **The engine:** one cluster service, `rfactory-stt`. It runs `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 0.0.0.0 --port 8080 --inference-path /inference/<secret>`, with the multilingual small model pinned by hash.
   - Requests are 8 CPU and 1.5 GiB; limits are 8 CPU and 2 GiB.
   - The 128-bit `<secret>` comes from a Secret mounted only into `rfactory-stt` and the web server.
   - Its NetworkPolicy allows ingress on 8080 only from the web server's pods, and denies all egress.
@@ -64,6 +64,8 @@ Branch `feat/16-own-stt`, cut from `main` after this plan is approved. Each step
 
 1. **Step 6 (Codex): `web/Containerfile`'s explicit copy list** gains `web/stt.js` and `bot/stt-bridge.js`. Without it the web image would not ship them.
 2. **Step 6: in `audio` mode the manager logs the bot's `log` lines and its stderr by size only.** That follows "no text that could carry transcript content" strictly, and costs some debugging detail. `platform` calls log as before.
+3. **Step 7: no `-np`.** whisper-cpp 1.9.2 (pinned nixpkgs) rejects `-np` ("unknown argument"), so the container would not start. The server prints no transcript by default (`--print-realtime` is off), and `deploy/check-image-stt.sh` now fails if the server's log carries the recognised fixture text. The flags are otherwise as in Decisions.
+4. **Step 7: `check-image-stt.sh` waits on the secret path itself.** whisper-server answers 404 on every path before the model has loaded, so a 404 on the bare path is not a readiness signal.
 
 ## Steps
 
