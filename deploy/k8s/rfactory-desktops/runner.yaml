@@ -46,9 +46,9 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:67f9df2b9a2f8aceb320956d70dc26adbaae5002429cf2b8d1db364b6a3ad115"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:28c65adccd93032cf04a3deae58f6827a2b91cefccc3d712b4ba76817e7251c0"}
-            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/zajfmd00bqbia246wvnynagla294z65y-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:e06d370cf320d4dbd2b1b7746bd9dc72ca07cb34555c0778991b4afa93a304be"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:d2a3b1cb278727eadc2ce2ebfc4ef0f6d4ce4ae0c1a099fb41c2ee2837810c5a"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/kxm5ypvq03ky8w6waxgqz9mrf7k1zwvv-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
             # k14 test mode only (deploy/k3d/k14-env.sh on): three named keys from the Secret rfverify-runner, never in Git;
             # without it (production) none is set. Named keys only, not envFrom: a Secret must not add any other variable
             # (NODE_OPTIONS, RF_PLATFORM_NAMES...) to the runner (Opus review).
