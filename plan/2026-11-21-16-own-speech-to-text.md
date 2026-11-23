@@ -109,6 +109,8 @@ Traps that apply to every step:
    - **If the count is zero:** first check the bridge (a page-side counter) and the relay. Only if both are fine is it Teams supplying no tap audio, and then the lead stops and brings it to the owner.
    - **Evidence** goes into `plan/`. The benchmark raw output and its script go into `stt/bench/`.
    - Both temporary pieces are removed before step 4.
+   - **Result (2026-11-23, lead, deviation 5):** steps 4 and 6 were already built, so the spike ran the real audio path instead of temporary counters: `bot/run.js` with `RFACTORY_LISTEN=audio`, started directly on p620 (no pod, no VM) against the owner's Teams meeting, with each finished segment sent to the step 7 `rfactory-stt` image running locally. A speaker participant said "RFactory, stand up" twice through `call.speak`. **Pass:** the bot sent 2 segments from `remote-media-1` (2 s each), transcribed as "Our factory stand up." and "Our factory, stand up." (the wake word matched both) in 1.22 s each. Script and output: `stt/bench/teams-tap-spike.js`, `stt/bench/teams-tap-spike-2026-11-23.txt`.
+   - **To check in step 11:** the roster read `count 1` while the speaker and the owner were both in the meeting, which affects the 1:1 rule; the desktop VM path (with the avatar) is not covered by this run.
 
 3. **Scope fields** (`core/src/scope.js` and its test; `core/src/stt-languages.js`, new):
    - `listen` and `language` validation as in Decisions;
