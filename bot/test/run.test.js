@@ -680,3 +680,17 @@ test('audio leave during join discards the bridge without starting the tap', asy
   assert.ok(!s.out.some((m) => m.type === 'audio'));
 });
 
+
+test('a removal shown by the page stops the bot within one 4 s check (Teams reports none itself)', async () => {
+  let removed = false;
+  const page = { evaluate: async (fn) => (fn && fn.name === 'pageLeft' ? removed : false), waitForFunction: async () => {} };
+  const s = await joined({ page });
+  const watch = () => s.timers.filter((t) => t.ms === 4000 && !t.cleared).at(-1);
+  await watch().fn(); await tick();                         // still in the call: keeps watching
+  assert.ok(!s.states().includes('removed'));
+  removed = true;
+  await watch().fn(); await tick(); await tick();
+  assert.ok(s.states().includes('removed'));
+  assert.strictEqual(s.calls.leave, 1);
+  assert.strictEqual(s.calls.close, 1);
+});

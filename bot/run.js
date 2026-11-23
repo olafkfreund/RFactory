@@ -17,6 +17,13 @@ const MAX_OUT = 64 * 1024;
 const LIMIT_MS = 60 * 60 * 1000;
 const BOT_NAME = 'RFactory Bot (AI)';
 const TERMINAL = ['left', 'removed', 'error'];
+// Runs in the page: the in-call Leave control is gone AND the page says the call was left or ended. Chat or captions
+// saying "rejoin" cannot pass alone (Codex). Teams' provider reports no removal, so this also watches for one (#16).
+function pageLeft() {
+  return !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
+    && /leave by mistake|rejoin|you left|left the (meeting|call)|removed you|been removed|meeting (has )?ended|call ended/i
+      .test((document.body && document.body.innerText) || '');
+}
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const audio = env.RFACTORY_LISTEN === 'audio';
@@ -45,7 +52,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const ac = new AbortController();
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
-  let rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
+  let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
@@ -165,6 +172,20 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     try { gate.flush(); } finally { gate.onFinal = final; }
   }
 
+  // every 4 s while in the call: a bot removed by someone, or a meeting ended for all, stops at once instead of
+  // holding its desktop VM until the 60-minute limit (owner's removal in the #16 Teams live check went unnoticed)
+  async function watchLeft() {
+    if (closing || !call) return;
+    const page = call._inner && call._inner.page;
+    try {
+      if (page && typeof page.evaluate === 'function' && await page.evaluate(pageLeft) === true) {
+        if (!closing) { sendState('removed'); stop('the platform shows the call was left', 0); }
+        return;
+      }
+    } catch { /* page busy or navigating: check again */ }
+    if (!closing) leftTimer = d.clock.setTimeout(watchLeft, 4000);
+  }
+
   async function pollRoster() {
     if (closing || !call) return;
     try {
@@ -265,11 +286,9 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     const page = call._inner && call._inner.page;
     if (!page || typeof page.waitForFunction !== 'function') return;
     // the in-call Leave control is gone AND the page says the call was left: chat or captions saying "rejoin" can't pass (Codex)
-    const left = () => !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
-      && /leave by mistake|rejoin|you left|left the (meeting|call)|meeting (has )?ended|call ended/i.test((document.body && document.body.innerText) || '');
     // what is left of a 7 s budget from the start of stop: host close and profile removal must finish before web's 10 s SIGTERM
     const timeout = Math.max(1000, 7000 - (Date.now() - stopStarted));
-    try { await page.waitForFunction(left, null, { timeout }); } catch { log(`leave not confirmed by the page within ${timeout} ms`); }
+    try { await page.waitForFunction(pageLeft, null, { timeout }); } catch { log(`leave not confirmed by the page within ${timeout} ms`); }
   }
 
   // The one stop path: abort join, clear timers, cancel playback, leave, close host, remove profile.
@@ -279,6 +298,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     gates.clear();
     recent.clear();
     if (rosterTimer) d.clock.clearTimeout(rosterTimer);
+    if (leftTimer) d.clock.clearTimeout(leftTimer);
     if (noAudioTimer) d.clock.clearTimeout(noAudioTimer);
     if (noticeTimer) d.clock.clearTimeout(noticeTimer);
     stopping = Promise.resolve().then(async () => {
@@ -372,6 +392,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       try { await bridge.start(call._inner.mediaPage); } catch { if (!closing) log('stt tap start failed'); }
       if (!closing) pollRoster();
     }
+    if (!closing) leftTimer = d.clock.setTimeout(watchLeft, 4000);
     if (!stopping) afterJoin();
   }
 
