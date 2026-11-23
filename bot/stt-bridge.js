@@ -5,7 +5,7 @@ async function installSttBridge(host, { onAudio, log }) {
   const streams = new Set();
   await host.context.exposeBinding('__rfSttAudio', (source, payload) => {
     if (!mediaPage || source.page !== mediaPage || source.frame !== mediaPage.mainFrame()) return;
-    if (!payload || typeof payload !== 'object' || typeof payload.stream !== 'string' || !payload.stream
+    if (!payload || typeof payload !== 'object' || typeof payload.stream !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(payload.stream)
       || payload.rate !== 16000 || !Number.isFinite(payload.at)) return;
 
     const { stream, rate, at } = payload;

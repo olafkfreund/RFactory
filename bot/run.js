@@ -46,13 +46,21 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
   let rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
-  const gates = new Map(), playback = [];
+  const gates = new Map(), playback = [], lastSpeech = new Map();
   let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
   const finished = new Promise((r) => { finish = r; });
 
+  function speechHint(stream) {
+    const at = d.clock.now();
+    if (!closing && at - (lastSpeech.get(stream) ?? -Infinity) >= 300) {
+      lastSpeech.set(stream, at);
+      send({ type: 'speech', stream });
+    }
+  }
+
   function newGate(stream) {
-    const gate = new d.SpeechGate({ onPartial: () => {}, onFinal: ({ audio: samples, startAt, endAt }) => {
+    const gate = new d.SpeechGate({ onPartial: () => speechHint(stream), onFinal: ({ audio: samples, startAt, endAt }) => {
       if (closing) return;
       const pcm = Buffer.allocUnsafe(samples.length * 2);
       for (let i = 0; i < samples.length; i++) pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768))), i * 2);
@@ -64,13 +72,20 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     return gate;
   }
 
+  function prunePlayback() {
+    for (let i = playback.length - 1; i >= 0; i--) {
+      if (playback[i].end < d.clock.now() - 60000) playback.splice(i, 1);
+    }
+  }
+
   function onAudio({ stream, at, pcm, event }) {
     if (closing) return;
-    if (event === 'attached') { newGate(stream); return; }
-    if (event === 'detached') { gates.get(stream)?.flush(); gates.delete(stream); return; }
+    if (event === 'attached') { newGate(stream); lastSpeech.delete(stream); return; }
+    if (event === 'detached') { gates.get(stream)?.flush(); gates.delete(stream); lastSpeech.delete(stream); return; }
     if (!pcm?.length || !gates.has(stream)) return;
     if (!heardPcm) { heardPcm = true; if (noAudioTimer) d.clock.clearTimeout(noAudioTimer); send({ type: 'hearing', state: 'own' }); }
     const first = at - pcm.length / 16;
+    prunePlayback();
     const overlap = playback.filter((w) => w.start <= at && w.end > first);
     let runStart = -1, cut = false;
     for (let i = 0; i <= pcm.length; i++) {
@@ -78,13 +93,21 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       const blocked = i === pcm.length || overlap.some((w) => time >= w.start && time < w.end);
       if (!blocked && runStart < 0) runStart = i;
       if (blocked && runStart >= 0) {
-        gates.get(stream).push(pcm.subarray(runStart, i), first + runStart / 16);
+        const gate = gates.get(stream);
+        gate.push(pcm.subarray(runStart, i), first + runStart / 16);
+        if (gate.isOpen?.()) speechHint(stream);
         runStart = -1;
       }
       if (blocked && i < pcm.length) cut = true;
-      if (cut && !blocked) { newGate(stream); cut = false; }
+      if (cut && !blocked) { discardOpen(gates.get(stream)); cut = false; }
     }
-    if (cut) newGate(stream);
+    if (cut) discardOpen(gates.get(stream));
+  }
+
+  function discardOpen(gate) {
+    const final = gate.onFinal;
+    gate.onFinal = () => {};
+    try { gate.flush(); } finally { gate.onFinal = final; }
   }
 
   async function pollRoster() {
@@ -227,6 +250,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   async function play(msg) {
     const myGen = playGen;
     let h = null, result;
+    if (audio) prunePlayback();
     const window = audio ? { start: d.clock.now(), end: Infinity } : null;
     if (window) playback.push(window);
     try {

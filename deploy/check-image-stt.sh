@@ -34,5 +34,6 @@ model=$(podman inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" | 
 got=$(podman exec "$name" sha256sum "$model")
 [ "${got%% *}" = "$model_sha" ] || { echo "stt check failed: model hash differs" >&2; exit 1; }
 # privacy: the server must not log what it recognised (the fixture is heard as "beeping")
-! podman logs "$name" 2>&1 | grep -qi 'beep' || { echo "stt check failed: the log carries recognised text" >&2; exit 1; }
+podman logs "$name" > "$tmp/log" 2>&1
+! grep -qi 'beep' "$tmp/log" || { echo "stt check failed: the log carries recognised text" >&2; exit 1; }
 echo "stt image ok: model $model_sha"

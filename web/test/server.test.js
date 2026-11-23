@@ -206,6 +206,15 @@ test('call listen override is validated and passed to the manager', async (t) =>
   assert.deepEqual(call.options, [{ listen: 'audio' }]);
 });
 
+test('explicit audio is a 400 when STT is not configured', async (t) => {
+  const call = fakeCall();
+  call.start = async () => { throw new Error('stt-not-configured'); };
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const response = await post(get, { link: 'https://meet.google.com/abc-defg-hij', listen: 'audio' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'stt-not-configured' });
+});
+
 test('call page renders each hearing state as text', () => {
   const nodes = Object.fromEntries(['call-hearing', 'call-state-text', 'call-join', 'call-leave', 'call-listen'].map((id) => [id, { textContent: '', disabled: false }]));
   const doc = { getElementById: (id) => nodes[id] };

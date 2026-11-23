@@ -26,11 +26,13 @@ test('multipart request carries WAV and language without a prompt; errors reveal
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
   assert.equal(wav.readUInt32LE(24), 16000);
   assert.deepEqual(wav.subarray(44), Buffer.from([0, 0, 1, 0]));
+  let cancelled = false;
   const failed = createStt({ url: 'http://stt', secretFile: file, fetch: async () => ({ ok: false, status: 500,
-    text: async () => 'canary transcript' }) });
+    body: { cancel: async () => { cancelled = true; } }, text: async () => 'canary transcript' }) });
   await assert.rejects(failed.transcribe(Buffer.from([0, 0]), 'en'), (error) => {
     assert.deepEqual(error, { status: 500 }); return true;
   });
+  assert.equal(cancelled, true);
 });
 
 test('request timeout and leave signal abort the fetch', async (t) => {

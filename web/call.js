@@ -21,7 +21,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
   stt = null }) {
-  const sttConfigured = !!(stt || (sttUrl && sttSecretFile && fs.existsSync(sttSecretFile)));
+  let sttConfigured = !!stt;
+  if (!sttConfigured && sttUrl && sttSecretFile) {
+    try { sttConfigured = /^[0-9a-f]{32}$/i.test(fs.readFileSync(sttSecretFile, 'utf8')); } catch { /* unavailable */ }
+  }
   const listeners = new Set();
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
@@ -73,6 +76,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (c.stopping) return c.stopping;
     c.closed = true;
     clock.clearTimeout(c.turn?.timer);
+    if (c.listen === 'audio') log(`stt pending=${c.requests.size} dropped=${c.dropped}`);
     c.parts.clear();
     for (const controller of c.requests) controller.abort();
     c.requests.clear();
@@ -247,12 +251,29 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   }
 
   function settle(c) {
+    while (!c.closed && c.turns[0]?.quiet && c.turns[0].segments.every((s) => s.done)) {
+      const turn = c.turns.shift();
+      const text = turn.segments.sort((a, b) => a.seg - b.seg).map((s) => s.text).filter(Boolean).join(' ').trim();
+      if (text) {
+        log(`turn ms=${now() - turn.lastPiece} segments=${turn.segments.length}`);
+        c.hearing.heard({ id: `audio-${turn.segments[0].seg}`, speaker: 'Participant',
+          text, final: true, source: 'audio', settled: true });
+      }
+    }
+  }
+
+  function armQuiet(c) {
     const turn = c.turn;
-    if (!turn || !turn.quiet || turn.segments.some((s) => !s.done) || c.closed) return;
-    c.turn = null;
-    const text = turn.segments.sort((a, b) => a.seg - b.seg).map((s) => s.text).filter(Boolean).join(' ').trim();
-    if (text) c.hearing.heard({ id: `audio-${turn.segments[0].seg}`, speaker: c.roster.count === 1 && c.roster.name ? c.roster.name : 'Participant',
-      text, final: true, source: 'audio', settled: true });
+    clock.clearTimeout(turn.timer);
+    turn.timer = clock.setTimeout(() => {
+      for (const [seg, pending] of c.parts) {
+        if (pending.turn !== turn) continue;
+        pending.segment.done = true; c.parts.delete(seg); c.seen.add(seg); c.dropped++;
+      }
+      turn.quiet = true;
+      c.turn = null;
+      settle(c);
+    }, 1000);
   }
 
   function audio(c, msg) {
@@ -269,32 +290,29 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let part = c.parts.get(msg.seg);
     if (!part) {
       if (msg.i !== 0 || c.parts.size >= 2) { c.dropped++; return; }
+      if (!c.turn) { c.turn = { segments: [], quiet: false, timer: null, lastPiece: now() }; c.turns.push(c.turn); }
       const segment = { seg: msg.seg, done: false, text: '' };
-      part = { n: msg.n, at: msg.at, end: msg.end, stream: msg.stream, chunks: [], bytes: 0, segment };
+      part = { n: msg.n, at: msg.at, end: msg.end, stream: msg.stream, chunks: [], bytes: 0, segment, turn: c.turn };
       c.parts.set(msg.seg, part);
-      if (!c.turn) c.turn = { segments: [], quiet: false, end: msg.end, timer: null };
       c.turn.segments.push(segment);
-      c.turn.end = Math.max(c.turn.end, msg.end);
-      c.turn.quiet = false;
-      clock.clearTimeout(c.turn.timer);
-      c.turn.timer = clock.setTimeout(() => { if (c.turn) {
-        for (const [seg, pending] of c.parts) { pending.segment.done = true; c.parts.delete(seg); c.seen.add(seg); c.dropped++; }
-        c.turn.quiet = true; settle(c);
-      } }, Math.max(0, c.turn.end + 1000 - now()));
     }
     if (msg.n !== part.n || msg.at !== part.at || msg.end !== part.end || msg.stream !== part.stream || msg.i !== part.chunks.length ||
       part.bytes + bytes.length > 800000) { c.dropped++; return; }
     part.chunks.push(bytes); part.bytes += bytes.length;
+    part.turn.lastPiece = now();
+    armQuiet(c);
     if (part.chunks.length !== part.n) return;
     c.parts.delete(msg.seg); c.seen.add(msg.seg);
-    if (c.requests.size >= 2) { part.segment.done = true; c.dropped++; emit({ type: 'hearing', state: 'own', dropped: c.dropped }); settle(c); return; }
+    if (c.requests.size >= 2) { part.segment.done = true; c.dropped++;
+      emit({ type: 'hearing', state: c.noticeFailed ? 'notice-failed' : 'own', dropped: c.dropped }); settle(c); return; }
     const segment = part.segment;
     const controller = new AbortController();
     c.requests.add(controller);
+    const started = now();
     Promise.resolve().then(() => c.closed ? { text: '' } : c.stt.transcribe(Buffer.concat(part.chunks), c.language, { signal: controller.signal }))
       .then((result) => { if (!c.closed) segment.text = result.text; }, (error) => {
         if (!c.closed) log(`stt failed: ${Number.isInteger(error?.status) ? error.status : 502}`);
-      }).finally(() => { c.requests.delete(controller); segment.done = true; settle(c); });
+      }).finally(() => { log(`stt ms=${now() - started} bytes=${part.bytes}`); c.requests.delete(controller); segment.done = true; settle(c); });
   }
 
   function incoming(c, line) {
@@ -310,8 +328,12 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
     } else if (msg.type === 'audio') audio(c, msg);
+    else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
+      if (c.turn) armQuiet(c);
+    }
     else if (msg.type === 'hearing' && c.listen === 'audio' && ['own', 'no-audio', 'notice-failed'].includes(msg.state))
-      emit({ type: 'hearing', state: msg.state, dropped: c.dropped });
+      { if (msg.state === 'notice-failed') c.noticeFailed = true;
+        emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state, dropped: c.dropped }); }
     else if (msg.type === 'roster' && c.listen === 'audio' && Number.isInteger(msg.count) && msg.count >= 0) {
       c.roster = { count: msg.count, ...(msg.count === 1 && typeof msg.name === 'string' ? { name: msg.name } : {}) };
       emit({ type: 'roster', ...c.roster });
@@ -345,7 +367,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set(), listen: selected, language: whisperLanguage,
-      stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false, turn: null, roster: { count: 0 } };
+      stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 } };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);

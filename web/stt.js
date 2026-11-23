@@ -22,7 +22,7 @@ function createStt({ url, secretFile, fetch: request = globalThis.fetch, clock =
     const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
       const response = await request(endpoint, { method: 'POST', body: form, signal: combined });
-      if (!response.ok) throw { status: response.status };
+      if (!response.ok) { try { await response.body?.cancel(); } catch {} throw { status: response.status }; }
       const body = await response.json();
       if (typeof body.text !== 'string') throw { status: 502 };
       return { text: body.text };

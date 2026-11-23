@@ -455,10 +455,12 @@ async function audioJoined(over = {}) {
   const order = over.order || [];
   const gates = [];
   class Gate {
-    constructor(callbacks) { this.callbacks = callbacks; this.pushes = []; gates.push(this); }
-    push(samples, at) { this.pushes.push({ samples: [...samples], at }); }
-    flush() { order.push('flush'); }
+    constructor(callbacks) { this.callbacks = callbacks; this.onFinal = callbacks.onFinal; this.pushes = []; gates.push(this); }
+    push(samples, at) { this.pushes.push({ samples: [...samples], at }); this.open = true; }
+    isOpen() { return !!this.open; }
+    flush() { order.push('flush'); if (this.open) { this.open = false; this.onFinal({ audio: Float32Array.of(0.5), startAt: 0, endAt: 1000 }); } }
     final(samples, at = 0, end = 25000) { this.callbacks.onFinal({ audio: samples, startAt: at, endAt: end }); }
+    partial() { this.callbacks.onPartial({ audio: Float32Array.of(0.5) }); }
   }
   const s = await joined({ ...over, order, env: { RFACTORY_LISTEN: 'audio', ...over.env }, SpeechGate: Gate,
     installSttBridge: async (host, opts) => {
@@ -488,8 +490,48 @@ test('audio cuts echo by sample capture time, including a delayed chunk and the 
   s.speaks[0].resolve({ cancelled: false }); await tick();
   s.audio({ stream: 'a', at: 1000.25, pcm: Int16Array.from([1, 2, 3, 4, 5, 6, 7, 8]) });
   s.audio({ stream: 'a', at: 2000.125, pcm: Int16Array.from([1, 2, 3, 4]) });
-  assert.deepStrictEqual(s.gates[0].pushes, [{ samples: [1, 2, 3, 4], at: 999.75 }]);
-  assert.deepStrictEqual(s.gates.at(-1).pushes, [{ samples: [3, 4], at: 2000 }]);
+  assert.deepStrictEqual(s.gates[0].pushes, [{ samples: [1, 2, 3, 4], at: 999.75 }, { samples: [3, 4], at: 2000 }]);
+  assert.strictEqual(s.gates.length, 1);
+  assert.strictEqual(s.out.filter((m) => m.type === 'audio').length, 0);
+  s.stdin.end(); await s.done;
+});
+
+test('playback windows older than 60 seconds no longer cut delayed chunks', async () => {
+  const now = { value: 1000 };
+  const s = await audioJoined({ now });
+  s.audio({ stream: 'a', event: 'attached' });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  s.speaks[0].resolve({ cancelled: false }); await tick();
+  now.value = 63000;
+  s.audio({ stream: 'a', at: 1000.125, pcm: Int16Array.of(1, 2) });
+  assert.deepStrictEqual(s.gates[0].pushes.at(-1).samples, [1, 2]);
+  s.stdin.end(); await s.done;
+});
+
+test('partial speech emits only a throttled stream hint and stops at close', async () => {
+  const now = { value: 1000 };
+  const s = await audioJoined({ now });
+  s.audio({ stream: 'a', event: 'attached' });
+  s.gates[0].partial(); s.gates[0].partial();
+  now.value = 1300; s.gates[0].partial();
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'speech'), [
+    { type: 'speech', stream: 'a' }, { type: 'speech', stream: 'a' },
+  ]);
+  s.msg({ type: 'leave' }); await s.done;
+  s.gates[0].partial();
+  assert.strictEqual(s.out.filter((m) => m.type === 'speech').length, 2);
+});
+
+test('open gates hint between sparse partial callbacks', async () => {
+  const now = { value: 1000 };
+  const s = await audioJoined({ now });
+  s.audio({ stream: 'a', event: 'attached' });
+  s.audio({ stream: 'a', at: 1000, pcm: Int16Array.of(1) });
+  now.value = 1200; s.audio({ stream: 'a', at: 1200, pcm: Int16Array.of(1) });
+  now.value = 1300; s.audio({ stream: 'a', at: 1300, pcm: Int16Array.of(1) });
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'speech'), [
+    { type: 'speech', stream: 'a' }, { type: 'speech', stream: 'a' },
+  ]);
   s.stdin.end(); await s.done;
 });
 

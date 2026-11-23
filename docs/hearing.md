@@ -53,7 +53,7 @@ The scope field `language` (default `'en'`) takes a BCP-47 language tag (such as
   - `web/stt.js` never reads or logs error response bodies; on HTTP or parse failure it throws `{ status }` only, and `web/call.js` logs `stt failed: <status>`.
   - In `audio` mode, `web/call.js` logs child `log` events and child `stderr` chunks by byte length only (`child log: <N> bytes` and `child stderr: <N> bytes`) so transcript text cannot leak through child output.
 - **Isolated `rfactory-stt` service**:
-  - `rfactory-stt` runs `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 0.0.0.0 --port 8080 -np --inference-path /inference/<secret>` in the cluster.
+  - `rfactory-stt` runs `whisper-server -m ggml-small.bin -t 8 -ac 768 --host 0.0.0.0 --port 8080 --inference-path /inference/<secret>` in the pod. `STT_PORT` defaults to 8080; the pod uses 8081.
   - The 128-bit (`32` hex character) `<secret>` is mounted from a Kubernetes Secret only into `rfactory-stt` and the web server. Requests to `/inference` or a wrong secret return 404.
   - Its `NetworkPolicy` allows ingress on port 8080 only from the web server's pods and denies all egress.
 - **In-call join notice**:

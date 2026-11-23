@@ -69,6 +69,8 @@ test('refuses invalid PCM, rates, timestamps and more than four open streams', a
   s.send(event('s1', 'detached'));
   s.send(event('s5', 'attached'));
   s.send(audio('s5', new Array(16000).fill(1)));
+  s.send(event('x'.repeat(129), 'attached'));
+  s.send(event('bad/name', 'attached'));
   assert.deepEqual(s.heard.map((p) => p.event || p.pcm.length),
     ['attached', 'attached', 'attached', 'attached', 'detached', 'attached', 16000]);
 });
