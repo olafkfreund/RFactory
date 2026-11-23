@@ -66,6 +66,8 @@ Branch `feat/16-own-stt`, cut from `main` after this plan is approved. Each step
 2. **Step 6: in `audio` mode the manager logs the bot's `log` lines and its stderr by size only.** That follows "no text that could carry transcript content" strictly, and costs some debugging detail. `platform` calls log as before.
 3. **Step 7: no `-np`.** whisper-cpp 1.9.2 (pinned nixpkgs) rejects `-np` ("unknown argument"), so the container would not start. The server prints no transcript by default (`--print-realtime` is off), and `deploy/check-image-stt.sh` now fails if the server's log carries the recognised fixture text. The flags are otherwise as in Decisions.
 4. **Step 7: `check-image-stt.sh` waits on the secret path itself.** whisper-server answers 404 on every path before the model has loaded, so a 404 on the bare path is not a readiness signal.
+5. **Step 2 ran on the real audio path** (see the step 2 result).
+6. **Step 9: `rfactory-stt` runs in the `rfactory` podman pod on p620, not in the cluster** (owner's choice, 2026-11-23). The web server is that pod, so the planned Service, NetworkPolicy and k3d load-balancer port would only have added exposure and a load-balancer restart. `deploy/pod.sh` with `RFACTORY_STT=on` builds `.#image-stt`, loads it, and runs it on the pod's loopback port 8081 (never published) with the planned limits (`--cpus 8 --memory 2g`). The 32-hex path is `$RFACTORY_CONFIG/stt-path` (mode 600), passed to the STT container as a podman secret for uid 10001 and to the web app as `RFACTORY_STT_SECRET_FILE`. The wrapper takes `STT_PORT` (default 8080). No factory-gitops change is needed for STT; the desktop images still go through it (step 11).
 
 ## Steps
 

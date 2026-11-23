@@ -33,7 +33,7 @@ let
     esac
     [ "''${#secret}" -eq 32 ] || { echo "stt: secret is not 32 characters" >&2; exit 1; }
     exec ${pkgs.whisper-cpp}/bin/whisper-server -m ${sttModel} -t 8 -ac 768 \
-      --host 0.0.0.0 --port 8080 --inference-path "/inference/$secret"
+      --host 0.0.0.0 --port "${STT_PORT:-8080}" --inference-path "/inference/$secret"
   '';
 in
 {
