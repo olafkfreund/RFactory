@@ -1,6 +1,8 @@
 'use strict';
 // Every node is built with createElement and textContent; nothing is parsed as markup.
 const SECTIONS = ['done', 'in_progress', 'blocked', 'left'];
+const STANDUP_SECTIONS = ['done', 'now', 'missing', 'next', 'issues', 'unknown'];
+const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const STALE_DAYS = 7;
 
 function renderFooter(doc, commit = '') {
@@ -45,7 +47,7 @@ function renderItem(doc, item) {
   const li = el(doc, 'li', undefined, 'card');
   li.appendChild(el(doc, 'span', item.id, 'card-key'));
   const title = item.title || '(no title)';
-  if (typeof item.url === 'string' && item.url.startsWith('https://github.com/')) {
+  if (typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
     const a = el(doc, 'a', title, 'card-title');
     a.setAttribute('href', item.url);
     li.appendChild(a);
@@ -55,17 +57,89 @@ function renderItem(doc, item) {
   return li;
 }
 
-function fill(doc, id, items) {
-  const ul = doc.getElementById(id).querySelector('ul');
+function renderRow(doc, row) {
+  const li = el(doc, 'li', undefined, 'card');
+  // a button, so the card review opens from the keyboard too
+  const key = el(doc, row.card_key ? 'button' : 'span', row.card_key, 'card-key');
+  if (row.card_key) { key.setAttribute('type', 'button'); key.addEventListener('click', () => loadReviewCard(doc, row.card_key)); }
+  li.appendChild(key);
+  const title = row.title || '(no title)';
+  if (typeof row.url === 'string' && ISSUE_URL.test(row.url)) {
+    const a = el(doc, 'a', title, 'card-title');
+    a.setAttribute('href', row.url);
+    li.appendChild(a);
+  } else li.appendChild(el(doc, 'span', title, 'card-title'));
+  if (row.status && !['done', 'in_progress', 'ready', 'blocked'].includes(row.status)) {
+    li.appendChild(el(doc, 'div', `status: ${row.status}`, 'evidence'));
+  }
+  if (row.why) li.appendChild(el(doc, 'div', row.why, 'evidence'));
+  return li;
+}
+
+function fill(doc, id, items, rowFn = renderItem, countValue) {
+  const sec = doc.getElementById(id);
+  if (!sec) return;
+  const ul = sec.querySelector('ul');
   while (ul.firstChild) ul.removeChild(ul.firstChild);
-  for (const item of items) ul.appendChild(renderItem(doc, item));
+  for (const item of items) ul.appendChild(rowFn(doc, item));
   if (!items.length) ul.appendChild(el(doc, 'li', 'None', 'none'));
   const count = doc.getElementById(`${id}-count`);
-  if (count) count.textContent = String(items.length);
+  if (count) count.textContent = String(countValue !== undefined ? countValue : items.length);
+}
+
+// the count tile in the stats bar follows its section's visibility
+function tile(doc, id, hidden) {
+  const count = doc.getElementById(`${id}-count`);
+  if (count && count.parentNode && count.parentNode.classList?.contains('stat')) count.parentNode.hidden = hidden;
 }
 
 function render(doc, data, now = Date.now()) {
-  for (const s of SECTIONS) fill(doc, s, data.items.filter((i) => i.state === s));
+  if (data.standup) {
+    const st = data.standup;
+    const counts = st.counts || {};
+    for (const s of ['in_progress', 'blocked', 'left']) {
+      const sec = doc.getElementById(s);
+      if (sec) sec.hidden = true;
+      tile(doc, s, true);
+    }
+    for (const s of STANDUP_SECTIONS) {
+      tile(doc, s, false);
+      const sec = doc.getElementById(s);
+      if (sec) sec.hidden = false;
+      const list = st[s] || [];
+      fill(doc, s, list, renderRow, counts[s] !== undefined ? counts[s] : list.length);
+    }
+    tile(doc, 'backlog', false);
+    const backlog = doc.getElementById('backlog-count');
+    if (backlog) backlog.textContent = String(counts.backlog || 0);
+    const fetched = st.fetched_at || data.fetched_at;
+    const freshness = st.freshness || data.freshness || { state: 'unavailable', last_polled_at: null };
+    const conflicting = st.conflicting !== undefined ? st.conflicting : (data.conflicting || 0);
+    const poll = freshness.last_polled_at
+      ? `last issue poll ${clock(freshness.last_polled_at)} (${ago(freshness.last_polled_at, now)})`
+      : 'last issue poll none';
+    doc.getElementById('age').textContent = `As of ${clock(fetched)} (${ago(fetched, now)}) · issue data ${freshness.state} · ${poll} · ${conflicting} conflicting`;
+    const pill = doc.getElementById('stale');
+    if (pill) pill.hidden = freshness.state !== 'stale'; // "unavailable" is in the age line, not a stale pill
+    const headline = data.headline !== undefined ? data.headline : data.summary;
+    doc.getElementById('summary').textContent = headline || (data.summary_error ? `No summary (${data.summary_error}). The board above is still current.` : '');
+    doc.getElementById('destination').textContent = 'Summary built by the server from the board.';
+    const card = doc.getElementById('summary-card');
+    if (card) card.hidden = false;
+    return;
+  }
+  for (const s of ['now', 'missing', 'next', 'issues']) {
+    const sec = doc.getElementById(s);
+    if (sec) sec.hidden = true;
+    tile(doc, s, true);
+  }
+  tile(doc, 'backlog', true);
+  for (const s of SECTIONS) {
+    tile(doc, s, false);
+    const sec = doc.getElementById(s);
+    if (sec) sec.hidden = false;
+    fill(doc, s, data.items.filter((i) => i.state === s));
+  }
   fill(doc, 'unknown', data.unknown);
   const newest = data.newest_update
     ? `newest card update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`
@@ -91,7 +165,170 @@ async function run(doc) {
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
   } catch { status.textContent = 'Failed: network'; }
+  loadReview(doc);
   button.disabled = false;
+}
+
+function clear(node) {
+  if (!node) return;
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function renderReview(doc, data, now = Date.now()) {
+  const panel = doc.getElementById('review');
+  if (panel) panel.hidden = false;
+  const status = doc.getElementById('review-status');
+  if (status) status.textContent = '';
+  const freshness = data.freshness || { state: 'unavailable', last_polled_at: null };
+  const poll = freshness.last_polled_at
+    ? `last issue poll ${clock(freshness.last_polled_at)} (${ago(freshness.last_polled_at, now)})`
+    : 'last issue poll none';
+  const fetched = data.fetched_at ? `As of ${clock(data.fetched_at)} (${ago(data.fetched_at, now)}) · ` : '';
+  const conflicting = data.conflicting !== undefined ? ` · ${data.conflicting} conflicting` : '';
+  const meta = doc.getElementById('review-meta');
+  if (meta) meta.textContent = `${fetched}issue data ${freshness.state} · ${poll}${conflicting}`;
+  const prov = doc.getElementById('review-provenance');
+  if (prov) prov.textContent = data.provenance_note || '';
+  const stagesEl = doc.getElementById('review-stages');
+  if (stagesEl) {
+    clear(stagesEl);
+    const stages = data.stages || {};
+    for (const stage of ['plan', 'code', 'test']) {
+      const counts = stages[stage] || {};
+      const entries = Object.entries(counts).map(([k, v]) => `${v} ${k}`);
+      stagesEl.appendChild(el(doc, 'div', `${stage}: ${entries.length ? entries.join(', ') : '0'}`, 'evidence'));
+    }
+  }
+  for (const [id, list, fmt] of [
+    ['review-failed', data.failed || [], (item) => `${item.stage}: failed`],
+    ['review-active', data.active || [], (item) => `${item.stage}: ${item.status}`],
+  ]) {
+    const ul = doc.getElementById(id);
+    if (!ul) continue;
+    clear(ul);
+    for (const item of list) {
+      const li = el(doc, 'li', undefined, 'card');
+      const btn = el(doc, 'button', item.card_key, 'btn');
+      btn.setAttribute('type', 'button');
+      btn.addEventListener('click', () => loadReviewCard(doc, item.card_key));
+      li.appendChild(btn);
+      li.appendChild(el(doc, 'span', item.title || '(no title)', 'card-title'));
+      li.appendChild(el(doc, 'div', fmt(item), 'evidence'));
+      ul.appendChild(li);
+    }
+    if (!list.length) ul.appendChild(el(doc, 'li', 'None', 'none'));
+  }
+}
+
+async function loadReview(doc, now = Date.now()) {
+  const panel = doc.getElementById('review');
+  const status = doc.getElementById('review-status');
+  try {
+    const r = await fetch('/api/review');
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (panel) panel.hidden = false;
+      if (status) {
+        status.textContent = r.status === 502
+          ? `Factory data unavailable (${data.error || 'source-error'})`
+          : `Failed: ${data.error || r.status}`;
+      }
+      return;
+    }
+    renderReview(doc, data, now);
+  } catch {
+    if (panel) panel.hidden = false;
+    if (status) status.textContent = 'Failed: network';
+  }
+}
+
+function renderReviewCard(doc, data) {
+  const panel = doc.getElementById('review-card');
+  if (panel) panel.hidden = false;
+  const status = doc.getElementById('review-card-status');
+  if (status) status.textContent = '';
+  const body = doc.getElementById('review-card-body');
+  if (!body) return;
+  clear(body);
+  body.appendChild(el(doc, 'span', data.card_key || '', 'card-key'));
+  const title = data.title || '(no title)';
+  if (typeof data.url === 'string' && ISSUE_URL.test(data.url)) {
+    const a = el(doc, 'a', title, 'card-title');
+    a.setAttribute('href', data.url);
+    body.appendChild(a);
+  } else body.appendChild(el(doc, 'span', title, 'card-title'));
+  body.appendChild(el(doc, 'div', `status: ${data.status ?? ''} · priority: ${data.priority ?? 'none'} · tier: ${data.tier ?? 'none'}`, 'evidence'));
+  if (data.github_sync_error) body.appendChild(el(doc, 'div', `github_sync_error: ${data.github_sync_error}`, 'evidence'));
+  body.appendChild(el(doc, 'div', data.description || '(no description)', 'evidence'));
+  const criteriaUl = el(doc, 'ul');
+  const criteria = Array.isArray(data.acceptance_criteria) ? data.acceptance_criteria : [];
+  for (const c of criteria) criteriaUl.appendChild(el(doc, 'li', c, 'evidence'));
+  if (!criteria.length) criteriaUl.appendChild(el(doc, 'li', 'None', 'none'));
+  body.appendChild(criteriaUl);
+  const stagesUl = el(doc, 'ul');
+  const stages = Array.isArray(data.stages) ? data.stages : [];
+  for (const s of stages) {
+    const li = el(doc, 'li', undefined, 'card');
+    li.appendChild(el(doc, 'div', `${s.stage} (${s.service || 'none'}): ${s.status || ''}`, 'evidence'));
+    if (s.dispatched_at) li.appendChild(el(doc, 'div', `dispatched_at: ${s.dispatched_at}`, 'evidence'));
+    if (s.detail) li.appendChild(el(doc, 'div', s.detail, 'evidence'));
+    if (s.ref) li.appendChild(el(doc, 'div', `ref: ${s.ref}`, 'evidence'));
+    stagesUl.appendChild(li);
+  }
+  if (!stages.length) stagesUl.appendChild(el(doc, 'li', 'None', 'none'));
+  body.appendChild(stagesUl);
+  const disc = data.discussion || {};
+  if (disc.note) body.appendChild(el(doc, 'div', disc.note, 'evidence'));
+  if (disc.synced_at) body.appendChild(el(doc, 'div', `synced_at: ${disc.synced_at}`, 'evidence'));
+  const commentsUl = el(doc, 'ul');
+  const comments = Array.isArray(disc.comments) ? disc.comments : [];
+  for (const c of comments) {
+    const li = el(doc, 'li', undefined, 'card');
+    li.appendChild(el(doc, 'div', `${c.author || ''} · ${c.created_at || ''}`, 'who'));
+    li.appendChild(el(doc, 'div', c.body || '', 'evidence'));
+    if (c.url) li.appendChild(el(doc, 'div', c.url, 'fine'));
+    commentsUl.appendChild(li);
+  }
+  body.appendChild(commentsUl);
+  const notIn = Array.isArray(data.not_in_card_data) && data.not_in_card_data.length
+    ? `${data.not_in_card_data.join(', ')}: not in the card data (olafkfreund/CFactory#583)`
+    : 'not in the card data (olafkfreund/CFactory#583)';
+  body.appendChild(el(doc, 'div', notIn, 'fine'));
+  if (data.provenance_note) body.appendChild(el(doc, 'div', data.provenance_note, 'fine'));
+}
+
+const reviewSeq = new WeakMap();
+async function loadReviewCard(doc, card_key) {
+  const panel = doc.getElementById('review-card');
+  if (panel) panel.hidden = false;
+  const status = doc.getElementById('review-card-status');
+  const body = doc.getElementById('review-card-body');
+  clear(body);
+  if (status) status.textContent = '';
+  // only the latest click may fill the panel; a slower earlier response is dropped
+  const seq = (reviewSeq.get(doc) || 0) + 1;
+  reviewSeq.set(doc, seq);
+  try {
+    const r = await fetch(`/api/review/${encodeURIComponent(card_key)}`);
+    const data = await r.json().catch(() => ({}));
+    if (reviewSeq.get(doc) !== seq) return;
+    if (r.status === 404) {
+      if (status) status.textContent = 'not in this project';
+      return;
+    }
+    if (r.status === 502) {
+      if (status) status.textContent = `Factory data unavailable (${data.error || 'source-error'})`;
+      return;
+    }
+    if (!r.ok) {
+      if (status) status.textContent = `Failed: ${data.error || r.status}`;
+      return;
+    }
+    renderReviewCard(doc, data);
+  } catch {
+    if (reviewSeq.get(doc) !== seq) return;
+    if (status) status.textContent = 'Failed: network';
+  }
 }
 
 // Actions: one store per document, keyed by id so a replayed event and the first render cannot duplicate.
@@ -293,4 +530,9 @@ if (typeof document !== 'undefined') {
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
-if (typeof module !== 'undefined') module.exports = { render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares };
+if (typeof module !== 'undefined') {
+  module.exports = {
+    render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares,
+    renderReview, loadReview, renderReviewCard, loadReviewCard,
+  };
+}

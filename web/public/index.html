@@ -51,6 +51,11 @@
     <div class="stat stat--in_progress"><span class="stat-label">In progress</span><span id="in_progress-count" class="stat-value">–</span></div>
     <div class="stat stat--left"><span class="stat-label">Left</span><span id="left-count" class="stat-value">–</span></div>
     <div class="stat stat--done"><span class="stat-label">Done</span><span id="done-count" class="stat-value">–</span></div>
+    <div class="stat stat--in_progress" hidden><span class="stat-label">Now</span><span id="now-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Missing</span><span id="missing-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Next</span><span id="next-count" class="stat-value">–</span></div>
+    <div class="stat stat--blocked" hidden><span class="stat-label">Issues</span><span id="issues-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Backlog</span><span id="backlog-count" class="stat-value">–</span></div>
   </div>
 
   <section id="summary-card" class="panel" hidden>
@@ -94,9 +99,31 @@
     <section id="in_progress" class="col col--in_progress"><h2 class="panel-title">In progress</h2><ul></ul></section>
     <section id="left" class="col col--left"><h2 class="panel-title">Left</h2><ul></ul></section>
     <section id="done" class="col col--done"><h2 class="panel-title">Done</h2><ul></ul></section>
+    <section id="now" class="col col--in_progress" hidden><h2 class="panel-title">Now</h2><ul></ul></section>
+    <section id="missing" class="col col--left" hidden><h2 class="panel-title">Missing</h2><ul></ul></section>
+    <section id="next" class="col col--left" hidden><h2 class="panel-title">Next</h2><ul></ul></section>
+    <section id="issues" class="col col--blocked" hidden><h2 class="panel-title">Issues</h2><ul></ul></section>
   </div>
 
   <section id="unknown" class="panel panel--unknown"><h2 class="panel-title">Unrecognised states <span id="unknown-count" class="count">0</span></h2><ul></ul></section>
+
+  <section id="review" class="panel" hidden>
+    <h2 class="panel-title">Review</h2>
+    <p id="review-status" class="status-line" role="status" aria-live="polite"></p>
+    <p id="review-meta" class="fine"></p>
+    <p id="review-provenance" class="fine"></p>
+    <div id="review-stages"></div>
+    <h3 class="panel-title">Failed stages</h3>
+    <ul id="review-failed"></ul>
+    <h3 class="panel-title">Active stages</h3>
+    <ul id="review-active"></ul>
+  </section>
+
+  <section id="review-card" class="panel" hidden>
+    <h2 class="panel-title">Card review</h2>
+    <p id="review-card-status" class="status-line" role="status" aria-live="polite"></p>
+    <div id="review-card-body"></div>
+  </section>
 </main>
 <footer class="footer" id="source-footer"></footer>
 <script src="/app.js"></script>
