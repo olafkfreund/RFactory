@@ -68,7 +68,7 @@ test('Factory review data stays out of standup, call, brain record and shared bo
   const standupResponse = await get('/api/standup', { method: 'POST' });
   assert.equal(standupResponse.status, 200);
   const standup = await standupResponse.json();
-  for (const value of [standup.items, standup.summary, standup.headline]) assert.doesNotMatch(JSON.stringify(value), allMarkers);
+  assert.doesNotMatch(JSON.stringify(standup), allMarkers);
   assert.deepEqual(standup.freshness, { state: 'unavailable', last_polled_at: null });
 
   const events = [], spoken = [];

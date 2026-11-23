@@ -8,7 +8,8 @@ function buildStandup({ cards, conflicting, freshness, fetched_at }) {
   for (const card of cards) {
     const mapped = mapCard(card);
     const row = (why) => ({ card_key: card.card_key, title: card.title, status: card.status, url: mapped.url, why });
-    const runs = card.stage_runs && typeof card.stage_runs === 'object' ? Object.entries(card.stage_runs) : [];
+    const runs = (card.stage_runs && typeof card.stage_runs === 'object' ? Object.entries(card.stage_runs) : [])
+      .filter(([, run]) => run && typeof run === 'object');
     const failures = runs.filter(([, run]) => run && FAILED.test(String(run.status ?? '')))
       .map(([stage]) => `${stage} recorded as failed`);
     if (card.status === 'done') standup.done.push(row('done on the board'));

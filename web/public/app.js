@@ -117,7 +117,7 @@ function render(doc, data, now = Date.now()) {
       : 'last issue poll none';
     doc.getElementById('age').textContent = `As of ${clock(fetched)} (${ago(fetched, now)}) · issue data ${freshness.state} · ${poll} · ${conflicting} conflicting`;
     const pill = doc.getElementById('stale');
-    if (pill) pill.hidden = freshness.state === 'current';
+    if (pill) pill.hidden = freshness.state !== 'stale'; // "unavailable" is in the age line, not a stale pill
     const headline = data.headline !== undefined ? data.headline : data.summary;
     doc.getElementById('summary').textContent = headline || (data.summary_error ? `No summary (${data.summary_error}). The board above is still current.` : '');
     doc.getElementById('destination').textContent = 'Summary built by the server from the board.';
@@ -233,6 +233,7 @@ async function loadReview(doc, now = Date.now()) {
     }
     renderReview(doc, data, now);
   } catch {
+    if (panel) panel.hidden = false;
     if (status) status.textContent = 'Failed: network';
   }
 }

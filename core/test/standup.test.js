@@ -107,3 +107,13 @@ test('headline redacts a secret-shaped first title', () => {
   assert.match(headline, /ship \[redacted\]/);
   assert.doesNotMatch(headline, /ghp_/);
 });
+
+test('null stage entries are not runs', () => {
+  const { buildStandup: build } = require('../src/standup.js');
+  const s = build({ cards: [
+    { card_key: 'A', title: 'a', status: 'in_progress', stage_runs: { plan: null, code: null } },
+    { card_key: 'B', title: 'b', status: 'ready', correlation_key: null, stage_runs: { plan: null } },
+  ], conflicting: 0, freshness: { state: 'current', last_polled_at: 'x' }, fetched_at: 'x' });
+  assert.equal(s.now[0].why, 'no Factory run recorded');
+  assert.equal(s.next[0].why, 'no Factory run yet');
+});

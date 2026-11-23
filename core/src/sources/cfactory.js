@@ -113,7 +113,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   async function comments(card, deadline = Date.now() + timeoutMs) {
     try {
       const reply = await call('cfactory_card_comments', deadline, { card_key: card.card_key });
-      if (!reply.error && reply.issue_ref === card.issue_ref) return { available: true, synced_at: reply.synced_at, comments: reply.comments };
+      if (!reply.error && typeof card.issue_ref === 'string' && card.issue_ref && reply.issue_ref === card.issue_ref) return { available: true, synced_at: reply.synced_at, comments: reply.comments };
     } catch {}
     return { available: false };
   }
@@ -131,8 +131,8 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     },
     async standupData() {
       const deadline = Date.now() + timeoutMs;
-      const { cards, conflicting } = await scopedCards(deadline);
-      return { cards, conflicting, freshness: await freshness(), fetched_at: new Date().toISOString() };
+      const [{ cards, conflicting }, fresh] = await Promise.all([scopedCards(deadline), freshness(deadline)]);
+      return { cards, conflicting, freshness: fresh, fetched_at: new Date().toISOString() };
     },
     async reviewData(card_key) {
       const deadline = Date.now() + timeoutMs;
@@ -141,7 +141,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       catch (error) { throw sourceError(error); }
       if (!hasRepo(repos)) throw new Error('source-error');
       if (card.error || !card.card_key || !inScope(card, repos, repositoryId)) return { found: false };
-      const [discussion, sync] = await Promise.all([comments(card), freshness()]);
+      const [discussion, sync] = await Promise.all([comments(card, deadline), freshness(deadline)]);
       return { found: true, card, discussion, freshness: sync };
     },
     async boardView() {
