@@ -14,6 +14,30 @@ Work follows intent → spec → plan: see `intent/`, `spec/`, `plan/`.
 
 Approvers and admins must also be members; otherwise the web app refuses to start (`roles-not-members`).
 
+## Standup and review
+
+RFactory reads the configured project's cards from CFactory, read-only. A card counts only when its repository is the configured one and its issue belongs to that repository's project; other cards are left out, and cards whose issue points elsewhere are only counted ("conflicting").
+
+**Standup** (`POST /api/standup`, and "stand up" in a call). The server builds it from the board, with no AI call:
+
+- **done**, newest first;
+- **now**: in progress, with the latest stage run;
+- **missing**: no acceptance criteria recorded (neither in the field nor under an "Acceptance criteria" heading in the description), or a stage recorded as failed;
+- **next**: ready, in CFactory's order;
+- **issues**: blocked, failed stages, issue sync errors, board-versus-issue mismatches;
+- **unknown**: any other status, shown as it is.
+
+In a call the bot speaks a two- or three-sentence headline built from the counts; the page shows the full lists.
+
+**Freshness.** Issue data is `current`, `stale` or `unavailable`, from CFactory's sync state for the configured repository. A stale or failed read is reported as such, never as a gap.
+
+**Review** (members only, on the page):
+
+- `GET /api/review`: plan, code and test stage counts, failed and active stages.
+- `GET /api/review/<card_key>`: the full card, its stages and its issue discussion. Cards outside the project return 404.
+
+Card descriptions, criteria, stage detail and comments appear only in the review. They never reach the AI, the call or the shared board. Stage results can come from another card with the same correlation key until olafkfreund/CFactory#583 is fixed; test cases, branches, pull requests, plan findings and pending approvals aren't in the card data yet.
+
 ## Licence
 
 RFactory is free software under the GNU Affero General Public License v3.0 only (`LICENSE`). Third-party parts and their licences are listed in `NOTICE.md`; upstream licence texts are in `LICENSES/`. This is not a legal review.
