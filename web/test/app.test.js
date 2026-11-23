@@ -24,7 +24,7 @@ function shim() {
     const s = new Node('section'); s.appendChild(new Node('ul')); byId[id] = s;
     byId[`${id}-count`] = new Node('span');
   }
-  for (const id of ['age', 'summary', 'destination', 'review-status', 'review-meta', 'review-provenance', 'review-card-status']) byId[id] = new Node('p');
+  for (const id of ['age', 'summary', 'destination', 'review-status', 'review-meta', 'review-provenance', 'review-card-status', 'backlog-count']) byId[id] = new Node('p');
   for (const id of ['review', 'review-card']) { byId[id] = new Node('section'); byId[id].hidden = true; }
   for (const id of ['review-stages', 'review-card-body']) byId[id] = new Node('div');
   for (const id of ['review-failed', 'review-active']) byId[id] = new Node('ul');
@@ -168,7 +168,7 @@ test('standup renders six lists, counts, freshness, times, conflicting count, he
     next: [{ card_key: 'AF-4', title: 'Next card', status: 'ready', url: 'javascript:alert(1)', why: 'no Factory run yet' }],
     issues: [{ card_key: 'AF-5', title: 'Blocked card', status: 'blocked', url: 'https://github.com/o/r/issues/5?foo=1', why: 'blocked' }],
     unknown: [{ card_key: 'AF-6', title: 'Mystery', status: 'review', why: '' }],
-    counts: { done: 1, now: 1, missing: 1, next: 1, issues: 1, unknown: 1 },
+    counts: { done: 1, now: 1, missing: 1, next: 1, issues: 1, unknown: 1, backlog: 4 },
     conflicting: 2,
     freshness: { state: 'stale', last_polled_at: '2026-11-23T17:55:00Z' },
     fetched_at: '2026-11-23T17:59:50Z',
@@ -194,6 +194,7 @@ test('standup renders six lists, counts, freshness, times, conflicting count, he
   assert.match(byId.age.textContent, /stale/);
   assert.match(byId.age.textContent, /5 min ago/);
   assert.match(byId.age.textContent, /2 conflicting/);
+  assert.equal(byId["backlog-count"].textContent, "4");
 });
 
 test('snapshot-less answer event renders its text in the call log and leaves the board as it was', () => {

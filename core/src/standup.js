@@ -21,7 +21,7 @@ function buildStandup({ cards, conflicting, freshness, fetched_at }) {
     if (card.status !== 'done' && (!Array.isArray(card.acceptance_criteria) || card.acceptance_criteria.every((item) => !String(item ?? '').trim()))
       && !/acceptance criteria/i.test(card.description ?? '')) gaps.push('no acceptance criteria recorded');
     gaps.push(...failures);
-    if (gaps.length) standup.missing.push(row(gaps.join('; ')));
+    if (gaps.length && card.status !== 'backlog') standup.missing.push(row(gaps.join('; ')));
     if (card.status === 'ready') standup.next.push(row(!runs.length && card.correlation_key == null ? 'no Factory run yet' : ''));
     const issues = [];
     if (card.status === 'blocked') issues.push('blocked');
@@ -30,16 +30,18 @@ function buildStandup({ cards, conflicting, freshness, fetched_at }) {
     issues.push(...mapped.evidence.filter((reason) => reason.startsWith('board says '))
       .map((reason) => freshness.state === 'current' ? reason : `${reason} as of the last issue poll`));
     if (issues.length) standup.issues.push(row(issues.join('; ')));
-    if (!['done', 'in_progress', 'blocked', 'ready'].includes(card.status)) standup.unknown.push(row(''));
+    if (!['done', 'in_progress', 'blocked', 'ready', 'backlog'].includes(card.status)) standup.unknown.push(row(''));
   }
   standup.done.sort((a, b) => String(cards.find((card) => card.card_key === b.card_key)?.updated_at ?? '').localeCompare(String(cards.find((card) => card.card_key === a.card_key)?.updated_at ?? '')));
   for (const section of ['done', 'now', 'missing', 'next', 'issues', 'unknown']) standup.counts[section] = standup[section].length;
+  // owner decision (#28): backlog is counted, not listed, so it never swamps the standup
+  standup.counts.backlog = cards.filter((card) => card.status === 'backlog').length;
   return standup;
 }
 
 function speakStandupHeadline(standup, redactor) {
   const counts = standup.counts;
-  const labels = { done: 'done', now: 'in progress', missing: 'missing', next: 'ready', issues: 'issues', unknown: 'unknown' };
+  const labels = { done: 'done', now: 'in progress', missing: 'missing', next: 'ready', issues: 'issues', unknown: 'unknown', backlog: 'in backlog' };
   const parts = Object.entries(labels).filter(([section]) => standup.freshness.state === 'current' || counts[section] > 0)
     .map(([section, label]) => `${counts[section]} ${label}`);
   const board = parts.length ? `Board: ${parts.join(', ')}.` : 'Board read complete.';

@@ -109,6 +109,9 @@ function render(doc, data, now = Date.now()) {
       const list = st[s] || [];
       fill(doc, s, list, renderRow, counts[s] !== undefined ? counts[s] : list.length);
     }
+    tile(doc, 'backlog', false);
+    const backlog = doc.getElementById('backlog-count');
+    if (backlog) backlog.textContent = String(counts.backlog || 0);
     const fetched = st.fetched_at || data.fetched_at;
     const freshness = st.freshness || data.freshness || { state: 'unavailable', last_polled_at: null };
     const conflicting = st.conflicting !== undefined ? st.conflicting : (data.conflicting || 0);
@@ -130,6 +133,7 @@ function render(doc, data, now = Date.now()) {
     if (sec) sec.hidden = true;
     tile(doc, s, true);
   }
+  tile(doc, 'backlog', true);
   for (const s of SECTIONS) {
     tile(doc, s, false);
     const sec = doc.getElementById(s);

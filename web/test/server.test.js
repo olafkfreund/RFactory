@@ -72,7 +72,7 @@ test('standup returns legacy and new fields without calling the brain', async (t
   assert.equal(body.newest_update, 'N');
   assert.equal(body.conflicting, 1);
   assert.deepEqual(body.freshness, boardData.freshness);
-  assert.deepEqual(body.standup.counts, { done: 1, now: 0, missing: 1, next: 0, issues: 1, unknown: 1 });
+  assert.deepEqual(body.standup.counts, { done: 1, now: 0, missing: 1, next: 0, issues: 1, unknown: 1, backlog: 0 });
   assert.equal(body.standup.fetched_at, 'F');
   assert.equal(body.standup.conflicting, 1);
 });

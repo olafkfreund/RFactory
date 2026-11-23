@@ -35,10 +35,9 @@ test('all sections keep their exact rules and row shape', () => {
   assert.deepEqual(result.next.map((r) => [r.card_key, r.why]), [['ready-first', 'no Factory run yet'], ['ready-second', '']]);
   assert.equal(result.issues[0].why, 'blocked; test recorded as failed; issue sync error');
   assert.deepEqual(result.unknown, [
-    { card_key: 'backlog', title: 'backlog', status: 'backlog', url: undefined, why: '' },
     { card_key: 'review', title: 'review', status: 'review', url: undefined, why: '' },
   ]);
-  assert.deepEqual(result.counts, { done: 2, now: 2, missing: 1, next: 2, issues: 1, unknown: 2 });
+  assert.deepEqual(result.counts, { done: 2, now: 2, missing: 1, next: 2, issues: 1, unknown: 1, backlog: 1 });
   assert.equal(result.conflicting, 2);
   assert.deepEqual(result.freshness, freshness('current'));
   assert.equal(result.fetched_at, 'board-time');
@@ -116,4 +115,11 @@ test('null stage entries are not runs', () => {
   ], conflicting: 0, freshness: { state: 'current', last_polled_at: 'x' }, fetched_at: 'x' });
   assert.equal(s.now[0].why, 'no Factory run recorded');
   assert.equal(s.next[0].why, 'no Factory run yet');
+});
+
+test('backlog cards are counted, never listed, even without criteria', () => {
+  const result = build([card('b1', 'backlog', { acceptance_criteria: [] }), card('b2', 'backlog')]);
+  assert.equal(result.counts.backlog, 2);
+  for (const s of ['done', 'now', 'missing', 'next', 'issues', 'unknown']) assert.equal(result[s].length, 0);
+  assert.match(speakStandupHeadline(result, makeRedactor([])), /2 in backlog/);
 });

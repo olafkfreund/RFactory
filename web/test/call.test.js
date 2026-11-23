@@ -335,7 +335,7 @@ test('standup speaks a local headline and emits only text and counts', async () 
     await f.heard('1', 'RFactory, stand up.'); await flush();
     const answer = f.events.find((e) => e.type === 'answer');
     assert.deepEqual(Object.keys(answer).sort(), ['counts', 'text', 'type']);
-    assert.deepEqual(answer.counts, { done: 0, now: 0, missing: 0, next: 1, issues: 0, unknown: 0 });
+    assert.deepEqual(answer.counts, { done: 0, now: 0, missing: 0, next: 1, issues: 0, unknown: 0, backlog: 0 });
     assert.match(answer.text, /Ready card/);
     assert.equal(turns, 0);
     await finishSpeech(f);

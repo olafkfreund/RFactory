@@ -116,6 +116,11 @@ reviewers:
      - the two `mapCard` mismatches. A mismatch gets "as of the last
        issue poll" unless `freshness.state === 'current'`.
    - **unknown:** any other status. `status` is shown verbatim.
+   - **backlog (owner decision, 2026-11-23, after PR #30 review):**
+     `backlog` cards are counted in `counts.backlog` and listed in no
+     section, not even `missing`, so the standup is never swamped. The
+     headline says "<n> in backlog"; the page shows a Backlog count
+     tile. They are no longer `unknown`.
 
    The page shows a `why` text only in the member view.
 
