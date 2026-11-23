@@ -30,10 +30,12 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random, desktop, stt, listen, language } = {}) {
+function setup({ brainTurn, ttsSay, sourceSnapshot, sourceStandup, tts, maleTts, avatar, random, desktop, stt, listen, language } = {}) {
   const clock = fakeClock();
   const children = [], events = [], kills = [], spoken = [], spawnOptions = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
+  const standup = { cards: [{ card_key: 'FCT-2', title: 'Ready card', status: 'ready', acceptance_criteria: ['ready'] }],
+    conflicting: 0, freshness: { state: 'current', last_polled_at: 'today' }, fetched_at: 'today' };
   const child = (bin, args, options) => {
     spawnOptions.push(options);
     const c = new EventEmitter();
@@ -50,7 +52,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random
   };
   const originalKill = process.kill;
   process.kill = (pid, signal) => { kills.push([pid, signal]); };
-  const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot) },
+  const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot), standupData: sourceStandup || (async () => standup) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
     tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
     maleTts, avatar, random, redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop, stt, listen, language });
@@ -61,7 +63,20 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, tts, maleTts, avatar, random
     children.at(-1).output({ type: 'heard', id, speaker, text, final: true });
     clock.tick(1500); await flush();
   };
-  return { manager, children, events, kills, spoken, messages, spawnOptions, clock, heard, restore, snapshot };
+  return { manager, children, events, kills, spoken, messages, spawnOptions, clock, heard, restore, snapshot, standup };
+}
+
+async function finishSpeech(f, from = 0) {
+  let index = from;
+  for (let n = 0; n < 10; n++) {
+    await flush();
+    const message = f.messages().filter((m) => m.type === 'speak')[index];
+    if (!message) break;
+    f.children[0].output({ type: 'spoke', seq: message.seq, result: 'done' });
+    index++;
+  }
+  await flush();
+  return index;
 }
 
 test('avatar resolves once per call and the child receives its id only when set', async () => {
@@ -332,7 +347,7 @@ test('one moment after three seconds, facts check before speech, snapshot on ans
   const f = setup({ brainTurn: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
     f.clock.tick(2999); await flush();
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 0);
     f.clock.tick(1); await flush();
@@ -355,7 +370,7 @@ test('sentence two synthesises while sentence one plays', async () => {
   const f = setup({ brainTurn: async () => ({ text: 'First. Second.' }), ttsSay: async (s) => { said.push(s); return Buffer.from(s); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.'); await flush();
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await flush();
     assert.deepEqual(said, ['First.', 'Second.']);
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' }); await flush();
@@ -369,11 +384,109 @@ test('snapshot is reused for sixty seconds within a call', async () => {
   const f = setup({ sourceSnapshot: async () => { fetches++; return { items: f.snapshot.items, fetched_at: 'today' }; } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.'); await flush();
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await flush();
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' }); await flush();
-    await f.heard('2', 'RFactory, stand up.'); await flush();
+    await f.heard('2', 'RFactory, why is FCT-1 blocked?'); await flush();
     assert.equal(fetches, 1);
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('standup speaks a local headline and emits only text and counts', async () => {
+  let turns = 0;
+  const f = setup({ brainTurn: async () => { turns++; throw new Error('brain-called'); } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, stand up.'); await flush();
+    const answer = f.events.find((e) => e.type === 'answer');
+    assert.deepEqual(Object.keys(answer).sort(), ['counts', 'text', 'type']);
+    assert.deepEqual(answer.counts, { done: 0, now: 0, missing: 0, next: 1, issues: 0, unknown: 0, backlog: 0 });
+    assert.match(answer.text, /Ready card/);
+    assert.equal(turns, 0);
+    await finishSpeech(f);
+    assert.ok(f.messages().some((m) => m.type === 'speak' && answer.text.includes(Buffer.from(m.wav, 'base64').toString())));
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('standup cache is separate and a warm question snapshot keeps its read time', async () => {
+  let reads = 0, standups = 0;
+  const inputs = [];
+  const f = setup({
+    sourceSnapshot: async () => ({ items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: `read-${++reads}` }),
+    sourceStandup: async () => { standups++; return f.standup; },
+    brainTurn: async (snap) => { inputs.push(snap); return { text: 'FCT-1 is blocked.' }; },
+  });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    let spoken = await finishSpeech(f);
+    const original = structuredClone(inputs[0]);
+    f.clock.tick(100);
+    await f.heard('2', 'RFactory, stand up.');
+    spoken = await finishSpeech(f, spoken);
+    await f.heard('3', 'RFactory, stand up.');
+    spoken = await finishSpeech(f, spoken);
+    assert.equal(standups, 1);
+    f.clock.tick(100);
+    await f.heard('4', 'RFactory, why is FCT-1 blocked?');
+    spoken = await finishSpeech(f, spoken);
+    assert.equal(reads, 1);
+    assert.deepEqual(inputs[0], original);
+    assert.deepEqual(inputs[1], original);
+    f.clock.tick(59800); // the original snapshot expires at 60 s, even though the standup was newer
+    await f.heard('5', 'RFactory, why is FCT-1 blocked?');
+    spoken = await finishSpeech(f, spoken);
+    assert.equal(reads, 2);
+    assert.equal(inputs[2].fetched_at, 'read-2');
+    f.clock.tick(100); // the standup fetched at 100 ms has now expired
+    await f.heard('6', 'RFactory, stand up.');
+    await finishSpeech(f, spoken);
+    assert.equal(standups, 2);
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('a slow standup read still says One moment after three seconds', async () => {
+  const pending = deferred();
+  const f = setup({ sourceStandup: () => pending.promise });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, stand up.');
+    f.clock.tick(2999); await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 0);
+    f.clock.tick(1); await flush();
+    const moment = f.messages().find((m) => m.type === 'speak');
+    assert.equal(Buffer.from(moment.wav, 'base64').toString(), 'One moment.');
+    pending.resolve(f.standup); await flush();
+    assert.ok(f.events.some((e) => e.type === 'answer'));
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('failed standup reads log only a code and speak the existing fallback', async () => {
+  const f = setup({ sourceStandup: async () => { throw new Error('private-marker'); } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, stand up.'); await flush();
+    assert.ok(f.events.some((e) => e.type === 'log' && e.message === 'source failed: source-error'));
+    assert.doesNotMatch(JSON.stringify(f.events), /private-marker/);
+    assert.equal(f.events.filter((e) => e.type === 'answer').length, 0);
+    const fallback = f.messages().find((m) => m.type === 'speak');
+    assert.equal(Buffer.from(fallback.wav, 'base64').toString(), "Sorry, I can't answer that right now.");
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('a standup result arriving after stop emits no answer', async () => {
+  const pending = deferred();
+  const f = setup({ sourceStandup: () => pending.promise });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, stand up.');
+    const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+    pending.resolve(f.standup); await flush();
+    assert.equal(f.events.filter((e) => e.type === 'answer').length, 0);
   } finally { f.restore(); }
 });
 
@@ -382,7 +495,7 @@ test('slow source triggers one moment at three seconds and brain failure speaks 
   const f = setup({ sourceSnapshot: () => pending.promise, brainTurn: async () => { throw new Error('brain-timeout'); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
     f.clock.tick(3000); await flush();
     const moment = f.messages().find((m) => m.type === 'speak');
     assert.equal(Buffer.from(moment.wav, 'base64').toString(), 'One moment.');

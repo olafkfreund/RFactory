@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCfactorySource, mapCard } = require('../src/sources/cfactory.js');
+const { createCfactorySource, mapCard, inScope } = require('../src/sources/cfactory.js');
 const cards = require('./fixtures/cfactory-cards.json');
 const repos = require('./fixtures/cfactory-repos.json');
 
@@ -22,6 +22,7 @@ test('in-scope selection follows the three rules; no arguments passed', async ()
   assert.ok(client.calls.every((c) => Object.keys(c.arguments).length === 0));
   assert.equal(snap.newest_update, '2026-11-12T00:00:00Z');
   assert.ok(snap.fetched_at);
+  assert.equal(snap.conflicting, 0);
 });
 
 test('repository 1 gets the default-fallback and repo-1 cards', async () => {
@@ -44,7 +45,7 @@ test('state, rule, basis, url, evidence per fixture', async () => {
   assert.equal(m['FCT-10'].url, undefined);
   assert.deepEqual(m['FCT-10'].evidence, ['board says done but the issue is open']);
   assert.deepEqual(m['FCT-3'].evidence, [
-    'code (aifactory) failed: compile error', 'test (tfactory) failed: 3 tests red', 'board says blocked but the issue is closed']);
+    'code (aifactory) failed', 'test (tfactory) failed', 'board says blocked but the issue is closed']);
 });
 
 test('no description, acceptance_criteria or comments anywhere in an item', async () => {
@@ -101,7 +102,7 @@ test('a second failed call throws after one reconnect', async () => {
   const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2,
     clientFactory, timeoutMs: 100 });
   await s.start();
-  await assert.rejects(s.snapshot(), /still down/);
+  await assert.rejects(s.snapshot(), { message: 'source-error' });
   assert.equal(created, 2);
 });
 
@@ -134,4 +135,105 @@ test('getCard maps an error payload to { error }', async () => {
 
 test('getCard rejects with source-timeout', async () => {
   await assert.rejects(src({ callTool: () => new Promise(() => {}) }).getCard('FCT-1'), /source-timeout/);
+});
+
+const boardClient = (overrides = {}) => ({
+  calls: [],
+  async callTool(req) {
+    this.calls.push(req);
+    const value = overrides[req.name];
+    if (value instanceof Error) throw value;
+    return reply(value === undefined ? {
+      cfactory_list_git_repositories: repos,
+      cfactory_list_cards: cards,
+      cfactory_card_sync_state: { repositories: [] },
+      cfactory_get_card: cards.cards[0],
+      cfactory_card_comments: { issue_ref: 'example/demo#11', synced_at: 'now', comments: [] },
+    }[req.name] : value);
+  },
+});
+
+test('scope uses intake project, keeps unparseable refs, and excludes deleted cards', async () => {
+  const intakeRepos = { ...repos, repositories: repos.repositories.map((r) => r.id === 2 ? { ...r, intake_project: 'example/intake' } : r) };
+  const selected = { card_key: 'selected', repository_id: 2, issue_ref: 'example/intake#1' };
+  const conflicting = { card_key: 'conflicting', repository_id: 2, issue_ref: 'example/demo#2' };
+  const foreign = { card_key: 'foreign', repository_id: 1, issue_ref: 'example/other#3' };
+  const unparsed = { card_key: 'unparsed', repository_id: 2, issue_ref: 'bad ref' };
+  const deleted = { ...selected, card_key: 'deleted', deleted_at: 'now' };
+  assert.equal(inScope(selected, intakeRepos, 2), true);
+  assert.equal(inScope(conflicting, intakeRepos, 2), false);
+  const client = boardClient({ cfactory_list_git_repositories: intakeRepos,
+    cfactory_list_cards: { cards: [selected, conflicting, foreign, unparsed, deleted] } });
+  const source = src(client);
+  const snap = await source.snapshot();
+  assert.deepEqual(snap.items.map((i) => i.id), ['selected', 'unparsed']);
+  assert.equal(snap.conflicting, 1);
+  const standup = await source.standupData();
+  assert.deepEqual(standup.cards.map((c) => c.card_key), ['selected', 'unparsed']);
+  assert.equal(standup.conflicting, 1);
+  assert.equal(standup.freshness.state, 'unavailable');
+});
+
+test('failed list replies and calls fail closed with a code', async () => {
+  for (const value of [{ error: 'private marker' }, {}, { cards: {} }, new Error('private marker')]) {
+    const source = src(boardClient({ cfactory_list_cards: value }));
+    await assert.rejects(source.snapshot(), { message: 'source-error' });
+    await assert.rejects(source.standupData(), { message: 'source-error' });
+  }
+});
+
+test('freshness selects only the requested repository and handles unavailable states', async () => {
+  const entry = { repository_id: 2, stale: false, last_polled_at: '2026-11-23T00:00:00Z' };
+  const cases = [
+    [{ repositories: [entry] }, { state: 'current', last_polled_at: entry.last_polled_at }],
+    [{ repositories: [{ ...entry, stale: true }] }, { state: 'stale', last_polled_at: entry.last_polled_at }],
+    [{ repositories: [{ ...entry, last_polled_at: null }] }, { state: 'unavailable', last_polled_at: null }],
+    [{ repositories: [{ ...entry, repository_id: 1 }] }, { state: 'unavailable', last_polled_at: null }],
+    [{ repositories: [{ ...entry, repository_id: null }] }, { state: 'unavailable', last_polled_at: null }],
+    [{ error: 'private marker' }, { state: 'unavailable', last_polled_at: null }],
+    [new Error('private marker'), { state: 'unavailable', last_polled_at: null }],
+  ];
+  for (const [replyValue, expected] of cases) {
+    const result = await src(boardClient({ cfactory_card_sync_state: replyValue })).standupData();
+    assert.deepEqual(result.freshness, expected);
+  }
+});
+
+test('review refuses foreign and conflicting cards before comments', async () => {
+  for (const card of [
+    { card_key: 'foreign', repository_id: 1 },
+    { card_key: 'conflicting', repository_id: 2, issue_ref: 'other/repo#1' },
+    { card_key: 'deleted', repository_id: 2, deleted_at: 'now' },
+    { error: 'missing' },
+    {},
+  ]) {
+    const client = boardClient({ cfactory_get_card: card });
+    assert.deepEqual(await src(client).reviewData('FCT-1'), { found: false });
+    assert.equal(client.calls.some((c) => c.name === 'cfactory_card_comments'), false);
+  }
+});
+
+test('review binds comments to the issue ref and returns full card with freshness', async () => {
+  const card = cards.cards[0];
+  const client = boardClient({ cfactory_get_card: card,
+    cfactory_card_sync_state: { repositories: [{ repository_id: 2, stale: true, last_polled_at: null }] } });
+  const result = await src(client).reviewData(card.card_key);
+  assert.equal(result.found, true);
+  assert.deepEqual(result.card, card);
+  assert.deepEqual(result.discussion, { available: true, synced_at: 'now', comments: [] });
+  assert.deepEqual(result.freshness, { state: 'stale', last_polled_at: null });
+  assert.deepEqual(client.calls.find((c) => c.name === 'cfactory_card_comments').arguments, { card_key: card.card_key });
+  for (const value of [{ issue_ref: 'example/other#11', comments: [] }, { error: 'private marker' }, new Error('private marker')]) {
+    const unavailable = await src(boardClient({ cfactory_get_card: card, cfactory_card_comments: value })).reviewData(card.card_key);
+    assert.deepEqual(unavailable.discussion, { available: false });
+  }
+});
+
+test('a failed or empty repository read is a source error, not a board of conflicting cards', async () => {
+  for (const value of [{ error: 'private marker' }, { repositories: [] }, { repositories: 'x' }]) {
+    const source = src(boardClient({ cfactory_list_git_repositories: value }));
+    await assert.rejects(source.snapshot(), { message: 'source-error' });
+    await assert.rejects(source.standupData(), { message: 'source-error' });
+    await assert.rejects(source.reviewData('FCT-1'), { message: 'source-error' });
+  }
 });

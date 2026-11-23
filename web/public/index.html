@@ -1,26 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-portal="meet">
 <head>
 <meta charset="utf-8">
 <title>RFactory · Standup</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@125,600..900&amp;family=Hanken+Grotesk:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/shell.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">R</span>
-    <span class="brand-name">RFactory</span>
+<header class="f-topbar">
+  <div class="f-topbar__left">
+    <span class="f-brand"><span class="f-brand__mark" aria-hidden="true">R</span><span class="f-brand__name">RFactory</span></span>
+    <nav class="f-portal-switcher" aria-label="Factory portals">
+      <a class="f-portal-switcher__item" href="https://pfactory.freundcloud.org.uk" title="Plan"><span class="f-portal-switcher__dot f-portal-switcher__dot--plan" aria-hidden="true"></span><span class="f-portal-switcher__label">Plan</span></a>
+      <a class="f-portal-switcher__item" href="https://aifactory.freundcloud.org.uk" title="Build"><span class="f-portal-switcher__dot f-portal-switcher__dot--build" aria-hidden="true"></span><span class="f-portal-switcher__label">Build</span></a>
+      <a class="f-portal-switcher__item" href="https://tfactory.freundcloud.org.uk" title="Test"><span class="f-portal-switcher__dot f-portal-switcher__dot--test" aria-hidden="true"></span><span class="f-portal-switcher__label">Test</span></a>
+      <a class="f-portal-switcher__item" href="https://cfactory.freundcloud.org.uk" title="Cockpit"><span class="f-portal-switcher__dot f-portal-switcher__dot--cockpit" aria-hidden="true"></span><span class="f-portal-switcher__label">Cockpit</span></a>
+      <span class="f-portal-switcher__item" aria-current="page" title="Meet"><span class="f-portal-switcher__dot f-portal-switcher__dot--meet" aria-hidden="true"></span><span class="f-portal-switcher__label">Meet</span></span>
+    </nav>
   </div>
-  <nav class="portal-switch" aria-label="Factory portals">
-    <a class="portal-opt" href="https://cfactory.freundcloud.org.uk"><span class="portal-dot dot-c"></span>CFactory</a>
-    <a class="portal-opt" href="https://pfactory.freundcloud.org.uk"><span class="portal-dot dot-p"></span>PFactory</a>
-    <a class="portal-opt" href="https://aifactory.freundcloud.org.uk"><span class="portal-dot dot-ai"></span>AIFactory</a>
-    <a class="portal-opt" href="https://tfactory.freundcloud.org.uk"><span class="portal-dot dot-t"></span>TFactory</a>
-    <span class="portal-opt on" aria-current="page"><span class="portal-dot dot-r"></span>RFactory</span>
-  </nav>
+  <div class="f-topbar__right">
+    <div class="f-theme-switch" role="group" aria-label="Theme">
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="system" aria-pressed="true">System</button>
+    </div>
+  </div>
 </header>
 
 <main class="content">
@@ -42,6 +51,11 @@
     <div class="stat stat--in_progress"><span class="stat-label">In progress</span><span id="in_progress-count" class="stat-value">–</span></div>
     <div class="stat stat--left"><span class="stat-label">Left</span><span id="left-count" class="stat-value">–</span></div>
     <div class="stat stat--done"><span class="stat-label">Done</span><span id="done-count" class="stat-value">–</span></div>
+    <div class="stat stat--in_progress" hidden><span class="stat-label">Now</span><span id="now-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Missing</span><span id="missing-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Next</span><span id="next-count" class="stat-value">–</span></div>
+    <div class="stat stat--blocked" hidden><span class="stat-label">Issues</span><span id="issues-count" class="stat-value">–</span></div>
+    <div class="stat stat--left" hidden><span class="stat-label">Backlog</span><span id="backlog-count" class="stat-value">–</span></div>
   </div>
 
   <section id="summary-card" class="panel" hidden>
@@ -88,9 +102,31 @@
     <section id="in_progress" class="col col--in_progress"><h2 class="panel-title">In progress</h2><ul></ul></section>
     <section id="left" class="col col--left"><h2 class="panel-title">Left</h2><ul></ul></section>
     <section id="done" class="col col--done"><h2 class="panel-title">Done</h2><ul></ul></section>
+    <section id="now" class="col col--in_progress" hidden><h2 class="panel-title">Now</h2><ul></ul></section>
+    <section id="missing" class="col col--left" hidden><h2 class="panel-title">Missing</h2><ul></ul></section>
+    <section id="next" class="col col--left" hidden><h2 class="panel-title">Next</h2><ul></ul></section>
+    <section id="issues" class="col col--blocked" hidden><h2 class="panel-title">Issues</h2><ul></ul></section>
   </div>
 
   <section id="unknown" class="panel panel--unknown"><h2 class="panel-title">Unrecognised states <span id="unknown-count" class="count">0</span></h2><ul></ul></section>
+
+  <section id="review" class="panel" hidden>
+    <h2 class="panel-title">Review</h2>
+    <p id="review-status" class="status-line" role="status" aria-live="polite"></p>
+    <p id="review-meta" class="fine"></p>
+    <p id="review-provenance" class="fine"></p>
+    <div id="review-stages"></div>
+    <h3 class="panel-title">Failed stages</h3>
+    <ul id="review-failed"></ul>
+    <h3 class="panel-title">Active stages</h3>
+    <ul id="review-active"></ul>
+  </section>
+
+  <section id="review-card" class="panel" hidden>
+    <h2 class="panel-title">Card review</h2>
+    <p id="review-card-status" class="status-line" role="status" aria-live="polite"></p>
+    <div id="review-card-body"></div>
+  </section>
 </main>
 <footer class="footer" id="source-footer"></footer>
 <script src="/app.js"></script>

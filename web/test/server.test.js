@@ -5,12 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { EventEmitter } = require('node:events');
-const { PassThrough, Writable } = require('node:stream');
 const { createApp, makeLogin } = require('../server.js');
 const { handleCall } = require('../public/app.js');
-const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
-const { claudeHash } = require('@rfactory/core/src/brains/destination.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const ME = 'owner@example.com';
@@ -18,7 +14,11 @@ const { loadRoles } = require('@rfactory/core/src/roles.js');
 const rolesFor = (members, approvers = '', admins = '') => loadRoles({ RFACTORY_ALLOWED_EMAILS: members, RFACTORY_APPROVERS: approvers, RFACTORY_ADMINS: admins });
 const items = [{ id: 'AF-1', kind: 'card', title: 'a', state: 'done', evidence: [] },
   { id: 'AF-2', kind: 'card', title: 'b', state: 'unknown', evidence: [] }];
-const source = { snapshot: async () => ({ items, fetched_at: 'F', newest_update: 'N' }) };
+const boardData = { cards: [
+  { card_key: 'AF-1', title: 'a', status: 'done', updated_at: 'N', stage_runs: { code: { status: 'failed' } } },
+  { card_key: 'AF-2', title: 'b', status: 'review', updated_at: 'M', acceptance_criteria: ['x'] },
+], conflicting: 1, freshness: { state: 'current', last_polled_at: 'P' }, fetched_at: 'F' };
+const source = { snapshot: async () => ({ items, fetched_at: 'F', newest_update: 'N' }), standupData: async () => boardData };
 const fakeBrain = { label: () => 'fake', turn: async () => ({ text: 'ok' }) };
 
 async function start(t, opts) {
@@ -38,7 +38,7 @@ test('401 without identity, 403 for others, 200 for the owner (case-insensitive)
 
 test('static files carry CSP, nosniff and no-store', async (t) => {
   const get = await start(t, { source, brain: fakeBrain });
-  for (const p of ['/', '/app.js', '/style.css']) {
+  for (const p of ['/', '/app.js', '/style.css', '/tokens.css', '/shell.css', '/theme.js']) {
     const r = await get(p);
     assert.equal(r.status, 200);
     const csp = r.headers.get('content-security-policy');
@@ -54,34 +54,45 @@ test('page config returns the source commit', async (t) => {
   assert.deepEqual(await (await get('/api/config')).json(), { commit: 'abc123' });
 });
 
-test('standup response has exactly the planned keys; deadline is passed to the brain', async (t) => {
-  let seen;
-  const brain = { label: () => 'fake', turn: async (snap, o) => { seen = o; return { text: 'ok' }; } };
+test('standup returns legacy and new fields without calling the brain', async (t) => {
+  const brain = { turn: () => { throw new Error('brain-called'); } };
   const get = await start(t, { source, brain });
-  const before = Date.now();
   const r = await get('/api/standup', { method: 'POST' });
   assert.equal(r.status, 200);
   const body = await r.json();
-  assert.deepEqual(Object.keys(body).sort(), ['counts', 'destination', 'fetched_at', 'items', 'newest_update', 'summary', 'summary_error', 'unknown']);
-  assert.equal(body.summary, 'ok');
+  assert.deepEqual(Object.keys(body).sort(), ['conflicting', 'counts', 'destination', 'fetched_at', 'freshness', 'headline', 'items', 'newest_update', 'standup', 'summary', 'summary_error', 'unknown']);
+  assert.equal(body.summary, body.headline);
+  assert.match(body.headline, /1 done/);
   assert.equal(body.summary_error, null);
+  assert.equal(body.destination, 'the server');
+  assert.deepEqual(body.items.map((i) => i.id), ['AF-1', 'AF-2']);
   assert.deepEqual(body.unknown.map((i) => i.id), ['AF-2']);
   assert.equal(body.counts.done, 1);
-  assert.ok(seen.deadline >= before + 54000 && seen.deadline <= Date.now() + 55000);
+  assert.equal(body.fetched_at, 'F');
+  assert.equal(body.newest_update, 'N');
+  assert.equal(body.conflicting, 1);
+  assert.deepEqual(body.freshness, boardData.freshness);
+  assert.deepEqual(body.standup.counts, { done: 1, now: 0, missing: 1, next: 0, issues: 1, unknown: 1, backlog: 0 });
+  assert.equal(body.standup.fetched_at, 'F');
+  assert.equal(body.standup.conflicting, 1);
 });
 
-test('source error gives 502 with a code only', async (t) => {
-  const bad = { snapshot: async () => { throw new Error('source-timeout'); } };
-  const get = await start(t, { source: bad, brain: fakeBrain });
-  const r = await get('/api/standup', { method: 'POST' });
-  assert.equal(r.status, 502);
-  assert.deepEqual(await r.json(), { error: 'source-timeout', destination: 'fake' });
+test('standup source errors use only source codes', async (t) => {
+  for (const [message, code] of [['source-timeout', 'source-timeout'], ['private-marker', 'source-error']]) {
+    const bad = { standupData: async () => { throw new Error(message); } };
+    const get = await start(t, { source: bad, brain: fakeBrain });
+    const r = await get('/api/standup', { method: 'POST' });
+    assert.equal(r.status, 502);
+    const body = await r.json();
+    assert.deepEqual(body, { error: code });
+    assert.doesNotMatch(JSON.stringify(body), /private-marker/);
+  }
 });
 
 test('concurrent standup gets 409; busy clears afterwards', async (t) => {
   let release;
-  const brain = { label: () => 'fake', turn: () => new Promise((r) => { release = () => r({ text: 'ok' }); }) };
-  const get = await start(t, { source, brain });
+  const slow = { standupData: () => new Promise((r) => { release = () => r(boardData); }) };
+  const get = await start(t, { source: slow, brain: fakeBrain });
   const first = get('/api/standup', { method: 'POST' });
   while (!release) await new Promise((r) => setTimeout(r, 5));
   assert.equal((await get('/api/standup', { method: 'POST' })).status, 409);
@@ -93,34 +104,77 @@ test('concurrent standup gets 409; busy clears afterwards', async (t) => {
   assert.equal((await again).status, 200);
 });
 
-test('a brain that never answers: brain-timeout, child exit recorded before the next spawn', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-web-home-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const scope = { brain: { kind: 'claude-cli', home, destination: 'third-party', approved_hash: claudeHash({ version: '1.0.0', home }) } };
-  const log = [];
-  let n = 0;
-  const spawn = (command, args) => {
-    const id = ++n;
-    log.push(`spawn ${id}`);
-    const child = new EventEmitter();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    const hang = args[0] !== '--version' && id === 2;
-    child.stdin = new Writable({ write(c, e, d) { d(); }, final(d) {
-      if (!hang) setImmediate(() => { child.stdout.end(args[0] === '--version' ? '1.0.0\n' : JSON.stringify({ result: 'ok' })); child.emit('close', 0); });
-      d();
-    } });
-    child.kill = () => setImmediate(() => { log.push(`exit ${id}`); child.emit('close', null); });
-    return child;
-  };
-  const brain = createClaudeBrain(scope, makeRedactor([]), { spawn });
-  const get = await start(t, { source, brain, deadlineMs: 2500 });
-  const first = await (await get('/api/standup', { method: 'POST' })).json();
-  assert.equal(first.summary, null);
-  assert.equal(first.summary_error, 'brain-timeout');
-  const second = await get('/api/standup', { method: 'POST' });
-  assert.equal(second.status, 200);
-  assert.ok(log.indexOf('exit 2') < log.indexOf('spawn 3'), log.join());
+test('review routes require membership before reading the source', async (t) => {
+  const get = await start(t, { source: {
+    standupData: () => { throw new Error('read-called'); },
+    reviewData: () => { throw new Error('read-called'); },
+  }, brain: fakeBrain });
+  for (const url of ['/api/review', '/api/review/AF-1']) {
+    assert.equal((await get(url, {}, null)).status, 401);
+    assert.equal((await get(url, {}, 'other@example.com')).status, 403);
+  }
+});
+
+test('project review returns stage counts, cards, freshness, conflicts and read time', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain });
+  const r = await get('/api/review');
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.deepEqual(Object.keys(body).sort(), ['active', 'conflicting', 'failed', 'fetched_at', 'freshness', 'provenance_note', 'stages']);
+  assert.deepEqual(body.stages.code, { failed: 1 });
+  assert.deepEqual(body.failed, [{ card_key: 'AF-1', title: 'a', stage: 'code' }]);
+  assert.deepEqual(body.active, []);
+  assert.deepEqual(body.freshness, boardData.freshness);
+  assert.equal(body.conflicting, 1);
+  assert.equal(body.fetched_at, 'F');
+  assert.match(body.provenance_note, /CFactory#583/);
+});
+
+test('card review validates keys and keeps foreign, conflicting and unknown cards hidden', async (t) => {
+  const calls = [];
+  const get = await start(t, { source: { reviewData: async (key) => { calls.push(key); return { found: false }; } }, brain: fakeBrain });
+  for (const url of ['/api/review/', '/api/review/bad%2Fkey', `/api/review/${'x'.repeat(129)}`]) {
+    const r = await get(url);
+    assert.equal(r.status, 400);
+  }
+  assert.deepEqual(calls, []);
+  for (const key of ['foreign', 'conflicting', 'unknown']) {
+    const r = await get(`/api/review/${key}`);
+    assert.equal(r.status, 404);
+    assert.deepEqual(await r.json(), { error: 'not-found' });
+  }
+  assert.deepEqual(calls, ['foreign', 'conflicting', 'unknown']);
+});
+
+test('card review returns the approved full projection to a member', async (t) => {
+  const raw = { card_key: 'AF-1', title: 'a', status: 'done', issue_ref: 'owner/repo#12', description: 'member-only detail',
+    acceptance_criteria: ['works'], stage_runs: { code: { service: 'aifactory', status: 'failed', detail: 'compile error' } } };
+  const get = await start(t, { source: { reviewData: async () => ({ found: true, card: raw,
+    discussion: { available: true, synced_at: 'P', comments: [{ author: 'Ada', body: 'comment' }] }, freshness: boardData.freshness }) }, brain: fakeBrain });
+  const r = await get('/api/review/AF-1');
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.equal(body.card_key, 'AF-1');
+  assert.equal(body.url, 'https://github.com/owner/repo/issues/12');
+  assert.equal(body.description, 'member-only detail');
+  assert.deepEqual(body.acceptance_criteria, ['works']);
+  assert.equal(body.stages[0].detail, 'compile error');
+  assert.equal(body.discussion.comments[0].body, 'comment');
+  assert.match(body.provenance_note, /CFactory#583/);
+});
+
+test('review source errors produce only source codes and never an MCP message', async (t) => {
+  for (const [message, code] of [['source-timeout', 'source-timeout'], ['private-marker', 'source-error']]) {
+    const bad = { standupData: async () => { throw new Error(message); }, reviewData: async () => { throw new Error(message); } };
+    const get = await start(t, { source: bad, brain: fakeBrain });
+    for (const url of ['/api/review', '/api/review/AF-1']) {
+      const r = await get(url);
+      assert.equal(r.status, 502);
+      const body = await r.json();
+      assert.deepEqual(body, { error: code });
+      assert.doesNotMatch(JSON.stringify(body), /private-marker/);
+    }
+  }
 });
 
 test('start is refused when a CFACTORY_*KEY* variable is set', () => {

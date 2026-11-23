@@ -5,5 +5,6 @@
   "type": "commonjs",
   "engines": { "node": ">=22" },
   "dependencies": { "@rfactory/core": "file:../core" },
+  "devDependencies": { "playwright-core": "1.65.1" },
   "scripts": { "test": "node --test" }
 }

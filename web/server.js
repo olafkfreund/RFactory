@@ -3,12 +3,18 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
+const { mapCard } = require('@rfactory/core/src/sources/cfactory.js');
+const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
+const { reviewCard, reviewProject } = require('@rfactory/core/src/review.js');
 
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/tokens.css': ['tokens.css', 'text/css; charset=utf-8'],
+  '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
+  '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
   '/live.html': ['live.html', 'text/html; charset=utf-8'],
   '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };
@@ -25,11 +31,7 @@ const HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 };
-const BRAIN_CODES = new Set(['brain-timeout', 'brain-error', 'destination-changed', 'destination-override', 'destination-missing']);
-const codeOf = (error, allowed, fallback) => {
-  const code = String(error && error.message).split(':')[0];
-  return allowed ? (allowed.has(code) ? code : fallback) : (/^[a-z]+(-[a-z]+)+$/.test(code) ? code : fallback);
-};
+const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
@@ -70,24 +72,24 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, brain, roles, deadlineMs = 55000, call = null, actions = null, shares = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
   let busy = false;
-  let last = null; // in memory only
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
 
   async function standup() {
-    const deadline = Date.now() + deadlineMs;
-    let snap;
-    try { snap = await source.snapshot(); }
-    catch (error) { return [502, { error: codeOf(error, null, 'source-error'), destination: brain.label() }]; }
-    const { items, fetched_at, newest_update } = snap;
+    let data;
+    try { data = await source.standupData(); }
+    catch (error) { return [502, { error: sourceCode(error) }]; }
+    const { cards, conflicting, freshness, fetched_at } = data;
+    const items = cards.map(mapCard);
+    const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
     const counts = summarise(items);
-    let summary = null, summary_error = null;
-    try { summary = (await brain.turn({ items, counts, fetched_at }, { deadline })).text; }
-    catch (error) { summary_error = codeOf(error, BRAIN_CODES, 'brain-error'); }
+    const summary = buildStandup(data);
+    const headline = speakStandupHeadline(summary, redactor || { toModel: (s) => s });
     return [200, { items, counts, unknown: items.filter((i) => i.state === 'unknown'),
-      fetched_at, newest_update, summary, summary_error, destination: brain.label() }];
+      fetched_at, newest_update, summary: headline, summary_error: null, destination: 'the server',
+      standup: summary, headline, freshness, conflicting }];
   }
 
   const server = http.createServer((req, res) => {
@@ -95,6 +97,21 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const url = req.url.split('?')[0];
+    if (req.method === 'GET' && url === '/api/review') {
+      source.standupData().then(({ cards, conflicting, freshness, fetched_at }) =>
+        json(res, 200, { ...reviewProject(cards, freshness), conflicting, fetched_at }))
+        .catch((error) => json(res, 502, { error: sourceCode(error) }));
+      return;
+    }
+    if (req.method === 'GET' && url.startsWith('/api/review/')) {
+      const card_key = url.slice('/api/review/'.length);
+      if (!/^[\w.-]{1,128}$/.test(card_key)) return json(res, 400, { error: 'bad-request' });
+      source.reviewData(card_key).then((result) => result.found
+        ? json(res, 200, reviewCard(result.card, result.discussion, result.freshness))
+        : json(res, 404, { error: 'not-found' }))
+        .catch((error) => json(res, 502, { error: sourceCode(error) }));
+      return;
+    }
     if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}) });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
@@ -105,9 +122,9 @@ function createApp({ source, brain, roles, deadlineMs = 55000, call = null, acti
       req.resume();
       if (busy) return json(res, 409, { error: 'busy' });
       busy = true;
-      standup().then(([status, body]) => { if (status === 200) last = body; json(res, status, body); },
-        () => json(res, 500, { error: 'internal' }))
-        .finally(() => { busy = false; }); // brain.turn has returned by now, so no CLI outlives its request
+      standup().then(([status, body]) => json(res, status, body),
+        (error) => json(res, 502, { error: sourceCode(error) }))
+        .finally(() => { busy = false; });
       return;
     }
     if (actions && req.method === 'GET' && url === '/api/actions') {
@@ -267,7 +284,7 @@ async function main() {
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, desktop,
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, brain, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  createApp({ source, redactor, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 

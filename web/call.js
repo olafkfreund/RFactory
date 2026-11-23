@@ -8,6 +8,7 @@ const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts } = require('@rfactory/core/src/facts.js');
 const { summarise } = require('@rfactory/core/src/items.js');
+const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
 const { createStt } = require('./stt.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
@@ -143,18 +144,32 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     return c.snapshot;
   }
 
+  async function standupView(c) {
+    if (c.standup && now() - c.standupAt < 60000) return c.standup;
+    c.standup = buildStandup(await source.standupData());
+    c.standupAt = now();
+    return c.standup;
+  }
+
   async function answer(c, question, generation) {
     const timer = clock.setTimeout(() => { queueSpeech(c, 'One moment.', generation); }, 3000);
     let snap;
-    try { snap = await snapshot(c); }
+    try { snap = await (question.kind === 'standup' ? standupView(c) : snapshot(c)); }
     catch (error) {
       clock.clearTimeout(timer);
       if (c.generation !== generation || c.stopping) return;
-      log(`source failed: ${error.message}`);
+      log(`source failed: ${error?.message === 'source-timeout' ? 'source-timeout' : 'source-error'}`);
       await queueSpeech(c, "Sorry, I can't answer that right now.", generation);
       return;
     }
     if (c.generation !== generation || c.stopping) { clock.clearTimeout(timer); return; }
+    if (question.kind === 'standup') {
+      clock.clearTimeout(timer);
+      const text = speakStandupHeadline(snap, redactor);
+      emit({ type: 'answer', text, counts: snap.counts });
+      await queueSpeech(c, text, generation);
+      return;
+    }
     let text;
     try {
       const result = await brain.turn(snap, { deadline: now() + 55000,
@@ -328,7 +343,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
-      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0,
+      waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set(), listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false, turn: null, roster: { count: 0 } };
     call = c;
