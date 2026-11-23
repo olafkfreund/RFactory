@@ -240,7 +240,15 @@ Traps that apply to every step:
     Results go in the PR.
     - **Teams results (2026-11-23, lead, owner in the meeting; desktop VM; `auto` → own transcription; build 2213baa, guest pinned in e29b99b):** a speaker participant asked 6 recorded questions 40 s apart. Question 1 was asked before the bot's VM had joined, so it does not count. **5 of 5 asked with the bot present were answered**, including "RFactory." + 1 s pause + "what is in progress right now?" (one joined 4.3 s segment, deviation 8). "how many **cards** are done?" was transcribed as "cars"; the bot answered that it assumed cards. Manager timings: STT 1.22–1.25 s per segment, `turn ms` (last piece to dispatch) 1.22–1.25 s, so about 1.9 s from the end of speech (0.6 s gate silence + 1.25 s); the standup headline followed 0.1 s later and brain answers 2.6–3.9 s later.
     - **The 6-of-6 bar is not yet met:** a repeat of question 1 found that Teams had dropped the bot after 20:30 while its VM and the manager still showed `in-call`. To investigate before the PR: why Teams removed the guest, and why the bot did not see it leave.
-    - **Not yet run:** Meet 5/5 with `audio` and `auto`, false triggers (5 min unaddressed + 2 min silence), 3 concurrent calls, and the log privacy grep.
+    - **Teams removal (owner removed the bot):** the bot did not notice; fixed in f34d31b (a 4 s "page has left the call" watch). Recheck in the next Teams run.
+    - **Meet, desktop VM (2026-11-23, no owner; an observer held the room open, because Meet makes anonymous guests knock in an empty room):**
+      - first run heard nothing: review fix 7's stream-name rule dropped Meet's `remote-<participant id>` streams (ids contain `/`); fixed in 094e27d.
+      - **`audio`: 4 of 5** answered (standup, the pause question, blocked, next). "how many cards are done?" produced no segment at all; cause not found.
+      - **False triggers: 0** wake-ups in 5 min of unaddressed talk + 2 min of silence; the bot's own answers woke nothing. The talk was held as one 18-segment turn by the speech hints (no harm here, but a question inside steady talk waits for a pause).
+      - **`auto` (captions): 5 of 5** answered.
+      - Timings: STT 1.19-1.28 s per question segment (one 3.0 s); about 1.9 s from end of speech to heard.
+    - **Privacy:** 0 matches for the spoken phrases in the logs of rfactory-web, rfactory-stt, oauth2-proxy, the runner, guard, proxy and reaper; rfactory-stt logs only `processing 'audio.wav' (N samples)`. VM journals are deleted with each VM and were not read.
+    - **Not yet run:** 3 concurrent calls; the Teams rerun (6 questions, then a removal by the owner).
 
 12. **PR to `main`:** link the intent, spec and plan, say which steps Codex, agy and the coder did, and announce it on the bus.
 
