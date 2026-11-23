@@ -1,0 +1,61 @@
+name: factory-ui drift gate
+
+on:
+  pull_request:
+    branches: [main, "feat/**", "release/**"]
+    paths:
+      - "web/public/tokens.css"
+      - "web/public/shell.css"
+      - ".github/workflows/factory-ui-drift.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  HUB_PIN_SHA: "c6cf9534abf318b9aea36eada8d3a48e9cbd9be5"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out RFactory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: service
+
+      - name: Verify the pin is on Factory main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ env.HUB_PIN_SHA }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          status=$(gh api "repos/olafkfreund/Factory/compare/main...${SHA}" --jq .status)
+          [[ "$status" == identical || "$status" == behind ]]
+
+      - name: Check out pinned Factory canonical
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: olafkfreund/Factory
+          ref: ${{ env.HUB_PIN_SHA }}
+          path: factory-hub
+
+      - name: Check out current Factory checker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: olafkfreund/Factory
+          ref: main
+          path: factory-hub-main
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check vendored CSS byte-for-byte
+        run: |
+          python factory-hub-main/scripts/check_factory_ui_drift.py \
+            --canonical factory-hub/shared/factory-ui \
+            --service rfactory \
+            --root service

@@ -1,27 +1,12 @@
-/* Factory suite theme (Gruvbox dark + light), taken from CFactory's apps/frontend-web/src/index.css.
-   Each portal has its own accent; RFactory's is gruvbox orange (the others: CFactory blue/aqua,
-   PFactory purple, AIFactory yellow, TFactory green). */
+/* RFactory's existing names map to the shared Factory tokens. */
 :root {
-  --bg: #282828; --sidebar: #1d2021; --panel: #32302f; --panel-2: #3c3836;
-  --border: #504945; --border-soft: #3c3836;
-  --text: #ebdbb2; --muted: #a89984; --faint: #7c6f64;
-  --accent: #fe8019; --brand: linear-gradient(135deg, #fe8019, #fabd2f);
-  --cfactory: #83a598; --plan: #d3869b; --code: #fabd2f; --test: #b8bb26;
-  --green: #b8bb26; --red: #fb4934; --amber: #fabd2f; --blue: #83a598; --violet: #d3869b;
-  --font-display: "Archivo", "Hanken Grotesk", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --font-ui: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
-  color-scheme: dark;
-}
-/* Light palette, as CFactory: on :root.light (the portals default to dark, light is opt-in). */
-:root.light {
-  --bg: #fbf1c7; --sidebar: #f2e5bc; --panel: #f9f5d7; --panel-2: #ebdbb2;
-  --border: #d5c4a1; --border-soft: #ebdbb2;
-  --text: #3c3836; --muted: #665c54; --faint: #7c6f64;
-  --accent: #af3a03; --brand: linear-gradient(135deg, #af3a03, #b57614);
-  --cfactory: #427b58; --plan: #8f3f71; --code: #b57614; --test: #79740e;
-  --green: #79740e; --red: #9d0006; --amber: #b57614; --blue: #076678; --violet: #8f3f71;
-  color-scheme: light;
+  --bg: var(--f-bg); --sidebar: var(--f-surface-2); --panel: var(--f-surface-1); --panel-2: var(--f-surface-2);
+  --border: var(--f-border-subtle); --border-soft: var(--f-border-subtle);
+  --text: var(--f-text); --muted: var(--f-text-secondary); --faint: var(--f-text-muted);
+  --accent: var(--f-accent);
+  --green: var(--f-success); --red: var(--f-danger); --amber: var(--f-warning);
+  --blue: var(--f-info); --violet: var(--f-plan);
+  --font-display: var(--f-font-sans); --font-mono: var(--f-font-mono); --font-ui: var(--f-font-sans);
 }
 
 * { box-sizing: border-box; }
@@ -30,26 +15,26 @@ body { margin: 0; min-height: 100vh; font-family: var(--font-ui); background: va
 a { color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
-/* ── Topbar ─────────────────────────────────────────────── */
-.topbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: .6rem 1rem; padding: .6rem 1.4rem; border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(6px); }
-.brand { display: flex; align-items: center; gap: .6rem; }
-.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
-  background: var(--brand); color: #1d2021; font: 900 1rem var(--font-display); font-stretch: 125%;
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent); }
-.brand-name { font-family: var(--font-display); font-stretch: 125%; font-weight: 900; font-size: 1.08rem;
-  letter-spacing: .02em; text-transform: uppercase; }
-.portal-switch { display: inline-flex; flex-wrap: wrap; gap: .2rem; padding: .2rem; border: 1px solid var(--border);
-  border-radius: 9px; background: var(--panel); }
-.portal-opt { display: inline-flex; align-items: center; gap: .4rem; text-decoration: none; padding: .28rem .6rem;
-  border-radius: 6px; font: 600 .72rem var(--font-mono); color: var(--muted); }
-.portal-opt:hover { color: var(--text); background: var(--panel-2); }
-.portal-opt.on { color: var(--text); background: var(--panel-2); }
-.portal-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 6px currentColor; }
-.dot-c { background: var(--cfactory); color: var(--cfactory); } .dot-p { background: var(--plan); color: var(--plan); }
-.dot-ai { background: var(--code); color: var(--code); } .dot-t { background: var(--test); color: var(--test); }
-.dot-r { background: var(--accent); color: var(--accent); }
+/* The plain-HTML bar can grow and wrap; the shared React shell uses fixed rows. */
+.f-topbar { position: sticky; top: 0; }
+.f-portal-switcher__dot--plan { background: var(--f-plan); }
+.f-portal-switcher__dot--build { background: var(--f-build); }
+.f-portal-switcher__dot--test { background: var(--f-test); }
+.f-portal-switcher__dot--cockpit { background: var(--f-cockpit); }
+.f-portal-switcher__dot--meet { background: var(--f-meet); }
+@media (max-width: 899px) {
+  .f-topbar { display: flex; height: auto; min-height: 48px; flex-wrap: wrap; padding-block: var(--f-space-2); }
+  .f-topbar__left { flex-wrap: wrap; }
+  .f-topbar__right { width: auto; margin-left: auto; }
+}
+@media (max-width: 560px) {
+  .f-topbar { flex-direction: column; align-items: flex-start; }
+  .f-topbar__left { width: 100%; }
+  .f-brand__name { display: inline; }
+  .f-portal-switcher { flex-wrap: wrap; max-width: 100%; }
+  .f-portal-switcher__label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  .f-topbar__right { justify-content: flex-start; margin-left: 0; }
+}
 
 /* ── Page ───────────────────────────────────────────────── */
 .content { max-width: 78rem; margin: 0 auto; padding: 1.6rem 1.6rem 3rem; }
@@ -76,7 +61,7 @@ a { color: inherit; }
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-bottom: 1rem; }
 .stat { display: flex; flex-direction: column; gap: .2rem; padding: .85rem 1rem; border-radius: 12px; background: var(--panel);
   border: 1px solid var(--border); border-top: 2px solid var(--c); }
-.stat-label { font: 700 .7rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.stat-label { font: 700 .75rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 .stat-value { font-family: var(--font-display); font-stretch: 125%; font-weight: 850; font-size: 1.9rem; line-height: 1; color: var(--c); }
 .stat--blocked, .col--blocked { --c: var(--red); } .stat--in_progress, .col--in_progress { --c: var(--blue); }
 .stat--left, .col--left { --c: var(--amber); } .stat--done, .col--done { --c: var(--green); }
@@ -88,27 +73,27 @@ a { color: inherit; }
   letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 #summary-card { border-left: 3px solid var(--accent); }
 .summary { margin: 0 0 .6rem; font-size: 1rem; line-height: 1.6; }
-.fine { margin: 0; color: var(--faint); font: 500 .72rem var(--font-mono); }
+.fine { margin: 0; color: var(--faint); font: 500 .75rem var(--font-mono); }
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-bottom: 1rem; align-items: start; }
 .col { background: var(--sidebar); border: 1px solid var(--border); border-top: 2px solid var(--c); border-radius: 12px; padding: .8rem; min-height: 6rem; }
 .col .panel-title { color: var(--c); }
-.count { min-width: 1.5rem; padding: 0 .45rem; border-radius: 999px; text-align: center; font-size: .72rem;
-  color: var(--bg); background: var(--c, var(--muted)); }
+.count { min-width: 1.5rem; padding: 0 .45rem; border-radius: 999px; text-align: center; font-size: .75rem;
+  color: var(--f-on-accent); background: var(--c, var(--f-text-secondary)); }
 
 ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; padding: .65rem .8rem; font-size: .85rem; }
 .card:hover { border-color: color-mix(in srgb, var(--c, var(--accent)) 55%, var(--border)); }
-.card-key { display: block; margin-bottom: .2rem; font: 600 .72rem var(--font-mono); color: var(--c, var(--accent)); }
+.card-key { display: block; margin-bottom: .2rem; font: 600 .75rem var(--font-mono); color: var(--c, var(--accent)); }
 .card-title { display: block; font-weight: 600; line-height: 1.35; text-decoration: none; }
 a.card-title:hover { text-decoration: underline; text-decoration-color: var(--c, var(--accent)); }
 .evidence { margin-top: .4rem; padding-top: .4rem; border-top: 1px solid var(--border-soft); color: var(--muted);
-  font: 500 .72rem/1.45 var(--font-mono); }
+  font: 500 .75rem/1.45 var(--font-mono); }
 .none { color: var(--faint); font: 500 .75rem var(--font-mono); padding: .2rem .1rem; }
 
 @media (max-width: 960px) { .board, .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) {
   .board { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .content { padding: 1rem; } .page-head h1 { font-size: 1.7rem; }
+  .content { padding: 1rem; } .page-head h1 { font-size: 1.75rem; }
 }
 
 /* ── Call panel ─────────────────────────────────────────── */
@@ -117,12 +102,12 @@ a.card-title:hover { text-decoration: underline; text-decoration-color: var(--c,
   border: 1px solid var(--border); border-radius: 8px; padding: .45rem .7rem; }
 .call-log { list-style: none; margin: .6rem 0 0; padding: 0; max-height: 18rem; overflow-y: auto; }
 .call-log li { padding: .35rem 0; border-top: 1px solid var(--border-soft); font-size: .85rem; overflow-wrap: anywhere; }
-.call-log .who { color: var(--muted); font: 500 .72rem var(--font-mono); }
+.call-log .who { color: var(--muted); font: 500 .75rem var(--font-mono); }
 .call-log .answer { color: var(--accent); }
 
 /* ── Actions ────────────────────────────────────────────── */
 .action-text { display: block; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .action-payload { margin: .4rem 0 0; padding: .45rem .6rem; background: var(--panel-2); border-radius: 8px;
-  font: 500 .72rem/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  font: 500 .75rem/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .action-buttons, .share-buttons { display: flex; gap: .5rem; margin-top: .5rem; }
-.footer { max-width: 78rem; margin: 0 auto; padding: 0 1.6rem 1.5rem; color: var(--muted); font: 500 .72rem var(--font-mono); }
+.footer { max-width: 78rem; margin: 0 auto; padding: 0 1.6rem 1.5rem; color: var(--muted); font: 500 .75rem var(--font-mono); }

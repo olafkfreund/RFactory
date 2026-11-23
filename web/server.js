@@ -9,6 +9,9 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/tokens.css': ['tokens.css', 'text/css; charset=utf-8'],
+  '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
+  '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
   '/live.html': ['live.html', 'text/html; charset=utf-8'],
   '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };

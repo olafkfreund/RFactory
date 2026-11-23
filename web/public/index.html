@@ -1,26 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-portal="meet">
 <head>
 <meta charset="utf-8">
 <title>RFactory · Standup</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@125,600..900&amp;family=Hanken+Grotesk:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/shell.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">R</span>
-    <span class="brand-name">RFactory</span>
+<header class="f-topbar">
+  <div class="f-topbar__left">
+    <span class="f-brand"><span class="f-brand__mark" aria-hidden="true">R</span><span class="f-brand__name">RFactory</span></span>
+    <nav class="f-portal-switcher" aria-label="Factory portals">
+      <a class="f-portal-switcher__item" href="https://pfactory.freundcloud.org.uk" title="Plan"><span class="f-portal-switcher__dot f-portal-switcher__dot--plan" aria-hidden="true"></span><span class="f-portal-switcher__label">Plan</span></a>
+      <a class="f-portal-switcher__item" href="https://aifactory.freundcloud.org.uk" title="Build"><span class="f-portal-switcher__dot f-portal-switcher__dot--build" aria-hidden="true"></span><span class="f-portal-switcher__label">Build</span></a>
+      <a class="f-portal-switcher__item" href="https://tfactory.freundcloud.org.uk" title="Test"><span class="f-portal-switcher__dot f-portal-switcher__dot--test" aria-hidden="true"></span><span class="f-portal-switcher__label">Test</span></a>
+      <a class="f-portal-switcher__item" href="https://cfactory.freundcloud.org.uk" title="Cockpit"><span class="f-portal-switcher__dot f-portal-switcher__dot--cockpit" aria-hidden="true"></span><span class="f-portal-switcher__label">Cockpit</span></a>
+      <span class="f-portal-switcher__item" aria-current="page" title="Meet"><span class="f-portal-switcher__dot f-portal-switcher__dot--meet" aria-hidden="true"></span><span class="f-portal-switcher__label">Meet</span></span>
+    </nav>
   </div>
-  <nav class="portal-switch" aria-label="Factory portals">
-    <a class="portal-opt" href="https://cfactory.freundcloud.org.uk"><span class="portal-dot dot-c"></span>CFactory</a>
-    <a class="portal-opt" href="https://pfactory.freundcloud.org.uk"><span class="portal-dot dot-p"></span>PFactory</a>
-    <a class="portal-opt" href="https://aifactory.freundcloud.org.uk"><span class="portal-dot dot-ai"></span>AIFactory</a>
-    <a class="portal-opt" href="https://tfactory.freundcloud.org.uk"><span class="portal-dot dot-t"></span>TFactory</a>
-    <span class="portal-opt on" aria-current="page"><span class="portal-dot dot-r"></span>RFactory</span>
-  </nav>
+  <div class="f-topbar__right">
+    <div class="f-theme-switch" role="group" aria-label="Theme">
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+      <button class="f-theme-switch__opt" type="button" data-theme-choice="system" aria-pressed="true">System</button>
+    </div>
+  </div>
 </header>
 
 <main class="content">
