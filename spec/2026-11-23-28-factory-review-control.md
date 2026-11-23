@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 28
 intent: intent/2026-11-23-28-factory-review-control.md
 ---
