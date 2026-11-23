@@ -1,6 +1,8 @@
 'use strict';
 // Every node is built with createElement and textContent; nothing is parsed as markup.
 const SECTIONS = ['done', 'in_progress', 'blocked', 'left'];
+const STANDUP_SECTIONS = ['done', 'now', 'missing', 'next', 'issues', 'unknown'];
+const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const STALE_DAYS = 7;
 
 function renderFooter(doc, commit = '') {
@@ -45,7 +47,7 @@ function renderItem(doc, item) {
   const li = el(doc, 'li', undefined, 'card');
   li.appendChild(el(doc, 'span', item.id, 'card-key'));
   const title = item.title || '(no title)';
-  if (typeof item.url === 'string' && item.url.startsWith('https://github.com/')) {
+  if (typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
     const a = el(doc, 'a', title, 'card-title');
     a.setAttribute('href', item.url);
     li.appendChild(a);
@@ -55,17 +57,82 @@ function renderItem(doc, item) {
   return li;
 }
 
-function fill(doc, id, items) {
-  const ul = doc.getElementById(id).querySelector('ul');
+function renderRow(doc, row) {
+  const li = el(doc, 'li', undefined, 'card');
+  li.appendChild(el(doc, 'span', row.card_key, 'card-key'));
+  const title = row.title || '(no title)';
+  if (typeof row.url === 'string' && ISSUE_URL.test(row.url)) {
+    const a = el(doc, 'a', title, 'card-title');
+    a.setAttribute('href', row.url);
+    li.appendChild(a);
+  } else li.appendChild(el(doc, 'span', title, 'card-title'));
+  if (row.status && !['done', 'in_progress', 'ready', 'blocked'].includes(row.status)) {
+    li.appendChild(el(doc, 'div', `status: ${row.status}`, 'evidence'));
+  }
+  if (row.why) li.appendChild(el(doc, 'div', row.why, 'evidence'));
+  return li;
+}
+
+function fill(doc, id, items, rowFn = renderItem, countValue) {
+  const sec = doc.getElementById(id);
+  if (!sec) return;
+  const ul = sec.querySelector('ul');
   while (ul.firstChild) ul.removeChild(ul.firstChild);
-  for (const item of items) ul.appendChild(renderItem(doc, item));
+  for (const item of items) ul.appendChild(rowFn(doc, item));
   if (!items.length) ul.appendChild(el(doc, 'li', 'None', 'none'));
   const count = doc.getElementById(`${id}-count`);
-  if (count) count.textContent = String(items.length);
+  if (count) count.textContent = String(countValue !== undefined ? countValue : items.length);
+}
+
+// the count tile in the stats bar follows its section's visibility
+function tile(doc, id, hidden) {
+  const count = doc.getElementById(`${id}-count`);
+  if (count && count.parentNode && count.parentNode.classList?.contains('stat')) count.parentNode.hidden = hidden;
 }
 
 function render(doc, data, now = Date.now()) {
-  for (const s of SECTIONS) fill(doc, s, data.items.filter((i) => i.state === s));
+  if (data.standup) {
+    const st = data.standup;
+    const counts = st.counts || {};
+    for (const s of ['in_progress', 'blocked', 'left']) {
+      const sec = doc.getElementById(s);
+      if (sec) sec.hidden = true;
+      tile(doc, s, true);
+    }
+    for (const s of STANDUP_SECTIONS) {
+      tile(doc, s, false);
+      const sec = doc.getElementById(s);
+      if (sec) sec.hidden = false;
+      const list = st[s] || [];
+      fill(doc, s, list, renderRow, counts[s] !== undefined ? counts[s] : list.length);
+    }
+    const fetched = st.fetched_at || data.fetched_at;
+    const freshness = st.freshness || data.freshness || { state: 'unavailable', last_polled_at: null };
+    const conflicting = st.conflicting !== undefined ? st.conflicting : (data.conflicting || 0);
+    const poll = freshness.last_polled_at
+      ? `last issue poll ${clock(freshness.last_polled_at)} (${ago(freshness.last_polled_at, now)})`
+      : 'last issue poll none';
+    doc.getElementById('age').textContent = `As of ${clock(fetched)} (${ago(fetched, now)}) · issue data ${freshness.state} · ${poll} · ${conflicting} conflicting`;
+    const pill = doc.getElementById('stale');
+    if (pill) pill.hidden = freshness.state === 'current';
+    const headline = data.headline !== undefined ? data.headline : data.summary;
+    doc.getElementById('summary').textContent = headline || (data.summary_error ? `No summary (${data.summary_error}). The board above is still current.` : '');
+    doc.getElementById('destination').textContent = 'Summary built by the server from the board.';
+    const card = doc.getElementById('summary-card');
+    if (card) card.hidden = false;
+    return;
+  }
+  for (const s of ['now', 'missing', 'next', 'issues']) {
+    const sec = doc.getElementById(s);
+    if (sec) sec.hidden = true;
+    tile(doc, s, true);
+  }
+  for (const s of SECTIONS) {
+    tile(doc, s, false);
+    const sec = doc.getElementById(s);
+    if (sec) sec.hidden = false;
+    fill(doc, s, data.items.filter((i) => i.state === s));
+  }
   fill(doc, 'unknown', data.unknown);
   const newest = data.newest_update
     ? `newest card update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`

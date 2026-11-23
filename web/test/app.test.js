@@ -17,8 +17,9 @@ class Node {
 }
 function shim() {
   const byId = {};
-  for (const id of ['done', 'in_progress', 'blocked', 'left', 'unknown']) {
+  for (const id of ['done', 'in_progress', 'blocked', 'left', 'now', 'missing', 'next', 'issues', 'unknown']) {
     const s = new Node('section'); s.appendChild(new Node('ul')); byId[id] = s;
+    byId[`${id}-count`] = new Node('span');
   }
   for (const id of ['age', 'summary', 'destination']) byId[id] = new Node('p');
   const doc = { createElement: (t) => new Node(t), getElementById: (id) => byId[id] };
@@ -149,4 +150,54 @@ test('share buttons are absent for a non-approver', () => {
   handleCall(doc, { type: 'share-pending', share: { id: 's1', hash: 'h', state: 'proposed', project: 'F', proposed_by: 'x' } });
   assert.deepEqual(buttons(byId), []);
   assert.ok(byId['share-list'].textContent.includes('Share the live CFactory board of F, refreshed every 30 seconds.'));
+});
+
+test('standup renders six lists, counts, freshness, times, conflicting count, headline, and keeps hostile text and non-issue URLs inert', () => {
+  const { doc, byId } = shim();
+  const now = Date.parse('2026-11-23T18:00:00Z');
+  const standup = {
+    done: [{ card_key: 'AF-1', title: '<script>alert(1)</script>', status: 'done', url: 'https://github.com/o/r/issues/12', why: 'done on the board' }],
+    now: [{ card_key: 'AF-2', title: '<img src=x onerror=alert(1)>', status: 'in_progress', url: 'https://github.com/o/r/pull/12', why: '<script>bad</script>' }],
+    missing: [{ card_key: 'AF-3', title: 'Missing criteria', status: 'ready', url: 'https://github.com/o/r/issues/notanumber', why: '<img src=x onerror=1>' }],
+    next: [{ card_key: 'AF-4', title: 'Next card', status: 'ready', url: 'javascript:alert(1)', why: 'no Factory run yet' }],
+    issues: [{ card_key: 'AF-5', title: 'Blocked card', status: 'blocked', url: 'https://github.com/o/r/issues/5?foo=1', why: 'blocked' }],
+    unknown: [{ card_key: 'AF-6', title: 'Mystery', status: 'review', why: '' }],
+    counts: { done: 1, now: 1, missing: 1, next: 1, issues: 1, unknown: 1 },
+    conflicting: 2,
+    freshness: { state: 'stale', last_polled_at: '2026-11-23T17:55:00Z' },
+    fetched_at: '2026-11-23T17:59:50Z',
+  };
+  const headline = 'Board: 1 done, 1 in progress, 1 missing, 1 ready, 1 issues, 1 unknown. Next: Next card; Issue: Blocked card. Issue data is stale.';
+  render(doc, { ...base, summary: headline, headline, standup, freshness: standup.freshness, conflicting: 2, fetched_at: standup.fetched_at, items: [], unknown: [] }, now);
+  for (const s of ['done', 'now', 'missing', 'next', 'issues', 'unknown']) {
+    assert.equal(byId[`${s}-count`].textContent, '1');
+    const ul = byId[s].querySelector('ul');
+    assert.ok(!ul.all().some((n) => ['script', 'img'].includes(n.tag)));
+  }
+  assert.ok(byId.done.textContent.includes('<script>alert(1)</script>'));
+  assert.ok(byId.done.textContent.includes('done on the board'));
+  assert.ok(byId.now.textContent.includes('<img src=x onerror=alert(1)>'));
+  assert.ok(byId.now.textContent.includes('<script>bad</script>'));
+  assert.ok(byId.missing.textContent.includes('<img src=x onerror=1>'));
+  assert.ok(byId.unknown.textContent.includes('review'));
+  const allLinks = ['done', 'now', 'missing', 'next', 'issues', 'unknown']
+    .flatMap((s) => byId[s].querySelector('ul').all().filter((n) => n.attrs.href).map((n) => n.attrs.href));
+  assert.deepEqual(allLinks, ['https://github.com/o/r/issues/12']);
+  assert.equal(byId.summary.textContent, headline);
+  assert.match(byId.age.textContent, /just now/);
+  assert.match(byId.age.textContent, /stale/);
+  assert.match(byId.age.textContent, /5 min ago/);
+  assert.match(byId.age.textContent, /2 conflicting/);
+});
+
+test('snapshot-less answer event renders its text in the call log and leaves the board as it was', () => {
+  const { doc, byId } = shim();
+  for (const id of ['call-state-text', 'call-mic', 'call-voice', 'call-error', 'call-log', 'call-join', 'call-leave', 'stale', 'summary-card']) byId[id] = new Node('x');
+  render(doc, { ...base, items: [card({ title: 'existing board item' })], unknown: [], summary: 'Initial summary' });
+  assert.ok(byId.done.textContent.includes('existing board item'));
+  assert.equal(byId.summary.textContent, 'Initial summary');
+  handleCall(doc, { type: 'answer', text: 'Board: 1 done. No card highlights.', counts: { done: 1, now: 0, missing: 0, next: 0, issues: 0, unknown: 0 } });
+  assert.ok(byId['call-log'].textContent.includes('Board: 1 done. No card highlights.'));
+  assert.ok(byId.done.textContent.includes('existing board item'));
+  assert.equal(byId.summary.textContent, 'Initial summary');
 });
