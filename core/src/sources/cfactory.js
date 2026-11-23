@@ -19,13 +19,20 @@ function repositoryOf(card, repos) {
   return repos.default_repository_id;
 }
 
+function inScope(card, repos, repositoryId) {
+  if (!card || card.deleted_at != null || repositoryOf(card, repos) !== repositoryId) return false;
+  const m = typeof card.issue_ref === 'string' ? REF.exec(card.issue_ref) : null;
+  const repo = repos.repositories.find((r) => r.id === repositoryId);
+  return !m || `${m[1]}/${m[2]}` === (repo?.intake_project ?? repo?.project);
+}
+
 // Pure. Reads only the kept fields; description, acceptance_criteria and comments never get in.
 function mapCard(card) {
   const m = typeof card.issue_ref === 'string' ? REF.exec(card.issue_ref) : null;
   const state = Object.hasOwn(STATE, card.status) ? STATE[card.status] : 'unknown';
   const evidence = [];
   for (const [stage, run] of Object.entries(card.stage_runs && typeof card.stage_runs === 'object' ? card.stage_runs : {})) {
-    if (run && FAILED.test(str(run.status))) evidence.push(`${stage} (${str(run.service)}) failed: ${str(run.detail)}`);
+    if (run && FAILED.test(str(run.status))) evidence.push(`${stage} (${str(run.service)}) failed`);
   }
   if ((card.status === 'blocked' || card.status === 'in_progress') && card.issue_state === 'closed') evidence.push(`board says ${card.status} but the issue is closed`);
   if (card.status === 'done' && card.issue_state === 'open') evidence.push('board says done but the issue is open');
@@ -77,18 +84,62 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     const r = await call('cfactory_list_git_repositories', deadline);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
+  const sourceError = (error) => new Error(error?.message === 'source-timeout' ? 'source-timeout' : 'source-error');
+  async function scopedCards(deadline) {
+    let repos, response;
+    try { [repos, response] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]); }
+    catch (error) { throw sourceError(error); }
+    if (response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+    const cards = [];
+    let conflicting = 0;
+    for (const card of response.cards) {
+      if (inScope(card, repos, repositoryId)) cards.push(card);
+      else if (card && card.deleted_at == null && repositoryOf(card, repos) === repositoryId) conflicting++;
+    }
+    return { cards, conflicting };
+  }
+  async function freshness(deadline = Date.now() + timeoutMs) {
+    try {
+      const state = await call('cfactory_card_sync_state', deadline);
+      if (state.error) return { state: 'unavailable', last_polled_at: null };
+      const entry = Array.isArray(state.repositories) && state.repositories.find((r) => r.repository_id === repositoryId);
+      if (entry && entry.stale === true) return { state: 'stale', last_polled_at: entry.last_polled_at ?? null };
+      if (entry && entry.stale === false && entry.last_polled_at != null) return { state: 'current', last_polled_at: entry.last_polled_at };
+    } catch {}
+    return { state: 'unavailable', last_polled_at: null };
+  }
+  async function comments(card, deadline = Date.now() + timeoutMs) {
+    try {
+      const reply = await call('cfactory_card_comments', deadline, { card_key: card.card_key });
+      if (!reply.error && reply.issue_ref === card.issue_ref) return { available: true, synced_at: reply.synced_at, comments: reply.comments };
+    } catch {}
+    return { available: false };
+  }
   return {
     async start() {
       if (!c) await connect();
       if (!(await repoList()).repositories.some((r) => r.id === repositoryId)) throw new Error('scope-unknown-repository');
     },
     async snapshot() {
-      // in parallel, so both reads fit the plan's single 10 s budget
       const deadline = Date.now() + timeoutMs;
-      const [repos, { cards }] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]);
-      const items = (Array.isArray(cards) ? cards : []).filter((x) => x && repositoryOf(x, repos) === repositoryId).map(mapCard);
+      const { cards, conflicting } = await scopedCards(deadline);
+      const items = cards.map(mapCard);
       const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
-      return { items, fetched_at: new Date().toISOString(), newest_update };
+      return { items, fetched_at: new Date().toISOString(), newest_update, conflicting };
+    },
+    async standupData() {
+      const deadline = Date.now() + timeoutMs;
+      const { cards, conflicting } = await scopedCards(deadline);
+      return { cards, conflicting, freshness: await freshness(), fetched_at: new Date().toISOString() };
+    },
+    async reviewData(card_key) {
+      const deadline = Date.now() + timeoutMs;
+      let repos, card;
+      try { [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]); }
+      catch (error) { throw sourceError(error); }
+      if (card.error || !card.card_key || !inScope(card, repos, repositoryId)) return { found: false };
+      const [discussion, sync] = await Promise.all([comments(card), freshness()]);
+      return { found: true, card, discussion, freshness: sync };
     },
     async boardView() {
       if (typeof redactor?.logSafe !== 'function') throw new Error('board-redactor-required');
@@ -107,4 +158,4 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   };
 }
 
-module.exports = { createCfactorySource, mapCard, repositoryOf };
+module.exports = { createCfactorySource, mapCard, repositoryOf, inScope };
