@@ -9,7 +9,9 @@
 | Call Join and Leave | Standup call panel `#call-join` and `#call-leave` |
 | Pending actions, share and history | Standup page panels |
 | Desktop grants, requests, share and approval queue | Desktop page panels |
+| Desktop profile management (admin) | Desktop page `#profiles-panel` |
 | Live view | Live page `#screen` |
+| Versioned source link | Standup footer `#source-footer` |
 | Theme choice (new) | `f-theme-switch` on every page; saved as `rfactory-theme` |
 
 RFactory has no project switcher, pipeline strip, sidebar, settings or preferences pages.
