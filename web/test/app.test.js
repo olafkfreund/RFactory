@@ -318,3 +318,25 @@ test('review view and card panel: stage counts, failed/active cards, hostile tex
     global.fetch = realFetch;
   }
 });
+
+test('a slower response for an earlier card never overwrites the latest card', async () => {
+  const { doc, byId } = shim();
+  const realFetch = global.fetch;
+  let releaseA;
+  const card = (key) => ({ card_key: key, title: `Title ${key}`, status: 'ready', stages: [], acceptance_criteria: [],
+    discussion: { available: false, note: 'discussion not available', comments: [] }, not_in_card_data: [] });
+  try {
+    global.fetch = async (url) => {
+      if (url === '/api/review/A') { await new Promise((r) => { releaseA = r; }); return { ok: true, status: 200, json: async () => card('A') }; }
+      return { ok: true, status: 200, json: async () => card('B') };
+    };
+    const a = loadReviewCard(doc, 'A');
+    await loadReviewCard(doc, 'B');
+    releaseA();
+    await a;
+    assert.ok(byId['review-card-body'].textContent.includes('Title B'));
+    assert.ok(!byId['review-card-body'].textContent.includes('Title A'));
+  } finally {
+    global.fetch = realFetch;
+  }
+});

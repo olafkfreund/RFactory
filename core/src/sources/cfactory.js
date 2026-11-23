@@ -84,12 +84,14 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     const r = await call('cfactory_list_git_repositories', deadline);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
+  // a failed or empty repository read is a source failure, never "every card is conflicting"
+  const hasRepo = (repos) => repos.repositories.some((r) => r.id === repositoryId);
   const sourceError = (error) => new Error(error?.message === 'source-timeout' ? 'source-timeout' : 'source-error');
   async function scopedCards(deadline) {
     let repos, response;
     try { [repos, response] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]); }
     catch (error) { throw sourceError(error); }
-    if (response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+    if (!hasRepo(repos) || response.error || !Array.isArray(response.cards)) throw new Error('source-error');
     const cards = [];
     let conflicting = 0;
     for (const card of response.cards) {
@@ -137,6 +139,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       let repos, card;
       try { [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]); }
       catch (error) { throw sourceError(error); }
+      if (!hasRepo(repos)) throw new Error('source-error');
       if (card.error || !card.card_key || !inScope(card, repos, repositoryId)) return { found: false };
       const [discussion, sync] = await Promise.all([comments(card), freshness()]);
       return { found: true, card, discussion, freshness: sync };

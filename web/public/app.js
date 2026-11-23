@@ -292,15 +292,21 @@ function renderReviewCard(doc, data) {
   if (data.provenance_note) body.appendChild(el(doc, 'div', data.provenance_note, 'fine'));
 }
 
+const reviewSeq = new WeakMap();
 async function loadReviewCard(doc, card_key) {
   const panel = doc.getElementById('review-card');
   if (panel) panel.hidden = false;
   const status = doc.getElementById('review-card-status');
   const body = doc.getElementById('review-card-body');
   clear(body);
+  if (status) status.textContent = '';
+  // only the latest click may fill the panel; a slower earlier response is dropped
+  const seq = (reviewSeq.get(doc) || 0) + 1;
+  reviewSeq.set(doc, seq);
   try {
     const r = await fetch(`/api/review/${encodeURIComponent(card_key)}`);
     const data = await r.json().catch(() => ({}));
+    if (reviewSeq.get(doc) !== seq) return;
     if (r.status === 404) {
       if (status) status.textContent = 'not in this project';
       return;
@@ -315,6 +321,7 @@ async function loadReviewCard(doc, card_key) {
     }
     renderReviewCard(doc, data);
   } catch {
+    if (reviewSeq.get(doc) !== seq) return;
     if (status) status.textContent = 'Failed: network';
   }
 }

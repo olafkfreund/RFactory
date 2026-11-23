@@ -228,3 +228,12 @@ test('review binds comments to the issue ref and returns full card with freshnes
     assert.deepEqual(unavailable.discussion, { available: false });
   }
 });
+
+test('a failed or empty repository read is a source error, not a board of conflicting cards', async () => {
+  for (const value of [{ error: 'private marker' }, { repositories: [] }, { repositories: 'x' }]) {
+    const source = src(boardClient({ cfactory_list_git_repositories: value }));
+    await assert.rejects(source.snapshot(), { message: 'source-error' });
+    await assert.rejects(source.standupData(), { message: 'source-error' });
+    await assert.rejects(source.reviewData('FCT-1'), { message: 'source-error' });
+  }
+});
