@@ -96,6 +96,24 @@
   </div>
 
   <section id="unknown" class="panel panel--unknown"><h2 class="panel-title">Unrecognised states <span id="unknown-count" class="count">0</span></h2><ul></ul></section>
+
+  <section id="review" class="panel" hidden>
+    <h2 class="panel-title">Review</h2>
+    <p id="review-status" class="status-line" role="status" aria-live="polite"></p>
+    <p id="review-meta" class="fine"></p>
+    <p id="review-provenance" class="fine"></p>
+    <div id="review-stages"></div>
+    <h3 class="panel-title">Failed stages</h3>
+    <ul id="review-failed"></ul>
+    <h3 class="panel-title">Active stages</h3>
+    <ul id="review-active"></ul>
+  </section>
+
+  <section id="review-card" class="panel" hidden>
+    <h2 class="panel-title">Card review</h2>
+    <p id="review-card-status" class="status-line" role="status" aria-live="polite"></p>
+    <div id="review-card-body"></div>
+  </section>
 </main>
 <footer class="footer" id="source-footer"></footer>
 <script src="/app.js"></script>

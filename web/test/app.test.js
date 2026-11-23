@@ -1,17 +1,20 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { render, handleCall, renderFooter, loadShares } = require('../public/app.js');
+const {
+  render, handleCall, renderFooter, loadShares,
+  renderReview, loadReview, renderReviewCard, loadReviewCard,
+} = require('../public/app.js');
 
 class Node {
-  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.text = ''; }
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.text = ''; this.listeners = {}; }
   set textContent(v) { this.text = String(v); this.children = []; }
   get textContent() { return this.text + this.children.map((c) => c.textContent).join(''); }
   get firstChild() { return this.children[0] || null; }
   appendChild(c) { this.children.push(c); return c; }
   removeChild(c) { this.children.splice(this.children.indexOf(c), 1); }
   setAttribute(k, v) { this.attrs[k] = v; }
-  addEventListener() {}
+  addEventListener(ev, fn) { this.listeners[ev] = fn; }
   querySelector(tag) { return this.all().find((n) => n.tag === tag) || null; }
   all() { return this.children.flatMap((c) => [c, ...c.all()]); }
 }
@@ -21,7 +24,10 @@ function shim() {
     const s = new Node('section'); s.appendChild(new Node('ul')); byId[id] = s;
     byId[`${id}-count`] = new Node('span');
   }
-  for (const id of ['age', 'summary', 'destination']) byId[id] = new Node('p');
+  for (const id of ['age', 'summary', 'destination', 'review-status', 'review-meta', 'review-provenance', 'review-card-status']) byId[id] = new Node('p');
+  for (const id of ['review', 'review-card']) { byId[id] = new Node('section'); byId[id].hidden = true; }
+  for (const id of ['review-stages', 'review-card-body']) byId[id] = new Node('div');
+  for (const id of ['review-failed', 'review-active']) byId[id] = new Node('ul');
   const doc = { createElement: (t) => new Node(t), getElementById: (id) => byId[id] };
   return { doc, byId };
 }
@@ -200,4 +206,115 @@ test('snapshot-less answer event renders its text in the call log and leaves the
   assert.ok(byId['call-log'].textContent.includes('Board: 1 done. No card highlights.'));
   assert.ok(byId.done.textContent.includes('existing board item'));
   assert.equal(byId.summary.textContent, 'Initial summary');
+});
+
+test('review view and card panel: stage counts, failed/active cards, hostile text in description/criteria/detail/comment body/author stays text, comment URL and ref are never links, 404 shows "not in this project", 502 shows "Factory data unavailable (<code>)"', async () => {
+  const { doc, byId } = shim();
+  const now = Date.parse('2026-11-23T18:00:00Z');
+  const scriptTag = '<script>alert(1)</script>';
+  const imgTag = '<img src=x onerror=alert(1)>';
+  const projectReview = {
+    stages: { plan: { done: 2 }, code: { failed: 1 }, test: { dispatched: 1 } },
+    failed: [{ card_key: 'AF/1', title: `Failed ${scriptTag}`, stage: 'code' }],
+    active: [{ card_key: 'AF-2', title: `Active ${imgTag}`, stage: 'test', status: 'dispatched' }],
+    freshness: { state: 'stale', last_polled_at: '2026-11-23T17:55:00Z' },
+    conflicting: 3,
+    fetched_at: '2026-11-23T17:59:50Z',
+    provenance_note: 'Stage results can come from another card with the same correlation key until CFactory#583 is fixed.',
+  };
+  const cardDetail = {
+    card_key: 'AF/1',
+    title: 'Card title',
+    status: 'in_progress',
+    priority: 1,
+    tier: 'standard',
+    url: 'https://github.com/o/r/issues/42',
+    description: `Desc ${scriptTag} and ${imgTag}`,
+    acceptance_criteria: [`Crit 1 ${scriptTag}`, `Crit 2 ${imgTag}`],
+    stages: [{
+      stage: 'code',
+      service: 'aifactory',
+      status: 'failed',
+      detail: `Detail ${scriptTag} ${imgTag}`,
+      dispatched_at: '2026-11-23T17:50:00Z',
+      ref: 'https://github.com/o/r/pull/99',
+    }],
+    github_sync_error: 'sync boom',
+    discussion: {
+      available: true,
+      synced_at: '2026-11-23T17:55:00Z',
+      note: 'issue data is stale',
+      comments: [{
+        author: `Author ${scriptTag} ${imgTag}`,
+        created_at: '2026-11-23T17:52:00Z',
+        body: `Body ${scriptTag} ${imgTag}`,
+        url: 'https://github.com/o/r/issues/42#issuecomment-1',
+      }],
+    },
+    not_in_card_data: ['test cases', 'branches', 'pull requests', 'plan findings', 'pending approvals'],
+    provenance_note: 'Stage results can come from another card with the same correlation key until CFactory#583 is fixed.',
+  };
+
+  const fetchedUrls = [];
+  const realFetch = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      fetchedUrls.push(url);
+      if (url === '/api/review') return { ok: true, status: 200, json: async () => projectReview };
+      if (url === '/api/review/AF%2F1') return { ok: true, status: 200, json: async () => cardDetail };
+      if (url === '/api/review/missing') return { ok: false, status: 404, json: async () => ({ error: 'not-found' }) };
+      if (url === '/api/review/boom') return { ok: false, status: 502, json: async () => ({ error: 'source-timeout' }) };
+      throw new Error(`unexpected url ${url}`);
+    };
+
+    await loadReview(doc, now);
+    assert.equal(byId.review.hidden, false);
+    assert.match(byId['review-meta'].textContent, /issue data stale/);
+    assert.match(byId['review-meta'].textContent, /3 conflicting/);
+    assert.match(byId['review-provenance'].textContent, /CFactory#583/);
+    assert.match(byId['review-stages'].textContent, /plan: 2 done/);
+    assert.match(byId['review-stages'].textContent, /code: 1 failed/);
+    assert.match(byId['review-stages'].textContent, /test: 1 dispatched/);
+    assert.ok(!byId['review-failed'].all().some((n) => ['script', 'img'].includes(n.tag)));
+    assert.ok(!byId['review-active'].all().some((n) => ['script', 'img'].includes(n.tag)));
+
+    // Clicking the failed card button loads /api/review/AF%2F1
+    const failedBtn = byId['review-failed'].querySelector('button');
+    await failedBtn.listeners.click();
+    assert.ok(fetchedUrls.includes('/api/review/AF%2F1'));
+    assert.equal(byId['review-card'].hidden, false);
+
+    const body = byId['review-card-body'];
+    assert.ok(!body.all().some((n) => ['script', 'img'].includes(n.tag)));
+    assert.ok(body.textContent.includes(cardDetail.description));
+    assert.ok(body.textContent.includes(cardDetail.acceptance_criteria[0]));
+    assert.ok(body.textContent.includes(cardDetail.acceptance_criteria[1]));
+    assert.ok(body.textContent.includes(cardDetail.stages[0].detail));
+    assert.ok(body.textContent.includes(cardDetail.stages[0].ref));
+    assert.ok(body.textContent.includes(cardDetail.github_sync_error));
+    assert.ok(body.textContent.includes(cardDetail.discussion.note));
+    assert.ok(body.textContent.includes(cardDetail.discussion.comments[0].author));
+    assert.ok(body.textContent.includes(cardDetail.discussion.comments[0].body));
+    assert.ok(body.textContent.includes(cardDetail.discussion.comments[0].url));
+    assert.ok(body.textContent.includes('not in the card data (olafkfreund/CFactory#583)'));
+    assert.ok(body.textContent.includes(cardDetail.provenance_note));
+
+    // Only the card's parsed issue_ref URL is a link; comment URL and ref are plain text, never links
+    const links = body.all().filter((n) => n.tag === 'a' || n.attrs.href);
+    assert.deepEqual(links.map((n) => n.attrs.href), ['https://github.com/o/r/issues/42']);
+
+    // 404 shows "not in this project"
+    await loadReviewCard(doc, 'missing');
+    assert.equal(byId['review-card-status'].textContent, 'not in this project');
+
+    // 502 shows "Factory data unavailable (<code>)"
+    await loadReviewCard(doc, 'boom');
+    assert.equal(byId['review-card-status'].textContent, 'Factory data unavailable (source-timeout)');
+
+    global.fetch = async () => ({ ok: false, status: 502, json: async () => ({ error: 'source-error' }) });
+    await loadReview(doc, now);
+    assert.equal(byId['review-status'].textContent, 'Factory data unavailable (source-error)');
+  } finally {
+    global.fetch = realFetch;
+  }
 });
