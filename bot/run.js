@@ -66,7 +66,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       state.finalized = true;
       const short = state.short;
       const prefixLen = short && Math.round((startAt - short.start) * 16);
-      if (short && startAt >= short.end && startAt - short.end <= 2000 && short.prefix
+      if (short && startAt > short.start && startAt - short.end <= 2000 && short.prefix
           && prefixLen <= short.prefix.length && prefixLen + samples.length <= 25 * 16000) {
         const joined = new Float32Array(prefixLen + samples.length);
         joined.set(short.prefix.subarray(0, prefixLen));
@@ -107,22 +107,24 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       first.samples = first.samples.subarray(drop);
       first.at += drop / 16;
     }
-    if (state.short && !gate.isOpen() && at - state.short.end > 2000) state.short = null;
-    const wasOpen = gate.isOpen();
-    gate.push(samples, at);
-    const open = gate.isOpen();
-    if (!wasOpen && open) {
-      state.openAt = at;
-      state.finalized = false;
-      if (state.short) {
-        if (at >= state.short.end && at - state.short.end <= 2000)
-          state.short.prefix = prefix(state, state.short.start, end);
+    // push in the gate's own 20 ms frames, so an open and a close inside one 256 ms tap chunk are both seen
+    for (let i = 0; i < samples.length; i += 320) {
+      const frame = samples.subarray(i, i + 320), fAt = at + i / 16, fEnd = fAt + frame.length / 16;
+      if (state.short && !gate.isOpen() && fAt - state.short.end > 2000) state.short = null;
+      const wasOpen = gate.isOpen();
+      gate.push(frame, fAt);
+      const open = gate.isOpen();
+      if (!wasOpen && open) {
+        state.openAt = fAt;
+        state.finalized = false;
+        if (state.short && fAt >= state.short.end && fAt - state.short.end <= 2000)
+          state.short.prefix = prefix(state, state.short.start, fEnd);
+      } else if (wasOpen && !open) {
+        if (!state.finalized) state.short = { start: Math.max(state.chunks[0].at, state.openAt - 300), end: fAt };
+        state.openAt = null;
       }
-    } else if (wasOpen && !open) {
-      if (!state.finalized) state.short = { start: Math.max(state.chunks[0].at, state.openAt - 300), end };
-      state.openAt = null;
     }
-    if (open) speechHint(stream);
+    if (gate.isOpen()) speechHint(stream);
   }
 
   function prunePlayback() {

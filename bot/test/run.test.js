@@ -475,10 +475,10 @@ async function audioJoined(over = {}) {
   return { ...s, gates, order, audio: (p) => onAudio(p) };
 }
 
-function feed(s, samples, start = 0) {
+function feed(s, samples, start = 0, size = 320) {
   s.audio({ stream: 'a', event: 'attached' });
-  for (let i = 0; i < samples.length; i += 320) {
-    const chunk = samples.subarray(i, i + 320);
+  for (let i = 0; i < samples.length; i += size) {
+    const chunk = samples.subarray(i, i + size);
     s.audio({ stream: 'a', at: start + (i + chunk.length) / 16, pcm: chunk });
   }
   s.audio({ stream: 'a', event: 'detached' });
@@ -501,6 +501,19 @@ test('short wake word survives a pause before the question', async () => {
   assert.ok(pieces[0].at <= 400, `start ${pieces[0].at}`);
   assert.ok(pieces.reduce((n, p) => n + Buffer.from(p.data, 'base64').length, 0) / 32000 > 3.5);
   s.msg({ type: 'leave' }); await s.done;
+});
+
+test('the join works with production-sized tap chunks (4096 samples) and a short pause', async () => {
+  // review finding: transitions were only seen per 256 ms chunk; 300 ms speech, 700 ms pause, 1500 ms speech
+  for (const [samples, minStart] of [[fixture('wake-pause-question.wav'), 400], [(() => {
+    const a = new Int16Array(48000); a.fill(16000, 0, 4800); a.fill(16000, 16000, 40000); return a; })(), 400]]) {
+    const s = await audioJoined({ realGate: true });
+    feed(s, samples, 0, 4096);
+    const pieces = s.out.filter((m) => m.type === 'audio');
+    assert.strictEqual(new Set(pieces.map((p) => p.seg)).size, 1);
+    assert.ok(pieces[0].at <= minStart, `start ${pieces[0].at}`);
+    s.msg({ type: 'leave' }); await s.done;
+  }
 });
 
 test('continuous wake word and question remain one segment', async () => {
