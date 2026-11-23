@@ -248,7 +248,13 @@ Traps that apply to every step:
       - **`auto` (captions): 5 of 5** answered.
       - Timings: STT 1.19-1.28 s per question segment (one 3.0 s); about 1.9 s from end of speech to heard.
     - **Privacy:** 0 matches for the spoken phrases in the logs of rfactory-web, rfactory-stt, oauth2-proxy, the runner, guard, proxy and reaper; rfactory-stt logs only `processing 'audio.wav' (N samples)`. VM journals are deleted with each VM and were not read.
-    - **Not yet run:** 3 concurrent calls; the Teams rerun (6 questions, then a removal by the owner).
+    - **Meet `audio` rerun (2026-11-23, 23:37-23:50, same build):** the missed question did not come back. "how many cards are done?" was answered 5 of 5, including straight after "stand up." as in the missed run, and a full 5-question run was **5 of 5**. Meet own transcription now stands at 16 of 17 over the day. The one miss is unexplained; no code was changed for it.
+    - **3 concurrent calls (simulated):** one web server holds one call (`busy` → 409), so the load is 1 real Meet call plus 2 simulated calls that sent the same question's audio to `rfactory-stt` 0.6 s after it finished playing (`load.js`, timings only). whisper-server answers one request at a time:
+      - the real call's segments went first each time: STT 1.25-1.34 s;
+      - the queued ones took 2.2-2.6 s and 3.5-3.9 s, so the third call waits about 2.5 s extra;
+      - a 3-request burst took 4.0 s for the last answer and used 28.7 CPU-seconds in 4.4 s (about 6.5 of the 8 allowed cores); memory peaked at 893 MB of 2 GB.
+      - **Latency bar:** for the third of 3 simultaneous segments, end of speech to heard is about 4.6 s (0.6 s gate + 4.0 s), above the 4 s p90 bar. It is met only when questions in different calls don't end within the same second or so. Desktop VM CPU was not measured (the VM is the same per call; only the STT server is shared).
+    - **Not yet run:** the Teams rerun (6 questions, then a removal by the owner).
 
 12. **PR to `main`:** link the intent, spec and plan, say which steps Codex, agy and the coder did, and announce it on the bus.
 
