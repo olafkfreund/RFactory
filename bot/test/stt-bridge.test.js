@@ -70,9 +70,19 @@ test('refuses invalid PCM, rates, timestamps and more than four open streams', a
   s.send(event('s5', 'attached'));
   s.send(audio('s5', new Array(16000).fill(1)));
   s.send(event('x'.repeat(129), 'attached'));
-  s.send(event('bad/name', 'attached'));
+  s.send(event('bad name', 'attached'));
+  s.send(event('bad\u0007name', 'attached'));
   assert.deepEqual(s.heard.map((p) => p.event || p.pcm.length),
     ['attached', 'attached', 'attached', 'attached', 'detached', 'attached', 16000]);
+});
+
+test('Meet participant streams (remote-spaces/.../devices/...) are accepted', async () => {
+  // live #16 finding: Meet names its streams after participant ids that contain '/'; a stricter name rule dropped them all
+  const s = await setup();
+  const meet = 'remote-spaces/abcDEF123/devices/456789';
+  s.send(event(meet, 'attached'));
+  s.send(audio(meet, [1, 2]));
+  assert.deepEqual(s.heard.map((p) => p.event || p.pcm.length), ['attached', 2]);
 });
 
 test('start and stop post the extension actions; stop is bounded', async () => {
