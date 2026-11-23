@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
+const fs = require('fs');
+const path = require('path');
 const { run } = require('../run.js');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
@@ -462,7 +464,8 @@ async function audioJoined(over = {}) {
     final(samples, at = 0, end = 25000) { this.callbacks.onFinal({ audio: samples, startAt: at, endAt: end }); }
     partial() { this.callbacks.onPartial({ audio: Float32Array.of(0.5) }); }
   }
-  const s = await joined({ ...over, order, env: { RFACTORY_LISTEN: 'audio', ...over.env }, SpeechGate: Gate,
+  const s = await joined({ ...over, order, env: { RFACTORY_LISTEN: 'audio', ...over.env },
+    SpeechGate: over.realGate ? require('../node_modules/@vibeconferencing/calls/hearing/speech-gate.js').SpeechGate : Gate,
     installSttBridge: async (host, opts) => {
       onAudio = opts.onAudio;
       order.push('install');
@@ -471,6 +474,71 @@ async function audioJoined(over = {}) {
     } });
   return { ...s, gates, order, audio: (p) => onAudio(p) };
 }
+
+function feed(s, samples, start = 0) {
+  s.audio({ stream: 'a', event: 'attached' });
+  for (let i = 0; i < samples.length; i += 320) {
+    const chunk = samples.subarray(i, i + 320);
+    s.audio({ stream: 'a', at: start + (i + chunk.length) / 16, pcm: chunk });
+  }
+  s.audio({ stream: 'a', event: 'detached' });
+}
+
+function fixture(name) {
+  const wav = fs.readFileSync(path.join(__dirname, 'fixtures', name));
+  const rate = wav.readUInt32LE(24), source = new Int16Array((wav.length - 44) / 2);
+  for (let i = 0; i < source.length; i++) source[i] = wav.readInt16LE(44 + i * 2);
+  const out = new Int16Array(Math.round(source.length * 16000 / rate));
+  for (let i = 0; i < out.length; i++) out[i] = source[Math.min(source.length - 1, Math.round(i * rate / 16000))];
+  return out;
+}
+
+test('short wake word survives a pause before the question', async () => {
+  const s = await audioJoined({ realGate: true });
+  feed(s, fixture('wake-pause-question.wav'));
+  const pieces = s.out.filter((m) => m.type === 'audio');
+  assert.strictEqual(new Set(pieces.map((p) => p.seg)).size, 1);
+  assert.ok(pieces[0].at <= 400, `start ${pieces[0].at}`);
+  assert.ok(pieces.reduce((n, p) => n + Buffer.from(p.data, 'base64').length, 0) / 32000 > 3.5);
+  s.msg({ type: 'leave' }); await s.done;
+});
+
+test('continuous wake word and question remain one segment', async () => {
+  const s = await audioJoined({ realGate: true });
+  feed(s, fixture('wake-question.wav'));
+  assert.strictEqual(new Set(s.out.filter((m) => m.type === 'audio').map((m) => m.seg)).size, 1);
+  s.msg({ type: 'leave' }); await s.done;
+});
+
+test('short sound more than two seconds before speech is not joined', async () => {
+  const s = await audioJoined({ realGate: true });
+  const samples = new Int16Array(80000);
+  samples.fill(16000, 0, 4800);
+  samples.fill(16000, 56000, 80000);
+  feed(s, samples);
+  const pieces = s.out.filter((m) => m.type === 'audio');
+  assert.strictEqual(new Set(pieces.map((p) => p.seg)).size, 1);
+  assert.ok(pieces[0].at > 3000, `start ${pieces[0].at}`);
+  s.msg({ type: 'leave' }); await s.done;
+});
+
+test('an echo cut discards an open short stretch before later speech', async () => {
+  const now = { value: 300 };
+  const s = await audioJoined({ realGate: true, now });
+  s.audio({ stream: 'a', event: 'attached' });
+  for (let i = 0; i < 4800; i += 320) s.audio({ stream: 'a', at: (i + 320) / 16, pcm: new Int16Array(320).fill(16000) });
+  s.msg({ type: 'speak', seq: 1, wav: 'AAAA' }); await tick();
+  s.audio({ stream: 'a', at: 320, pcm: new Int16Array(320).fill(16000) });
+  now.value = 400; s.speaks[0].resolve({ cancelled: false }); await tick();
+  for (let i = 0; i < 30400; i += 320) {
+    const pcm = new Int16Array(320).fill(i < 19200 ? 16000 : 0);
+    s.audio({ stream: 'a', at: 1400 + (i + 320) / 16, pcm });
+  }
+  const pieces = s.out.filter((m) => m.type === 'audio');
+  assert.strictEqual(new Set(pieces.map((p) => p.seg)).size, 1);
+  assert.ok(pieces[0].at >= 1100, `start ${pieces[0].at}`);
+  s.msg({ type: 'leave' }); await s.done;
+});
 
 test('audio installs before join, starts after join and does not forward captions', async () => {
   const s = await audioJoined();

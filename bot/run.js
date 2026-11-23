@@ -46,7 +46,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
   let rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
-  const gates = new Map(), playback = [], lastSpeech = new Map();
+  const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
   const finished = new Promise((r) => { finish = r; });
@@ -62,6 +62,19 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   function newGate(stream) {
     const gate = new d.SpeechGate({ onPartial: () => speechHint(stream), onFinal: ({ audio: samples, startAt, endAt }) => {
       if (closing) return;
+      const state = recent.get(stream);
+      state.finalized = true;
+      const short = state.short;
+      const prefixLen = short && Math.round((startAt - short.start) * 16);
+      if (short && startAt >= short.end && startAt - short.end <= 2000 && short.prefix
+          && prefixLen <= short.prefix.length && prefixLen + samples.length <= 25 * 16000) {
+        const joined = new Float32Array(prefixLen + samples.length);
+        joined.set(short.prefix.subarray(0, prefixLen));
+        joined.set(samples, prefixLen);
+        samples = joined;
+        startAt = short.start;
+      }
+      state.short = null;
       const pcm = Buffer.allocUnsafe(samples.length * 2);
       for (let i = 0; i < samples.length; i++) pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768))), i * 2);
       const n = Math.ceil(pcm.length / 32768), seg = segment++;
@@ -69,7 +82,47 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         data: pcm.subarray(i * 32768, (i + 1) * 32768).toString('base64') });
     } });
     gates.set(stream, gate);
+    recent.set(stream, { chunks: [], openAt: null, finalized: false, short: null });
     return gate;
+  }
+
+  function prefix(state, start, end) {
+    const out = new Float32Array(Math.max(0, Math.round((end - start) * 16)));
+    for (const { samples, at } of state.chunks) {
+      const from = Math.max(0, Math.ceil((start - at) * 16));
+      const to = Math.min(samples.length, Math.ceil((end - at) * 16));
+      const offset = Math.round((at - start) * 16) + from;
+      if (to > from && offset >= 0) for (let i = from; i < to; i++) out[offset + i - from] = samples[i] / 32768;
+    }
+    return out;
+  }
+
+  function pushAudio(stream, samples, at) {
+    const gate = gates.get(stream), state = recent.get(stream);
+    const end = at + samples.length / 16;
+    state.chunks.push({ samples: samples.slice(), at });
+    while (state.chunks.length && state.chunks[0].at + state.chunks[0].samples.length / 16 < end - 3000) state.chunks.shift();
+    if (state.chunks.length && state.chunks[0].at < end - 3000) {
+      const first = state.chunks[0], drop = Math.floor((end - 3000 - first.at) * 16);
+      first.samples = first.samples.subarray(drop);
+      first.at += drop / 16;
+    }
+    if (state.short && !gate.isOpen() && at - state.short.end > 2000) state.short = null;
+    const wasOpen = gate.isOpen();
+    gate.push(samples, at);
+    const open = gate.isOpen();
+    if (!wasOpen && open) {
+      state.openAt = at;
+      state.finalized = false;
+      if (state.short) {
+        if (at >= state.short.end && at - state.short.end <= 2000)
+          state.short.prefix = prefix(state, state.short.start, end);
+      }
+    } else if (wasOpen && !open) {
+      if (!state.finalized) state.short = { start: Math.max(state.chunks[0].at, state.openAt - 300), end };
+      state.openAt = null;
+    }
+    if (open) speechHint(stream);
   }
 
   function prunePlayback() {
@@ -81,7 +134,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   function onAudio({ stream, at, pcm, event }) {
     if (closing) return;
     if (event === 'attached') { newGate(stream); lastSpeech.delete(stream); return; }
-    if (event === 'detached') { gates.get(stream)?.flush(); gates.delete(stream); lastSpeech.delete(stream); return; }
+    if (event === 'detached') { gates.get(stream)?.flush(); gates.delete(stream); recent.delete(stream); lastSpeech.delete(stream); return; }
     if (!pcm?.length || !gates.has(stream)) return;
     if (!heardPcm) { heardPcm = true; if (noAudioTimer) d.clock.clearTimeout(noAudioTimer); send({ type: 'hearing', state: 'own' }); }
     const first = at - pcm.length / 16;
@@ -93,9 +146,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       const blocked = i === pcm.length || overlap.some((w) => time >= w.start && time < w.end);
       if (!blocked && runStart < 0) runStart = i;
       if (blocked && runStart >= 0) {
-        const gate = gates.get(stream);
-        gate.push(pcm.subarray(runStart, i), first + runStart / 16);
-        if (gate.isOpen?.()) speechHint(stream);
+        pushAudio(stream, pcm.subarray(runStart, i), first + runStart / 16);
         runStart = -1;
       }
       if (blocked && i < pcm.length) cut = true;
@@ -105,6 +156,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   }
 
   function discardOpen(gate) {
+    for (const [stream, current] of gates) if (current === gate) { recent.get(stream).short = null; break; }
     const final = gate.onFinal;
     gate.onFinal = () => {};
     try { gate.flush(); } finally { gate.onFinal = final; }
@@ -222,6 +274,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (stopping) return stopping;
     closing = true;
     gates.clear();
+    recent.clear();
     if (rosterTimer) d.clock.clearTimeout(rosterTimer);
     if (noAudioTimer) d.clock.clearTimeout(noAudioTimer);
     if (noticeTimer) d.clock.clearTimeout(noticeTimer);
