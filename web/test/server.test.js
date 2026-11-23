@@ -38,7 +38,7 @@ test('401 without identity, 403 for others, 200 for the owner (case-insensitive)
 
 test('static files carry CSP, nosniff and no-store', async (t) => {
   const get = await start(t, { source, brain: fakeBrain });
-  for (const p of ['/', '/app.js', '/style.css']) {
+  for (const p of ['/', '/app.js', '/style.css', '/tokens.css', '/shell.css', '/theme.js']) {
     const r = await get(p);
     assert.equal(r.status, 200);
     const csp = r.headers.get('content-security-policy');
