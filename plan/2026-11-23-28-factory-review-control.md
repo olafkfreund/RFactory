@@ -251,6 +251,36 @@ reviewers:
      stop and update this plan before step 2.
    - **Check:** the field names match.
    - **Traps:** no write or run tools.
+   - **Result (2026-11-23, lead):**
+     - **Cards:** `list_cards` returned 57, all `done` and all
+       `repository_id: 2`. The card keys match decisions 6 and 8, plus
+       `labels`, `tenant_id`, `created_at` and `deleted_at`.
+     - **Sync state:** the `repositories[]` keys match decision 5. The
+       repositories reply also has `intake_project`, which is `null` for
+       both entries.
+     - **Comments:** `card_comments` returned `issue_ref`, `count`,
+       `synced_at` and the comment fields.
+     - **Stage runs:** `stage_runs` was `{}` on every card, so their
+       keys come from CFactory's schema only (`cards.py:191-200`).
+       Every `acceptance_criteria` list was empty.
+
+   **Deviations, which apply to steps 2 and 3:**
+
+   - **D1, issue project for scope rule (b).** RFactory compares
+     against `intake_project ?? project`. CFactory reads issues from
+     `intake_project` when it is set, which Codex found in
+     `card_ops.py:250` and the live `intake_project` field confirms. Rule
+     (b) is otherwise unchanged.
+   - **D2, deleted cards.** A card with a non-null `deleted_at` is
+     skipped as foreign and never counted. This is defensive, because
+     the live list returned none.
+   - **D3, the "no acceptance criteria" gap.** Live PFactory cards keep
+     their criteria in the description under an "Acceptance criteria"
+     heading and leave the criteria field empty. The gap is therefore
+     stated only when the field is empty or blank **and** the
+     description doesn't match `/acceptance criteria/i`. Without this,
+     every card from a PFactory plan would be reported as a gap that
+     isn't confirmed, which intent decision 4 forbids.
 
 2. **Source: `core/src/sources/cfactory.js`.**
    - **What to add:**
