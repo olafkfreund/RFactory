@@ -158,4 +158,4 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   };
 }
 
-module.exports = { createCfactorySource, mapCard, repositoryOf, inScope };
+module.exports = { createCfactorySource, mapCard, repositoryOf, inScope, FAILED };
