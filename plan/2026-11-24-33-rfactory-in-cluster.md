@@ -329,6 +329,33 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
     - The volume, the images and `scope.json` are kept for 7 days.
     - A follow-up issue covers day 7: remove the podman volume and images, and delete the `127.0.0.1` callback.
 
+## Landing record (2026-11-24)
+
+- **8.3:** factory-gitops PR #419 merged (`9504b38`) after merging main to resolve a conflict with #421 (the mirror exemption in the coverage rule; both kept; the list check and the 34 Kyverno CLI v1.18.2 tests pass). Argo synced with `replicas: 0`.
+  - Positive dry runs: `kyverno.io/verify-images` is `pass` for both pinned digests.
+  - Negative dry run: the `.sig` artifact `rfactory-web@sha256:7c86a3c2…` is refused by `verify-rfactory-signature` ("no signatures found").
+- **9:** the five Secrets were created with `--rotated --no-restart`.
+- **10:** factory-gitops PR #422 set `replicas: 1`. The pod came up 4/4 Ready with no restarts. The p620 records (`2026-11-17.jsonl`, `2026-11-19.jsonl`) were copied in, and their sha256 sums match before and after `rollout restart`.
+- **11:**
+  - Keycloak client `rfactory` has both callbacks. The `127.0.0.1` one stays until day 7.
+  - **Trap:** step 11.2's `<tunnel>` is the **cluster's** tunnel, `55338418-…` (the `tunnel:` line in `infra/cloudflared/cloudflared.yaml`). The credentials file on p620 (`db4e80d3-…`) is a different tunnel, and routing to it gave its catch-all 404. Fixed with `--overwrite-dns`.
+  - cloudflared was restarted after a bus post. Every other Factory hostname answered afterwards.
+
+### Live check results (step 12)
+
+| Check | Result |
+|---|---|
+| 1. Login and roles | **Partial.** Passed from the proxy side inside the pod:<ul><li>an unauthenticated `GET /` gets 302 to Keycloak `factory` (client `rfactory`, PKCE);</li><li>no identity gets 401, a non-member 403, and both owner addresses 200 with `can_approve: true`;</li><li>a test-only member got `can_approve: false` and 403 on approve;</li><li>an approver with the page `Origin` passes the same-origin check (409, no such action), and with a foreign `Origin` gets 403.</li></ul>A forged header with no session gets 302, and the proxy sets `X-Forwarded-Email` itself through `injectRequestHeaders`. **Still open:** an owner browser login with Google and with GitHub, and proving the forged header is replaced for a signed-in user. |
+| 2. Isolation | Pass. From an unlabelled pod, 4180, 8080 and 8081 are all blocked. |
+| 3. Hardened runtime | Pass.<ul><li>Brain: a real `claude-cli` turn with the deployed scope in 3.1 s; the approved hash matches.</li><li>Piper: `piper:en_US-ljspeech-medium` at 22050 Hz.</li><li>Whisper transcribed the Piper sentence exactly in 1.3 s.</li><li>No container logged `EROFS` or `EACCES`.</li></ul> |
+| 4. Restart | Pass. After a pod delete, the switches, roles and record sums are unchanged and a brain turn works. |
+| 5. Images | Pass. The running digests are the pinned, signed ones (`verify-images: pass`), and `/api/config` reports commit `16f3d65`. |
+| 6. Calls and features | **mTLS passes:** without a client certificate the runner Service refuses (`CERTIFICATE_REQUIRED`); with one it answers. **Still open:** #3 call, #12 share, #16 Meet 5/5, #28 panels. |
+| 7. Secrets | Pass.<ul><li>None of the 7 values (5 secrets, 2 addresses) appears in either repository's `main`, the Deployment, the container logs, or a `last-applied-configuration` annotation.</li><li>A member added through the script took effect after the roll and was removed again the same way.</li></ul> |
+| 8. Argo | Pass. `Synced` and `Healthy`; a manual `strategy` edit was reverted by self-heal in about 10 s. |
+
+**Noted, not changed:** `POST /api/standup` has no `Origin` check. It is a read-only summary, and the write routes do check. That predates #33.
+
 ## Tests
 
 | Where | Command | Expected |
