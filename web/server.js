@@ -112,7 +112,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch((error) => json(res, 502, { error: sourceCode(error) }));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}) });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -182,9 +182,11 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       if (req.method === 'POST') {
         readJson(req).then((body) => {
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
+          if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (call.running) return json(res, 409, { error: 'busy' });
-          return call.start(body.link).then(() => json(res, 202, { ok: true }),
-            (error) => (error && error.message === 'busy' ? json(res, 409, { error: 'busy' }) : json(res, 500, { error: 'call-error' })));
+          return call.start(body.link, { listen: body.listen }).then(() => json(res, 202, { ok: true }),
+            (error) => (error && error.message === 'busy' ? json(res, 409, { error: 'busy' })
+              : error?.message === 'stt-not-configured' ? json(res, 400, { error: 'stt-not-configured' }) : json(res, 500, { error: 'call-error' })));
         });
         return;
       }
@@ -279,7 +281,7 @@ async function main() {
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
-    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, redactor, actions, shares, desktop,
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, desktop,
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   createApp({ source, redactor, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,

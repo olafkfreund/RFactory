@@ -75,6 +75,16 @@ test('growth resets the timer and 1.5 seconds of quiet completes once', () => {
   assert.equal(addressed.length, 1);
 });
 
+test('a settled audio turn dispatches immediately while captions keep their quiet timer', () => {
+  const { clock, addressed, heard } = setup();
+  heard('caption', 'RFactory, later?');
+  const audio = createHearing({ clock, onAddressed: (item) => addressed.push(item) });
+  audio.heard({ id: 'audio', speaker: 'Alice', text: 'RFactory, now?', settled: true });
+  assert.deepEqual(addressed.map((item) => item.text), ['now?']);
+  clock.tick(1500);
+  assert.deepEqual(addressed.map((item) => item.text), ['now?', 'later?']);
+});
+
 test('the answered offset prevents an answer on later growth but permits a new wake', () => {
   const { clock, addressed, heard } = setup();
   heard('a', 'RFactory, first?');

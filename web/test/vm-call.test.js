@@ -124,3 +124,19 @@ test('vm spawn: the chosen avatar (opts.env.RFACTORY_AVATAR) reaches runner.crea
   assert.equal(seen[0].avatar, 'ada');
   assert.ok(!('avatar' in seen[1]));
 });
+
+test('vm spawn: RFACTORY_LISTEN and RFACTORY_LANGUAGE reach runner.create; none sends no key', async () => {
+  const seen = [];
+  for (const env of [{ RFACTORY_LISTEN: 'audio', RFACTORY_LANGUAGE: 'de' }, {}]) {
+    const f = fake();
+    const create = f.runner.create;
+    f.runner.create = async (b) => { seen.push(b); return create(b); };
+    const child = createVmSpawn({ runner: f.runner, scope: 's' })('node', [], { env });
+    child.stdin.write(`${LINK}\n`);
+    await tick();
+    child.kill();
+  }
+  assert.equal(seen[0].listen, 'audio');
+  assert.equal(seen[0].language, 'de');
+  assert.ok(!('listen' in seen[1]) && !('language' in seen[1]));
+});

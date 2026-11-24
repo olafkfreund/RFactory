@@ -52,7 +52,7 @@ test('dial: control messages cross a TCP fake runner both ways, and the guest re
 test('agent: call-config proxy.token reaches onCallConfig (protocol.js must allow the field: the runner step)', async () => {
   const seen = [];
   await createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (...a) => seen.push(a) }).handle({ type: 'call-config', nonce: 'n1', proxy: { addr: '10.42.0.9:3128', token: 'tok' } });
-  assert.deepEqual(seen, [['n1', false, 'tok', undefined]]);
+  assert.deepEqual(seen, [['n1', false, 'tok', undefined, undefined, undefined]]);
   // a synchronous throw in onCallConfig is caught, not raised from handle()
   await createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: () => { throw new Error('boom'); } }).handle({ type: 'call-config', nonce: 'n1' });
 });
@@ -101,6 +101,6 @@ test('control: Chrome does not start without a proxy when one is required, and t
 
 test('agent: call-config avatar reaches onCallConfig as the fourth argument', async () => {
   const seen = [];
-  await createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (...a) => seen.push(a) }).handle({ type: 'call-config', nonce: 'n1', avatar: 'ada' });
-  assert.deepEqual(seen, [['n1', false, undefined, 'ada']]);
+  await createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (...a) => seen.push(a) }).handle({ type: 'call-config', nonce: 'n1', avatar: 'ada', listen: 'audio', language: 'de' });
+  assert.deepEqual(seen, [['n1', false, undefined, 'ada', 'audio', 'de']]);
 });

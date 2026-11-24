@@ -31,7 +31,8 @@ function badgeColors(el) {
 
 test('shell pages load shared styles, fit at 390px, and restore keyboard-selected theme', { skip: !executablePath }, async (t) => {
   const server = createApp({ roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com' }),
-    source: { snapshot: async () => ({ items: [], fetched_at: new Date().toISOString() }) },
+    source: { snapshot: async () => ({ items: [], fetched_at: new Date().toISOString() }),
+      standupData: async () => ({ cards: [], conflicting: 0, freshness: { state: 'current', last_polled_at: null }, fetched_at: new Date().toISOString() }) },
     brain: { label: () => 'fake', turn: async () => ({ text: 'ok' }) }, desktop: {} });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());

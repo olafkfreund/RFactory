@@ -13,7 +13,7 @@ const STANDUP = /\bstand[ -]?up\b/i;
 function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
   const blocks = new Map();
 
-  function heard({ id, speaker, text }) {
+  function heard({ id, speaker, text, settled = false }) {
     const block = blocks.get(id) || { text: '', offset: 0, timer: null };
     if (text === block.text) return;
 
@@ -27,7 +27,7 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
     clock.clearTimeout(block.timer);
 
     if (WAKE.test(text.slice(block.offset))) {
-      block.timer = clock.setTimeout(() => {
+      const dispatch = () => {
         block.timer = null;
         const match = WAKE.exec(block.text.slice(block.offset));
         if (!match) return;
@@ -40,7 +40,9 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
           kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
           text: addressed, speaker: block.speaker, id,
         });
-      }, quietMs);
+      };
+      if (settled) dispatch();
+      else block.timer = clock.setTimeout(dispatch, quietMs);
     }
     blocks.set(id, block);
   }

@@ -29,6 +29,7 @@ function firstLine(stream) {
 function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryMs = 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   return (_cmd, _args, opts) => {
     const avatar = opts?.env?.RFACTORY_AVATAR; // call.js's chosen portrait; the guest bot validates it against its manifest
+    const { RFACTORY_LISTEN: listen, RFACTORY_LANGUAGE: language } = opts?.env || {};
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
     let id = null, sock = null, beat = null, closed = false;
     const close = (why) => {
@@ -46,7 +47,8 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
       const platform = platformOf(await firstLine(child.stdin));
       if (closed) return;
       if (!platform) throw new Error('unsupported call link');
-      const made = await runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}) });
+      const made = await runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}),
+        ...(listen ? { listen } : {}), ...(language ? { language } : {}) });
       if (made.status !== 200) throw new Error(`runner refused: ${made.body && made.body.error}`);
       id = made.body.desktop_id;
       child.desktop_id = id;
