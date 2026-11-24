@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { test } = require('node:test');
-const { createCallWorker, withProxy } = require('./call');
+const { createCallWorker, withProxy, TEAMS_CAPTIONS } = require('./call');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 // waits for a condition rather than a fixed number of turns (the leave path is slower under load)
@@ -116,4 +116,16 @@ test('TEAMS_CAPTIONS retries a disabled Captions item and clicks it once it is e
   b.tick();
   assert.ok(!b.clicks.includes('cc')); // already on: never clicked off
   assert.equal(b.cleared(), true);
+});
+
+test('TEAMS_CAPTIONS is injected unless RFACTORY_LISTEN is audio', async () => {
+  for (const [listen, injected] of [[undefined, 1], ['platform', 1], ['audio', 0]]) {
+    const scripts = [];
+    createCallWorker({ nonce: 'n', send: () => {}, env: { RFACTORY_LISTEN: listen }, deps: {
+      playwrightHost: async () => ({ context: { addInitScript: async (s) => scripts.push(s) }, close: async () => {} }),
+      run: async ({ deps }) => { await deps.playwrightHost({}); },
+    } });
+    await tick();
+    assert.equal(scripts.filter((s) => s === TEAMS_CAPTIONS).length, injected, String(listen));
+  }
 });

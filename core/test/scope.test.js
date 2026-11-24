@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loadScope } = require('../src/scope.js');
+const { loadScope, resolveListen } = require('../src/scope.js');
 const { makeRedactor } = require('../src/redact.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
 
@@ -175,4 +175,31 @@ test('shares_enabled needs both switches and the env alone cannot turn shares on
     f.scope.shares_enabled = 'yes';
     assert.throws(() => f.load(), /shares-enabled/);
   } finally { f.cleanup(); }
+});
+
+test('listen and language are validated', () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(f.load(), f.scope); // both optional
+    for (const listen of ['auto', 'platform', 'audio']) { f.scope.listen = listen; assert.deepEqual(f.load(), f.scope); }
+    f.scope.listen = 'both';
+    assert.throws(() => f.load(), /invalid-listen/);
+    delete f.scope.listen;
+    for (const language of ['en', 'en-GB', 'yue', 'de-CH']) { f.scope.language = language; assert.deepEqual(f.load(), f.scope); }
+    for (const language of ['xx', '', 'tlh-US', 5]) { f.scope.language = language; assert.throws(() => f.load(), /unsupported-language/); }
+  } finally { f.cleanup(); }
+});
+
+test('resolveListen follows the platform and whether transcription is configured', () => {
+  for (const platform of ['meet', 'teams', 'zoom', 'slack']) {
+    const audioWhenAuto = platform === 'meet' ? 'platform' : 'audio';
+    assert.equal(resolveListen({ platform, sttConfigured: true }), audioWhenAuto); // listen defaults to auto
+    assert.equal(resolveListen({ listen: 'auto', platform, sttConfigured: true }), audioWhenAuto);
+    assert.equal(resolveListen({ listen: 'auto', platform, sttConfigured: false }), 'platform');
+    assert.equal(resolveListen({ listen: 'platform', platform, sttConfigured: true }), 'platform');
+    assert.equal(resolveListen({ listen: 'platform', platform, sttConfigured: false }), 'platform');
+    assert.equal(resolveListen({ listen: 'audio', platform, sttConfigured: true }), 'audio');
+    assert.throws(() => resolveListen({ listen: 'audio', platform, sttConfigured: false }), /stt-not-configured/);
+  }
+  assert.throws(() => resolveListen({ listen: 'x', platform: 'meet', sttConfigured: true }), /invalid-listen/);
 });

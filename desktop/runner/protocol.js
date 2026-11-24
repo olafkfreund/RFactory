@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX = 64 * 1024;
+const LANGUAGE = /^(?=.{1,35}$)[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const string = (v) => typeof v === 'string';
 const boolean = (v) => typeof v === 'boolean';
 const number = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -46,7 +47,8 @@ const schemas = Object.freeze({
   desktop_screenshot: { action_id: optional(string), hosts: optional(hosts) },
   desktop_login: { profile: string, action_id: optional(string), hosts: optional(hosts), login: optional(login) },
   'call-config': { nonce: string, proxy: optional(v => !!v && typeof v === 'object' && string(v.addr) && string(v.token) && v.token.length > 0 &&
-    Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean), avatar: optional(v => string(v) && /^[a-z0-9]{1,16}$/.test(v)) },
+    Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean), avatar: optional(v => string(v) && /^[a-z0-9]{1,16}$/.test(v)),
+    listen: optional(v => v === 'platform' || v === 'audio'), language: optional(v => string(v) && LANGUAGE.test(v)) },
   // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
   'call-in': { chunk: string, end: boolean },
   'call-out': { chunk: string, end: boolean },
@@ -143,4 +145,4 @@ function tag(message, socketPath, map) {
   return { ...clean, call_id: owner.call_id, scope: owner.scope, desktop_id: owner.desktop_id };
 }
 
-module.exports = { MAX, encode, createDecoder, tag };
+module.exports = { MAX, LANGUAGE, encode, createDecoder, tag };

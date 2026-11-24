@@ -187,8 +187,8 @@ test('start is refused when a CFACTORY_*KEY* variable is set', () => {
 function fakeCall() {
   const subs = new Set();
   const latest = new Map();
-  const m = { running: false, started: [], stopped: [], subs,
-    start: async (link) => { if (m.running) throw new Error('busy'); m.running = true; m.started.push(link); },
+  const m = { running: false, started: [], options: [], stopped: [], subs,
+    start: async (link, opts) => { if (m.running) throw new Error('busy'); m.running = true; m.started.push(link); m.options.push(opts); },
     stop: async (reason) => { m.running = false; m.stopped.push(reason); },
     current: () => [...latest.values()],
     subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn); },
@@ -196,6 +196,36 @@ function fakeCall() {
   return m;
 }
 const post = (get, body) => get('/api/call', { method: 'POST', body: JSON.stringify(body) });
+
+test('call listen override is validated and passed to the manager', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const link = 'https://meet.google.com/abc-defg-hij';
+  for (const listen of ['bad', null, 1]) assert.equal((await post(get, { link, listen })).status, 400);
+  assert.equal((await post(get, { link, listen: 'audio' })).status, 202);
+  assert.deepEqual(call.options, [{ listen: 'audio' }]);
+});
+
+test('explicit audio is a 400 when STT is not configured', async (t) => {
+  const call = fakeCall();
+  call.start = async () => { throw new Error('stt-not-configured'); };
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const response = await post(get, { link: 'https://meet.google.com/abc-defg-hij', listen: 'audio' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'stt-not-configured' });
+});
+
+test('call page renders each hearing state as text', () => {
+  const nodes = Object.fromEntries(['call-hearing', 'call-state-text', 'call-join', 'call-leave', 'call-listen'].map((id) => [id, { textContent: '', disabled: false }]));
+  const doc = { getElementById: (id) => nodes[id] };
+  for (const [state, expected] of [
+    ['captions', 'Hearing: captions'], ['own', 'Hearing: own transcription'],
+    ['no-audio', 'Hearing: own transcription (no audio received)'],
+    ['notice-failed', 'Hearing: own transcription (call notice failed)'],
+  ]) { handleCall(doc, { type: 'hearing', state }); assert.equal(nodes['call-hearing'].textContent, expected); }
+  handleCall(doc, { type: 'hearing', state: 'captions', notConfigured: true });
+  assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (own transcription not configured)');
+});
 
 test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   const call = fakeCall();

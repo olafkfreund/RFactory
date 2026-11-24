@@ -20,6 +20,7 @@ proxy_image='quay.io/oauth2-proxy/oauth2-proxy:v7.7.0@sha256:9ed7eaf720508640e1d
 down() {
   podman pod rm -f "$pod" >/dev/null 2>&1 || true
   podman secret rm rfactory-cookie-secret >/dev/null 2>&1 || true
+  podman secret rm rfactory-stt-path >/dev/null 2>&1 || true
 }
 
 up() {
@@ -96,9 +97,25 @@ up() {
     [ -z "${RFACTORY_BRAIN_RECORD:-}" ] || desktop+=(-e RFACTORY_BRAIN_RECORD="$RFACTORY_BRAIN_RECORD"
       -v "$(dirname "$RFACTORY_BRAIN_RECORD"):$(dirname "$RFACTORY_BRAIN_RECORD"):U,Z")
   fi
+  # #16 (deviation 6): RFACTORY_STT=on runs rfactory-stt inside this pod, on the pod's loopback only (port 8081, never
+  # published). $cfg/stt-path holds the 32-hex request path; the image comes from this checkout's flake (.#image-stt).
+  stt=()
+  if [ -n "${RFACTORY_STT:-}" ]; then
+    [ "$RFACTORY_STT" = on ] || { echo "RFACTORY_STT must be on or unset" >&2; exit 2; }
+    [ -f "$cfg/stt-path" ] && [ "$(stat -c %a "$cfg/stt-path")" = 600 ] || { echo "$cfg/stt-path must exist, mode 600" >&2; exit 2; }
+    grep -qxE '[0-9a-f]{32}' "$cfg/stt-path" || { echo "$cfg/stt-path must hold 32 lowercase hex characters" >&2; exit 2; }
+    archive=$(nix build "$here#image-stt" --no-link --print-out-paths)
+    # podman unpacks under TMPDIR; the default /var/tmp can be a small tmpfs
+    load_tmp=$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}")
+    stt_image=$(TMPDIR=$load_tmp podman load -q -i "$archive" | sed -n 's/^Loaded image[^:]*: //p' | tail -1)
+    rm -rf "$load_tmp"
+    podman secret create rfactory-stt-path "$cfg/stt-path" >/dev/null
+    stt=(-e RFACTORY_STT_URL=http://127.0.0.1:8081
+      -e RFACTORY_STT_SECRET_FILE=/run/rfactory/stt-path -v "$cfg/stt-path:/run/rfactory/stt-path:ro,Z")
+  fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${share[@]}" "${roles[@]}" "${desktop[@]}" \
+    "${write[@]}" "${share[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \
@@ -106,6 +123,9 @@ up() {
     -v "$cfg/cfactory-read-key:/run/rfactory/cfactory-read-key:ro,Z" \
     -v "$claude_home:/var/lib/rfactory/claude-home:Z" \
     rfactory-web >/dev/null
+  # the plan's limits (8 CPU, 2 GiB); the secret reaches uid 10001 through a podman secret, never a world-readable file
+  [ ${#stt[@]} -eq 0 ] || podman run -d --pod "$pod" --name rfactory-stt --cpus 8 --memory 2g -e STT_PORT=8081 \
+    --secret rfactory-stt-path,target=/run/secrets/stt/path,uid=10001,mode=0400 "$stt_image" >/dev/null
   # runs as the owner's uid (keep-id) so it can read the 600 secret files
   podman run -d --pod "$pod" --name rfactory-oauth2-proxy --user "$(id -u):$(id -g)" \
     --secret rfactory-cookie-secret,type=env,target=OAUTH2_PROXY_COOKIE_SECRET \

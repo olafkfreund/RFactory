@@ -1,12 +1,16 @@
 'use strict';
 
 const { spawn: nodeSpawn } = require('node:child_process');
-const { createHearing } = require('@rfactory/core/src/call/hearing.js');
+const fs = require('node:fs');
+const { createHearing } = require('../core/src/call/hearing.js');
+const { resolveListen } = require('../core/src/scope.js');
+const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts } = require('@rfactory/core/src/facts.js');
 const { summarise } = require('@rfactory/core/src/items.js');
 const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
+const { createStt } = require('./stt.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
@@ -14,7 +18,13 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null }) {
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null,
+  listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
+  stt = null }) {
+  let sttConfigured = !!stt;
+  if (!sttConfigured && sttUrl && sttSecretFile) {
+    try { sttConfigured = /^[0-9a-f]{32}$/i.test(fs.readFileSync(sttSecretFile, 'utf8')); } catch { /* unavailable */ }
+  }
   const listeners = new Set();
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
@@ -22,7 +32,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
-    if (['state', 'mic', 'voice', 'greeting'].includes(event.type)) current.set(event.type, event);
+    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     for (const fn of listeners) fn(event);
@@ -64,6 +74,12 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const c = call;
     if (!c) return;
     if (c.stopping) return c.stopping;
+    c.closed = true;
+    clock.clearTimeout(c.turn?.timer);
+    if (c.listen === 'audio') log(`stt pending=${c.requests.size} dropped=${c.dropped}`);
+    c.parts.clear();
+    for (const controller of c.requests) controller.abort();
+    c.requests.clear();
     c.generation++;
     c.queue.length = 0;
     clock.clearTimeout(c.limitTimer);
@@ -234,6 +250,71 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     else { c.queue.push(question); drain(c); }
   }
 
+  function settle(c) {
+    while (!c.closed && c.turns[0]?.quiet && c.turns[0].segments.every((s) => s.done)) {
+      const turn = c.turns.shift();
+      const text = turn.segments.sort((a, b) => a.seg - b.seg).map((s) => s.text).filter(Boolean).join(' ').trim();
+      if (text) {
+        log(`turn ms=${now() - turn.lastPiece} segments=${turn.segments.length}`);
+        c.hearing.heard({ id: `audio-${turn.segments[0].seg}`, speaker: 'Participant',
+          text, final: true, source: 'audio', settled: true });
+      }
+    }
+  }
+
+  function armQuiet(c) {
+    const turn = c.turn;
+    clock.clearTimeout(turn.timer);
+    turn.timer = clock.setTimeout(() => {
+      for (const [seg, pending] of c.parts) {
+        if (pending.turn !== turn) continue;
+        pending.segment.done = true; c.parts.delete(seg); c.seen.add(seg); c.dropped++;
+      }
+      turn.quiet = true;
+      c.turn = null;
+      settle(c);
+    }, 1000);
+  }
+
+  function audio(c, msg) {
+    if (c.closed || c.listen !== 'audio') return;
+    if (!Number.isInteger(msg.seg) || msg.seg < 0 || !Number.isInteger(msg.i) || !Number.isInteger(msg.n) ||
+      msg.n < 1 || msg.n > 26 || msg.i < 0 || msg.i >= msg.n || !Number.isFinite(msg.at) || !Number.isFinite(msg.end) ||
+      msg.end < msg.at || msg.end - msg.at > 25000 || typeof msg.stream !== 'string' || msg.stream.length > 128 ||
+      typeof msg.data !== 'string' || msg.data.length > 43692 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(msg.data)) {
+      c.dropped++; return;
+    }
+    const bytes = Buffer.from(msg.data, 'base64');
+    if (!bytes.length || bytes.length > 32768 || bytes.length % 2 || bytes.toString('base64') !== msg.data) { c.dropped++; return; }
+    if (c.seen.has(msg.seg)) { c.dropped++; return; }
+    let part = c.parts.get(msg.seg);
+    if (!part) {
+      if (msg.i !== 0 || c.parts.size >= 2) { c.dropped++; return; }
+      if (!c.turn) { c.turn = { segments: [], quiet: false, timer: null, lastPiece: now() }; c.turns.push(c.turn); }
+      const segment = { seg: msg.seg, done: false, text: '' };
+      part = { n: msg.n, at: msg.at, end: msg.end, stream: msg.stream, chunks: [], bytes: 0, segment, turn: c.turn };
+      c.parts.set(msg.seg, part);
+      c.turn.segments.push(segment);
+    }
+    if (msg.n !== part.n || msg.at !== part.at || msg.end !== part.end || msg.stream !== part.stream || msg.i !== part.chunks.length ||
+      part.bytes + bytes.length > 800000) { c.dropped++; return; }
+    part.chunks.push(bytes); part.bytes += bytes.length;
+    part.turn.lastPiece = now();
+    armQuiet(c);
+    if (part.chunks.length !== part.n) return;
+    c.parts.delete(msg.seg); c.seen.add(msg.seg);
+    if (c.requests.size >= 2) { part.segment.done = true; c.dropped++;
+      emit({ type: 'hearing', state: c.noticeFailed ? 'notice-failed' : 'own', dropped: c.dropped }); settle(c); return; }
+    const segment = part.segment;
+    const controller = new AbortController();
+    c.requests.add(controller);
+    const started = now();
+    Promise.resolve().then(() => c.closed ? { text: '' } : c.stt.transcribe(Buffer.concat(part.chunks), c.language, { signal: controller.signal }))
+      .then((result) => { if (!c.closed) segment.text = result.text; }, (error) => {
+        if (!c.closed) log(`stt failed: ${Number.isInteger(error?.status) ? error.status : 502}`);
+      }).finally(() => { log(`stt ms=${now() - started} bytes=${part.bytes}`); c.requests.delete(controller); segment.done = true; settle(c); });
+  }
+
   function incoming(c, line) {
     if (call !== c || c.stopping) return;
     let msg;
@@ -244,31 +325,50 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
       if (msg.state === 'in-call') queueSpeech(c, "RFactory here. Say 'RFactory' and your question.");
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
-    } else if (msg.type === 'heard' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
+    } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
+    } else if (msg.type === 'audio') audio(c, msg);
+    else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
+      if (c.turn) armQuiet(c);
+    }
+    else if (msg.type === 'hearing' && c.listen === 'audio' && ['own', 'no-audio', 'notice-failed'].includes(msg.state))
+      { if (msg.state === 'notice-failed') c.noticeFailed = true;
+        emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state, dropped: c.dropped }); }
+    else if (msg.type === 'roster' && c.listen === 'audio' && Number.isInteger(msg.count) && msg.count >= 0) {
+      c.roster = { count: msg.count, ...(msg.count === 1 && typeof msg.name === 'string' ? { name: msg.name } : {}) };
+      emit({ type: 'roster', ...c.roster });
     } else if (msg.type === 'mic' && typeof msg.muted === 'boolean') emit({ type: 'mic', muted: msg.muted });
     else if (msg.type === 'spoke' && Number.isInteger(msg.seq)) {
       const resolve = c.waiters.get(msg.seq);
       if (resolve) { c.waiters.delete(msg.seq); resolve(msg.result); }
       if (msg.seq === 0) emit({ type: 'greeting', result: ['done', 'cancelled', 'failed'].includes(msg.result) ? msg.result : 'failed' });
-    } else if (msg.type === 'log') log(msg.message);
+    } else if (msg.type === 'log') log(c.listen === 'audio' ? `child log: ${Buffer.byteLength(String(msg.message || ''))} bytes` : msg.message);
     else log('dropped unknown child message');
   }
 
-  async function start(link) {
+  async function start(link, { listen: override } = {}) {
     if (call) throw new Error('busy');
+    const platform = link.startsWith('https://meet.google.com/') ? 'meet' : 'teams';
+    const selected = resolveListen({ listen: override === undefined ? listen : override, platform, sttConfigured });
+    const whisperLanguage = toWhisperLanguage(language);
+    if (!whisperLanguage) throw new Error('unsupported-language');
+    const client = selected === 'audio' ? (stt || createStt({ url: sttUrl, secretFile: sttSecretFile })) : null;
     const choices = avatar === 'random' ? Object.keys(portraits).filter((id) => portraits[id].anchors) : avatar;
     const resolvedAvatar = Array.isArray(choices) ? choices[Math.floor(random() * choices.length)] : choices;
     const env = { ...process.env };
     delete env.RFACTORY_AVATAR;
     if (resolvedAvatar) env.RFACTORY_AVATAR = resolvedAvatar;
+    env.RFACTORY_LISTEN = selected;
+    env.RFACTORY_LANGUAGE = language;
     const child = spawn(botCmd[0], botCmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], detached: true, env });
     const callTts = resolvedAvatar?.startsWith('m') ? maleTts : tts;
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
-      tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set() };
+      tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set(), listen: selected, language: whisperLanguage,
+      stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 } };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);
@@ -279,7 +379,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       if (!c.stopping) stop('child exited');
     });
     child.stdin.on('error', (error) => log(`child stdin failed: ${error.message}`));
-    child.stderr.on('data', (data) => log(data.toString()));
+    child.stderr.on('data', (data) => log(selected === 'audio' ? `child stderr: ${data.length} bytes` : data.toString()));
     let buffer = '', skipping = false;
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
@@ -304,11 +404,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
     if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => log(`shares start failed: ${error.message}`));
     emit({ type: 'voice', voice: c.voice });
+    emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',
+      ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
     emit({ type: 'state', state: 'joining' });
     child.stdin.write(`${link}\n`);
   }
 
-  return { get running() { return !!call; }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values()],
+  return { get running() { return !!call; }, config: { listen, sttConfigured }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 

@@ -48,6 +48,10 @@ In a call the bot speaks a two- or three-sentence headline built from the counts
 
 Card descriptions, criteria, stage detail and comments appear only in the review. They never reach the AI, the call or the shared board. Stage results can come from another card with the same correlation key until olafkfreund/CFactory#583 is fixed; test cases, branches, pull requests, plan findings and pending approvals aren't in the card data yet.
 
+## How the bot hears
+
+During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
+
 ## Licence
 
 RFactory is free software under the GNU Affero General Public License v3.0 only (`LICENSE`). Third-party parts and their licences are listed in `NOTICE.md`; upstream licence texts are in `LICENSES/`. This is not a legal review.
