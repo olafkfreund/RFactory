@@ -60,8 +60,10 @@ function createRecord({ dir, clock = Date, redactor }) {
 
   function unfinished() { return lastEntries().filter((e) => !e.kind && e.state === 'executing'); }
   function unfinishedShares() { return lastEntries().filter((e) => e.kind === 'share' && ['starting', 'running'].includes(e.state)); }
+  function unfinishedInvestigations() { return lastEntries().filter((e) => e.kind === 'investigation' &&
+    ['starting', 'running', 'stopping', 'uncertain'].includes(e.state)); }
 
-  return { append, prune, unfinished, unfinishedShares };
+  return { append, prune, unfinished, unfinishedShares, unfinishedInvestigations };
 }
 
 module.exports = { createRecord };

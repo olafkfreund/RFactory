@@ -81,3 +81,14 @@ test('recovery separates unfinished shares from actions using real JSONL', async
   assert.deepEqual(rec.unfinished().map((e) => e.id), ['action']);
   assert.deepEqual(rec.unfinishedShares().map((e) => e.id), ['share', 'running']);
 });
+
+test('unfinished investigations retain uncertain starts and stops until a terminal record', (t) => {
+  const { dir, rec } = setup(t);
+  const line = (entry) => `${JSON.stringify({ kind: 'investigation', ...entry })}\n`;
+  fs.writeFileSync(path.join(dir, '2026-11-16.jsonl'),
+    line({ id: 'start', state: 'starting' }) + line({ id: 'done', state: 'running' }) +
+    line({ id: 'lost', state: 'uncertain', card_key: 'FCT-1' }));
+  fs.writeFileSync(path.join(dir, '2026-11-17.jsonl'),
+    line({ id: 'done', state: 'stopped', reason: 'restart' }) + line({ id: 'stop', state: 'stopping', run_id: 'run-1' }));
+  assert.deepEqual(rec.unfinishedInvestigations().map((e) => e.id), ['start', 'lost', 'stop']);
+});
