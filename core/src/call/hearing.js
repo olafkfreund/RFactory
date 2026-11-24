@@ -8,6 +8,8 @@ const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|s
 const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
 // a share request starts with show/display/share/put up and names "board" ("show me what's blocked" stays a question)
 const SHARE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|put up)\b(?=.*\bboard\b)/i;
+// an investigation request starts with investigate / find out / look into / "open a terminal ... and ..."
+const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
 
 function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
@@ -37,7 +39,7 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
         block.offset = block.text.length;
         block.answeredText = block.text;
         onAddressed({
-          kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
+          kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
           text: addressed, speaker: block.speaker, id,
         });
       }, quietMs);
