@@ -25,6 +25,8 @@ let
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
     hash = "sha256-G+OpsgY4Z7k35k4ux0gzZKeZF+FX+pjF2UtcH//qmHs=";
   };
+  # without SDL (only whisper's microphone tools use it): SDL pulls in zenity and librsvg, which carry HIGH CVEs (#33)
+  whisper = pkgs.whisper-cpp.override { withSDL = false; };
   sttRun = pkgs.writeShellScript "rfactory-stt" ''
     set -eu
     read -r secret < /run/secrets/stt/path || true
@@ -32,7 +34,7 @@ let
       *[!0-9a-fA-F]* | "") echo "stt: secret is not hex" >&2; exit 1 ;;
     esac
     [ "''${#secret}" -eq 32 ] || { echo "stt: secret is not 32 characters" >&2; exit 1; }
-    exec ${pkgs.whisper-cpp}/bin/whisper-server -m ${sttModel} -t 8 -ac 768 \
+    exec ${whisper}/bin/whisper-server -m ${sttModel} -t 8 -ac 768 \
       --host 0.0.0.0 --port "''${STT_PORT:-8080}" --inference-path "/inference/$secret"
   '';
 in
