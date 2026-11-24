@@ -46,6 +46,11 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
 7. **The positive admission check** uses the dry-run response's `kyverno.io/verify-images` annotation, as the existing runner probe does, not a PolicyReport (Kyverno reports only persisted objects). The factory-gitops PR's image-pin CI fails while the tags are `sha-PENDING`; they are filled at step 8.3, before merge.
 8. **`rfactory-web` gets `HOME=/tmp`**, so nothing writes to the read-only root, and `seed-creds` leaves the Claude credentials file at mode 600, so the CLI can update it.
 
+9. **The first CI run's Trivy gate failed; the packages were fixed, not ignored** (step 8.2):
+   - `rfactory-web`: npm's own bundled dependencies (brace-expansion, ip-address, pacote, picomatch, sigstore) are removed by deleting npm after the installs (it is not used at runtime), and `setuptools` (66.1.1, and the old `jaraco.context` and `wheel` it vendors) is uninstalled from Piper's venv after Piper's install. Piper and the Claude CLI were checked in the rebuilt image.
+   - `rfactory-stt`: whisper-cpp is built `withSDL = false`. SDL is only for whisper's microphone tools, and pulled in zenity and librsvg (CVE-2026-96889).
+   - Both rebuilt images scan clean locally with the CI's Trivy settings, and `deploy/check-image-stt.sh` passes.
+
 **Accepted, not changed:**
 - **whisper's open routes:** its root page shows the inference path, and it has an unauthenticated model-load route. Only containers in the pod can reach port 8081 under `rfactory-ingress`; step 12.2 verifies that.
 - **Trivy on `rfactory-stt`:** it is close to a no-op on a Nix image, which has no OS package database.

@@ -17,9 +17,11 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Piper (GPL-3.0, its own process) and the public-domain LJSpeech and Joe voices, pinned by commit and sha256.
+# setuptools is removed after the install: Piper does not need it to run, and its vendored copies carry HIGH CVEs (#33).
 RUN set -eux; \
     python3 -m venv /opt/piper; \
     /opt/piper/bin/pip install --no-cache-dir piper-tts==1.8.0; \
+    /opt/piper/bin/pip uninstall -y setuptools; \
     mkdir -p /opt/voices; cd /opt/voices; \
     base=https://huggingface.co/rhasspy/piper-voices/resolve/4a409e3cbfd0a189930b38f127a38e107677e8ac/en/en_US/ljspeech/medium; \
     curl -fsSLo en_US-ljspeech-medium.onnx "$base/en_US-ljspeech-medium.onnx"; \
@@ -44,6 +46,8 @@ COPY --chown=node:node web/package.json web/package-lock.json web/
 RUN cd web && npm ci --omit=dev
 COPY --chown=node:node bot/package.json bot/package-lock.json bot/
 RUN cd bot && npm ci --omit=dev
+# npm is only needed to build: its bundled dependencies carry fixable HIGH CVEs that the CI's Trivy gate refuses (#33)
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --chown=node:node core/src core/src
 COPY --chown=node:node core/bin core/bin
 # #2's GitHub adapter loads its recorded read-only tool inventory from this fixture (#2 plan step 4)
