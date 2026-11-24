@@ -6,6 +6,7 @@ const { hashPayload } = require('@rfactory/core/src/actions/allowlist.js');
 const PROPOSAL_MS = 10 * 60 * 1000;
 const SHARE_MS = 30 * 60 * 1000;
 const REFRESH_MS = 30 * 1000;
+const LOG_REFRESH_MS = 5 * 1000;
 const reply = (status, text, share) => ({ status, text, ...(share ? { share } : {}) });
 
 function createShareManager({ board, record, redactor, clock = Date, scope, approvers, enabled }) {
@@ -38,6 +39,22 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
 
   function valid(entry, token) {
     return entry.token === token && entry.generation === generation && active === entry;
+  }
+
+  async function frameFor(entry) {
+    if (entry.payload.view !== 'log') return board();
+    const next = await entry.provider();
+    if (next?.error) return next;
+    if (!Array.isArray(next?.lines) || !next.lines.every((line) => typeof line === 'string')) throw new Error('invalid log lines');
+    entry.rawLines.push(...next.lines);
+    entry.rawLines = entry.rawLines.slice(-400);
+    let lines = redactor.logSafeWindow(entry.rawLines).slice(-200).map((line) => Array.from(line).slice(0, 400).join(''));
+    const data = { repo: next.repo, sha: next.sha, at: next.at, lines };
+    while (lines.length && Buffer.byteLength(JSON.stringify(data)) > 48 * 1024) {
+      lines = lines.slice(1);
+      data.lines = lines;
+    }
+    return data;
   }
 
   async function expire(entry) {
@@ -89,7 +106,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     entry.refreshTimer = setTimer(async () => {
       if (!valid(entry, token) || entry.state !== 'running') return;
       try {
-        const data = await board();
+        const data = await frameFor(entry);
         if (!valid(entry, token) || entry.state !== 'running') return;
         if (data?.error) throw new Error(data.error);
         await entry.desktop.updateView(entry.payload.id, data);
@@ -105,7 +122,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
         emit('share-updated', entry, { stale: true, as_of: entry.frame?.at });
       }
       if (valid(entry, token) && entry.state === 'running') scheduleRefresh(entry, token);
-    }, REFRESH_MS);
+    }, entry.payload.view === 'log' ? LOG_REFRESH_MS : REFRESH_MS);
     entry.refreshTimer.unref?.();
   }
 
@@ -114,11 +131,11 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     try {
       await write(entry, 'starting', { approved_by: entry.approved_by });
       if (!valid(entry, token)) return;
-      const data = await board();
+      const data = await frameFor(entry);
       if (!valid(entry, token)) return;
       if (data?.error) throw new Error(data.error === 'too-large' ? 'the board is too large' : data.error);
       entry.opened = true; // from here a stop must close the view (set before the send: a stop during it still closes)
-      await entry.desktop.openView(entry.payload.id, entry.nonce, data);
+      await entry.desktop.openView(entry.payload.id, entry.nonce, data, entry.payload.view);
       if (!valid(entry, token)) return; // stopEntry owns the cleanup: closing twice timed out on the real guest (review P1)
       await entry.desktop.startShare(entry.payload.id, entry.nonce);
       if (!valid(entry, token)) return;
@@ -141,6 +158,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     if (!enabled || !scope.shares_enabled) return reply(403, 'Sharing is turned off here.');
     if (generation === undefined) return reply(409, "I can't share the board right now: no call right now.");
     if (!desktop) return reply(409, "I can't share the board right now: no desktop for this call.");
+    if (active?.payload.view === 'log') return reply(409, 'Stop the log share first.');
     if (pending && now() >= Date.parse(pending.payload.expires_at)) await expire(pending);
     if (pending) return reply(409, 'A share is already waiting for approval.');
     const proposed_at = new Date(now()).toISOString();
@@ -168,6 +186,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     if (!approvers.has(email, 'approver')) return reply(403, 'Forbidden.');
     const entry = pending;
     if (!entry || entry.payload.id !== id || entry.hash !== hash || entry.state !== 'proposed') return reply(409, 'This share is no longer pending.');
+    if (active?.payload.view === 'log') return reply(409, 'Stop the log share first.');
     if (now() >= Date.parse(entry.payload.expires_at) || entry.generation !== generation) {
       await expire(entry); return reply(409, 'This share has expired.');
     }
@@ -202,6 +221,23 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     clearTimer(entry.proposalTimer);
     await write(entry, 'rejected', { rejected_by: String(email).toLowerCase() });
     return reply(200, 'Share rejected.');
+  }
+
+  async function openFor(owner, { view, provider, title }) {
+    if (view !== 'log' || typeof provider !== 'function') return reply(400, 'Invalid log share.');
+    if (!recovered || !desktop || generation === undefined) return reply(409, 'No desktop for this call.');
+    if (!approvers.has(owner, 'approver')) return reply(403, 'Forbidden.');
+    if (active) return reply(409, `Stop the ${active.payload.view} share first.`);
+    const entry = { payload: Object.freeze({ id: randomUUID(), view, title: safe(String(title || 'Investigation log')),
+      proposed_by: safe(String(owner)), proposed_at: new Date(now()).toISOString() }),
+      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, rawLines: [] };
+    active = entry; // claim the desktop before the first await
+    entry.approved_by = String(owner).toLowerCase();
+    try { await write(entry, 'approved', { approved_by: entry.approved_by }); }
+    catch { await stopEntry(entry, 'record-failed'); return reply(500, 'The share could not be recorded.'); }
+    if (!valid(entry, 1)) return reply(409, 'The share was stopped.');
+    void start(entry);
+    return reply(200, 'Sharing the investigation log.', { ...entry.payload });
   }
 
   async function stop(email) {
@@ -251,7 +287,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     recovered = true;
   }
 
-  return { request, approve, reject, stop, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  return { request, approve, reject, openFor, stop, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     startCall, endCall, recover };
 }
 

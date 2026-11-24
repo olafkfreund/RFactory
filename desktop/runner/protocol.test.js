@@ -9,6 +9,7 @@ const path = require('node:path');
 const { MAX, encode, createDecoder, tag } = require('./protocol');
 const board = () => ({ project: 'factory', at: '2026-11-19T00:00:00.000Z',
   columns: Object.fromEntries(['backlog', 'ready', 'in_progress', 'blocked', 'done'].map((key) => [key, { total: 0, shown: 0, omitted: 0 }])), cards: [] });
+const log = (over = {}) => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: '2026-11-19T00:00:00.000Z', lines: ['test passed'], ...over });
 
 test('view schemas accept their exact fields and refuse malformed board data', () => {
   for (const message of [
@@ -26,6 +27,20 @@ test('view schemas accept their exact fields and refuse malformed board data', (
   const oversize = Buffer.alloc(4); oversize.writeUInt32BE(MAX + 1);
   const drops = []; createDecoder(() => assert.fail('oversize accepted'), (reason) => drops.push(reason)).write(oversize);
   assert.deepEqual(drops, ['oversize']);
+});
+
+test('log view enforces the line, count, shape and byte limits', () => {
+  const open = (data, view = 'log') => encode({ type: 'view-open', share_id: 's', nonce: 'n', view, data });
+  assert.doesNotThrow(() => open(log()));
+  assert.doesNotThrow(() => encode({ type: 'view-data', share_id: 's', data: log(), stale: true }));
+  assert.doesNotThrow(() => encode({ type: 'view-data', share_id: 's', view: 'log', data: log() }));
+  for (const data of [log({ lines: ['x'.repeat(401)] }), log({ lines: Array(201).fill('x') }),
+    log({ lines: Array(200).fill('x'.repeat(300)) }), log({ sha: 'bad' }), log({ extra: true }), log({ lines: [4] })]) {
+    assert.throws(() => open(data), /invalid protocol/);
+  }
+  assert.throws(() => open(log(), 'board'), /invalid protocol/);
+  assert.throws(() => open(board(), 'log'), /invalid protocol/);
+  assert.throws(() => encode({ type: 'view-data', share_id: 's', view: 'log', data: board() }), /invalid protocol/);
 });
 
 function raw(body) {

@@ -105,7 +105,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
   async function start({ share_id, url, hosts, nonce: viewNonce, view, data }, openOnly = false) {
     if (stopping) await stopping;
     if (active) throw new Error('share already active');
-    if (openOnly && (view !== 'board' || url !== URL_BOARD || viewNonce !== callNonce || closed.has(share_id))) throw new Error('invalid view');
+    if (openOnly && (!['board', 'log'].includes(view) || url !== URL_BOARD || viewNonce !== callNonce || closed.has(share_id))) throw new Error('invalid view');
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || !Array.isArray(hosts) || !hosts.includes(parsed.origin)) throw new Error('share origin not granted');
     const page = await context.newPage();
@@ -168,7 +168,7 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
       if (active !== share) throw new Error('share target changed');
       if (!(await matches(share, '', 'browser'))) throw new Error('share title not unique');
       if (openOnly) {
-        await page.evaluate((board) => window.rfBoard.render(board, { stale: false }), data);
+        await page.evaluate(([frame, kind]) => window.rfBoard.render(frame, { view: kind, stale: frame.stale === true }), [data, view]);
         return { share_id, nonce: callNonce, window_title: title, target_id: share.targetId };
       }
       return await capture(share);
@@ -219,9 +219,9 @@ function createShare({ context, callPage, callNonce, clickShare, stopShare, send
         active.capturing = false;
       }
     },
-    updateView: async ({ share_id, data, stale = false }) => {
-      if (!active?.view || active.id !== share_id) throw new Error('view not open');
-      await active.page.evaluate(([board, isStale]) => window.rfBoard.render(board, { stale: isStale }), [data, stale === true]);
+    updateView: async ({ share_id, view, data, stale = false }) => {
+      if (!active?.view || active.id !== share_id || (view && view !== active.view)) throw new Error('view not open');
+      await active.page.evaluate(([frame, kind, isStale]) => window.rfBoard.render(frame, { view: kind, stale: isStale }), [data, active.view, stale === true]);
     },
     // idempotent per share id (review P1): a view that never opened, or already ended (a target change), is closed;
     // its id is remembered so a late view-open for it is refused; another share is never touched
