@@ -74,6 +74,8 @@ No log text, and no report text beyond the counts.
 
 1. **Step 3: CFactory's real tool shapes** (CFactory main `0d8b605`, `apps/backend/cfactory/mcp.py`). `defaultBranchSha(repo)` and `testCommand()` are one read, `investigationContext()` (`cfactory_investigation_context`), which returns `{ repository_id, repo, default_branch, sha, test_command | null }`. `createInvestigationCard(request, repositoryId)` takes CFactory's numeric repository id. Every call after the card exists takes `card_key` first. `investigationRecord(card_key)` (`cfactory_investigation_recover`) is added for `recover()`. Logs take an integer `after` and a `limit` of 1-500 (RFactory uses 200) and return `{ entries: [{ seq, at, line }], cursor }`. The run body is AIFactory's, relayed: `{ state, pods_gone, tests, report? }`: the field is `pods_gone`, not `pod_gone`. On the read side a refusal sent as an MCP error rejects instead of giving `{error}`; step 4 treats both as a failed read.
 
+2. **Desktop test command needs `NODE_PATH`.** `desktop/` has no `playwright-core` of its own, so with `RFACTORY_REQUIRE_BROWSER=1` the viewer tests fail unless it comes from `bot/node_modules`: run the desktop suite as `NODE_PATH=$PWD/../bot/node_modules RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test`. Also, main's `web/test/shell-browser.test.js` stub lacked `standupData` (since #28) and is fixed on this branch, as on #16's.
+
 ## Steps
 
 **Before implementation:**
