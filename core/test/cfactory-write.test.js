@@ -147,3 +147,25 @@ test('key shape is checked and key never appears in output, errors or redaction'
   fs.writeFileSync(s.file, 'invalid', { mode: 0o600 });
   assert.throws(() => createCfactoryWriter({ writeKeyFile: s.file, redactor: makeRedactor([]) }), /invalid-write-key/);
 });
+
+test('investigation writes: fixed tool names and arguments, write key only', async (t) => {
+  const s = setup(t, (request) => reply(request.name === 'cfactory_investigate_card' ? { run_id: 'r1' } : { card_key: 'FCT-20' }));
+  const limits = { minutes: 30, tokens: 2000000, turns: 200 };
+  assert.equal((await s.writer.createInvestigationCard('why', 2)).card_key, 'FCT-20');
+  assert.deepEqual(await s.writer.investigate('FCT-20', { request: 'why', sha: 'a'.repeat(40), test_command: null, limits }), { run_id: 'r1' });
+  await s.writer.renewLease('FCT-20', 'r1');
+  await s.writer.stopInvestigation('FCT-20', 'r1');
+  assert.deepEqual(s.calls, [
+    { name: 'cfactory_create_investigation_card', arguments: { request: 'why', repository_id: 2 } },
+    { name: 'cfactory_investigate_card', arguments: { card_key: 'FCT-20', request: 'why', sha: 'a'.repeat(40), test_command: null, limits } },
+    { name: 'cfactory_investigation_lease', arguments: { card_key: 'FCT-20', run_id: 'r1' } },
+    { name: 'cfactory_investigation_stop', arguments: { card_key: 'FCT-20', run_id: 'r1' } },
+  ]);
+});
+
+test('investigation writes: a refusal gives {error}; timeout and unparsable replies reject', async (t) => {
+  assert.deepEqual(await setup(t, reply({ error: 'test_command_changed' })).writer.investigate('FCT-20', {}), { error: 'test_command_changed' });
+  assert.deepEqual(await setup(t, { isError: true, content: [{ type: 'text', text: 'run_live' }] }).writer.renewLease('FCT-20', 'r1'), { error: 'run_live' });
+  await assert.rejects(setup(t, () => new Promise(() => {})).writer.stopInvestigation('FCT-20', 'r1'), /write-timeout/);
+  await assert.rejects(setup(t, { content: [{ type: 'text', text: '{bad' }] }).writer.stopInvestigation('FCT-20', 'r1'), /write-unparsable/);
+});

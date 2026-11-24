@@ -70,6 +70,10 @@ No log text, and no report text beyond the counts.
 
 **Switches:** the scope's `investigations_enabled: true` **and** `RFACTORY_INVESTIGATIONS=on` (like #10 and #12). With either off, a request is answered "Investigations are turned off here."
 
+## Deviations
+
+1. **Step 3: CFactory's real tool shapes** (CFactory main `0d8b605`, `apps/backend/cfactory/mcp.py`). `defaultBranchSha(repo)` and `testCommand()` are one read, `investigationContext()` (`cfactory_investigation_context`), which returns `{ repository_id, repo, default_branch, sha, test_command | null }`. `createInvestigationCard(request, repositoryId)` takes CFactory's numeric repository id. Every call after the card exists takes `card_key` first. `investigationRecord(card_key)` (`cfactory_investigation_recover`) is added for `recover()`. Logs take an integer `after` and a `limit` of 1-500 (RFactory uses 200) and return `{ entries: [{ seq, at, line }], cursor }`. The run body is AIFactory's, relayed: `{ state, pods_gone, tests, report? }`: the field is `pods_gone`, not `pod_gone`. On the read side a refusal sent as an MCP error rejects instead of giving `{error}`; step 4 treats both as a failed read.
+
 ## Steps
 
 **Before implementation:**

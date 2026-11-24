@@ -237,3 +237,54 @@ test('a failed or empty repository read is a source error, not a board of confli
     await assert.rejects(source.reviewData('FCT-1'), { message: 'source-error' });
   }
 });
+
+const inv = (responses, tools = []) => ({
+  calls: [],
+  async callTool(req) { this.calls.push(req); return reply(responses[req.name]); },
+  async listTools() { return { tools: tools.map((name) => ({ name })) }; },
+});
+
+test('investigation reads: names and arguments, read client only', async () => {
+  const client = inv({
+    cfactory_investigation_context: { repository_id: 2, sha: 'a'.repeat(40), test_command: null },
+    cfactory_investigation_get: { state: 'running', pods_gone: false },
+    cfactory_investigation_logs: { entries: [], cursor: 7 },
+    cfactory_investigation_recover: { card_key: 'FCT-20' },
+  });
+  const s = src(client);
+  assert.equal((await s.investigationContext()).test_command, null);
+  assert.equal((await s.investigationState('FCT-20', 'r1')).pods_gone, false);
+  assert.equal((await s.investigationLogs('FCT-20', 'r1', 7)).cursor, 7);
+  await s.investigationRecord('FCT-20');
+  assert.deepEqual(client.calls, [
+    { name: 'cfactory_investigation_context', arguments: { repository_id: 2 } },
+    { name: 'cfactory_investigation_get', arguments: { card_key: 'FCT-20', run_id: 'r1' } },
+    { name: 'cfactory_investigation_logs', arguments: { card_key: 'FCT-20', run_id: 'r1', after: 7, limit: 200 } },
+    { name: 'cfactory_investigation_recover', arguments: { card_key: 'FCT-20' } },
+  ]);
+});
+
+test('log cursor advances over three reads; pods_gone and report shapes pass through', async () => {
+  const pages = [{ entries: [{ seq: 1, at: 't', line: 'a' }, { seq: 2, at: 't', line: 'b' }], cursor: 2 }, { entries: [{ seq: 3, at: 't', line: 'c' }], cursor: 3 }, { entries: [], cursor: 3 }];
+  const client = { async callTool(req) { return reply(pages.shift()); } };
+  const s = src(client);
+  let cursor = 0;
+  const seen = [];
+  for (let i = 0; i < 3; i++) { const r = await s.investigationLogs('FCT-20', 'r1', cursor); cursor = r.cursor; seen.push(...r.entries.map((e) => e.line)); }
+  assert.deepEqual([seen.join(''), cursor], ['abc', 3]);
+  const done = { state: 'completed', pods_gone: true, report: { findings: 'f', refs: [], tests: [{ command: 'npm test', exit_code: 1, parsed: false }], sha: 'a'.repeat(40) } };
+  const none = { state: 'completed', pods_gone: true, report: { findings: 'f', refs: [], tests: [], sha: 'a'.repeat(40) } };
+  assert.equal((await src(inv({ cfactory_investigation_get: done })).investigationState('k', 'r')).report.tests[0].parsed, false);
+  assert.deepEqual((await src(inv({ cfactory_investigation_get: none })).investigationState('k', 'r')).report.tests, []);
+});
+
+test('an error payload gives {error}; a hung read times out', async () => {
+  assert.deepEqual(await src(inv({ cfactory_investigation_get: { error: 'investigation_not_found' } })).investigationState('k', 'r'), { error: 'investigation_not_found' });
+  const hung = { callTool: () => new Promise(() => {}) };
+  await assert.rejects(src(hung).investigationLogs('k', 'r', 0), /source-timeout/);
+});
+
+test('investigateAvailable follows the tool list', async () => {
+  assert.equal(await src(inv({}, ['cfactory_list_cards', 'cfactory_investigate_card'])).investigateAvailable(), true);
+  assert.equal(await src(inv({}, ['cfactory_list_cards'])).investigateAvailable(), false);
+});

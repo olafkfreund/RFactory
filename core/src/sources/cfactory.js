@@ -157,6 +157,19 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       if (card.error || !card.card_key) return { error: str(card.error) || 'unknown card' };
       return { card, inRepository: repositoryOf(card, repos) === repositoryId };
     },
+    // Investigation reads; read key only. Bodies are relayed as CFactory and AIFactory return them; an error payload gives { error }.
+    // { repository_id, repo, default_branch, sha, test_command|null }
+    investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: repositoryId }),
+    // Hidden by CFactory while it drains.
+    async investigateAvailable() {
+      const { tools = [] } = await within(c.listTools(), Date.now() + timeoutMs);
+      return tools.some((tool) => tool.name === 'cfactory_investigate_card');
+    },
+    // { state, pods_gone, tests, report?: { findings, refs, tests, sha } }
+    investigationState: (card_key, run_id) => call('cfactory_investigation_get', undefined, { card_key, run_id }),
+    // { entries: [{ seq, at, line }], cursor }
+    investigationLogs: (card_key, run_id, after, limit = 200) => call('cfactory_investigation_logs', undefined, { card_key, run_id, after, limit }),
+    investigationRecord: (card_key) => call('cfactory_investigation_recover', undefined, { card_key }),
     close: () => (c && c.close ? c.close() : undefined),
   };
 }
