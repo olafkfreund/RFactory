@@ -4,6 +4,16 @@ A web app where an AI bot joins team calls (Google Meet, Zoom, Teams, Slack hudd
 
 Work follows intent → spec → plan: see `intent/`, `spec/`, `plan/`.
 
+## Deployment
+
+The factory cluster is the deployment: see `plan/2026-11-24-33-rfactory-in-cluster.md`. The Secrets are never in git; `deploy/k8s/bootstrap-secrets.sh` writes them from `~/.config/rfactory` (`--dry-run` lists what it would write).
+
+- `roles.env` (mode 600) holds `ALLOWED=`, `APPROVERS=` and `ADMINS=` as comma lists.
+- `scope.cluster.json` is the cluster's scope file (the in-cluster CFactory URL). `scope.json` stays for the p620 pod.
+- **Change a member:** edit `roles.env`, run `deploy/k8s/bootstrap-secrets.sh`; the pod restarts.
+- **Re-seed the shared Claude login:** update the `factory-cli-creds` Secret as `docs/secrets-management.md` in factory-gitops describes, then `kubectl --context k3d-factory -n factory rollout restart deploy/rfactory`.
+- `deploy/pod.sh` is a development path only.
+
 ## Roles
 
 `deploy/pod.sh up` passes three comma-separated email lists to the web app:
