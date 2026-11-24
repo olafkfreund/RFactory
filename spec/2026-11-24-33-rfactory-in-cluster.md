@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 33
 intent: intent/2026-11-24-33-rfactory-in-cluster.md
 ---
