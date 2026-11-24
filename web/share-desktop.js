@@ -48,16 +48,17 @@ function createShareDesktop({ runner, desktopId, clock = globalThis }) {
     // The guest binds a share to the nonce its call Chrome was launched with (the capture auto-selects
     // "RFactory share <nonce>"), so the view uses the desktop's own nonce from the runner, never the manager's
     // per-share one (lead review: a fresh nonce made every real view-open "invalid view"). #3's share does the same.
-    async openView(shareId, _managerNonce, data) {
+    async openView(shareId, _managerNonce, data, view = 'board') {
       const r = await runner.list();
       const nonce = r.status === 200 ? r.body.desktops.find((d) => d.desktop_id === id())?.nonce : undefined;
       if (typeof nonce !== 'string' || !nonce) throw new Error('no desktop nonce');
-      await send('view-open', { share_id: shareId, nonce, view: 'board', data });
-      open = { shareId, started: false };
+      await send('view-open', { share_id: shareId, nonce, view, data });
+      open = { shareId, started: false, view };
       schedule();
     },
     async updateView(shareId, data, { stale } = {}) {
-      await send('view-data', { share_id: shareId, data, ...(typeof stale === 'boolean' ? { stale } : {}) });
+      await send('view-data', { share_id: shareId, data, ...(open?.shareId === shareId && open.view === 'log' ? { view: 'log' } : {}),
+        ...(typeof stale === 'boolean' ? { stale } : {}) });
     },
     // url and hosts are the protocol's required fields; the view needs neither, so the adapter sends none.
     async startShare(shareId) {

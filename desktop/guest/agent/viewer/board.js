@@ -25,6 +25,12 @@
   function render(data, opts = {}) {
     root.replaceChildren();
     const stale = Boolean(opts.stale);
+    if (opts.view === 'log') {
+      root.append(el('div', stale ? 'rf-banner rf-stale' : 'rf-banner',
+        `RFactory (AI) · Investigation · read-only · ${data.repo} @ ${data.sha.slice(0, 7)} · as of ${hhmm(data.at)}${stale ? ' · stale' : ''}`));
+      root.append(el('pre', 'rf-log', data.lines.join('\n')));
+      return;
+    }
     root.append(el('div', stale ? 'rf-banner rf-stale' : 'rf-banner',
       `RFactory (AI) · CFactory board · read-only · as of ${hhmm(data.at)}${stale ? ' · stale' : ''}`));
     root.append(el('div', 'rf-project', data.project));

@@ -30,6 +30,13 @@ const board = (v) => exact(v, ['project', 'at', 'columns', 'cards']) && string(v
     exact(card.stages, ['plan', 'code', 'test']) && Object.values(card.stages).every((stage) =>
       ['none', 'queued', 'running', 'done', 'failed', 'unknown'].includes(stage))) &&
   Buffer.byteLength(JSON.stringify(v)) <= 48 * 1024;
+const log = (v) => !!v && typeof v === 'object' && !Array.isArray(v) &&
+  Object.keys(v).every((key) => ['repo', 'sha', 'at', 'lines', 'stale'].includes(key)) &&
+  string(v.repo) && string(v.sha) && /^[a-fA-F0-9]{40}$/.test(v.sha) &&
+  string(v.at) && !Number.isNaN(Date.parse(v.at)) &&
+  Array.isArray(v.lines) && v.lines.length <= 200 && v.lines.every((line) => string(line) && Array.from(line).length <= 400) &&
+  optional(boolean)(v.stale) && Buffer.byteLength(JSON.stringify(v)) <= 48 * 1024;
+const viewData = (v) => board(v) || log(v);
 const schemas = Object.freeze({
   heartbeat: {},
   'call-end': {},
@@ -52,8 +59,8 @@ const schemas = Object.freeze({
   'call-out': { chunk: string, end: boolean },
   'share-start': { share_id: string, url: string, hosts, action_id: optional(string) },
   'share-stop': { share_id: string, action_id: optional(string) },
-  'view-open': { share_id: string, nonce: string, view: (v) => v === 'board', data: board, action_id: optional(string) },
-  'view-data': { share_id: string, data: board, stale: optional((v) => typeof v === 'boolean'), action_id: optional(string) },
+  'view-open': { share_id: string, nonce: string, view: (v) => ['board', 'log'].includes(v), data: viewData, action_id: optional(string) },
+  'view-data': { share_id: string, view: optional((v) => ['board', 'log'].includes(v)), data: viewData, stale: optional(boolean), action_id: optional(string) },
   'view-close': { share_id: string, action_id: optional(string) },
   'view-closed': { share_id: string, action_id: optional(string) },
 });
@@ -76,7 +83,9 @@ function safe(value) {
 function valid(message) {
   if (!message || Array.isArray(message) || typeof message !== 'object' || !safe(message)) return false;
   const schema = Object.hasOwn(schemas, message.type) && schemas[message.type];
-  return !!schema && Object.entries(schema).every(([key, check]) => check(message[key])) &&
+  return !!schema && (!['view-open', 'view-data'].includes(message.type) || !message.view ||
+    (message.view === 'board' ? board(message.data) : log(message.data))) &&
+    Object.entries(schema).every(([key, check]) => check(message[key])) &&
     Object.keys(message).every((key) => key === 'type' || identity.has(key) || Object.hasOwn(schema, key));
 }
 
