@@ -26,6 +26,10 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
 2. **`rfactory-stt` probe:** a kubelet **`tcpSocket` probe on 8081**, not an exec probe. The STT image has no shell, `nc` or `node`, and whisper binds `0.0.0.0`. Step 10 confirms that the ingress policy does not block kubelet probes; if it does, the policy gets an `ipBlock` for the node address, recorded as a deviation.
 3. **The cluster scope is a separate file** (`~/.config/rfactory/scope.cluster.json`, with the in-cluster CFactory URL). The p620 `scope.json` stays unchanged for the 7-day fallback.
 
+## Deviations
+
+1. **The RFactory branch was cut before PR #32 (#16) merged** (2026-11-24), not after. Steps 1–3 touch only `.github/`, `deploy/k8s/`, `README.md` and a comment in `deploy/pod.sh`, none of which #16 changes except that comment's file. `main` is merged in once #32 lands, and before the RFactory PR merges (step 8.2), because the `stt` job builds `.#image-stt`, which only exists after #16.
+
 ## Decisions (from the approved spec; owner defaults accepted 2026-11-24)
 
 - **Pod:**
