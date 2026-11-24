@@ -30,6 +30,27 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
 
 1. **The RFactory branch was cut before PR #32 (#16) merged** (2026-11-24), not after. Steps 1–3 touch only `.github/`, `deploy/k8s/`, `README.md` and a comment in `deploy/pod.sh`, none of which #16 changes except that comment's file. `main` is merged in once #32 lands, and before the RFactory PR merges (step 8.2), because the `stt` job builds `.#image-stt`, which only exists after #16.
 
+2. **CFactory URL stays the public HTTPS one** (step 7 reviews, Codex and agy). `core/src/scope.js` allows plain HTTP only to `127.0.0.1`, so the in-cluster `http://cfactory.factory.svc.cluster.local:3111/mcp` is refused at startup (`invalid-scope`). The cluster scope keeps `https://cfactory-mcp.freundcloud.org.uk/mcp`. `scope.cluster.json` differs from `scope.json` only in the key paths (deviation 3). Calling CFactory inside the cluster would need a validator change, left out.
+3. **CFactory keys are staged into a private volume** (Codex, agy). `scope.js` refuses a read key with any group or other bit and requires the write key at exactly `0600`, while Secret files are root-owned. An init container `stage-keys` (busybox, uid 1000) copies both keys from the Secret into a memory `emptyDir` at `/run/rfactory/keys/` with mode 600. The scope's `key_file` and `write_key_file` are `/run/rfactory/keys/cfactory-read-key` and `/run/rfactory/keys/cfactory-write-key`.
+4. **The web image installs the current Chrome in CI** (Codex). Google's apt repository keeps only the current stable, so the pinned `157.0.8103.78-1` no longer installs. CI passes an empty `CHROME_VERSION` (the Containerfile already supports it), and the signed digest pins the bytes. Chrome is unused in the cluster: with the runner set, `spawn` is the VM spawner (`web/server.js`), so calls run in the desktop VMs.
+5. **Promotion is by digest, only from the current `main` head, checked per image** (Codex, agy, Opus).
+   - The pin is `tag@digest`, so a rerun that repoints a tag cannot change what is deployed.
+   - A run whose commit is no longer `main`'s head does not promote, so a rerun cannot roll back.
+   - Each image's pin is read from its own `images` entry.
+   - The `stt` job logs in with `docker/login-action` like `web`: cosign, trivy and syft read Docker's credential.
+   - The registry and signing permissions are granted only to the two image jobs.
+6. **`bootstrap-secrets.sh`** (Codex, agy, Opus):
+   - It has no `--writes` or `--shares` flags. It reads `RFACTORY_WRITES` and `RFACTORY_SHARES` from the live `deploy/rfactory` (read only) and refuses a scope that disagrees, because the Deployment in git owns the switches.
+   - Existing Secrets are updated with one `kubectl replace` (never `--force`, which deletes first), carrying the rotation date in the same request. The script stops before any change if it cannot read that date.
+   - An empty Keycloak secret is refused, and a failed restart says so.
+7. **The positive admission check** uses the dry-run response's `kyverno.io/verify-images` annotation, as the existing runner probe does, not a PolicyReport (Kyverno reports only persisted objects). The factory-gitops PR's image-pin CI fails while the tags are `sha-PENDING`; they are filled at step 8.3, before merge.
+8. **`rfactory-web` gets `HOME=/tmp`**, so nothing writes to the read-only root, and `seed-creds` leaves the Claude credentials file at mode 600, so the CLI can update it.
+
+**Accepted, not changed:**
+- **whisper's open routes:** its root page shows the inference path, and it has an unauthenticated model-load route. Only containers in the pod can reach port 8081 under `rfactory-ingress`; step 12.2 verifies that.
+- **Trivy on `rfactory-stt`:** it is close to a no-op on a Nix image, which has no OS package database.
+- **Chrome in the web container:** the reviews' sandbox, `/dev/shm` and reaping findings do not apply in this configuration (deviation 4).
+
 ## Decisions (from the approved spec; owner defaults accepted 2026-11-24)
 
 - **Pod:**
@@ -252,7 +273,7 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
       - A wrong-signer image cannot exist in RFactory's repositories, so that case is covered by the pinned `subjectRegExp`, not by a test.
 9. **Owner's OK and a bus announcement, then:**
    - `roles.env` is written (the owner's two addresses);
-   - `scope.cluster.json` is made: a copy of `scope.json` with the CFactory MCP URL `http://cfactory.factory.svc.cluster.local:3111/mcp`, and the key and secret paths of the Decisions table;
+   - `scope.cluster.json` is made: a copy of `scope.json` with the key paths of deviation 3 (the CFactory URL is unchanged, deviation 2);
    - `bootstrap-secrets.sh --rotated --no-restart`.
 
    **No DNS and no Keycloak callback yet**, so the cluster instance is not reachable while it starts.

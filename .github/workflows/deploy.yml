@@ -15,9 +15,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 env:
   WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/rfactory-web
@@ -41,6 +38,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: meta
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build_web.outputs.digest }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,8 +65,12 @@ jobs:
           push: true
           tags: |
             ${{ env.WEB_IMAGE }}:${{ needs.meta.outputs.tag }}
+          # Google's apt repo keeps only the current Chrome, so a pinned version stops building;
+          # an empty CHROME_VERSION installs the current one, and the signed digest pins the bytes.
+          # (Chrome is unused in the cluster: calls run in the desktop VMs.)
           build-args: |
             RFACTORY_COMMIT=${{ github.sha }}
+            CHROME_VERSION=
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
@@ -131,10 +139,23 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: meta
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build_stt.outputs.digest }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      # trivy, cosign and syft read Docker's credential; skopeo falls back to it too
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build + push rfactory-stt
         id: build_stt
@@ -143,7 +164,6 @@ jobs:
         run: |
           set -euo pipefail
           out="$(nix build .#image-stt --print-out-paths)"
-          printf '%s' "${GITHUB_TOKEN}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
           skopeo copy --digestfile digest "docker-archive:${out}" "docker://${STT_IMAGE}:${{ needs.meta.outputs.tag }}"
           echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
 
@@ -223,6 +243,18 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ needs.meta.outputs.tag }}"
+          WEB_REF="${WEB_IMAGE}:${TAG}@${{ needs.web.outputs.digest }}"
+          STT_REF="${STT_IMAGE}:${TAG}@${{ needs.stt.outputs.digest }}"
+          # a rerun of an older run must not roll the deployment back
+          head=$(git ls-remote "https://github.com/${{ github.repository }}" refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::${GITHUB_SHA} is no longer the head of main (${head}); not promoting."
+            exit 0
+          fi
+          # each image's pin, read from the named images entry, not a shared grep
+          pinned() {
+            [ "$(yq ".images[] | select(.name == \"$1\") | .newTag + \"@\" + .digest" "$3/kustomization.yaml")" = "${TAG}@$2" ]
+          }
 
           pushed=""
           for attempt in 1 2 3 4 5; do
@@ -237,16 +269,16 @@ jobs:
             curl -sSLo kustomize.tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
             echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  kustomize.tgz" | sha256sum -c --quiet
             tar xzf kustomize.tgz kustomize && rm -f kustomize.tgz
-            ./kustomize edit set image "${WEB_IMAGE}=${WEB_IMAGE}:${TAG}"
-            ./kustomize edit set image "${STT_IMAGE}=${STT_IMAGE}:${TAG}"
+            ./kustomize edit set image "${WEB_IMAGE}=${WEB_REF}"
+            ./kustomize edit set image "${STT_IMAGE}=${STT_REF}"
             rm -f kustomize
             cd "$GITHUB_WORKSPACE/gitops"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
             if git diff --quiet; then
-              if grep -rq "newTag: ${TAG}\|${WEB_IMAGE}:${TAG}" "${GITOPS_PATH}/" \
-                 && grep -rq "newTag: ${TAG}\|${STT_IMAGE}:${TAG}" "${GITOPS_PATH}/"; then
+              if pinned "$WEB_IMAGE" "${{ needs.web.outputs.digest }}" "$GITOPS_PATH" \
+                 && pinned "$STT_IMAGE" "${{ needs.stt.outputs.digest }}" "$GITOPS_PATH"; then
                 echo "gitops already pinned to ${TAG}; nothing to do."
                 pushed="already"
                 break
@@ -274,8 +306,8 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf gitops-verify
           git clone --quiet --depth 1 "https://x:${GITOPS_PAT}@github.com/${GITOPS_REPO}.git" gitops-verify
-          if grep -rq "newTag: ${TAG}\|${WEB_IMAGE}:${TAG}" "gitops-verify/${GITOPS_PATH}/" \
-             && grep -rq "newTag: ${TAG}\|${STT_IMAGE}:${TAG}" "gitops-verify/${GITOPS_PATH}/"; then
+          if pinned "$WEB_IMAGE" "${{ needs.web.outputs.digest }}" "gitops-verify/${GITOPS_PATH}" \
+             && pinned "$STT_IMAGE" "${{ needs.stt.outputs.digest }}" "gitops-verify/${GITOPS_PATH}"; then
             echo "verified: ${GITOPS_REPO} pins both images at ${TAG}"
           else
             echo "::error::pushed, but ${GITOPS_REPO} does not pin both images at ${TAG}."

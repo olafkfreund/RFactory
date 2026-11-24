@@ -3,14 +3,9 @@ set -euo pipefail
 umask 077
 
 cfg=${RFACTORY_CONFIG:-$HOME/.config/rfactory}
-writes=on shares=on rotated=0 restart=1 dry_run=0
+rotated=0 restart=1 dry_run=0
 while (($#)); do
   case $1 in
-    --writes|--shares)
-      (($# >= 2)) || { echo "missing value for $1" >&2; exit 2; }
-      [[ $2 == on || $2 == off ]] || { echo "$1 must be on or off" >&2; exit 2; }
-      if [[ $1 == --writes ]]; then writes=$2; else shares=$2; fi
-      shift 2 ;;
     --rotated) rotated=1; shift ;;
     --no-restart) restart=0; shift ;;
     --dry-run) dry_run=1; shift ;;
@@ -23,6 +18,7 @@ for f in scope.cluster.json cfactory-read-key cfactory-write-key stt-path keyclo
   [[ $(stat -c %a "$cfg/$f") == 600 ]] || { echo "$cfg/$f must be mode 600" >&2; exit 2; }
 done
 for f in keycloak-client-secret oauth2-cookie-secret; do
+  [[ -s $cfg/$f ]] || { echo "$f is empty" >&2; exit 2; }
   [[ $(tail -c1 "$cfg/$f" | od -An -c | tr -d ' ') != '\n' ]] || { echo "$f must not end with a newline" >&2; exit 2; }
 done
 case $(stat -c %s "$cfg/oauth2-cookie-secret") in
@@ -30,6 +26,18 @@ case $(stat -c %s "$cfg/oauth2-cookie-secret") in
   *) echo "oauth2-cookie-secret must be 16, 24 or 32 bytes" >&2; exit 2 ;;
 esac
 [[ $(stat -c %s "$cfg/stt-path") == 32 && $(<"$cfg/stt-path") =~ ^[0-9a-f]{32}$ ]] || { echo "stt-path must be 32 lowercase hex characters" >&2; exit 2; }
+
+kubectl_cmd=(kubectl --context "${RFACTORY_KUBE_CONTEXT:-k3d-factory}" -n factory)
+# The Deployment in git owns the switches; the scope must agree with them or the web app refuses to start.
+env_of() {
+  "${kubectl_cmd[@]}" get deploy rfactory -o "jsonpath={.spec.template.spec.containers[?(@.name==\"rfactory-web\")].env[?(@.name==\"$1\")].value}" 2>/dev/null
+}
+if ! writes=$(env_of RFACTORY_WRITES) || ! shares=$(env_of RFACTORY_SHARES); then
+  echo "cannot read deploy/rfactory's switches; is factory-gitops synced?" >&2; exit 2
+fi
+if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ ]]; then
+  echo "deploy/rfactory's RFACTORY_WRITES and RFACTORY_SHARES must be on or off" >&2; exit 2
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -43,7 +51,7 @@ cfg, writes, shares, tmp = sys.argv[1:]
 try:
     scope = json.loads((pathlib.Path(cfg) / 'scope.cluster.json').read_text())
     if scope['writes_enabled'] is not (writes == 'on') or scope['shares_enabled'] is not (shares == 'on'):
-        raise ValueError('scope switches disagree with flags')
+        raise ValueError("scope's writes_enabled/shares_enabled disagree with deploy/rfactory")
     lines = (pathlib.Path(cfg) / 'roles.env').read_text().splitlines()
     if len(lines) != 3 or any(not line.startswith(name + '=') for line, name in zip(lines, ('ALLOWED', 'APPROVERS', 'ADMINS'))):
         raise ValueError('roles.env needs ALLOWED, APPROVERS, ADMINS in order')
@@ -73,25 +81,22 @@ if ((dry_run)); then
   exit 0
 fi
 
-kubectl_cmd=(kubectl --context "${RFACTORY_KUBE_CONTEXT:-k3d-factory}" -n factory)
 write_secret() {
   local name=$1 existing date=''
   shift
   existing=$("${kubectl_cmd[@]}" get secret "$name" --ignore-not-found -o name 2>/dev/null) || { echo "reading $name failed" >&2; exit 1; }
-  # replace --force recreates the Secret, which drops its annotations: carry the rotation date over
   if [[ -n $existing ]]; then
-    date=$("${kubectl_cmd[@]}" get secret "$name" -o 'jsonpath={.metadata.annotations.rotation\.factory\.dev/rotated-at}' 2>/dev/null) || date=''
-    "${kubectl_cmd[@]}" create secret generic "$name" "$@" --dry-run=client -o yaml 2>/dev/null |
-      "${kubectl_cmd[@]}" replace --force -f - >/dev/null 2>&1 || { echo "writing $name failed" >&2; exit 1; }
-  else
-    "${kubectl_cmd[@]}" create secret generic "$name" "$@" --dry-run=client -o yaml 2>/dev/null |
-      "${kubectl_cmd[@]}" create -f - >/dev/null 2>&1 || { echo "writing $name failed" >&2; exit 1; }
+    date=$("${kubectl_cmd[@]}" get secret "$name" -o 'jsonpath={.metadata.annotations.rotation\.factory\.dev/rotated-at}' 2>/dev/null) ||
+      { echo "reading $name's rotation date failed" >&2; exit 1; }
   fi
   if [[ -z $existing || $rotated == 1 ]]; then date=$(date -u +%Y-%m-%d); fi
-  if [[ -n $date ]]; then
-    "${kubectl_cmd[@]}" annotate --overwrite secret "$name" "rotation.factory.dev/rotated-at=$date" >/dev/null 2>&1 ||
-      { echo "annotating $name failed" >&2; exit 1; }
-  fi
+  # one request: the new data and the (kept or new) rotation date together; replace without --force never deletes
+  local annotate=(cat)
+  [[ -z $date ]] || annotate=("${kubectl_cmd[@]}" annotate --local -f - --overwrite "rotation.factory.dev/rotated-at=$date" -o yaml)
+  local verb=(create -f -)
+  [[ -z $existing ]] || verb=(replace -f -)
+  "${kubectl_cmd[@]}" create secret generic "$name" "$@" --dry-run=client -o yaml 2>/dev/null | "${annotate[@]}" 2>/dev/null |
+    "${kubectl_cmd[@]}" "${verb[@]}" >/dev/null 2>&1 || { echo "writing $name failed" >&2; exit 1; }
 }
 
 write_secret rfactory-config \
@@ -110,4 +115,7 @@ write_secret rfactory-runner-client \
   "--from-file=client.crt=$cfg/desktop-runner/client.crt" \
   "--from-file=client.key=$cfg/desktop-runner/client.key" \
   "--from-file=ca.crt=$cfg/desktop-runner/ca.crt"
-if ((restart)); then "${kubectl_cmd[@]}" rollout restart deploy/rfactory >/dev/null 2>&1; fi
+if ((restart)); then
+  "${kubectl_cmd[@]}" rollout restart deploy/rfactory >/dev/null 2>&1 ||
+    { echo "the Secrets are written, but restarting deploy/rfactory failed; restart it to apply them" >&2; exit 1; }
+fi

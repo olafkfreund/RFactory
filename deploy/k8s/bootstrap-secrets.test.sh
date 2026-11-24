@@ -10,6 +10,9 @@ cat >"$root/bin/kubectl" <<'SH'
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
 case " $* " in
+  *' get deploy rfactory '*)
+    [[ ${FAKE_NO_DEPLOY:-0} != 1 ]] || exit 1
+    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
   *' get secret '*'jsonpath='*) echo 2026-01-02 ;;
   *' get secret '*) if [[ ${FAKE_EXISTING:-0} == 1 ]]; then echo secret/existing; fi ;;
   *' create secret generic '*)
@@ -24,7 +27,8 @@ case " $* " in
       esac
     done
     printf 'kind: Secret\n' ;;
-  *' replace --force -f - '*|*' create -f - '*) cat >/dev/null; [[ ${FAKE_FAIL:-0} != 1 ]] ;;
+  *' annotate --local -f - '*) cat; printf 'annotated: %s\n' "${@: -3:1}" >>"$FAKE_LOG" ;;
+  *' replace -f - '*|*' create -f - '*) cat >>"$FAKE_LOG"; [[ ${FAKE_FAIL:-0} != 1 ]] ;;
 esac
 SH
 chmod 755 "$root/bin/kubectl"
@@ -56,12 +60,13 @@ run() {
 }
 refused() {
   if run "${@}"; then echo "expected refusal: $*" >&2; exit 1; fi
-  [[ ! -s $FAKE_LOG ]] || { echo "kubectl called after refusal: $*" >&2; exit 1; }
+  if grep -v ' get ' "$FAKE_LOG" | grep -q .; then echo "kubectl wrote after refusal: $*" >&2; exit 1; fi
 }
 
 fixture; rm "$RFACTORY_CONFIG/cfactory-read-key"; refused
 fixture; chmod 644 "$RFACTORY_CONFIG/desktop-runner/client.key"; refused
 fixture; printf '\n' >>"$RFACTORY_CONFIG/keycloak-client-secret"; refused
+fixture; : >"$RFACTORY_CONFIG/keycloak-client-secret"; refused
 fixture; printf '\n' >>"$RFACTORY_CONFIG/oauth2-cookie-secret"; refused
 fixture; printf 'short' >"$RFACTORY_CONFIG/oauth2-cookie-secret"; refused
 fixture; printf 'not-a-hex-path' >"$RFACTORY_CONFIG/stt-path"; refused
@@ -70,37 +75,39 @@ fixture; printf 'ALLOWED=owner@example.test\nAPPROVERS=other@example.test\nADMIN
 fixture; printf 'ALLOWED=not-an-email\nAPPROVERS=\nADMINS=\n' >"$RFACTORY_CONFIG/roles.env"; refused
 fixture; printf 'ALLOWED=owner@example.test\nAPPROVERS=owner@example.test\n' >"$RFACTORY_CONFIG/roles.env"; refused
 fixture; printf '{broken' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
+fixture; printf '{"writes_enabled":false,"shares_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
+fixture; FAKE_SHARES=off refused
+fixture; FAKE_NO_DEPLOY=1 refused
 fixture; refused --writes off
-fixture; refused --shares off
-fixture; refused --writes maybe
 
 fixture
 run --dry-run
-[[ ! -s $FAKE_LOG ]]
+if grep -v ' get ' "$FAKE_LOG" | grep -q .; then exit 1; fi
 [[ $(wc -l <"$root/output") == 5 ]]
 grep -q '^rfactory-config: scope.json allowed-emails approvers admins$' "$root/output"
 
 fixture
 printf '{"writes_enabled":false,"shares_enabled":false}' >"$RFACTORY_CONFIG/scope.cluster.json"
-run --writes off --shares off --dry-run
-[[ ! -s $FAKE_LOG ]]
+FAKE_WRITES=off FAKE_SHARES=off run --dry-run
 
 fixture
 run --no-restart
 [[ $(grep -c ' create secret generic ' "$FAKE_LOG") == 5 ]]
 [[ $(grep -c ' create -f -' "$FAKE_LOG") == 5 ]]
-[[ $(grep -c ' annotate --overwrite secret ' "$FAKE_LOG") == 5 ]]
-if grep -q ' replace --force\| rollout restart\| apply ' "$FAKE_LOG"; then exit 1; fi
+# a new Secret gets today's date, in the same request as its data
+[[ $(grep -c "^annotated: rotation.factory.dev/rotated-at=$(date -u +%Y-%m-%d)$" "$FAKE_LOG") == 5 ]]
+if grep -q ' replace\| rollout restart\| apply \|annotate --overwrite secret' "$FAKE_LOG"; then exit 1; fi
 grep -q -- '--from-file=allowed-emails=' "$FAKE_LOG"
 grep -q -- '--from-file=scope.json=' "$FAKE_LOG"
 grep -q -- '--context k3d-factory -n factory' "$FAKE_LOG"
 
 fixture
 FAKE_EXISTING=1 run
-[[ $(grep -c ' replace --force -f -' "$FAKE_LOG") == 5 ]]
-if grep -q ' create -f -\| apply ' "$FAKE_LOG"; then exit 1; fi
-# a rerun keeps each Secret's existing rotation date (replace --force would otherwise drop it)
-[[ $(grep -c ' annotate --overwrite secret .* rotation.factory.dev/rotated-at=2026-01-02$' "$FAKE_LOG") == 5 ]]
+[[ $(grep -c ' replace -f -' "$FAKE_LOG") == 5 ]]
+# never a delete-and-recreate, never apply
+if grep -q ' replace --force\| create -f -\| apply ' "$FAKE_LOG"; then exit 1; fi
+# a rerun keeps each Secret's existing rotation date, carried in the same replace
+[[ $(grep -c '^annotated: rotation.factory.dev/rotated-at=2026-01-02$' "$FAKE_LOG") == 5 ]]
 grep -q ' rollout restart deploy/rfactory' "$FAKE_LOG"
 
 fixture
@@ -109,7 +116,7 @@ grep -q '^writing rfactory-config failed$' "$root/output"
 
 fixture
 FAKE_EXISTING=1 run --rotated --no-restart
-[[ $(grep -c " annotate --overwrite secret .* rotation.factory.dev/rotated-at=$(date -u +%Y-%m-%d)$" "$FAKE_LOG") == 5 ]]
+[[ $(grep -c "^annotated: rotation.factory.dev/rotated-at=$(date -u +%Y-%m-%d)$" "$FAKE_LOG") == 5 ]]
 if grep -q ' rollout restart\| apply ' "$FAKE_LOG"; then exit 1; fi
 
 echo 'bootstrap-secrets tests passed'
