@@ -2,6 +2,7 @@
 # Run the RFactory Phase 1a pod (plan step 8): oauth2-proxy in front of the web app.
 # Only oauth2-proxy's port is published, and only on 127.0.0.1.
 #   deploy/pod.sh up | down
+# This is a development path only: the factory cluster is the deployment (see README "Deployment").
 # Config lives in $RFACTORY_CONFIG (default ~/.config/rfactory), all files mode 600:
 #   scope.json, cfactory-read-key, keycloak-client-secret, oauth2-cookie-secret
 # and the Claude login home in $RFACTORY_CLAUDE_HOME (default ~/.local/share/rfactory/claude-home).
