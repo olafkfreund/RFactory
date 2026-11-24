@@ -1,7 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validate, canonical, hashPayload } = require('../src/actions/allowlist.js');
+const { validate, canonical, hashPayload, INVESTIGATION_LIMITS, validateInvestigation, revalidate,
+  investigationApprovalText } = require('../src/actions/allowlist.js');
 const { deriveEffects, describe } = require('../src/actions/effects.js');
 const { makeRedactor } = require('../src/redact.js');
 
@@ -107,4 +108,51 @@ test('canonical JSON and SHA-256 are stable across key order, including nested o
   assert.equal(canonical(a), canonical(b));
   assert.match(hashPayload(a), /^[a-f0-9]{64}$/);
   assert.equal(hashPayload(a), hashPayload(b));
+});
+
+test('investigation tools accept only their specified arguments; card tools stay unchanged', () => {
+  assert.deepEqual(ok('investigate', { request: 'Why do tests fail?' }).args, { request: 'Why do tests fail?' });
+  assert.deepEqual(ok('stop_investigation', {}).args, {});
+  for (const args of [{}, { request: '' }, { request: '  ' }, { request: 'x', command: 'rm -rf /' },
+    { request: 'x'.repeat(2001) }, { request: 'password=hunter2' }]) refused('investigate', args);
+  refused('stop_investigation', { run_id: 'other' });
+  assert.deepEqual(ok('run_card', { card_key: 'FCT-9' }).args, { card_key: 'FCT-9' });
+});
+
+test('investigation payload accepts only the approved shape and scope', () => {
+  const scope = { investigations_enabled: true, source: { kind: 'cfactory', repository_id: 2 } };
+  const check = { scope, repo: 'owner/notes-api', redactor: makeRedactor([]) };
+  const payload = { id: 'proposal-1', kind: 'investigate', repo: 'owner/notes-api', sha: 'a'.repeat(40),
+    request: 'Why do tests fail?', test_command: 'npm test', limits: { ...INVESTIGATION_LIMITS },
+    show_log: true, proposed_by: 'Alice', proposed_at: '2026-11-24T10:00:00.000Z',
+    expires_at: '2026-11-24T10:10:00.000Z' };
+  assert.equal(validateInvestigation(payload, check).ok, true);
+  assert.equal(validateInvestigation(payload, { ...check,
+    scope: { investigations_enabled: true, source: { kind: 'github', owner: 'owner', repo: 'notes-api' } } }).ok, false);
+  assert.equal(validateInvestigation({ ...payload, test_command: null }, check).ok, true);
+  const bad = [
+    { id: '' }, { kind: 'run' }, { repo: 'other/repo' }, { sha: 'a'.repeat(39) },
+    { request: '' }, { test_command: 4 }, { limits: { ...payload.limits, turns: 201 } },
+    { limits: { ...payload.limits, extra: 1 } }, { show_log: 'yes' }, { proposed_by: '' },
+    { proposed_at: 'bad' }, { proposed_at: 1 }, { expires_at: 'bad' }, { request: 'password=hunter2' },
+    { extra: 'unexpected' },
+  ];
+  for (const change of bad) assert.equal(validateInvestigation({ ...payload, ...change }, check).ok, false, JSON.stringify(change));
+  for (const key of Object.keys(payload)) {
+    const missing = { ...payload };
+    delete missing[key];
+    assert.equal(validateInvestigation(missing, check).ok, false, `missing ${key}`);
+    assert.notEqual(hashPayload({ ...payload, [key]: key === 'limits' ? { ...payload.limits, turns: 199 } : null }),
+      hashPayload(payload), `hash ${key}`);
+  }
+  assert.equal(revalidate(payload, Date.parse(payload.proposed_at), check), true);
+  assert.equal(revalidate(payload, Date.parse(payload.expires_at), check), false);
+  assert.equal(revalidate(payload, Date.parse(payload.proposed_at) - 1, check), false);
+  assert.equal(revalidate(payload, Date.parse(payload.proposed_at), { ...check, scope: { ...scope, investigations_enabled: false } }), false);
+  assert.equal(revalidate(payload, Date.parse(payload.proposed_at), { ...check, scope: { ...scope, source: { kind: 'github', owner: 'owner', repo: 'notes-api' } } }), false);
+  assert.equal(revalidate(payload, Date.parse(payload.proposed_at), { ...check, repo: 'other/repo' }), false);
+  assert.equal(revalidate({ ...payload, limits: { ...payload.limits, tokens: 1 } }, Date.parse(payload.proposed_at), check), false);
+  assert.match(investigationApprovalText(payload), /30 minutes, 2 M tokens and 200 turns; show the log in the call/);
+  assert.match(investigationApprovalText(payload), /owner\/notes-api @ aaaaaaa: Why do tests fail\?/);
+  assert.match(investigationApprovalText({ ...payload, test_command: null, show_log: false }), /no tests: none configured/);
 });
