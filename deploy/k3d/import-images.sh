@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the six RFactory desktop images with nix and imports them into every k3d node's containerd.
 # Usage: deploy/k3d/import-images.sh [image ...]   (default: all six; e.g. `image-guard` after a guard change)
-# Prints each image as repo:tag@digest, the form the manifests pin.
+# Prints each image per node as repo:tag@digest, the form the manifests pin; warns when the nodes' digests differ.
 # Three traps, each hit on the first install (plan 2026-11-18-3-agent-workspace-k3d, deviations 24 and 25):
 #   - `k3d image import` reports success but imports nothing when the cluster has no shared image volume: use ctr.
 #   - `ctr import` names only repo:tag, but kubelet looks a tag@digest pin up as repo@digest: add that ref.
@@ -17,6 +17,7 @@ for i in "${IMAGES[@]}"; do
   nix build "$ROOT#$i" -o "$OUT/$i"
   tag=$(zcat "$OUT/$i" | tar -xO manifest.json | jq -r '.[0].RepoTags[0]')
   case $tag in */*) ref=docker.io/$tag ;; *) ref=docker.io/library/$tag ;; esac
+  digests=()
   for n in $NODES; do
     zcat "$OUT/$i" | docker exec -i "$n" ctr -n k8s.io images import - >/dev/null
     dg=$(docker exec "$n" ctr -n k8s.io images ls | awk -v r="$ref" '$1 == r { print $3 }')
@@ -26,8 +27,12 @@ for i in "${IMAGES[@]}"; do
     old=$(docker exec "$n" ctr -n k8s.io images ls | awk -v repo="${ref%:*}" -v keep="$dg" \
       'index($1, repo ":") == 1 || index($1, repo "@") == 1 { if ($3 != keep) print $1 }')
     [ -z "$old" ] || { echo "$i: removing older versions on $n: $(echo "$old" | wc -l) refs" >&2; echo "$old" | xargs docker exec "$n" ctr -n k8s.io images rm >/dev/null; }
+    digests+=("$n=$dg")
+    echo "$i $n $ref@$dg"
   done
-  echo "$i $ref@$dg"
+  # ctr import can give the same image a different digest per node: pin the digest of the node the pod runs on
+  [ "$(printf '%s\n' "${digests[@]#*=}" | sort -u | wc -l)" = 1 ] ||
+    echo "$i: WARNING the digest differs between nodes (${digests[*]}); pin the one for the node the pod is scheduled on" >&2
 done
 nix build "$ROOT#guest-kubevirt-cmdline" -o "$OUT/guest-kubevirt-cmdline"
 echo "RF_GUEST_CMDLINE $(cat "$OUT/guest-kubevirt-cmdline")"
