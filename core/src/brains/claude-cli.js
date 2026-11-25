@@ -10,6 +10,7 @@ const SYSTEM_PROMPT = path.join(__dirname, 'claude-system-prompt.txt');
 const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
 const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
 const DESKTOP_SYSTEM_PROMPT = path.join(__dirname, 'claude-desktop-system-prompt.txt');
+const SUMMARY_SYSTEM_PROMPT = path.join(__dirname, 'claude-summary-system-prompt.txt');
 const ARGV = ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
   '--no-session-persistence', '--output-format', 'json', '--system-prompt-file', SYSTEM_PROMPT];
 
@@ -41,7 +42,8 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     });
   }
 
-  async function turn(snapshot, { deadline = clock() + 55000, question } = {}) {
+  // every turn: the CLI and its home must still be the approved destination before any prompt is sent
+  async function checkDestination(deadline) {
     checkClaudeHome(home);
     const versionTime = Math.min(5000, deadline - clock());
     if (versionTime <= 0) throw new Error('brain-timeout');
@@ -53,6 +55,10 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     }
     if (!scope.brain.approved_hash) throw new Error('destination-missing');
     if (claudeHash({ version, home }) !== scope.brain.approved_hash) throw new Error('destination-changed');
+  }
+
+  async function turn(snapshot, { deadline = clock() + 55000, question } = {}) {
+    await checkDestination(deadline);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
     try {
@@ -73,17 +79,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
   }
 
   async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false } = {}) {
-    checkClaudeHome(home);
-    const versionTime = Math.min(5000, deadline - clock());
-    if (versionTime <= 0) throw new Error('brain-timeout');
-    let version;
-    try { version = (await run(['--version'], { timeout: versionTime })).stdout.trim(); }
-    catch (error) {
-      if (error.message === 'brain-timeout') throw error;
-      throw new Error('destination-changed');
-    }
-    if (!scope.brain.approved_hash) throw new Error('destination-missing');
-    if (claudeHash({ version, home }) !== scope.brain.approved_hash) throw new Error('destination-changed');
+    await checkDestination(deadline);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
     try {
@@ -112,11 +108,28 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
+  // #18: the investigation report is untrusted (it is agent output); its own prompt, never the standup one
+  async function summarize(report, { deadline = clock() + 55000 } = {}) {
+    await checkDestination(deadline);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
+    try {
+      const prompt = JSON.stringify({ investigation_report: { content: { untrusted: true, text: JSON.stringify(redactor.toModel(report)) } } });
+      const timeout = Math.min(40000, deadline - clock() - 2000);
+      if (timeout <= 0) throw new Error('brain-timeout');
+      const { stdout, stderr } = await run([...ARGV.slice(0, -1), SUMMARY_SYSTEM_PROMPT], { cwd, input: prompt, timeout });
+      let response;
+      try { response = JSON.parse(stdout); }
+      catch { throw new Error('brain-error'); }
+      if (response.is_error || typeof response.result !== 'string') throw new Error(`brain-error: ${redactor.logSafe(stderr)}`);
+      return { text: redactor.toModel(response.result) };
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  }
+
   function label() {
     return `claude-cli (${destination}), approval ${scope.brain.approved_hash ? 'ok' : 'missing'}`;
   }
 
-  return { turn, propose, label };
+  return { turn, propose, summarize, label };
 }
 
 module.exports = { createClaudeBrain, ARGV };

@@ -30,7 +30,7 @@ function setup(options = {}) {
   const record = { append: async (entry) => { entries.push(entry); }, unfinishedInvestigations: () => options.unfinished || [] };
   const shares = { list: () => ({ running: options.running || null }), openFor: async (...args) => { calls.push(['share', ...args]); return { status: 200, share: { id: 'share-1' } }; },
     stop: async (...args) => { calls.push(['close-share', ...args]); } };
-  const brain = { turn: async (...args) => { calls.push(['brain', ...args]); return options.brain ? options.brain(...args) : { text: 'A summary.' }; } };
+  const brain = { summarize: async (...args) => { calls.push(['brain', ...args]); return options.brain ? options.brain(...args) : { text: 'A summary.' }; } };
   const manager = createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock,
     scope: { investigations_enabled: true, source: { kind: 'cfactory', repository_id: 7 } },
     roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,member@example.com', RFACTORY_APPROVERS: 'owner@example.com' }), enabled: true });
@@ -220,9 +220,8 @@ test('each test run is spoken from run_tests results; prose counts are dropped; 
   { brain: () => ({ text: 'All 50 tests passed. The date parser is wrong.' }) });
   assert.deepEqual(event.counts, ['npm test: 41 passed, 1 failed, 0 skipped.', 'npm run e2e exited with code 2; I could not read the counts.']);
   assert.equal(event.summary, 'The date parser is wrong.');
-  const [, input, opts] = f.calls.find((c) => c[0] === 'brain');
-  assert.equal(input.investigation_report.findings, 'all 50 tests passed [redacted]');
-  assert.deepEqual(opts, { instruction: 'Summarise these findings in two sentences. Do not state test counts.' });
+  const [, input] = f.calls.find((c) => c[0] === 'brain');
+  assert.equal(input.findings, 'all 50 tests passed [redacted]');
 });
 
 test('no test runs are said plainly, and a failing brain still leaves the counts', async () => {

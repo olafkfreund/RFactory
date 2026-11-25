@@ -49,8 +49,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   }
   const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry) });
   async function summarize(report) {
-    const result = await brain.turn({ investigation_report: redactor.logSafeWindow(report) },
-      { instruction: 'Summarise these findings in two sentences. Do not state test counts.' });
+    const result = await brain.summarize(redactor.logSafeWindow(report)); // a brain without summarize() throws: no summary
     return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !COUNT_CLAIM.test(sentence)).join(' ');
   }
   // the spoken result: server-written counts, then the brain's summary (the caller redacts it again before speech)

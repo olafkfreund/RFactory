@@ -78,6 +78,17 @@ No log text, and no report text beyond the counts.
 
 3. **Step 9 deploys to the factory cluster, not the p620 pod.** #33 moved RFactory into `k3d-factory` (factory-gitops `apps/rfactory`) and stopped the p620 pod on 2026-11-24. So the switch reaches production in three places, all lead work in step 9: `RFACTORY_INVESTIGATIONS` in factory-gitops `apps/rfactory/manifests/manifests.yaml` (git owns the switches); `investigations_enabled` in `~/.config/rfactory/scope.cluster.json`; and `deploy/k8s/bootstrap-secrets.sh` (+ its test), which refuses a scope that disagrees with the Deployment, extended to the new switch like `RFACTORY_SHARES`. Images are built by CI and pinned by digest in factory-gitops, signed (Kyverno `verify-rfactory-signature`). Step 6's `deploy/pod.sh` change stays (development path). The live test (step 10) runs against `rfactory.freundcloud.org.uk`.
 
+4. **Step 6 (coder, reviewed by the lead):**
+   - **`logSafeWindow([])` returned `['']`** (a step 5 bug), so "no tests ran" was spoken as an unparsed run. Empty arrays now stay empty (`core/src/redact.js`).
+   - **Investigations need writes:** `investigations_enabled` without `writes_enabled` is refused (`investigations-need-writes`), because dispatch uses the write key and "writes off" must stop it too.
+   - **Count claims in the summary are dropped** sentence by sentence (a simple pattern; "the tests passed" without a number still gets through). The spoken counts stay server-written.
+   - **No tests run:** "No tests were run." when a test command is configured; "...: none are configured." only without one.
+   - **`investigateAvailable()` is checked per request,** not once at start, so CFactory draining turns the offer off without a restart.
+   - **`show_log`** is true when shares are on and the call has a desktop; with a board share running, the reply adds "To show the log, stop the board share first."
+   - **Manager:** the proposal event carries `approval_text`; `startCall` sets the new call before awaiting the old stop, and call end does not wait for the investigation stop, so a slow CFactory cannot hold the bot in the call.
+   - **Fixes the step needed:** "open a terminal..." no longer routes to the desktop action; the share panel labels a log share "investigation log"; the share and investigation routes share one code block.
+5. **The summary has its own brain turn (lead).** The plan's `brain.turn(..., { instruction })` does not exist on the Claude brain (`turn` takes only `deadline` and `question`), so the summary would have run under the standup prompt with the report not marked untrusted. Added `summarize(report)` to `core/src/brains/claude-cli.js` with `claude-summary-system-prompt.txt`; the report goes in as `content.untrusted`, redacted, with the same destination check (now one `checkDestination()` helper for all three turns). The approval hash covers the CLI version and home, not prompt files, so no re-approval. A brain without `summarize()` gives "I could not summarise the findings." and the counts are still spoken.
+
 ## Steps
 
 **Before implementation:**
