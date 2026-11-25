@@ -6,6 +6,18 @@ const { makeRedactor } = require('../src/redact.js');
 const secret = 'planted-secret-value';
 const { toModel, logSafe } = makeRedactor([secret]);
 
+test('log window redacts credentials split across lines and keeps ordinary output', () => {
+  const { logSafeWindow } = makeRedactor([]);
+  const lines = ['1 test passed', 'AKIA12345678', '90ABCDEF', '-----BEGIN RSA PRIVATE KEY-----',
+    'private data', '-----END RSA PRIVATE KEY-----', `eyJhbGciOiJIUzI1NiJ9.${'a'.repeat(40)}.${'b'.repeat(40)}`,
+    'a'.repeat(44), 'f'.repeat(40)];
+  const result = logSafeWindow(lines).join('\n');
+  assert.match(result, /1 test passed/);
+  for (const value of ['AKIA', '90ABCDEF', 'PRIVATE KEY', 'eyJhbGci', 'a'.repeat(44), 'f'.repeat(40)]) assert.ok(!result.includes(value), value);
+  assert.deepEqual(logSafeWindow({ findings: 'a'.repeat(44), tests: [{ command: 'npm test', passed: 1 }] }),
+    { findings: '[redacted]', tests: [{ command: 'npm test', passed: 1 }] });
+});
+
 test('nested values, errors, multiline text and JSON text are redacted', () => {
   assert.equal(toModel, logSafe);
   const error = new Error(`failed: ${secret}`);
@@ -58,4 +70,12 @@ test('CFactory credential patterns redact standalone and embedded keys', () => {
     assert.equal(toModel(key), '[redacted]');
     assert.equal(toModel(`title contains ${key} now`), 'title contains [redacted] now');
   }
+});
+
+test('logSafeWindow removes a PEM block cut by the window at either end', () => {
+  const r = makeRedactor([]);
+  assert.deepEqual(r.logSafeWindow(['ok', '-----BEGIN OPENSSH PRIVATE KEY-----', 'b3BlbnNzaC1rZXk', 'tail']), ['ok', '[redacted]']);
+  assert.deepEqual(r.logSafeWindow(['b3BlbnNzaC1rZXk', 'short', '-----END OPENSSH PRIVATE KEY-----', 'after']), ['[redacted]', 'after']);
+  assert.deepEqual(r.logSafeWindow(['1 passing', '2 failing']), ['1 passing', '2 failing']);
+  assert.deepEqual(r.logSafeWindow({ tests: [], refs: [] }), { tests: [], refs: [] });
 });

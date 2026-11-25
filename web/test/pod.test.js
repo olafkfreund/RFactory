@@ -90,3 +90,13 @@ test('pod.sh forwards RFACTORY_SHARES and mounts the record when writes are off;
   assert.equal(run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'yes' }).status, 2);
 });
 
+
+test('pod.sh forwards RFACTORY_INVESTIGATIONS and refuses other values', () => {
+  for (const value of ['on', 'off']) {
+    const r = run({ RFACTORY_INVESTIGATIONS: value, RFACTORY_APPROVERS: 'a@example.com' }, { writeKey: true });
+    assert.equal(r.status, 0);
+    assert.match(r.web, new RegExp(`-e RFACTORY_INVESTIGATIONS=${value}`));
+  }
+  assert.doesNotMatch(run({}).web, /RFACTORY_INVESTIGATIONS/);
+  assert.equal(run({ RFACTORY_INVESTIGATIONS: 'yes' }).status, 2);
+});

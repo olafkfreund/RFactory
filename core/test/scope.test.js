@@ -177,6 +177,25 @@ test('shares_enabled needs both switches and the env alone cannot turn shares on
   } finally { f.cleanup(); }
 });
 
+test('investigations_enabled needs both switches and writes; the env alone cannot turn investigations on', () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(f.load([], { RFACTORY_INVESTIGATIONS: 'off' }), f.scope); // absent means off
+    assert.throws(() => f.load([], { RFACTORY_INVESTIGATIONS: 'on' }), /investigations-enabled-env/);
+    f.scope.investigations_enabled = true;
+    assert.throws(() => f.load(), /investigations-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_INVESTIGATIONS: 'off' }), /investigations-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_INVESTIGATIONS: 'on' }), /investigations-need-writes/);
+    f.scope.writes_enabled = true;
+    f.scope.source.write_key_file = f.keyFile;
+    assert.deepEqual(f.load([], { RFACTORY_WRITES: 'on', RFACTORY_INVESTIGATIONS: 'on' }), f.scope);
+    f.scope.investigations_enabled = false;
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on', RFACTORY_INVESTIGATIONS: 'on' }), /investigations-enabled-env/);
+    f.scope.investigations_enabled = 'yes';
+    assert.throws(() => f.load([], { RFACTORY_WRITES: 'on' }), /investigations-enabled/);
+  } finally { f.cleanup(); }
+});
+
 test('listen and language are validated', () => {
   const f = fixture();
   try {

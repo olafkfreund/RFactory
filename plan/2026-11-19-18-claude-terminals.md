@@ -1,0 +1,289 @@
+---
+status: approved
+issue: 18
+spec: spec/2026-11-19-18-claude-terminals.md
+coders:
+  1: coder   # hearing kind: one anchored pattern plus tests, #12's pattern
+  2: codex   # allowlist tools, payload hash and revalidation: small, security-sensitive logic
+  3: coder   # CFactory sink calls: routine wrapper with tests
+  4: codex   # investigation manager: slot reservation, lease, polling, stop paths: small, tricky logic
+  5: codex   # log view: protocol schema, guest viewer layout, redaction across polls: security-sensitive
+  6: coder   # brain summary from the report, page panel, routes, call wiring: broad but routine
+reviewers:
+  - codex    # independent review of the diff against this plan (agent-team; agy out of use, #2748)
+---
+
+# Plan: an approved, read-only Claude investigation from the call (RFactory side)
+
+## Gates
+
+Nothing here is built before both gates pass.
+
+- **G1:** [AIFactory#2156](https://github.com/olafkfreund/AIFactory/issues/2156) (the `investigate` run kind, spec section 1) is merged and deployed.
+- **G2:** [CFactory#561](https://github.com/olafkfreund/CFactory/issues/561) (the `investigate` card action, the non-dispatching card, and the lease and stop relays, spec section 2) is merged and deployed.
+
+Each has its own intent, spec and plan in its repository. They will name the exact API shapes; step 3 adapts to them, and any difference is recorded as a deviation here.
+
+## Decisions carried over (approved intent and spec)
+
+**Read-only is enforced by AIFactory, not by RFactory:**
+- the agent gets Read, Grep and Glob on a read-only `/src`, plus `run_tests`;
+- the harness runs the project's test command on a pristine copy;
+- the run has an environment allowlist and an investigation-only egress policy;
+- its limits are 30 minutes plus an aborting token budget (2 M) and turn cap (200).
+
+RFactory never sends a command, a URL or a credential.
+
+**The approved payload** is hashed with #10's `hashPayload`: `{ id, kind: 'investigate', repo, sha, request, test_command, limits: { minutes: 30, tokens: 2000000, turns: 200 }, show_log: bool, proposed_by, proposed_at, expires_at }`.
+- **Where each field comes from:**
+  - `repo` is the scope's repository;
+  - `sha` is resolved at proposal time from the default branch through the read key;
+  - `test_command` comes from the project's configuration and is shown, never taken from speech.
+- **Its approval text:** "Investigate in <repo> @ <sha7>: <request>. Read-only; runs `<test_command>` (or "no tests: none configured"); at most 30 minutes, 2 M tokens and 200 turns[; show the log in the call]."
+- **Revalidated at dispatch:** scope, repo, `sha` still on the default branch, limits unchanged. RFactory also sends the approved `test_command` to CFactory, which **refuses the dispatch** unless it equals the project's configured command at that moment, in one check with the run's creation. A configuration change after approval therefore starts nothing; the proposal must be made again. This is added to CFactory#561.
+- **One slot per call:** taken synchronously at approve, before any await, and held through starting, running, stopping and uncertain states.
+
+**Wiring:**
+- **Dispatch** goes through CFactory only: first a non-dispatching card "Investigate: <request>", then `cfactory_investigate_card`.
+- **Lease:** renewed every 10 s through CFactory while the run is live. A lost RFactory lets the lease lapse, and AIFactory's watchdog ends the run within 60 s.
+- **Log in the call:** a #12 share with `view: 'log'`, approved in the same click when `show_log` is true.
+  - The server polls `logs?after=<cursor>` every 5 s.
+  - The viewer shows the last 200 lines in monospace, with the banner "RFactory (AI) · Investigation · read-only · <repo> @ <sha7> · as of hh:mm", marked stale when a poll fails.
+  - The data is capped at 48 KiB like the board.
+- **Redaction:** `redactor.logSafe` plus a high-entropy and key-shape filter, applied to the whole joined window of lines (not each poll's fragment) before it is shown, before the report reaches the brain, and before speech.
+
+**Result:**
+- **Spoken:** the brain gets the report as untrusted data (#1: no shell, no files) and gives a short summary. Test counts are taken only from `run_tests` results and spoken by the server, never from the agent's prose.
+
+**Stop:**
+- Stop on the page, call end, the 30-minute limit, a lapsed lease, or the slot's controller going away each stop the run through CFactory and close the view.
+- "Stopped" is shown only when AIFactory confirms that the pod is gone; otherwise "stop not confirmed".
+
+**Record:** #10's daily record, kept 90 days, gets `kind: 'investigation'` entries with:
+- the request;
+- the approver's identity and the payload hash;
+- the run id and the tested SHA;
+- each `run_tests` result as counts;
+- the terminal state: completed, stopped (reason), failed, expired, rejected or uncertain.
+
+No log text, and no report text beyond the counts.
+
+**Switches:** the scope's `investigations_enabled: true` **and** `RFACTORY_INVESTIGATIONS=on` (like #10 and #12). With either off, a request is answered "Investigations are turned off here."
+
+## Deviations
+
+1. **Step 3: CFactory's real tool shapes** (CFactory main `0d8b605`, `apps/backend/cfactory/mcp.py`). `defaultBranchSha(repo)` and `testCommand()` are one read, `investigationContext()` (`cfactory_investigation_context`), which returns `{ repository_id, repo, default_branch, sha, test_command | null }`. `createInvestigationCard(request, repositoryId)` takes CFactory's numeric repository id. Every call after the card exists takes `card_key` first. `investigationRecord(card_key)` (`cfactory_investigation_recover`) is added for `recover()`. Logs take an integer `after` and a `limit` of 1-500 (RFactory uses 200) and return `{ entries: [{ seq, at, line }], cursor }`. The run body is AIFactory's, relayed: `{ state, pods_gone, tests, report? }`: the field is `pods_gone`, not `pod_gone`. On the read side a refusal sent as an MCP error rejects instead of giving `{error}`; step 4 treats both as a failed read.
+
+2. **Desktop test command needs `NODE_PATH`.** `desktop/` has no `playwright-core` of its own, so with `RFACTORY_REQUIRE_BROWSER=1` the viewer tests fail unless it comes from `bot/node_modules`: run the desktop suite as `NODE_PATH=$PWD/../bot/node_modules RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test`. Also, main's `web/test/shell-browser.test.js` stub lacked `standupData` (since #28) and is fixed on this branch, as on #16's.
+
+3. **Step 9 deploys to the factory cluster, not the p620 pod.** #33 moved RFactory into `k3d-factory` (factory-gitops `apps/rfactory`) and stopped the p620 pod on 2026-11-24. So the switch reaches production in three places, all lead work in step 9: `RFACTORY_INVESTIGATIONS` in factory-gitops `apps/rfactory/manifests/manifests.yaml` (git owns the switches); `investigations_enabled` in `~/.config/rfactory/scope.cluster.json`; and `deploy/k8s/bootstrap-secrets.sh` (+ its test), which refuses a scope that disagrees with the Deployment, extended to the new switch like `RFACTORY_SHARES`. Images are built by CI and pinned by digest in factory-gitops, signed (Kyverno `verify-rfactory-signature`). Step 6's `deploy/pod.sh` change stays (development path). The live test (step 10) runs against `rfactory.freundcloud.org.uk`.
+
+4. **Step 6 (coder, reviewed by the lead):**
+   - **`logSafeWindow([])` returned `['']`** (a step 5 bug), so "no tests ran" was spoken as an unparsed run. Empty arrays now stay empty (`core/src/redact.js`).
+   - **Investigations need writes:** `investigations_enabled` without `writes_enabled` is refused (`investigations-need-writes`), because dispatch uses the write key and "writes off" must stop it too.
+   - **Count claims in the summary are dropped** sentence by sentence (a simple pattern; "the tests passed" without a number still gets through). The spoken counts stay server-written.
+   - **No tests run:** "No tests were run." when a test command is configured; "...: none are configured." only without one.
+   - **`investigateAvailable()` is checked per request,** not once at start, so CFactory draining turns the offer off without a restart.
+   - **`show_log`** is true when shares are on and the call has a desktop; with a board share running, the reply adds "To show the log, stop the board share first."
+   - **Manager:** the proposal event carries `approval_text`; `startCall` sets the new call before awaiting the old stop, and call end does not wait for the investigation stop, so a slow CFactory cannot hold the bot in the call.
+   - **Fixes the step needed:** "open a terminal..." no longer routes to the desktop action; the share panel labels a log share "investigation log"; the share and investigation routes share one code block.
+5. **The summary has its own brain turn (lead).** The plan's `brain.turn(..., { instruction })` does not exist on the Claude brain (`turn` takes only `deadline` and `question`), so the summary would have run under the standup prompt with the report not marked untrusted. Added `summarize(report)` to `core/src/brains/claude-cli.js` with `claude-summary-system-prompt.txt`; the report goes in as `content.untrusted`, redacted, with the same destination check (now one `checkDestination()` helper for all three turns). The approval hash covers the CLI version and home, not prompt files, so no re-approval. A brain without `summarize()` gives "I could not summarise the findings." and the counts are still spoken.
+
+6. **Step 7 review round (Opus agent and Codex; fixes by the coder, checked by the lead).** Every fix has a test that fails on the old code, except the end-to-end spoken-count test, which is coverage only.
+   - **Record kind:** the audit row's `kind: 'investigation'` was overwritten by the payload's `kind: 'investigate'`, so restart recovery found nothing. The kind is written after the payload, and old rows are recognised.
+   - **The slot never waits on a record write.** `finish()` frees the slot even when the append fails. Writes stay strict up to the `starting` row before dispatch; later states are logged on failure and carry on.
+   - **Unconfirmed starts and recovery:** an entry with a card and no run id polls `investigationRecord(card_key)` until a run id appears (adopted, or stopped if a Stop is pending) or CFactory shows no run (`refused`, or `created` after an error reply; after a lost reply only once 60 s have passed since `dispatched_at`, now recorded). Every unresolved recovered entry blocks the slot. **If nothing is ever confirmed, the slot is freed 30 min + 60 s after dispatch** as `failed` ("start not confirmed; freed after the run limit"): no run outlives the limit, and an unleased orphan dies within 60 s.
+   - **Stop:** stays `stopping`, polling, for a 60 s grace (the watchdog's bound) before "stop not confirmed". Stop takes the shown `id` (409 otherwise), so a stale page cannot stop another run. Stop on an unconfirmed start keeps "start not confirmed".
+   - **Lease:** a refused or failed lease reads the state first: a terminal run finishes normally with its report; `lease-lost` only when not terminal and no successful lease for 30 s or more (the plan's "lapsed lease"). A run completed under a Stop keeps its report.
+   - **Writer:** a connection that opens after the call timed out does not send. An error reply to `investigate` is ambiguous and goes to card polling, not a refusal.
+   - **The #10 action path refuses `investigate` and `stop_investigation`;** only the investigation manager uses them.
+   - **Spoken summary:** a sentence is dropped when it mentions tests **and** states a quantity (whole numbers, spelled numbers, all/every/none/no/both/each/most/half/several/many/few). "The failing test is X, because Y." is kept; "Fifty tests passed." is not. A qualitative "the tests passed" can still be spoken; the counts are always the server's. Malformed `tests` items give the "could not read the counts" sentence, on the page too.
+   - **Log share:** a failing first read keeps the share with a stale frame and retries; a share that opens after finalization is closed; closing the log stops only that share (`shares.close(id)`), not a pending board proposal.
+   - **Small:** approval clears the proposal timer, and the 30-minute run limit starts at approval; history keeps 50 rows and only the newest report; the SHA must be a string.
+   - **Not changed:** revalidation requires the approved SHA to still be the default branch **tip** (the plan says "on the branch"; stricter, so a push between approval and dispatch asks again); the same-origin check compares host only (the tunnel serves HTTPS only); log redaction also hides commit SHAs; a credential wrapped across log lines can escape the hex/base64 filters, tracked in #39.
+
+7. **Step 7 review round 2 (Codex re-review of the round 1 fix; fixes by the coder, checked by the lead).** Each fix has a test that fails on the previous commit.
+   - **A `created` card means "no run" only after CFactory refused, or 60 s after the dispatch was sent.** `dispatched_at` is recorded as the request goes out (after the awaited pre-dispatch rows), and both the 60 s and the 31-minute fallback count from it. An error reply alone settles nothing.
+   - **After dispatch, nothing waits on a record write:** Stop, the lease, state polling and the slot release run while an append is pending (the append's failure is logged). Rows up to dispatch stay strict, and the shared record queue keeps their order, so a hung append also holds back the next investigation's pre-dispatch rows: no run starts without its record.
+   - **A failed read inside the Stop grace stays `stopping`** until the 60 s pass, like a successful one.
+   - **A run found on the card is read before it is called `running`:** a terminal run finishes directly; one that is finished but whose pods are not confirmed gone, or that cannot be read, stays unresolved with no lease until confirmed.
+   - **`list()` returns every unresolved investigation (`active`)** apart from history, and the page shows each with its own Stop.
+   - **The Stop reply says what was observed:** completed, stopped, "ended: it failed" or "ended: it reached its time limit", else "Stop not confirmed yet."
+   - **The summary filter's test words** also cover success(es), error(s), checks, cases, specs and assertions, and numbers match only as whole words (`\b\d+\b`), so a name like `test_utf8` is not treated as a count.
+
+## Steps
+
+**Before implementation:**
+- this plan is `status: approved`;
+- #12 is merged (it is: RFactory#19);
+- G1 and G2 have passed.
+
+**Waves:**
+- **A:** steps 1, 2, 3 and 5 in parallel;
+- **B:** step 4;
+- **C:** step 6;
+- then the lead's steps 7 to 11, in this order: reviews and fixes → final suites → deploy (owner's OK) → live test → PR.
+
+**Worktrees:** each step runs in its own worktree `RFactory-wt/18-stepN`, cut from the integration branch `feat/18-claude-terminals`, which is cut from main after G1 and G2. The lead reviews each step against this plan and applies it only when every suite passes.
+
+1. **Hearing.**
+   - **Files:** `core/src/call/hearing.js` and `core/test/hearing.test.js`.
+   - **Change:** a kind `investigate`, after `share` and before `action`, anchored at the start: optional "please" or "can/could/would/will you", then "investigate", "find out", "look into", or "open a terminal … and …".
+   - **Tests:**
+     - "find out why the notes-api tests fail", "can you look into the login bug" and "open a terminal on notes-api and run the tests" → investigate;
+     - "show the board" → share;
+     - "move FCT-9 to done" → action;
+     - "what's blocked?" → question;
+     - every existing case unchanged.
+   - **Verify:** `cd core && npm test` → 0 failures.
+
+2. **Allowlist and payload.**
+   - **Files:** `core/src/actions/allowlist.js` and `core/test/allowlist.test.js`.
+   - **Tools:** `investigate` and `stop_investigation`.
+   - **Payload:** the shape in Decisions, validated exactly: extra keys refused; `sha` is 40 hex characters; `test_command` a string or `null` ("none configured"); `limits` equal to the scope's.
+   - **Approval text:** as in Decisions, all three limits named.
+   - **`revalidate(payload, now)`:** scope, repo and limits.
+   - **Tests:**
+     - accept and refuse for each field;
+     - the hash changes with any field;
+     - the approval text names 30 minutes, 2 M tokens and 200 turns;
+     - `revalidate` refuses a changed scope, repo or limits;
+     - #10's tools unchanged.
+   - **Verify:** `cd core && npm test`.
+
+3. **CFactory write and read calls.**
+   - **Write (`core/src/sinks/cfactory-write.js`, test `core/test/cfactory-write.test.js`), write key only:**
+     - `createInvestigationCard(request)`: non-dispatching;
+     - `investigate(key, { request, sha, test_command, limits })` → `{ run_id }`, refused by CFactory when `test_command` differs from the configured one;
+     - `renewLease(key, run_id)`;
+     - `stopInvestigation(key, run_id)`.
+   - **Read (`core/src/sources/cfactory.js`, test `core/test/cfactory.test.js`), read key only:**
+     - `defaultBranchSha(repo)`;
+     - `testCommand()`: the project's, or `null`;
+     - `investigateAvailable()`: true when the tool list has `cfactory_investigate_card`;
+     - `investigationState(key, run_id)` → `{ state, pod_gone, report? }`;
+     - `investigationLogs(key, run_id, cursor)` → `{ entries, cursor }`.
+   - **Report shape:** `{ findings, refs: [{file, line}], tests: [{ command, exit_code, passed, failed, skipped } | { command, exit_code, parsed: false } ], sha }`; `tests: []` means none ran.
+   - **Timeouts:** each call has a 10 s budget (as `snapshot()`); a timeout rejects; an error payload gives `{error}`.
+   - Shapes as CFactory#561 defines them; any difference is recorded as a deviation.
+   - **Tests** (a fake MCP server):
+     - each call;
+     - the write calls send the write key and the reads send the read key, never the other;
+     - cursor progression across three log reads;
+     - a report with `parsed: false` and with `tests: []`;
+     - `pod_gone` true and false;
+     - timeouts.
+   - **Verify:** `cd core && npm test`.
+
+4. **Investigation manager** (after wave A).
+   - **Files:** new `web/investigations.js` and `web/test/investigations.test.js`; `web/actions-record.js` and `web/test/actions-record.test.js` (`unfinishedInvestigations()`: the last state is `starting`, `running`, `stopping` or `uncertain` without a later confirmed stop).
+   - **Behaviour:** #12's `shares.js` pattern, with:
+     - `request`, `approve`, `reject`, `stop`, `list`, `subscribe`, `startCall`, `endCall`, `recover`;
+     - states `proposed → approved → starting → running → stopping → completed | stopped | failed | uncertain`;
+     - the synchronous slot claim and a start token checked after every await;
+     - the lease timer (10 s) and the log poll (5 s, one in flight);
+     - completion when `investigationState` says done, then the report;
+     - the stop paths in Decisions.
+   - **A late start response:** a run id returned after the token was invalidated (Stop, expiry, call end) is **recorded**, `stopInvestigation` is sent, `running` is never published, and the slot stays held until `pod_gone`.
+   - **A lost or timed-out start:** recorded as `uncertain` (no lease renewal, no redispatch); the slot stays held; the page shows "start not confirmed".
+   - **Records:** every record of a started run carries `card_key` and `run_id`.
+   - **`recover()`** reads `unfinishedInvestigations()` — including `uncertain` — and for each with a `run_id` sends `stopInvestigation` and polls `investigationState` until `pod_gone`. It records `stopped (restart)`, or keeps `uncertain` and blocks new investigations, showing why, until confirmed.
+   - **Tests** (fake CFactory and clock):
+     - two concurrent approvals → one dispatch;
+     - Stop, expiry and call end during each await, including a **deferred `investigate()` response** → the run id recorded, stop sent once, never running, the slot freed only on `pod_gone`;
+     - a start timeout → `uncertain`, no lease, no redispatch;
+     - leases while running and none after stop;
+     - polls one at a time, stale on failure;
+     - an unconfirmed stop → `uncertain`, then a restart retries the stop, and the slot stays blocked until `pod_gone`;
+     - the record holds no log or report text.
+   - **Verify:** `cd web && npm test`.
+
+5. **Log view through #12's share** (wave A; the share files are named here so step 4 and 6 can rely on them).
+   - **Files:**
+     - `desktop/runner/protocol.js` + `desktop/runner/protocol.test.js`: `view-open`/`view-data` accept `view: 'log'` with data `{ repo, sha, at, lines: [string ≤ 400 chars] ≤ 200, stale? }`, ≤ 48 KiB;
+     - `desktop/guest/agent/viewer/board.js`, `board.css`, `board.html` + `board.test.js`: a log layout chosen by the data's view, the same CSP, text only;
+     - `desktop/guest/agent/share.js` + `share.test.js`: `view` may be `'board'` or `'log'`;
+     - `web/shares.js` + `web/test/shares.test.js`: an internal `openFor(owner, { view: 'log', provider, title })` that starts a share under an **already approved** owner (the investigation's approval covers it when `show_log` is true; no second approval), with the provider supplying each frame instead of `board()`;
+     - `web/share-desktop.js` + `web/test/share-desktop.test.js`: send the share's own `view`, not a constant;
+     - `core/src/redact.js` + `core/test/redact.test.js`: `logSafeWindow(lines)`, i.e. `logSafe` plus a high-entropy and key-shape filter (AWS keys, PEM blocks, JWTs, base64 or hex runs ≥ 40 chars) applied to the **joined** text.
+   - **Rules:**
+     - **One share per desktop.** A log share is refused while a board share runs (the proposal says "stop the board share first"); a board request while a log share runs is refused the same way.
+     - **Closing the log does not stop the run.** Closing or losing the log view (Stop on the share, target change, desktop gone) does not stop the investigation; the page keeps showing its state and the report.
+     - **The polling buffer:** the provider keeps the last 400 raw lines. Each frame redacts the **whole buffer** with `logSafeWindow` **before** it truncates to the last 200 lines and 48 KiB, so a secret split across two polls is joined before redaction.
+   - **Tests:**
+     - the schema accepts and refuses `log`;
+     - the viewer renders 200 lines as text, a hostile line stays text, the banner and stale marking;
+     - `openFor` starts without a proposal and refuses while a board share runs;
+     - `share-desktop` sends `view: 'log'`;
+     - **through the real provider and two successive polls:** an AWS key, a PEM block split across the polls, a JWT and a long base64 secret are removed, while ordinary test output survives;
+     - a secret at the 200-line boundary is removed;
+     - the board view is unchanged.
+   - **Verify:**
+
+     ```bash
+     cd desktop && RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test
+     cd web && npm test
+     cd core && npm test
+     ```
+
+6. **Summary, server, call and page** (after step 4).
+   - **Files:**
+     - `core/src/scope.js` + `core/test/scope.test.js`: `investigations_enabled` with `RFACTORY_INVESTIGATIONS`, like the share switch;
+     - `web/server.js` + `web/test/server.test.js`: the switch; routes `GET /api/investigations`, `POST /api/investigations/:id/approve|reject` (header, origin, approver, hash) and `POST /api/investigations/stop` (member); record composition; `recover()` before listen; offered only when `investigateAvailable()`;
+     - `web/call.js` + `web/test/call.test.js`: routing `investigate` utterances; server sentences only in the originating call, each once;
+     - `web/investigations.js`: `summarize(report)`, which calls `brain.turn({ investigation_report: logSafeWindow(report) }, { instruction: 'Summarise these findings in two sentences. Do not state test counts.' })`;
+     - `web/public/index.html`, `web/public/app.js`, `web/public/style.css` + `web/test/app.test.js`: an Investigation panel built with `textContent` only, showing all three limits and the state, including "start not confirmed" and "stop not confirmed";
+     - `deploy/pod.sh` + `web/test/pod.test.js`: pass `RFACTORY_INVESTIGATIONS`;
+     - `web/Containerfile` + `web/test/containerfile.test.js`: copy `web/investigations.js`.
+   - **Spoken result:**
+     - **The counts are server-written,** from `tests`, never from the brain or the agent's prose. Each run: "<command>: 41 passed, 1 failed, 0 skipped." For an unparsed run: "<command> exited with code <n>; I could not read the counts." With none run: "No tests were run: none are configured."
+     - **The brain's summary** is passed through `logSafeWindow` **again immediately before** `queueSpeech`.
+   - **Tests:**
+     - the switch both ways;
+     - each route check, and a non-approver → 403;
+     - a hostile report rendered as text;
+     - the brain input redacted;
+     - **the TTS input captured:** a summary containing a planted secret reaches TTS redacted;
+     - agent prose saying "all 50 tests passed" against a `tests` result of 41/1 → the spoken counts are 41/1;
+     - several `run_tests` results each spoken;
+     - none run, and unparsed;
+     - not offered when `investigateAvailable()` is false.
+   - **Verify:**
+
+     ```bash
+     cd core && npm test
+     cd web && npm test
+     cd bot && npm test
+     cd desktop && RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test
+     grep -rn innerHTML web/public   # no output
+     ```
+
+7. **Reviews (lead):** a fresh Opus agent given this plan and `git diff`, and Codex, both read-only and independent of the authors. Findings are fixed with tests that fail on the old code.
+8. **Final suites (lead):** the Tests block below, on the integration branch after the fixes.
+9. **Deploy (lead; owner's OK; agent bus first):**
+   - the web pod, rebuilt with `RFACTORY_INVESTIGATIONS=on` and the scope's `investigations_enabled: true`;
+   - guest and runner images (step 5), pinned and pushed;
+   - smoke checks: `GET /api/investigations` 200; approve without the header → 403.
+10. **Live test (owner, on p620):**
+    - "RFactory, find out why the notes-api tests fail" → the approval text with three limits → Approve → the log appears in the call → a spoken summary with server-written counts;
+    - Stop ends the run, and the page shows the pod gone;
+    - a second request while it runs is refused;
+    - with investigations off: "Investigations are turned off here."
+11. **PR** linking intent, spec and plan, noting which steps Codex and the coder did.
+
+## Tests
+
+On the integration branch, all with 0 failures:
+
+```bash
+cd core && npm test
+cd web && npm test
+cd bot && npm test
+cd desktop && RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test
+grep -rn innerHTML web/public   # no output
+```
+
+## Rollback
+
+- **Turn it off:** set `RFACTORY_INVESTIGATIONS=off` (or the scope's `investigations_enabled: false`) and restart the pod. CFactory's and AIFactory's switches also turn their parts off.
+- **Revert:** steps 1 to 6 are additive; revert their commits. Step 5's `log` view is additive in the protocol schema.

@@ -193,3 +193,71 @@ test('recover stops only unfinished shares after restart', async () => {
   await f.manager.recover();
   assert.deepEqual(f.entries.at(-1), { id: 'old', kind: 'share', state: 'stopped', reason: 'restart' });
 });
+
+test('approved log share needs no proposal and is refused while a board is running', async () => {
+  const f = setup(); const p = await ready(f); await approve(f, p);
+  await until(() => f.entries.some((x) => x.state === 'running'));
+  const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: ['ok'] });
+  assert.equal((await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' })).status, 409);
+  await f.manager.stop('owner@example.com');
+  assert.equal((await f.manager.openFor('member@example.com', { view: 'log', provider, title: 'Log' })).status, 403);
+  assert.equal((await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' })).status, 200);
+  await until(() => f.entries.at(-1).state === 'running');
+  assert.equal(f.calls.findLast((c) => c[0] === 'openView')[4], 'log');
+  assert.equal((await f.manager.request('show board', 'Caller')).status, 409);
+  await f.manager.stop('owner@example.com');
+  assert.equal((await f.manager.request('show board', 'Caller')).status, 202);
+});
+
+test('log provider redacts the whole raw window across polls before the 200-line cut', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  let poll = 0;
+  const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(),
+    lines: ++poll === 1 ? [...Array(199).fill('test passed'), 'AKIA1234567890ABCDEF', '-----BEGIN RSA PRIVATE KEY-----'] :
+      ['private data', '-----END RSA PRIVATE KEY-----', `eyJhbGciOiJIUzI1NiJ9.${'a'.repeat(40)}.${'b'.repeat(40)}`, 'a'.repeat(44)] });
+  assert.equal((await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' })).status, 200);
+  await until(() => f.entries.at(-1).state === 'running');
+  f.clock.advance(5000);
+  await until(() => f.calls.some((c) => c[0] === 'updateView'));
+  const lines = f.calls.find((c) => c[0] === 'updateView')[2].lines;
+  const shown = lines.join('\n');
+  assert.ok(lines.length <= 200);
+  assert.match(shown, /test passed/);
+  for (const secret of ['AKIA', '90ABCDEF', 'PRIVATE KEY', 'eyJhbGci', 'a'.repeat(44)]) assert.ok(!shown.includes(secret), secret);
+  assert.ok(!JSON.stringify(f.entries).includes('private data'));
+  await f.manager.stop('owner@example.com');
+});
+
+test('a failing first log read keeps a stale log share and retries on the refresh loop', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  let reads = 0;
+  const provider = async () => { if (++reads === 1) throw new Error('log read failed');
+    return { repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: ['later'] }; };
+  await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log', initial: { repo: 'notes-api', sha: 'a'.repeat(40) } });
+  await until(() => f.entries.at(-1).state === 'running');
+  const opened = f.calls.find((c) => c[0] === 'openView')[3];
+  assert.deepEqual([opened.lines, opened.stale], [[], true]);
+  f.clock.advance(5000);
+  await until(() => f.calls.some((c) => c[0] === 'updateView'));
+  assert.deepEqual(f.calls.find((c) => c[0] === 'updateView')[2].lines, ['later']);
+});
+
+test('close(id) ends only that share and leaves a pending board proposal', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: [] });
+  const { share } = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  await f.manager.stop('owner@example.com');
+  const second = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  await f.manager.close(share.id);
+  assert.equal(f.manager.list().running.id, second.share.id);
+  await f.manager.stop('owner@example.com');
+  const third = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  f.manager.list(); await f.manager.close(third.share.id);
+  assert.equal(f.manager.list().running, null);
+  const board = await proposed(f);
+  await f.manager.close(third.share.id);
+  assert.equal(f.manager.list().pending[0].id, board.id);
+});

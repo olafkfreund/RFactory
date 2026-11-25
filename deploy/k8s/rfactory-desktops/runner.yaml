@@ -30,7 +30,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: runner
-          image: docker.io/rfactory/runner:6fvvl8bkk1cldlr9yrp8rq8967vyr9q5@sha256:515879811942fd045da9e2549d2e86c606501f8059f5a490b919169ddbd92c55
+          image: docker.io/rfactory/runner:bhh2yg30bmill2wiz7fm183gzd47974i@sha256:e6060a7e34546261f4686320cec7b700c83ad495d5ee06de05575bea1d00f366
           imagePullPolicy: Never
           ports:
             - {name: api, containerPort: 8443}
@@ -46,9 +46,9 @@ spec:
               value: '["192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48"]'
             # Guest images (k10 records the digests) and the kernel command line from
             # `nix eval .#packages.x86_64-linux.guest-kubevirt-cmdline` (k10 fills it in).
-            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:e46b4854d0e741844443cd0428dc226d556d26de8817b147e0bb9304dc4f2ae0"}
-            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:381a140dd88670c4a0f73fe2528403845f814a7bd4829284fd79cdc11e95af14"}
-            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/ch283cs4r8by1vsgrdnf42q8l9q7grps-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
+            - {name: RF_GUEST_BOOT_IMAGE, value: "docker.io/library/rfactory-guest-boot:k2@sha256:ab8b822e43c5b92a26c60a638692cf4f33e9a820393d7909a1816f7cdffaf403"}
+            - {name: RF_GUEST_DISK_IMAGE, value: "docker.io/library/rfactory-guest-disk:k2@sha256:818d2362656fb877d7fdca471316c16f7ceebfb96ac6700836e7782ec0a5ca13"}
+            - {name: RF_GUEST_CMDLINE, value: "init=/nix/store/dg14p2yl7cm7sh5pl7pmwwm9351p8sqi-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf"}
             # k14 test mode only (deploy/k3d/k14-env.sh on): three named keys from the Secret rfverify-runner, never in Git;
             # without it (production) none is set. Named keys only, not envFrom: a Secret must not add any other variable
             # (NODE_OPTIONS, RF_PLATFORM_NAMES...) to the runner (Opus review).

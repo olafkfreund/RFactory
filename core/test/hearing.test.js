@@ -193,3 +193,21 @@ test('share: show/display/put up the board is a share request, checked after lea
     assert.equal(addressed[0].kind, kind, text);
   }
 });
+
+test('investigate: investigate/find out/look into/open a terminal ... and, after share and before action', () => {
+  const kinds = {
+    'find out why the notes-api tests fail': 'investigate',
+    'can you look into the login bug': 'investigate',
+    'open a terminal on notes-api and run the tests': 'investigate',
+    'please investigate the slow build': 'investigate',
+    'show the board': 'share',
+    'move FCT-9 to done': 'action',
+    "what's blocked?": 'question',
+  };
+  for (const [text, kind] of Object.entries(kinds)) {
+    const { clock, addressed, heard } = setup();
+    heard('a', `RFactory, ${text}`);
+    clock.tick(1500);
+    assert.equal(addressed[0].kind, kind, text);
+  }
+});

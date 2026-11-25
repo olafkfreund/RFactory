@@ -48,6 +48,15 @@ test('a board of about 47 KiB is accepted', async () => {
   assert.ok(JSON.stringify(calls[0][1]).length > 47 * 1024);
 });
 
+test('log view sends its own view kind', async () => {
+  const { d, calls } = setup();
+  const data = { repo: 'notes-api', sha: 'a'.repeat(40), at: '2026-11-19T10:00:00Z', lines: ['ok'] };
+  await d.openView('log', 'n', data, 'log');
+  assert.equal(calls[0][1].view, 'log');
+  await d.updateView('log', data);
+  assert.equal(calls[1][1].view, 'log');
+});
+
 test('a refused route rejects; a close with no reply in 5 s is a timeout', async () => {
   const refused = setup({ call: async () => ({ status: 502, body: {} }) });
   await assert.rejects(refused.d.openView('s1', 'n', board()));

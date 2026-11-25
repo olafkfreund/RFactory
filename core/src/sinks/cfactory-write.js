@@ -46,7 +46,37 @@ function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, connectC
     return connected;
   }
 
+  // Investigation writes: the reply body is returned as is ({error} on a refusal); a timeout or transport
+  // failure rejects, and the caller treats it as uncertain (the call may have been sent).
+  async function invoke(name, args) {
+    let timer;
+    let reply;
+    let expired = false; // a connection that arrives after the timeout must not send
+    try {
+      reply = await Promise.race([
+        getClient().then((c) => { if (expired) throw new Error('write-timeout'); return c.callTool({ name, arguments: args }); }),
+        new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error('write-timeout')); }, timeoutMs); }),
+      ]);
+    } catch (error) {
+      connected = undefined;
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = (reply?.content || []).map((part) => part.text || '').join('');
+    if (reply?.isError) return { error: safe(text.slice(0, 200)) || 'error' };
+    let result;
+    try { result = JSON.parse(text); } catch { throw new Error('write-unparsable'); }
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('write-unparsable');
+    return typeof result.error === 'string' ? { error: safe(result.error) } : result;
+  }
+
   return {
+    createInvestigationCard: (request, repositoryId) => invoke('cfactory_create_investigation_card', { request, repository_id: repositoryId }),
+    investigate: (cardKey, { request, sha, test_command, limits }) =>
+      invoke('cfactory_investigate_card', { card_key: cardKey, request, sha, test_command, limits }),
+    renewLease: (cardKey, runId) => invoke('cfactory_investigation_lease', { card_key: cardKey, run_id: runId }),
+    stopInvestigation: (cardKey, runId) => invoke('cfactory_investigation_stop', { card_key: cardKey, run_id: runId }),
     async apply(action, args, before) {
       if (!Object.hasOwn(TOOLS, action)) throw new Error('write-action-not-allowed');
       let timer;

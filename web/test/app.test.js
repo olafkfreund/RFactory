@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  render, handleCall, renderFooter, loadShares,
+  render, handleCall, renderFooter, loadShares, loadInvestigations,
   renderReview, loadReview, renderReviewCard, loadReviewCard,
 } = require('../public/app.js');
 
@@ -340,4 +340,49 @@ test('a slower response for an earlier card never overwrites the latest card', a
   } finally {
     global.fetch = realFetch;
   }
+});
+
+test('investigation panel: limits, approval for approvers only, unconfirmed states, hostile report stays text', async () => {
+  const { doc, byId } = shim();
+  byId['investigation-list'] = new Node('ul'); byId['investigation-status'] = new Node('p'); byId.investigation = new Node('section');
+  byId.investigation.hidden = true;
+  const list = byId['investigation-list'];
+  const labels = () => list.all().filter((n) => n.tag === 'button').map((n) => n.textContent);
+  const hostile = '<img src=x onerror=alert(1)>';
+  const base = { id: 'i1', hash: 'h', repo: 'o/r', sha: 'a'.repeat(40), request: hostile, proposed_by: 'x',
+    limits: { minutes: 30, tokens: 2000000, turns: 200 } };
+  const send = (over) => handleCall(doc, { type: 'investigation-updated', investigation: { ...base, ...over } });
+  send({ state: 'proposed', approval_text: 'Approve this.' });
+  assert.equal(byId.investigation.hidden, false);
+  assert.deepEqual(labels(), []); // not an approver
+  assert.ok(list.textContent.includes('Limits: 30 minutes, 2000000 tokens, 200 turns'));
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [{ ...base, state: 'proposed', approval_text: 'Approve this.' }], running: null, history: [], can_approve: true }) });
+  try { await loadInvestigations(doc); } finally { global.fetch = realFetch; }
+  assert.deepEqual(labels(), ['Approve', 'Reject']);
+  for (const reason of ['start not confirmed', 'stop not confirmed']) {
+    send({ state: 'uncertain', reason });
+    assert.ok(list.textContent.includes(`State: ${reason}`));
+    assert.deepEqual(labels(), ['Stop']);
+  }
+  let sent;
+  global.fetch = async (url, options) => { sent = [url, JSON.parse(options.body)]; return { ok: true, json: async () => ({ text: 'ok' }) }; };
+  try { await list.all().find((n) => n.tag === 'button').listeners.click(); } finally { global.fetch = realFetch; }
+  assert.deepEqual(sent, ['/api/investigations/stop', { id: 'i1' }]);
+  const other = { ...base, id: 'i2', state: 'uncertain', reason: 'start not confirmed' };
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [], running: base, active: [{ ...base, state: 'running' }, other], history: [], can_approve: true }) });
+  try { await loadInvestigations(doc); } finally { global.fetch = realFetch; }
+  assert.deepEqual(labels(), ['Stop', 'Stop']); // every unresolved row, each with its own Stop
+  // a late GET answer must not overwrite the newer event-stream state
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [], running: { ...base, state: 'running' }, history: [], can_approve: true }) });
+  try { await loadInvestigations(doc); } finally { global.fetch = realFetch; }
+  assert.ok(list.textContent.includes('State: stop not confirmed'));
+  send({ state: 'completed', tests: [{ command: 'x', exit_code: 1 }], test_sentences: [`${hostile}: 41 passed, 1 failed, 0 skipped.`],
+    report: { findings: hostile, refs: [{ file: hostile, line: 3 }] } });
+  assert.equal(list.children.length, 2);
+  assert.ok(list.textContent.includes(`${hostile}: 41 passed, 1 failed, 0 skipped.`));
+  assert.ok(!list.textContent.includes('undefined'));
+  assert.ok(list.textContent.includes(`${hostile}:3`));
+  assert.ok(!list.all().some((n) => ['img', 'script'].includes(n.tag)));
+  assert.deepEqual(labels(), ['Stop']); // only the other, still unresolved row
 });

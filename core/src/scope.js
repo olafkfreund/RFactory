@@ -33,6 +33,11 @@ function loadScope(file, env = process.env, secrets = []) {
   if (Object.hasOwn(scope, 'shares_enabled') && typeof scope.shares_enabled !== 'boolean') throw new Error('shares-enabled');
   if (scope.shares_enabled === true && env.RFACTORY_SHARES !== 'on') throw new Error('shares-enabled');
   if (scope.shares_enabled !== true && env.RFACTORY_SHARES && env.RFACTORY_SHARES !== 'off') throw new Error('shares-enabled-env');
+  if (Object.hasOwn(scope, 'investigations_enabled') && typeof scope.investigations_enabled !== 'boolean') throw new Error('investigations-enabled');
+  if (scope.investigations_enabled === true && env.RFACTORY_INVESTIGATIONS !== 'on') throw new Error('investigations-enabled');
+  if (scope.investigations_enabled !== true && env.RFACTORY_INVESTIGATIONS && env.RFACTORY_INVESTIGATIONS !== 'off') throw new Error('investigations-enabled-env');
+  // an investigation creates a card and a run with the write key, so "writes off" turns it off too
+  if (scope.investigations_enabled === true && !scope.writes_enabled) throw new Error('investigations-need-writes');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&

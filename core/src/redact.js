@@ -43,7 +43,23 @@ function makeRedactor(secrets) {
     return value;
   }
 
-  return { toModel, logSafe: toModel };
+  function logSafeWindow(value) {
+    if (Array.isArray(value)) return value.length && value.every((item) => typeof item === 'string') // joining [] would give ['']
+      ? logSafeWindow(value.join('\n')).split('\n') : value.map(logSafeWindow);
+    if (value instanceof Error) return logSafeWindow(toModel(value));
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, logSafeWindow(item)]));
+    if (typeof value !== 'string') return value;
+    return redactString(value)
+      // a PEM block cut by the window: its END not polled yet, or its BEGIN already dropped from the buffer
+      .replace(/-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$)/g, '[redacted]')
+      .replace(/^[\s\S]*?-----END [A-Z0-9 ]+-----/, '[redacted]')
+      .replace(/\b(?:AKIA|ASIA)(?:[0-9A-Z]\s*){16}\b/g, '[redacted]')
+      .replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, (match) => match.length >= 40 ? '[redacted]' : match)
+      .replace(/\b[A-Fa-f0-9]{40,}\b/g, '[redacted]')
+      .replace(/\b[A-Za-z0-9+/]{40,}={0,2}\b/g, '[redacted]');
+  }
+
+  return { toModel, logSafe: toModel, logSafeWindow };
 }
 
 module.exports = { makeRedactor };

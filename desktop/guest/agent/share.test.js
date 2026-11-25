@@ -42,6 +42,19 @@ test('viewer opens without capture, updates, refuses foreign and closed ids, the
   assert.deepEqual(events, []);
 });
 
+test('log view opens and updates in the same guarded viewer', browser, async (t) => {
+  const f = await fixture(t);
+  const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once' });
+  const data = { repo: 'notes-api', sha: 'a'.repeat(40), at: '2026-11-19T09:05:00Z', lines: ['first'] };
+  await share.openView({ share_id: 'log', nonce: 'once', view: 'log', data });
+  assert.match(await share.active.page.locator('.rf-banner').innerText(), /Investigation/);
+  await share.updateView({ share_id: 'log', view: 'log', data: { ...data, lines: ['next'] }, stale: true });
+  assert.equal(await share.active.page.locator('.rf-log').textContent(), 'next');
+  assert.match(await share.active.page.locator('.rf-banner').innerText(), /stale/);
+  await assert.rejects(share.updateView({ share_id: 'log', view: 'board', data: board() }), /view not open/);
+  await share.closeView('log');
+});
+
 test('close is idempotent per id and stop names its share (review P1)', browser, async (t) => {
   const f = await fixture(t);
   const share = createShare({ context: f.context, callPage: f.callPage, callNonce: 'once', clickShare: pick('once') });

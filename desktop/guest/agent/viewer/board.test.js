@@ -40,6 +40,17 @@ async function open(t, data = board(), opts = {}) {
   return { page, seen, violations };
 }
 
+test('log view renders 200 hostile lines as text with its banner and stale mark', browser, async (t) => {
+  const hostile = '<img src=x onerror="window.pwn=1">';
+  const lines = Array(199).fill('test passed').concat(hostile);
+  const { page } = await open(t, { repo: 'notes-api', sha: 'a'.repeat(40), at: '2026-11-19T09:05:00', lines }, { view: 'log', stale: true });
+  assert.equal((await page.locator('.rf-log').textContent()).split('\n').length, 200);
+  assert.equal(await page.locator('.rf-log').textContent(), lines.join('\n'));
+  assert.match(await page.locator('.rf-banner').innerText(), /Investigation · read-only · notes-api @ aaaaaaa · as of 09:05 · stale/);
+  assert.equal(await page.locator('img, a, form, input').count(), 0);
+  assert.equal(await page.evaluate(() => window.pwn), undefined);
+});
+
 test('renders a fixture board', browser, async (t) => {
   const { page } = await open(t);
   const text = await page.locator('#rf-board').innerText();
