@@ -272,7 +272,7 @@ test('a private key stays hidden after its BEGIN leaves the log buffer, until it
     ['-----END CERTIFICATE-----', ...body(5)],
     body(420), // the mismatched END leaves the buffer
     ['-----END RSA PRIVATE KEY-----', 'benign after', ...ok(10)],
-    ok(389), // END is the oldest line still buffered
+    ok(388), // END is the oldest line still buffered
     ok(1), // END leaves
   ];
   const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: batches.shift() });

@@ -16,9 +16,10 @@ const AWS_WINDOW = /\b(?:AKIA|ASIA)(?:[0-9A-Z][ \t]*(?:\r?\n[ \t]*)?){15}[0-9A-Z
 const HEX_WINDOW = /\b[A-Fa-f0-9]{40,}\b/g;
 const BASE64_WINDOW = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])/g;
 const JWT_RUN = /[A-Za-z0-9_.-]+/g;
-const CHAIN_TAIL = /[A-Za-z0-9_.~+/=-]+$/;
 const CHAIN_HEAD = /^[A-Za-z0-9_.~+/=-]+/;
 const AWS_CHAIN = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
+const WRAP_MIN = 40;
+const JOIN_REACH = 512; // shortcut: a match crossing a join with more than this on one side is not joined; that side alone already matches every rule but exact secrets, which use the whole-window join
 const PEM_MARKER = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
 
 function pemSpans(text, openLabel = null) {
@@ -42,31 +43,72 @@ function pemSpans(text, openLabel = null) {
   return { spans, openLabel };
 }
 
+const LEGACY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
+const LEGACY_END = /-----END [A-Z ]*PRIVATE KEY-----/g;
+
+// main's /BEGIN…PRIVATE KEY-----[\s\S]*?-----END…PRIVATE KEY-----/g, without rescanning to the end per BEGIN
 function redactLegacyPem(text) {
   let result = '';
   let cursor = 0;
-  let begin = -1;
-  let nextBegin = text.indexOf('-----BEGIN ');
-  let nextEnd = text.indexOf('-----END ');
-  while (nextBegin >= 0 || nextEnd >= 0) {
-    const isBegin = nextEnd < 0 || (nextBegin >= 0 && nextBegin < nextEnd);
-    const marker = isBegin ? nextBegin : nextEnd;
-    if (isBegin) nextBegin = text.indexOf('-----BEGIN ', marker + 11);
-    else nextEnd = text.indexOf('-----END ', marker + 9);
-    const labelStart = marker + (isBegin ? 11 : 9);
-    const labelEnd = text.indexOf('-----', labelStart);
-    if (labelEnd < 0) break;
-    const label = text.slice(labelStart, labelEnd);
-    if (!/^[A-Z ]*PRIVATE KEY$/.test(label)) continue;
-    if (isBegin) {
-      if (begin < 0) begin = marker;
-    } else if (begin >= 0) {
-      result += text.slice(cursor, begin) + '[redacted]';
-      cursor = labelEnd + 5;
-      begin = -1;
-    }
+  let begin;
+  LEGACY_BEGIN.lastIndex = 0;
+  while ((begin = LEGACY_BEGIN.exec(text)) !== null) {
+    LEGACY_END.lastIndex = begin.index + begin[0].length;
+    const end = LEGACY_END.exec(text);
+    if (!end) break; // no END after this BEGIN means none after a later one either
+    result += text.slice(cursor, begin.index) + '[redacted]';
+    cursor = end.index + end[0].length;
+    LEGACY_BEGIN.lastIndex = cursor;
   }
   return result + text.slice(cursor);
+}
+
+// main's /\b[\w-]+\.[\w-]+\.[\w-]+\b/ (kept when 40+), as consecutive dot-separated triples of one run; only runs with a dot are visited
+const runChar = (code) => (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 45 || code === 46;
+function jwtSpans(text) {
+  const spans = [];
+  let dot = text.indexOf('.');
+  while (dot >= 0) {
+    let start = dot;
+    while (start > 0 && runChar(text.charCodeAt(start - 1))) start--;
+    let end = dot;
+    while (end < text.length && runChar(text.charCodeAt(end))) end++;
+    const parts = text.slice(start, end).split('.');
+    let at = start;
+    for (let i = 0; i + 2 < parts.length;) {
+      if (parts[i] && parts[i + 1] && parts[i + 2]) {
+        const length = parts[i].length + parts[i + 1].length + parts[i + 2].length + 2;
+        if (length >= 40) spans.push([at, at + length]);
+        at += length + 1;
+        i += 3;
+      } else {
+        at += parts[i].length + 1;
+        i++;
+      }
+    }
+    dot = text.indexOf('.', end);
+  }
+  return spans;
+}
+
+// KEY_VALUE_WINDOW matches as { match, value } ranges; a quoted value must close before `limit(start)` (its line's end, or a join point)
+function keyValueSpans(text, limit) {
+  const found = [];
+  KEY_VALUE_WINDOW.lastIndex = 0;
+  let match;
+  while ((match = KEY_VALUE_WINDOW.exec(text)) !== null) {
+    const start = match.index + match[1].length + match[2].length;
+    if (!text[start] || /\s/.test(text[start])) continue;
+    let end = start;
+    if (text[start] === '"' || text[start] === "'") {
+      const close = text.indexOf(text[start], start + 1);
+      if (close > start + 1 && close < limit(start)) end = close + 1;
+    }
+    if (end === start) while (end < text.length && !/\s/.test(text[end])) end++;
+    found.push({ match: [match.index, end], value: [start, end] });
+    KEY_VALUE_WINDOW.lastIndex = end;
+  }
+  return found;
 }
 
 function makeRedactor(secrets) {
@@ -125,107 +167,83 @@ function makeRedactor(secrets) {
       }
     }
     for (const pattern of [...PATTERNS, BEARER_WINDOW, AWS_WINDOW, HEX_WINDOW, BASE64_WINDOW]) {
-      for (const match of value.matchAll(pattern)) add(match.index, match.index + match[0].length);
-    }
-    KEY_VALUE_WINDOW.lastIndex = 0;
-    let match;
-    while ((match = KEY_VALUE_WINDOW.exec(value)) !== null) {
-      const start = match.index + match[1].length + match[2].length;
-      if (!value[start] || /\s/.test(value[start])) continue;
-      let end = start;
-      if (value[start] === '"' || value[start] === "'") {
-        const close = value.indexOf(value[start], start + 1);
-        if (close > start + 1 && !value.slice(start + 1, close).includes('\n')) end = close + 1;
-      }
-      if (end === start) while (end < value.length && !/\s/.test(value[end])) end++;
-      add(start, end);
-      KEY_VALUE_WINDOW.lastIndex = end;
-    }
-    for (const run of value.matchAll(JWT_RUN)) {
-      if (run[0].length < 40) continue;
-      let dots = 0;
-      for (let i = 1; i < run[0].length - 1; i++) {
-        if (run[0][i] === '.' && run[0][i - 1] !== '.' && /[A-Za-z0-9_-]/.test(run[0][i + 1])) dots++;
-      }
-      if (dots >= 2) add(run.index, run.index + run[0].length);
-    }
-    let coveredEnds;
-    const wrapMin = 40;
-    for (let first = 0; first + 1 < lines.length; first++) {
-      const firstLine = lines[first].replace(/\r$/, '');
-      if (firstLine.length < wrapMin) continue;
-      const tail = CHAIN_TAIL.exec(firstLine);
-      if (!tail) continue;
-      if (!coveredEnds) {
-        coveredEnds = new Map();
-        for (const [start, end] of spans) {
-          if (lineEnds.has(end) && (!coveredEnds.has(end) || start < coveredEnds.get(end))) coveredEnds.set(end, start);
-        }
-      }
-      const tailStart = offsets[first] + tail.index;
-      const lineEnd = offsets[first] + firstLine.length;
-      if (coveredEnds.has(lineEnd) && coveredEnds.get(lineEnd) <= tailStart) continue;
-      if (pem.some(([start, end]) => start <= tailStart && end >= lineEnd)) continue;
-      let endLine = first;
-      while (endLine + 1 < lines.length && endLine - first < 7) {
-        const current = lines[endLine].replace(/\r$/, '');
-        const next = lines[endLine + 1].replace(/\r$/, '').replace(/^[ \t]*/, '');
-        if (current.length < wrapMin || !next || !CHAIN_HEAD.test(next)) break;
-        endLine++;
-      }
-      if (endLine === first) continue;
-      const before = firstLine.slice(0, tail.index);
-      const bearer = /\bbearer[ \t]+$/i.exec(before);
-      const parts = [];
-      let chain = '';
-      for (let line = first; line <= endLine; line++) {
-        const content = lines[line].replace(/\r$/, '');
-        const indent = /^[ \t]*/.exec(content)[0].length;
-        const start = line === first ? (bearer ? bearer.index : tail.index) : indent;
-        const end = line === endLine ? start + CHAIN_HEAD.exec(content.slice(start))[0].length : content.length;
-        const piece = content.slice(start, end);
-        parts.push({ from: chain.length, to: chain.length + piece.length, source: offsets[line] + start });
-        chain += piece;
-        if (line === first && /bearer$/i.test(tail[0])) chain += ' ';
-      }
-      if (!values.length && !chain.includes('.') && !/[A-Za-z0-9+/]/.test(tail[0].at(-1)) &&
-          !/(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|acw_|cfk_|AKIA|ASIA|bearer|authorization|token|password|api[_-]?key|x-api-key)/i.test(chain)) continue;
-      const crossing = (start, end) => {
-        const covered = parts.filter((part) => start < part.to && end > part.from);
-        if (covered.length < 2) return;
-        for (const part of covered) add(part.source + Math.max(start, part.from) - part.from,
-          part.source + Math.min(end, part.to) - part.from);
-      };
-      for (const secret of values) {
-        let at = 0;
-        while ((at = chain.indexOf(secret, at)) >= 0) {
-          crossing(at, at + secret.length);
-          at += secret.length;
-        }
-      }
-      for (const pattern of [...PATTERNS, BEARER, AWS_CHAIN, HEX_WINDOW, BASE64_WINDOW]) {
-        for (const found of chain.matchAll(pattern)) crossing(found.index, found.index + found[0].length);
-      }
-      for (const found of chain.matchAll(KEY_VALUE)) {
-        const start = found.index + found[1].length + found[2].length;
-        crossing(start, start + found[3].length);
-      }
-      for (const run of chain.matchAll(JWT_RUN)) {
-        if (run[0].length < 40) continue;
-        let dots = 0;
-        for (let i = 1; i < run[0].length - 1; i++) {
-          if (run[0][i] === '.' && run[0][i - 1] !== '.' && /[A-Za-z0-9_-]/.test(run[0][i + 1])) dots++;
-        }
-        if (dots >= 2) crossing(run.index, run.index + run[0].length);
+      for (const match of value.matchAll(pattern)) {
+        if (pattern === AWS_WINDOW && match[0].split('\n').length > 2) continue; // at most one break in an AWS key
+        add(match.index, match.index + match[0].length);
       }
     }
-    const ends = new Set();
-    for (const [, end] of spans) if (lineEnds.has(end)) ends.add(end);
+    const lineEnd = (at) => { const next = value.indexOf('\n', at); return next < 0 ? value.length : next; };
+    for (const found of keyValueSpans(value, lineEnd)) add(...found.value);
+    for (const span of jwtSpans(value)) add(...span);
+    const content = (i) => lines[i].replace(/\r$/, '');
+    const indentOf = (text) => /^[ \t]*/.exec(text)[0].length;
+    // a break joins only after a wrap-length line and before a non-blank one
+    const joins = (i) => i + 1 < lines.length && content(i).length >= WRAP_MIN && content(i + 1).trim() !== '';
+
+    // whole-window join for exact scope secrets and JWT-like triples, which need every part at once
+    let joined = '';
+    const segments = []; // [start in joined, start in value, length]
+    for (let i = 0; i < lines.length; i++) {
+      const text = content(i);
+      const from = i > 0 && joins(i - 1) ? indentOf(text) : 0;
+      segments.push([joined.length, offsets[i] + from, text.length - from]);
+      joined += text.slice(from);
+      if (!joins(i) && i + 1 < lines.length) joined += '\n';
+    }
+    const addJoined = (start, end) => {
+      let low = 0;
+      let high = segments.length - 1;
+      while (low < high) { // last segment starting at or before `start`
+        const mid = (low + high + 1) >> 1;
+        if (segments[mid][0] <= start) low = mid; else high = mid - 1;
+      }
+      for (let k = low; k < segments.length && segments[k][0] < end; k++) {
+        const [at, from, length] = segments[k];
+        const a = Math.max(start, at);
+        const b = Math.min(end, at + length);
+        if (a < b) add(from + a - at, from + b - at);
+      }
+    };
+    for (const secret of values) {
+      let at = 0;
+      while ((at = joined.indexOf(secret, at)) >= 0) {
+        addJoined(at, at + secret.length);
+        at += secret.length;
+      }
+    }
+    for (const [start, end] of jwtSpans(joined)) addJoined(start, end);
+
+    // each join point: the last JOIN_REACH characters before it and the first after it, so a match can cross it
     for (let i = 0; i + 1 < lines.length; i++) {
-      const content = lines[i].replace(/\r$/, '');
-      if (content.length < wrapMin || !ends.has(offsets[i] + content.length)) continue;
+      if (!joins(i)) continue;
+      const before = content(i);
+      const next = content(i + 1);
+      const indent = indentOf(next);
+      const cut = Math.max(0, before.length - JOIN_REACH);
+      const left = before.slice(cut);
+      const pair = left + next.slice(indent, indent + JOIN_REACH);
+      const point = left.length;
+      const map = (j) => (j < point ? offsets[i] + cut + j : offsets[i + 1] + indent + j - point);
+      const crossing = ([start, end], [from, to] = [start, end]) => {
+        if (start >= point || end <= point) return;
+        if (from < point) add(map(from), map(Math.min(to, point) - 1) + 1);
+        if (to > point) add(map(Math.max(from, point)), map(to - 1) + 1);
+      };
+      for (const pattern of [...PATTERNS, BEARER, AWS_CHAIN, HEX_WINDOW, BASE64_WINDOW]) {
+        for (const found of pair.matchAll(pattern)) crossing([found.index, found.index + found[0].length]);
+      }
+      // the key may be the part that crosses: test the whole match, redact only the value
+      for (const found of keyValueSpans(pair, (start) => (start < point ? point : pair.length))) crossing(found.match, found.value);
+    }
+
+    // span extension: a span reaching the end of a wrap-length line also covers the next line's leading token run
+    const ends = new Set();
+    for (const [, end] of spans.slice(pem.length)) if (lineEnds.has(end)) ends.add(end);
+    for (let i = 0; i + 1 < lines.length; i++) {
+      const text = content(i);
+      if (text.length < WRAP_MIN || !ends.has(offsets[i] + text.length)) continue;
       const next = lines[i + 1].replace(/\r$/, '');
-      const indent = /^[ \t]*/.exec(next)[0].length;
+      const indent = indentOf(next);
       const head = CHAIN_HEAD.exec(next.slice(indent));
       if (!head) continue;
       const end = offsets[i + 1] + indent + head[0].length;

@@ -31,6 +31,17 @@ Self-contained: an implementer needs only this file and the files a step names.
 - **Accepted limits:** wraps under 40 columns are not joined; the next line's leading word after a credential ending a wrap-length line is redacted; a stray BEGIN hides the rest of that share; the first part of a wrapped secret can show on the poll before its last part arrives.
 - **No change** to CFactory, AIFactory, or the share, page and speech call sites other than `web/shares.js:49-51`.
 
+## Deviations
+
+1. **Step 4 review round 1 (Opus agent, Codex, agy; fixes by the lead).** The reviews reproduced wrapped credentials that stayed visible, a `toModel` change and hostile inputs taking 0.4-5.5 s. Each fix has a test that fails on the step 3 commit.
+   - **Chains replaced by join points.** The 8-line chains built from tail and head runs missed a keyword split mid-word (`Bear`/`er …`, `tok`/`en=…`, `pass`/`word: …`), paired quotes across middle lines, and were slow. Now each break after a wrap-length line into a non-blank line is a join point: the last 512 characters before it and the first 512 after it (leading spaces and tabs dropped) are joined, every token rule runs on that, and a match crossing the point is kept. For `KEY_VALUE` the whole match must cross (so a split key counts) and only the value is redacted; a quoted value may not cross the point. Splits over three or more lines are covered by span extension, which now ignores PEM spans (so the word after an `END` line stays).
+   - **Whole-window join for scope secrets and JWT-like values**, which need every part at once: the window with every join point closed (other breaks kept as `\n`) is searched for the exact secrets, whatever their characters, and for JWT-like triples, and matches map back per line. A secret split over any number of joined lines is found.
+   - **JWT-like rule keeps main's semantics:** consecutive dot-separated triples of 40+ characters, as main's regex matched, found by visiting only runs that contain a dot. The maximal-run version redacted Java stack frames and internal hostnames.
+   - **AWS:** a match with more than one break is dropped, as the one-break decision says. An AWS key split in three needs a middle line under 40 characters, so it is not joined.
+   - **`toModel` PEM** matches main exactly: the `END` search starts after the whole `BEGIN` marker.
+   - **Timing test** runs with a scope secret (as production does), adds the shapes the reviews found (`-a`, ` a`, `x … ab`, `a…!`, `a.`, BEGIN/END pairs) and takes the best of three runs, because the suite runs files in parallel.
+   - **Accepted limits added:** a quoted value with spaces wrapped across lines shows its part after the break (quoted values never cross a break); a token after `Bearer ` split over three lines with a short middle part is not joined; a match crossing a join point with more than 512 characters on one side is not joined there (that side already matches on its own, except for exact secrets, which use the whole-window join).
+
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).

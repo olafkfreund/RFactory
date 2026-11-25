@@ -144,9 +144,9 @@
     "semantic_hash": "f88df979b864528309c4b3b2949d8a6e"
   },
   "core/src/redact.js": {
-    "mtime": 1795611650.4335864,
-    "seen": 1795611824.6119456,
-    "ast_hash": "863df3bcfb8a0b341732afa324fe6b65",
+    "mtime": 1795612551.2002568,
+    "seen": 1795612694.6739535,
+    "ast_hash": "0ac0d484182010c26985592d0dea0746",
     "semantic_hash": ""
   },
   "core/src/roles.js": {
@@ -294,9 +294,9 @@
     "semantic_hash": "d61efa4fa37775eea9d2ca89128dfbdd"
   },
   "core/test/redact.test.js": {
-    "mtime": 1795611699.7272186,
-    "seen": 1795611824.6120198,
-    "ast_hash": "a6157ef0b64d2944056034ab6d3a1589",
+    "mtime": 1795612618.7611156,
+    "seen": 1795612694.6740413,
+    "ast_hash": "7fc0ae08cddee6ef8cbeea8075d2c0e0",
     "semantic_hash": ""
   },
   "core/test/roles.test.js": {
@@ -924,9 +924,9 @@
     "semantic_hash": ""
   },
   "web/test/shares.test.js": {
-    "mtime": 1795611816.4777164,
-    "seen": 1795611824.6123228,
-    "ast_hash": "1fba07f9f854fe5ec265ca163693f70f",
+    "mtime": 1795612666.0008926,
+    "seen": 1795612694.6743808,
+    "ast_hash": "b3161bc81755aafea7ea680d9a5a2197",
     "semantic_hash": ""
   },
   "web/test/source-guard.test.js": {
@@ -1554,9 +1554,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795611224.5841827,
-    "seen": 1795611824.6124904,
-    "ast_hash": "ededccd9f866e5d5f7f713fe660b212f",
+    "mtime": 1795612689.446744,
+    "seen": 1795612694.6745536,
+    "ast_hash": "7b426487437bb3e56898d4beed0124dc",
     "semantic_hash": ""
   },
   "spec/2026-11-25-39-wrapped-credential-redaction.md": {
