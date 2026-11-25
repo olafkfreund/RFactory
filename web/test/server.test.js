@@ -484,7 +484,10 @@ test('investigations are composed only when on, and recover before they are retu
     assert.equal((await compose({ investigations_enabled: false })).investigations, null);
     const { investigations } = await compose({});
     assert.equal(investigations.list().running, null);
-    const last = JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').at(-1));
+    const read = () => JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').at(-1));
+    // the closing row is written in the background
+    for (let n = 0; n < 200 && read().state === 'starting'; n++) await new Promise((r) => setTimeout(r, 10));
+    const last = read();
     assert.deepEqual([last.id, last.state, last.reason], ['i1', 'stopped', 'restart']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

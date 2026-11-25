@@ -102,6 +102,15 @@ No log text, and no report text beyond the counts.
    - **Small:** approval clears the proposal timer, and the 30-minute run limit starts at approval; history keeps 50 rows and only the newest report; the SHA must be a string.
    - **Not changed:** revalidation requires the approved SHA to still be the default branch **tip** (the plan says "on the branch"; stricter, so a push between approval and dispatch asks again); the same-origin check compares host only (the tunnel serves HTTPS only); log redaction also hides commit SHAs; a credential wrapped across log lines can escape the hex/base64 filters, tracked in #39.
 
+7. **Step 7 review round 2 (Codex re-review of the round 1 fix; fixes by the coder, checked by the lead).** Each fix has a test that fails on the previous commit.
+   - **A `created` card means "no run" only after CFactory refused, or 60 s after the dispatch was sent.** `dispatched_at` is recorded as the request goes out (after the awaited pre-dispatch rows), and both the 60 s and the 31-minute fallback count from it. An error reply alone settles nothing.
+   - **After dispatch, nothing waits on a record write:** Stop, the lease, state polling and the slot release run while an append is pending (the append's failure is logged). Rows up to dispatch stay strict, and the shared record queue keeps their order, so a hung append also holds back the next investigation's pre-dispatch rows: no run starts without its record.
+   - **A failed read inside the Stop grace stays `stopping`** until the 60 s pass, like a successful one.
+   - **A run found on the card is read before it is called `running`:** a terminal run finishes directly; one that is finished but whose pods are not confirmed gone, or that cannot be read, stays unresolved with no lease until confirmed.
+   - **`list()` returns every unresolved investigation (`active`)** apart from history, and the page shows each with its own Stop.
+   - **The Stop reply says what was observed:** completed, stopped, "ended: it failed" or "ended: it reached its time limit", else "Stop not confirmed yet."
+   - **The summary filter's test words** also cover success(es), error(s), checks, cases, specs and assertions, and numbers match only as whole words (`\b\d+\b`), so a name like `test_utf8` is not treated as a count.
+
 ## Steps
 
 **Before implementation:**

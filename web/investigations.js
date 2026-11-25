@@ -14,7 +14,7 @@ const TERMINAL = new Set(['completed', 'done', 'failed', 'stopped', 'expired']);
 const reply = (status, text, investigation) => ({ status, text, ...(investigation ? { investigation } : {}) });
 const OFF = 'Investigations are turned off here.';
 // a summary sentence that counts tests is dropped: only the server speaks results, from run_tests
-const ABOUT_TESTS = /\b(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped|suite)\b/i;
+const ABOUT_TESTS = /\b(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped|suite|success(?:es)?|errors?|checks?|cases?|specs?|assertions?)\b/i;
 const QUANTITY = /\b\d+\b|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|dozens?|all|every|none|no|both|each|most|half|several|many|few)\b/i;
 const count = (value) => Number.isInteger(value) && value >= 0;
 
@@ -84,26 +84,35 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     publish({ type: 'investigation-result', investigation: { id: entry.payload.id },
       counts: testSentences(entry.tests, entry.payload.test_command), summary });
   }
-  // write() is strict: a step that must be on record before it happens. note() records what has already happened.
-  async function write(entry, state, extra = {}, tolerant = false) {
+  function row(entry, state, extra) {
     entry.state = state;
-    const item = safe({ ...entry.payload, kind: 'investigation', hash: entry.hash, state,
+    return safe({ ...entry.payload, kind: 'investigation', hash: entry.hash, state,
       ...(entry.approved_by ? { approved_by: entry.approved_by } : {}),
       ...(entry.card_key ? { card_key: entry.card_key } : {}),
       ...(entry.run_id ? { run_id: entry.run_id } : {}),
       ...(entry.dispatchedAt ? { dispatched_at: new Date(entry.dispatchedAt).toISOString() } : {}), // survives restarts
       ...(entry.tests ? { tests: entry.tests } : {}), ...extra });
-    try { await record.append(item); }
-    catch (error) {
-      if (!tolerant) throw error;
-      log(`investigation record failed (${item.id} ${state}): ${safe(String(error?.message))}`);
-    }
+  }
+  function show(entry, item) {
     for (const older of entry.report ? history : []) delete older.report; // only the newest report is kept
     history.push({ ...item, ...sentences(entry), ...(entry.report ? { report: entry.report } : {}) });
     history.splice(0, history.length - HISTORY_LIMIT);
-    if (entry.state === state) emit(entry);
+    emit(entry);
   }
-  const note = (entry, state, extra) => write(entry, state, extra, true);
+  // write() is strict: a step that must be on record before it happens (only before dispatch).
+  async function write(entry, state, extra) {
+    const item = row(entry, state, extra);
+    await record.append(item);
+    if (entry.state === state) show(entry, item); // a row overtaken while it was written is not the latest
+  }
+  // note() records what has already happened. Nothing waits for it: a slow or hung record must not delay a Stop,
+  // a lease, a poll or the slot. The record appends in call order.
+  function note(entry, state, extra) {
+    const item = row(entry, state, extra);
+    new Promise((resolve) => resolve(record.append(item)))
+      .catch((error) => log(`investigation record failed (${item.id} ${state}): ${safe(String(error?.message))}`));
+    show(entry, item);
+  }
   const valid = (entry, token) => slots.has(entry) && !entry.finished && entry.token === token && entry.generation === generation;
   function clearLiveTimers(entry) {
     for (const name of ['proposalTimer', 'lifeTimer', 'leaseTimer', 'pollTimer']) { clear(entry[name]); entry[name] = undefined; }
@@ -136,19 +145,21 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     }, LEASE_MS);
     entry.leaseTimer.unref?.();
   }
-  async function finish(entry, state, reason) {
+  function finish(entry, state, reason) {
     if (entry.finished) return;
     entry.finished = true;
     entry.reason = reason;
     clearLiveTimers(entry);
     closeLog(entry);
-    try { await note(entry, state, reason ? { reason } : {}); }
-    finally { slots.delete(entry); }
+    slots.delete(entry); // before publishing, so no listener sees a finished run as active
+    note(entry, state, reason ? { reason } : {});
   }
-  async function stopUnconfirmed(entry) {
+  // a Stop stays "stopping" for the grace window, whether the reads succeed or not
+  function stillStopping(entry) {
+    if (now() - entry.stopAt < GRACE_MS) { entry.state = 'stopping'; delete entry.reason; emit(entry); return; }
     if (entry.state === 'uncertain' && entry.reason === 'stop not confirmed') { emit(entry); return; }
     entry.reason = 'stop not confirmed';
-    await note(entry, 'uncertain', { reason: entry.reason });
+    note(entry, 'uncertain', { reason: entry.reason });
   }
   function poll(entry) {
     if (entry.finished) return Promise.resolve();
@@ -164,7 +175,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     } catch {
       if (entry.finished) return;
       entry.stale = true;
-      if (entry.stopping) await stopUnconfirmed(entry);
+      if (entry.stopping) stillStopping(entry);
       else emit(entry);
       return;
     }
@@ -177,12 +188,10 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       // a Stop that arrives after the run completed does not discard its report
       const own = entry.terminal && (!entry.stopping || (final === 'completed' && !!state.report));
       if (own && state.report) entry.report = redactor.logSafeWindow(state.report);
-      await finish(entry, own ? final : 'stopped', own ? undefined : entry.stopReason);
+      finish(entry, own ? final : 'stopped', own ? undefined : entry.stopReason);
       if (own && final === 'completed') void announce(entry);
-    } else if (entry.stopping) {
-      if (now() - entry.stopAt >= GRACE_MS) await stopUnconfirmed(entry);
-      else { entry.state = 'stopping'; delete entry.reason; emit(entry); }
-    }
+    } else if (entry.stopping) stillStopping(entry);
+    else if (entry.adopting && !entry.terminal) { entry.adopting = false; goRunning(entry); }
   }
   // a card without a run id: the start was not confirmed, so ask CFactory until it says what happened
   async function findRun(entry) {
@@ -197,20 +206,20 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       entry.run_id = runId;
       entry.unconfirmed = false;
       if (entry.stopping) await sendStop(entry);
-      else await goRunning(entry);
+      else { entry.adopting = true; await readState(entry); } // read it first: it may be over already
     } else if (found && !found.error && (found.status === 'refused' ||
-        // 'created' is final once CFactory has answered; after a lost reply the dispatch may still be on its way
-        (found.status === 'created' && (entry.replied || now() - entry.dispatchedAt >= GRACE_MS)))) {
-      await finish(entry, entry.stopping ? 'stopped' : 'rejected', entry.stopping ? entry.stopReason : 'start refused');
+        // 'created' may precede a dispatch still on its way, even after an error reply
+        (found.status === 'created' && now() - entry.dispatchedAt >= GRACE_MS))) {
+      finish(entry, entry.stopping ? 'stopped' : 'rejected', entry.stopping ? entry.stopReason : 'start refused');
     } else if (now() - entry.dispatchedAt >= RUN_MS + GRACE_MS) {
       // no run outlives the run limit, and one without a lease dies within the grace: nothing can still be running
-      await finish(entry, 'failed', 'start not confirmed; freed after the run limit');
+      finish(entry, 'failed', 'start not confirmed; freed after the run limit');
     } else if (stale) emit(entry);
   }
   async function sendStop(entry) {
     entry.stopAt = now();
     delete entry.reason;
-    await note(entry, 'stopping', { reason: entry.stopReason });
+    note(entry, 'stopping', { reason: entry.stopReason });
     try { await writer.stopInvestigation(entry.card_key, entry.run_id); }
     catch { /* A failed Stop is retried at recovery; confirmation comes from the state read. */ }
   }
@@ -226,21 +235,21 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     entry.stopPromise = (async () => {
       if (entry.unconfirmed) { // still "start not confirmed": there is no run id to stop yet
         schedulePoll(entry);
-        await note(entry, 'uncertain', { reason: entry.reason });
+        note(entry, 'uncertain', { reason: entry.reason });
       } else if (entry.run_id) { await sendStop(entry); await poll(entry); }
       else {
-        await note(entry, 'stopping', { reason });
-        if (!entry.dispatching && !entry.unconfirmed && !entry.run_id) await finish(entry, 'stopped', reason);
+        note(entry, 'stopping', { reason });
+        if (!entry.dispatching) finish(entry, 'stopped', reason);
       }
     })();
     return entry.stopPromise;
   }
-  async function expire(entry) {
+  function expire(entry) {
     if (entry.state !== 'proposed') return;
     clear(entry.proposalTimer);
     if (pending === entry) pending = undefined;
     entry.finished = true;
-    await note(entry, 'expired');
+    note(entry, 'expired');
   }
   async function request(text, speaker, show_log = false) {
     if (!enabled || !scope.investigations_enabled) return reply(403, OFF);
@@ -268,7 +277,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     try { await write(entry, 'proposed', { approval_text }); }
     catch { if (pending === entry) pending = undefined; return reply(500, 'The investigation could not be recorded.'); }
     if (pending !== entry || call !== generation) return reply(409, 'The call has ended.');
-    entry.proposalTimer = timer(() => { void expire(entry); }, PROPOSAL_MS);
+    entry.proposalTimer = timer(() => expire(entry), PROPOSAL_MS);
     entry.proposalTimer.unref?.();
     const boardRunning = show_log && shares?.list?.().running?.view === 'board';
     return reply(202, `Approve the investigation on the RFactory page.${boardRunning ? ' To show the log, stop the board share first.' : ''}`,
@@ -283,46 +292,45 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       if (context?.error || context.sha !== entry.payload.sha || context.repo !== entry.payload.repo ||
           context.test_command !== entry.payload.test_command || context.repository_id !== scope.source.repository_id ||
           !revalidate(entry.payload, now(), { scope, repo: context.repo, redactor })) {
-        await finish(entry, 'rejected', 'context changed'); return;
+        finish(entry, 'rejected', 'context changed'); return;
       }
       const card = await writer.createInvestigationCard(entry.payload.request, context.repository_id);
       if (typeof card?.card_key === 'string' && card.card_key) entry.card_key = card.card_key;
       if (!valid(entry, token)) return;
-      if (card?.error || !entry.card_key) { await finish(entry, 'rejected', 'card refused'); return; }
-      entry.dispatchedAt = now();
+      if (card?.error || !entry.card_key) { finish(entry, 'rejected', 'card refused'); return; }
       await write(entry, 'starting'); // persist the recovery key before the possibly uncertain dispatch.
       if (!valid(entry, token)) return;
       entry.dispatching = true;
+      entry.dispatchedAt = now(); // the moment of sending: what the grace and the run limit count from
+      note(entry, 'starting');
       let result;
       try { result = await writer.investigate(entry.card_key, {
         request: entry.payload.request, sha: entry.payload.sha, test_command: entry.payload.test_command, limits: entry.payload.limits }); }
-      catch { await unconfirmed(entry, false); return; }
+      catch { unconfirmed(entry); return; }
       entry.dispatching = false;
-      if (typeof result?.run_id !== 'string' || !result.run_id) { await unconfirmed(entry, !!result?.error); return; }
+      if (typeof result?.run_id !== 'string' || !result.run_id) { unconfirmed(entry); return; }
       entry.run_id = result.run_id;
       // a canceled dispatch still created a run: keep the slot until its pod is gone
       if (entry.stopping) { await sendStop(entry); await poll(entry); return; }
-      await goRunning(entry);
+      goRunning(entry);
     } catch (error) {
       if (entry.finished || entry.stopping) return;
       log(`investigation start failed: ${safe(String(error?.message))}`);
-      if (!entry.run_id) await finish(entry, 'failed', 'start failed');
+      if (!entry.run_id) finish(entry, 'failed', 'start failed');
     }
   }
   // no run id after dispatch: an error, a timeout or an empty reply cannot say that nothing started
-  async function unconfirmed(entry, replied) {
-    Object.assign(entry, { dispatching: false, unconfirmed: true, replied, reason: 'start not confirmed' });
-    if (replied) await poll(entry); // CFactory answered, so its card record is final
-    if (entry.finished || !entry.unconfirmed) return;
+  function unconfirmed(entry) {
+    Object.assign(entry, { dispatching: false, unconfirmed: true, reason: 'start not confirmed' });
     schedulePoll(entry);
-    await note(entry, 'uncertain', { reason: entry.reason });
+    note(entry, 'uncertain', { reason: entry.reason });
   }
-  async function goRunning(entry) {
+  function goRunning(entry) {
     const token = entry.token;
     delete entry.reason;
     entry.leasedAt = now();
-    await note(entry, 'running');
-    if (!valid(entry, token)) return;
+    note(entry, 'running');
+    if (!valid(entry, token)) return; // a listener may have stopped it
     scheduleLease(entry);
     schedulePoll(entry);
     if (entry.payload.show_log && shares) void openLog(entry, token);
@@ -348,7 +356,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     const entry = pending;
     if (!entry || entry.payload.id !== id || entry.hash !== hash || entry.state !== 'proposed') return reply(409, 'This investigation is no longer pending.');
     if (slots.size) return reply(409, 'An investigation is already in progress.');
-    if (now() >= Date.parse(entry.payload.expires_at) || entry.generation !== generation) { await expire(entry); return reply(409, 'This investigation has expired.'); }
+    if (now() >= Date.parse(entry.payload.expires_at) || entry.generation !== generation) { expire(entry); return reply(409, 'This investigation has expired.'); }
     pending = undefined;
     slots.add(entry); // the slot is claimed before the first await.
     clear(entry.proposalTimer);
@@ -357,7 +365,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     entry.lifeTimer.unref?.();
     const token = ++entry.token;
     try { await write(entry, 'approved'); }
-    catch { await finish(entry, 'failed', 'record failed'); return reply(500, 'The investigation could not be recorded.'); }
+    catch { finish(entry, 'failed', 'record failed'); return reply(500, 'The investigation could not be recorded.'); }
     if (!valid(entry, token)) return reply(409, 'The investigation was stopped.');
     void start(entry, token);
     return reply(200, 'Investigation approved.');
@@ -369,24 +377,26 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     if (!entry || entry.payload.id !== id || entry.hash !== hash || entry.state !== 'proposed') return reply(409, 'This investigation is no longer pending.');
     pending = undefined; clear(entry.proposalTimer);
     entry.finished = true;
-    await note(entry, 'rejected', { rejected_by: String(email).toLowerCase() });
+    note(entry, 'rejected', { rejected_by: String(email).toLowerCase() });
     return reply(200, 'Investigation rejected.');
   }
   // Stop names the investigation the member saw, so a late click cannot stop a different one
   async function stop(email, id) {
     if (!roles.has(email, 'member')) return reply(403, 'Forbidden.');
-    if (pending && pending.payload.id === id) { await expire(pending); return reply(200, 'Investigation stopped.'); }
+    if (pending && pending.payload.id === id) { expire(pending); return reply(200, 'Investigation stopped.'); }
     const entry = [...slots].find((item) => item.payload.id === id);
     if (!entry) return reply(409, 'This investigation is no longer active.');
     await stopEntry(entry, 'manual');
-    return reply(200, slots.has(entry) ? 'Stop not confirmed yet.' : 'Investigation stopped.');
+    const outcome = !slots.has(entry) && { completed: 'Investigation completed.', stopped: 'Investigation stopped.', failed: 'Investigation ended: it failed.', expired: 'Investigation ended: it reached its time limit.' }[entry.state];
+    return reply(200, outcome || 'Stop not confirmed yet.');
   }
-  function list() { const [running] = slots; return { pending: pending ? [publicEntry(pending)] : [],
-    running: running ? publicEntry(running) : null, history: history.map(safe) }; }
+  // `active`: every unresolved investigation (several only after a restart); `running` is the first of them
+  function list() { const active = [...slots].map(publicEntry); return { pending: pending ? [publicEntry(pending)] : [],
+    running: active[0] || null, active, history: history.map(safe) }; }
   async function endCall() {
     generation = undefined;
     const ending = [...slots]; // taken now: a new call's investigation is not ours to stop
-    if (pending) await expire(pending);
+    if (pending) expire(pending);
     await Promise.all(ending.map((entry) => stopEntry(entry, 'call-ended')));
   }
   async function startCall(nextGeneration) {
@@ -402,7 +412,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       hash: item.hash, approved_by: item.approved_by, card_key: item.card_key, run_id: item.run_id,
       generation, state: 'uncertain', token: 0, stopping: true, stopReason: 'restart', stopAt: now() };
       // no card means nothing was dispatched
-      if (!entry.card_key && !entry.run_id) { slots.add(entry); await finish(entry, 'stopped', 'restart'); continue; }
+      if (!entry.card_key && !entry.run_id) { slots.add(entry); finish(entry, 'stopped', 'restart'); continue; }
       slots.add(entry);
       if (entry.run_id) await sendStop(entry);
       else {
@@ -411,7 +421,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
         await poll(entry); // asks the card; a run id found there is stopped
       }
       if (entry.run_id) await poll(entry);
-      if (!entry.finished && !entry.run_id) await note(entry, 'uncertain', { reason: entry.reason });
+      if (!entry.finished && !entry.run_id) note(entry, 'uncertain', { reason: entry.reason });
     }
     recovered = true;
   }

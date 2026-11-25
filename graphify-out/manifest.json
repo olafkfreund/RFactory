@@ -834,9 +834,9 @@
     "semantic_hash": ""
   },
   "web/public/app.js": {
-    "mtime": 1795594633.727657,
-    "seen": 1795594781.2310472,
-    "ast_hash": "ded26ff98cd1d0273d142555aa5e2425",
+    "mtime": 1795595212.6369195,
+    "seen": 1795595258.358899,
+    "ast_hash": "6ef6b42da72c08e88c98f541efa59f75",
     "semantic_hash": ""
   },
   "web/public/desktop.js": {
@@ -1206,9 +1206,9 @@
     "semantic_hash": ""
   },
   "web/test/app.test.js": {
-    "mtime": 1795594691.6038945,
-    "seen": 1795594781.2312086,
-    "ast_hash": "e6076aaca3650138f753777049a489a1",
+    "mtime": 1795595212.6388721,
+    "seen": 1795595258.3591056,
+    "ast_hash": "b058f896817d6516e3893daa72f8ec82",
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
@@ -1242,9 +1242,9 @@
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795594691.603411,
-    "seen": 1795594781.231228,
-    "ast_hash": "919a04d02ec17c7b4bb63103e9346867",
+    "mtime": 1795595212.6390476,
+    "seen": 1795595258.3591292,
+    "ast_hash": "ccbec36d6da192e8b71807458281c8fa",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -2658,27 +2658,27 @@
     "semantic_hash": ""
   },
   "deploy/k8s/bootstrap-secrets.sh": {
-    "mtime": 1795592426.3915198,
-    "seen": 1795594022.7988048,
-    "ast_hash": "7b15a38f560b0fad8a5060e4d9f20c39",
+    "mtime": 1795595023.7551243,
+    "seen": 1795595258.3585763,
+    "ast_hash": "d681578d3f049ee13ca7b253733aae18",
     "semantic_hash": ""
   },
   "deploy/k8s/bootstrap-secrets.test.sh": {
-    "mtime": 1795592426.3915198,
-    "seen": 1795594022.798808,
-    "ast_hash": "70ec5a073aa34cf4b969d4c250b2cf8c",
+    "mtime": 1795595013.6733432,
+    "seen": 1795595258.3585796,
+    "ast_hash": "15cb829ecbfa825feab0067a4b9283a4",
     "semantic_hash": ""
   },
   "web/investigations.js": {
-    "mtime": 1795594896.9078197,
-    "seen": 1795594964.6852965,
-    "ast_hash": "a1ebcdb5f3e20526184697d7a8191df6",
+    "mtime": 1795595277.0686057,
+    "seen": 1795595343.8513293,
+    "ast_hash": "8bd15f4f09ea8efab5a437755cea6263",
     "semantic_hash": ""
   },
   "web/test/investigations.test.js": {
-    "mtime": 1795594902.352902,
-    "seen": 1795594964.6854799,
-    "ast_hash": "089d8358059b7dd43d6fbe25f2f5af2a",
+    "mtime": 1795595323.6532874,
+    "seen": 1795595343.8514936,
+    "ast_hash": "de3d9b0f600cf4d307298548fafdc010",
     "semantic_hash": ""
   },
   ".github/workflows/deploy.yml": {
@@ -2700,9 +2700,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-19-18-claude-terminals.md": {
-    "mtime": 1795594958.1665397,
-    "seen": 1795594964.6858823,
-    "ast_hash": "d73c6ae0d3e04e7d973f77ecf270eb99",
+    "mtime": 1795595337.26877,
+    "seen": 1795595343.8518515,
+    "ast_hash": "4145af3cf8c6bce6ca7305e6520941df",
     "semantic_hash": ""
   },
   "plan/2026-11-24-33-rfactory-in-cluster.md": {

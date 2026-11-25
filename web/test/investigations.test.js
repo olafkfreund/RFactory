@@ -116,9 +116,8 @@ test('lease and state polling run once at a time; stop waits for pod confirmatio
   const stopping = stop(f, p);
   await until(() => f.calls.some((c) => c[0] === 'stop'));
   gate.reject(new Error('state unavailable')); await stopping;
-  await until(() => f.manager.list().running?.state === 'uncertain');
-  assert.equal(f.manager.list().running?.state, 'uncertain');
-  assert.equal(f.manager.list().running?.reason, 'stop not confirmed');
+  await until(() => f.manager.list().running?.stale);
+  assert.equal(f.manager.list().running?.state, 'stopping');
   assert.equal(f.calls.filter((c) => c[0] === 'stop').length, 1);
   f.clock.advance(5000); await until(() => f.manager.list().running === null);
   assert.equal(f.entries.at(-1).state, 'stopped');
@@ -321,8 +320,11 @@ test('an error reply to investigate keeps the slot until the card says there is 
   assert.equal(f.manager.list().running, null);
   const refused = setup({ investigate: async () => ({ error: 'test_command_changed' }), recoverRecord: () => ({ status: 'created', detail: {} }) });
   const q = await ready(refused); await approve(refused, q);
-  await until(() => refused.entries.at(-1).state === 'rejected');
+  await until(() => refused.manager.list().running?.state === 'uncertain');
+  await poll(refused, 55000); assert.ok(refused.manager.list().running); // an error reply does not make "created" final
+  await poll(refused);
   assert.equal(refused.manager.list().running, null);
+  assert.equal(refused.entries.at(-1).state, 'rejected');
 });
 
 test('a never-dispatched card record frees a lost start only after the watchdog bound', async () => {
@@ -419,10 +421,10 @@ test('the log share closes by id when it opens after the run has finished', asyn
 });
 
 test('a summary sentence is dropped only when it counts tests', async () => {
-  const kept = ['The failing test is test_parse_date, because the parser drops the time zone.', 'The suite is green.',
+  const kept = ['The failing test is test_utf8, which reads bytes as text.', 'The failing test is test_parse_date, because the parser drops the time zone.', 'The suite is green.',
     'All three parsers drop the time zone.', 'Line 40 reads the wrong field.', 'The failing test is test_utf8, which reads bytes as text.'];
   const dropped = ['Fifty tests passed.', 'All the tests pass now.', 'No tests failed.', '41 passed.', 'A dozen tests fail.',
-    'Both tests fail.', 'Most of the suite is skipped.', 'Twenty-one tests failed.', 'A few tests are failing.', 'One failure remains.'];
+    'Both tests fail.', 'The checks recorded 41 successes and 1 error.', 'Two specs and 3 assertions broke.', 'All cases are green.', 'Most of the suite is skipped.', 'Twenty-one tests failed.', 'A few tests are failing.', 'One failure remains.'];
   const f = setup({ brain: () => ({ text: [...dropped, ...kept].join(' ') }) });
   assert.equal(await f.manager.summarize({ findings: 'x' }), kept.join(' '));
 });
@@ -448,4 +450,79 @@ test('a start that stays unconfirmed frees the slot after the run limit plus the
   await poll(g, 60 * 1000);
   assert.equal(g.manager.list().running, null);
   assert.equal(g.entries.at(-1).reason, reason);
+});
+
+test('the 60 s run from the send, not from before the record append that precedes it', async () => {
+  let clock;
+  const f = setup({ investigate: async () => { throw new Error('write-timeout'); }, recoverRecord: () => ({ status: 'created', detail: {} }),
+    append: (e) => { if (e.state === 'starting' && e.card_key && !e.dispatched_at) clock.t += 120000; } }); // a slow disk
+  clock = f.clock;
+  const p = await ready(f); await approve(f, p); await until(() => f.manager.list().running?.state === 'uncertain');
+  await poll(f); assert.ok(f.manager.list().running);
+  assert.ok(f.entries.some((e) => e.dispatched_at === '2026-11-17T12:02:00.000Z'));
+});
+
+test('after dispatch a record append that never settles delays no Stop, lease, poll or slot release', async () => {
+  let state = { state: 'running', pods_gone: false, tests: [] };
+  const record = { append: (e) => (e.dispatched_at ? new Promise(() => {}) : Promise.resolve()), unfinishedInvestigations: () => [] };
+  const f = setup({ record, state: () => state });
+  const p = await ready(f); await approve(f, p); await running(f);
+  await poll(f, 10000);
+  assert.ok(f.calls.some((c) => c[0] === 'lease'));
+  assert.equal((await stop(f, p)).text, 'Stop not confirmed yet.');
+  assert.ok(f.calls.some((c) => c[0] === 'stop'));
+  state = { state: 'stopped', pods_gone: true, tests: [] };
+  await poll(f);
+  assert.equal(f.manager.list().running, null);
+});
+
+test('failed state reads during the grace window stay "stopping"', async () => {
+  let fail = false;
+  const f = setup({ state: () => { if (fail) throw new Error('source-timeout'); return { state: 'running', pods_gone: false, tests: [] }; } });
+  const p = await ready(f); await approve(f, p); await running(f);
+  fail = true;
+  await stop(f, p); await poll(f); await poll(f, 50000);
+  assert.equal(f.manager.list().running.state, 'stopping');
+  await poll(f);
+  assert.deepEqual([f.manager.list().running.state, f.manager.list().running.reason], ['uncertain', 'stop not confirmed']);
+});
+
+test('a run found on the card is read before it is called running', async () => {
+  const lost = { investigate: async () => { throw new Error('write-timeout'); }, recoverRecord: () => ({ status: 'running', detail: { run_id: 'run-7' } }) };
+  const over = setup({ ...lost, state: () => ({ state: 'completed', pods_gone: true, tests: [], report: { findings: 'found' } }) });
+  await over.manager.recover(); await over.manager.startCall(1);
+  const p = (await over.manager.request('why', 'Caller', true)).investigation; await approve(over, p);
+  await until(() => over.manager.list().running?.state === 'uncertain');
+  await poll(over);
+  assert.equal(over.manager.list().running, null);
+  assert.ok(!over.entries.some((e) => e.state === 'running'));
+  assert.ok(!over.calls.some((c) => c[0] === 'lease' || c[0] === 'share'));
+  assert.equal(over.entries.at(-1).state, 'completed');
+  assert.ok(over.events.some((e) => e.type === 'investigation-result'));
+  let read;
+  const late = setup({ ...lost, state: () => { if (!read) throw new Error('source-timeout'); return read; } });
+  const q = await ready(late); await approve(late, q); await until(() => late.manager.list().running?.state === 'uncertain');
+  await poll(late, 10000);
+  assert.equal(late.manager.list().running.state, 'uncertain');
+  assert.ok(!late.calls.some((c) => c[0] === 'lease'));
+  read = { state: 'running', pods_gone: false, tests: [] };
+  await poll(late); await running(late);
+  await poll(late, 10000);
+  assert.ok(late.calls.some((c) => c[0] === 'lease'));
+});
+
+test('list() returns every unresolved investigation apart from history', async () => {
+  const item = (id) => ({ id, repo: 'owner/notes-api', sha: SHA, request: 'why', card_key: `FCT-${id}`, run_id: `run-${id}`, state: 'running' });
+  const f = setup({ unfinished: [item('a'), item('b')] });
+  await f.manager.recover();
+  assert.deepEqual(f.manager.list().active.map((e) => e.id), ['a', 'b']);
+  assert.equal(f.manager.list().running.id, 'a');
+});
+
+test('Stop reports what was observed', async () => {
+  for (const [state, text] of [['completed', 'Investigation completed.'], ['stopped', 'Investigation stopped.']]) {
+    const f = setup({ state: () => ({ state, pods_gone: true, tests: [], report: { findings: 'x' } }) });
+    const p = await ready(f); await approve(f, p); await running(f);
+    assert.equal((await stop(f, p)).text, text);
+  }
 });

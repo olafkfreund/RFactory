@@ -547,7 +547,7 @@ async function loadInvestigations(doc) {
     const data = await r.json();
     const store = investigationStoreOf(doc);
     store.canApprove = !!data.can_approve;
-    const loaded = new Map([...data.history, ...data.pending, ...(data.running ? [data.running] : [])].map((s) => [s.id, s]));
+    const loaded = new Map([...data.history, ...data.pending, ...(data.active || (data.running ? [data.running] : []))].map((s) => [s.id, s]));
     // a row the event stream already delivered is newer than this answer
     for (const [id, s] of loaded) if (!store.items.has(id)) store.items.set(id, s);
     renderInvestigation(doc);
