@@ -155,8 +155,9 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      if (stop) { req.resume(); manager.stop(email).then(reply, () => json(res, 500, { error: 'internal' })); return; }
       readJson(req).then((body) => {
+        // an investigation Stop carries the id it was shown for; shares ignore it
+        if (stop) return manager.stop(email, body?.id).then(reply, () => json(res, 500, { error: 'internal' }));
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return manager[verb](id, email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
       });

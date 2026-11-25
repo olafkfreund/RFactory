@@ -238,3 +238,12 @@ test('write key is absent from events and record', async () => {
   assert.ok(!JSON.stringify(f.events).includes(KEY));
   assert.ok(!JSON.stringify(f.entries).includes(KEY));
 });
+
+test('actions.request refuses an investigate proposal: only the investigation manager may start one', async () => {
+  for (const proposed of [{ action: 'investigate', args: { request: 'why' } }, { action: 'stop_investigation', args: {} }]) {
+    const f = setup({ propose: async () => proposed });
+    await f.manager.recover(); await f.manager.startCall(1);
+    assert.equal((await f.manager.request('look into it', 'Caller')).status, 400);
+    assert.deepEqual(f.manager.list().pending, []);
+  }
+});

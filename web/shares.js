@@ -131,7 +131,11 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     try {
       await write(entry, 'starting', { approved_by: entry.approved_by });
       if (!valid(entry, token)) return;
-      const data = await frameFor(entry);
+      let data;
+      try { data = await frameFor(entry); }
+      catch (error) { if (!entry.initial) throw error; data = { error: 'unavailable' }; }
+      // a log view opens even when its first read fails: an empty stale frame, retried by the refresh loop
+      if (data?.error && entry.initial) data = { ...entry.initial, at: new Date(now()).toISOString(), lines: [], stale: true };
       if (!valid(entry, token)) return;
       if (data?.error) throw new Error(data.error === 'too-large' ? 'the board is too large' : data.error);
       entry.opened = true; // from here a stop must close the view (set before the send: a stop during it still closes)
@@ -223,14 +227,14 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     return reply(200, 'Share rejected.');
   }
 
-  async function openFor(owner, { view, provider, title }) {
+  async function openFor(owner, { view, provider, title, initial }) {
     if (view !== 'log' || typeof provider !== 'function') return reply(400, 'Invalid log share.');
     if (!recovered || !desktop || generation === undefined) return reply(409, 'No desktop for this call.');
     if (!approvers.has(owner, 'approver')) return reply(403, 'Forbidden.');
     if (active) return reply(409, `Stop the ${active.payload.view} share first.`);
     const entry = { payload: Object.freeze({ id: randomUUID(), view, title: safe(String(title || 'Investigation log')),
       proposed_by: safe(String(owner)), proposed_at: new Date(now()).toISOString() }),
-      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, rawLines: [] };
+      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, initial, rawLines: [] };
     active = entry; // claim the desktop before the first await
     entry.approved_by = String(owner).toLowerCase();
     try { await write(entry, 'approved', { approved_by: entry.approved_by }); }
@@ -239,6 +243,9 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     void start(entry);
     return reply(200, 'Sharing the investigation log.', { ...entry.payload });
   }
+
+  // ends one share by its id; a pending proposal and any other share are left alone
+  async function close(id) { if (active?.payload.id === id) await stopEntry(active, 'investigation-ended'); }
 
   async function stop(email) {
     if (!approvers.has(email, 'member')) return reply(403, 'Forbidden.');
@@ -287,7 +294,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     recovered = true;
   }
 
-  return { request, approve, reject, openFor, stop, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  return { request, approve, reject, openFor, close, stop, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     startCall, endCall, recover };
 }
 

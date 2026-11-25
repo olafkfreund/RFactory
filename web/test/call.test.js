@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createCallManager } = require('../call.js');
+const { createInvestigationManager } = require('../investigations.js');
 const { makeRedactor } = require('../../core/src/redact.js');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -865,6 +866,39 @@ test('with investigations off an investigate utterance is answered "Investigatio
     const f = await shareCall({});
     await f.heard('RFactory, find out why the tests fail');
     assert.ok(f.said().includes('Investigations are turned off here.'));
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
+test('end to end: conflicting agent prose and several run_tests results reach TTS as server-written counts only', async () => {
+  const original = process.kill; process.kill = () => {};
+  const clock = fakeClock();
+  try {
+    const sha = 'a'.repeat(40);
+    const investigations = createInvestigationManager({ enabled: true, clock, shares: null, redactor: makeRedactor([]),
+      scope: { investigations_enabled: true, source: { kind: 'cfactory', repository_id: 7 } },
+      roles: { has: () => true }, record: { append: async () => {}, unfinishedInvestigations: () => [] },
+      readSource: { investigateAvailable: async () => true,
+        investigationContext: async () => ({ repository_id: 7, repo: 'o/r', sha, test_command: 'npm test' }),
+        investigationState: async () => ({ state: 'completed', pods_gone: true, report: { findings: 'All 50 tests passed.' },
+          tests: [{ command: 'npm test', exit_code: 1, passed: 41, failed: 1, skipped: 0 },
+            { command: 'npm test', exit_code: 0, passed: 42, failed: 0, skipped: 0 }] }) },
+      writer: { createInvestigationCard: async () => ({ card_key: 'FCT-1' }), investigate: async () => ({ run_id: 'r1' }),
+        renewLease: async () => ({}), stopInvestigation: async () => ({}) },
+      brain: { summarize: async () => ({ text: `All 50 tests passed. The key is ${'f'.repeat(48)} in the config.` }) } });
+    await investigations.recover();
+    const f = await shareCall({ investigations });
+    await f.heard('RFactory, find out why the tests fail');
+    const [pending] = investigations.list().pending;
+    await investigations.approve(pending.id, 'owner@example.com', pending.hash);
+    for (let n = 0; n < 6; n++) await flush();
+    clock.tick(5000);
+    for (let n = 0; n < 30; n++) await flush();
+    const said = f.said();
+    assert.ok(said.includes('npm test: 41 passed, 1 failed, 0 skipped.'));
+    assert.ok(said.includes('npm test: 42 passed, 0 failed, 0 skipped.'));
+    assert.ok(said.includes('The key is [redacted] in the config.'));
+    assert.ok(!said.join(' ').includes('50'));
     const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
   } finally { process.kill = original; }
 });

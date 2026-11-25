@@ -499,26 +499,23 @@ function renderInvestigation(doc) {
     li.appendChild(el(doc, 'div', `Limits: ${limits.minutes} minutes, ${limits.tokens} tokens, ${limits.turns} turns`, 'evidence'));
     li.appendChild(el(doc, 'div', `State: ${investigationStateText(s)}`, 'evidence'));
     if (s.proposed_by) li.appendChild(el(doc, 'div', `Proposed by ${s.proposed_by} (display name, not verified)`, 'evidence'));
-    for (const t of s.tests || []) {
-      li.appendChild(el(doc, 'div', t.parsed === false ? `${t.command}: exit code ${t.exit_code}, counts not read`
-        : `${t.command}: ${t.passed} passed, ${t.failed} failed, ${t.skipped} skipped`, 'evidence'));
-    }
+    for (const sentence of s.test_sentences || []) li.appendChild(el(doc, 'div', sentence, 'evidence'));
     if (s.report) {
       const findings = s.report.findings;
       li.appendChild(el(doc, 'pre', typeof findings === 'string' ? findings : JSON.stringify(findings, null, 2), 'action-payload'));
-      for (const ref of Array.isArray(s.report.refs) ? s.report.refs : []) li.appendChild(el(doc, 'div', `${ref.file}:${ref.line}`, 'evidence'));
+      for (const ref of Array.isArray(s.report.refs) ? s.report.refs : []) li.appendChild(el(doc, 'div', `${ref?.file}:${ref?.line}`, 'evidence'));
     }
     const row = el(doc, 'div', undefined, 'investigation-buttons');
-    const button = (label, tail, hash) => {
+    const button = (label, tail, body) => {
       const b = el(doc, 'button', label, 'btn');
       b.setAttribute('type', 'button');
-      b.addEventListener('click', () => decideInvestigation(doc, tail, hash));
+      b.addEventListener('click', () => decideInvestigation(doc, tail, body));
       row.appendChild(b);
     };
     if (s.state === 'proposed' && store.canApprove) {
-      button('Approve', `${encodeURIComponent(s.id)}/approve`, s.hash);
-      button('Reject', `${encodeURIComponent(s.id)}/reject`, s.hash);
-    } else if (INVESTIGATION_LIVE.has(s.state)) button('Stop', 'stop');
+      button('Approve', `${encodeURIComponent(s.id)}/approve`, { hash: s.hash });
+      button('Reject', `${encodeURIComponent(s.id)}/reject`, { hash: s.hash });
+    } else if (INVESTIGATION_LIVE.has(s.state)) button('Stop', 'stop', { id: s.id });
     if (row.firstChild) li.appendChild(row);
     ul.appendChild(li);
   }
@@ -533,11 +530,11 @@ function handleInvestigation(doc, event) {
   renderInvestigation(doc);
 }
 
-async function decideInvestigation(doc, tail, hash) {
+async function decideInvestigation(doc, tail, payload) {
   const status = doc.getElementById('investigation-status');
   try {
     const r = await fetch(`/api/investigations/${tail}`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : {}) });
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(payload) });
     const body = await r.json();
     status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
   } catch { status.textContent = 'Failed: network'; }
@@ -550,7 +547,9 @@ async function loadInvestigations(doc) {
     const data = await r.json();
     const store = investigationStoreOf(doc);
     store.canApprove = !!data.can_approve;
-    for (const s of [...data.history, ...data.pending, ...(data.running ? [data.running] : [])]) store.items.set(s.id, s);
+    const loaded = new Map([...data.history, ...data.pending, ...(data.running ? [data.running] : [])].map((s) => [s.id, s]));
+    // a row the event stream already delivered is newer than this answer
+    for (const [id, s] of loaded) if (!store.items.has(id)) store.items.set(id, s);
     renderInvestigation(doc);
   } catch { /* panel stays hidden */ }
 }

@@ -60,7 +60,8 @@ function createRecord({ dir, clock = Date, redactor }) {
 
   function unfinished() { return lastEntries().filter((e) => !e.kind && e.state === 'executing'); }
   function unfinishedShares() { return lastEntries().filter((e) => e.kind === 'share' && ['starting', 'running'].includes(e.state)); }
-  function unfinishedInvestigations() { return lastEntries().filter((e) => e.kind === 'investigation' &&
+  // 'investigate': rows written before the audit kind was put after the payload's own kind
+  function unfinishedInvestigations() { return lastEntries().filter((e) => ['investigation', 'investigate'].includes(e.kind) &&
     ['starting', 'running', 'stopping', 'uncertain'].includes(e.state)); }
 
   return { append, prune, unfinished, unfinishedShares, unfinishedInvestigations };

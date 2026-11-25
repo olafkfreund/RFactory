@@ -227,3 +227,37 @@ test('log provider redacts the whole raw window across polls before the 200-line
   assert.ok(!JSON.stringify(f.entries).includes('private data'));
   await f.manager.stop('owner@example.com');
 });
+
+test('a failing first log read keeps a stale log share and retries on the refresh loop', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  let reads = 0;
+  const provider = async () => { if (++reads === 1) throw new Error('log read failed');
+    return { repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: ['later'] }; };
+  await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log', initial: { repo: 'notes-api', sha: 'a'.repeat(40) } });
+  await until(() => f.entries.at(-1).state === 'running');
+  const opened = f.calls.find((c) => c[0] === 'openView')[3];
+  assert.deepEqual([opened.lines, opened.stale], [[], true]);
+  f.clock.advance(5000);
+  await until(() => f.calls.some((c) => c[0] === 'updateView'));
+  assert.deepEqual(f.calls.find((c) => c[0] === 'updateView')[2].lines, ['later']);
+});
+
+test('close(id) ends only that share and leaves a pending board proposal', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: [] });
+  const { share } = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  await f.manager.stop('owner@example.com');
+  const second = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  await f.manager.close(share.id);
+  assert.equal(f.manager.list().running.id, second.share.id);
+  await f.manager.stop('owner@example.com');
+  const third = await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  f.manager.list(); await f.manager.close(third.share.id);
+  assert.equal(f.manager.list().running, null);
+  const board = await proposed(f);
+  await f.manager.close(third.share.id);
+  assert.equal(f.manager.list().pending[0].id, board.id);
+});

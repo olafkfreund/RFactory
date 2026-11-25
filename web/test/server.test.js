@@ -393,7 +393,7 @@ function fakeShares() {
       if (email !== ME) return { status: 403, text: 'Forbidden.' };
       return hash === 'good' ? { status: 200, text: 'Sharing the board.' } : { status: 409, text: 'This share is no longer pending.' }; },
     reject: async (...args) => { calls.push(['reject', ...args]); return { status: 200, text: 'Share rejected.' }; },
-    stop: async (email) => { calls.push(['stop', email]); return { status: 200, text: 'Stopped sharing.' }; } };
+    stop: async (email, id) => { calls.push(['stop', email, ...(id ? [id] : [])]); return { status: 200, text: 'Stopped sharing.' }; } };
   return s;
 }
 
@@ -464,8 +464,8 @@ test('investigation approve, reject and stop: header, origin, member, approver a
   assert.equal((await get(path, { body: {} })).status, 400);
   assert.equal((await get(path, { body: { hash: 'good' } })).status, 200);
   assert.equal((await get('/api/investigations/abc-1/reject')).status, 200);
-  assert.equal((await get('/api/investigations/stop', { email: 'other@example.com', body: {} })).status, 200);
-  assert.deepEqual(investigations.calls.at(-1), ['stop', 'other@example.com']);
+  assert.equal((await get('/api/investigations/stop', { email: 'other@example.com', body: { id: 'abc-1' } })).status, 200);
+  assert.deepEqual(investigations.calls.at(-1), ['stop', 'other@example.com', 'abc-1']);
   assert.equal((await (await get('/api/investigations', { method: 'GET' })).json()).can_approve, true);
   assert.equal((await get('/api/shares', { method: 'GET' })).status, 404); // one manager does not open the other's routes
 });

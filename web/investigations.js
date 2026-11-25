@@ -7,21 +7,37 @@ const PROPOSAL_MS = 10 * 60 * 1000;
 const RUN_MS = 30 * 60 * 1000;
 const LEASE_MS = 10 * 1000;
 const POLL_MS = 5 * 1000;
+const GRACE_MS = 60 * 1000; // AIFactory's watchdog bound: a run without a lease is gone by then
+const LEASE_LOST_MS = 30 * 1000;
+const HISTORY_LIMIT = 50;
+const TERMINAL = new Set(['completed', 'done', 'failed', 'stopped', 'expired']);
 const reply = (status, text, investigation) => ({ status, text, ...(investigation ? { investigation } : {}) });
 const OFF = 'Investigations are turned off here.';
-// a count claimed in prose ("all 50 tests passed"): only the server speaks counts, from run_tests
-const COUNT_CLAIM = /\b(?:\d+|all|every|none|no|zero|one|two|three|four|five|six|seven|eight|nine|ten)\b(?:\W+\w+){0,2}?\W+(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped)\b/i;
+// a summary sentence that counts tests is dropped: only the server speaks results, from run_tests
+const ABOUT_TESTS = /\b(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped|suite)\b/i;
+const QUANTITY = /\b\d+\b|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|dozens?|all|every|none|no|both|each|most|half|several|many|few)\b/i;
+const count = (value) => Number.isInteger(value) && value >= 0;
+
+// run_tests results are checked once, as they arrive; what cannot be read is reported as unread
+function readTests(tests) {
+  return tests.map((item) => {
+    const { command, exit_code, passed, failed, skipped, parsed } = item && typeof item === 'object' ? item : {};
+    return { command: typeof command === 'string' && command ? command : 'A test run',
+      exit_code: Number.isInteger(exit_code) ? exit_code : 'unknown',
+      ...(parsed !== false && [passed, failed, skipped].every(count) ? { passed, failed, skipped } : { parsed: false }) };
+  });
+}
 
 function testSentences(tests, testCommand) {
   if (!Array.isArray(tests)) return ['I could not read the test results.'];
   if (!tests.length) return [testCommand === null ? 'No tests were run: none are configured.' : 'No tests were run.'];
-  return tests.map(({ command, exit_code, passed, failed, skipped }) =>
-    [passed, failed, skipped].every(Number.isInteger)
-      ? `${command}: ${passed} passed, ${failed} failed, ${skipped} skipped.`
-      : `${command} exited with code ${Number.isInteger(exit_code) ? exit_code : 'unknown'}; I could not read the counts.`);
+  return tests.map(({ command, exit_code, passed, failed, skipped, parsed }) => parsed === false
+    ? `${command} exited with code ${exit_code}; I could not read the counts.`
+    : `${command}: ${passed} passed, ${failed} failed, ${skipped} skipped.`);
 }
 
-function createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock = Date, scope, roles, enabled }) {
+function createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock = Date, scope, roles, enabled,
+  log = (message) => console.error(`rfactory-web: ${message}`) }) {
   const now = () => clock.now();
   const timer = (fn, ms) => (clock.setTimeout || setTimeout).call(clock, fn, ms);
   const clear = (id) => { if (id) (clock.clearTimeout || clearTimeout).call(clock, id); };
@@ -29,7 +45,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   const listeners = new Set();
   const history = [];
   let pending;
-  let active;
+  const slots = new Set(); // what blocks a new investigation: the approved one, or every unresolved one after a restart
   let generation;
   let recovered = false;
 
@@ -41,8 +57,14 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       ...(entry.run_id ? { run_id: entry.run_id } : {}),
       ...(entry.report ? { report: entry.report } : {}),
       ...(entry.tests ? { tests: entry.tests } : {}),
+      ...sentences(entry),
       ...(entry.reason ? { reason: entry.reason } : {}),
       ...(entry.stale ? { stale: true } : {}) });
+  }
+  // the same sentences that are spoken; none while a run that has not tested yet is still going
+  function sentences(entry) {
+    return entry.tests && (entry.tests.length || entry.finished)
+      ? { test_sentences: testSentences(entry.tests, entry.payload.test_command) } : {};
   }
   function publish(event) {
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt the run. */ } }
@@ -50,7 +72,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry) });
   async function summarize(report) {
     const result = await brain.summarize(redactor.logSafeWindow(report)); // a brain without summarize() throws: no summary
-    return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !COUNT_CLAIM.test(sentence)).join(' ');
+    return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !(ABOUT_TESTS.test(sentence) && QUANTITY.test(sentence))).join(' ');
   }
   // the spoken result: server-written counts, then the brain's summary (the caller redacts it again before speech)
   async function announce(entry) {
@@ -62,28 +84,35 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     publish({ type: 'investigation-result', investigation: { id: entry.payload.id },
       counts: testSentences(entry.tests, entry.payload.test_command), summary });
   }
-  async function write(entry, state, extra = {}) {
+  // write() is strict: a step that must be on record before it happens. note() records what has already happened.
+  async function write(entry, state, extra = {}, tolerant = false) {
     entry.state = state;
-    const item = safe({ kind: 'investigation', ...entry.payload, hash: entry.hash, state,
+    const item = safe({ ...entry.payload, kind: 'investigation', hash: entry.hash, state,
       ...(entry.approved_by ? { approved_by: entry.approved_by } : {}),
       ...(entry.card_key ? { card_key: entry.card_key } : {}),
       ...(entry.run_id ? { run_id: entry.run_id } : {}),
+      ...(entry.dispatchedAt ? { dispatched_at: new Date(entry.dispatchedAt).toISOString() } : {}), // survives restarts
       ...(entry.tests ? { tests: entry.tests } : {}), ...extra });
-    await record.append(item);
-    history.push(entry.report ? { ...item, report: entry.report } : item);
+    try { await record.append(item); }
+    catch (error) {
+      if (!tolerant) throw error;
+      log(`investigation record failed (${item.id} ${state}): ${safe(String(error?.message))}`);
+    }
+    for (const older of entry.report ? history : []) delete older.report; // only the newest report is kept
+    history.push({ ...item, ...sentences(entry), ...(entry.report ? { report: entry.report } : {}) });
+    history.splice(0, history.length - HISTORY_LIMIT);
     if (entry.state === state) emit(entry);
   }
-  const valid = (entry, token) => active === entry && entry.token === token && entry.generation === generation;
+  const note = (entry, state, extra) => write(entry, state, extra, true);
+  const valid = (entry, token) => slots.has(entry) && !entry.finished && entry.token === token && entry.generation === generation;
   function clearLiveTimers(entry) {
-    clear(entry.proposalTimer); clear(entry.lifeTimer); clear(entry.leaseTimer); clear(entry.pollTimer);
+    for (const name of ['proposalTimer', 'lifeTimer', 'leaseTimer', 'pollTimer']) { clear(entry[name]); entry[name] = undefined; }
   }
   function closeLog(entry) {
-    if (entry.logShareId && shares?.list?.().running?.id === entry.logShareId) {
-      void shares.stop(entry.approved_by).catch(() => {});
-    }
+    if (entry.logShareId) void Promise.resolve(shares.close(entry.logShareId)).catch(() => {});
   }
   function schedulePoll(entry) {
-    if (entry.pollTimer || entry.polling || !entry.run_id) return;
+    if (entry.pollTimer || entry.polling || !(entry.run_id || entry.unconfirmed)) return;
     entry.pollTimer = timer(() => { entry.pollTimer = undefined; void poll(entry); }, POLL_MS);
     entry.pollTimer.unref?.();
   }
@@ -91,69 +120,118 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     if (entry.state !== 'running' || !entry.run_id) return;
     entry.leaseTimer = timer(async () => {
       entry.leaseTimer = undefined;
-      if (entry.state !== 'running' || active !== entry) return;
+      const over = () => entry.finished || entry.stopping;
+      if (over()) return;
       try {
         const result = await writer.renewLease(entry.card_key, entry.run_id);
-        if (entry.state !== 'running' || active !== entry) return;
         if (result?.error) throw new Error('lease refused');
-        scheduleLease(entry);
-      } catch { void stopEntry(entry, 'lease-lost'); }
+        entry.leasedAt = now();
+      } catch {
+        if (over()) return;
+        await poll(entry); // a finished run refuses its lease: read the state before calling it lost
+        if (over()) return;
+        if (!entry.terminal && now() - entry.leasedAt >= LEASE_LOST_MS) { void stopEntry(entry, 'lease-lost'); return; }
+      }
+      if (!over()) scheduleLease(entry);
     }, LEASE_MS);
     entry.leaseTimer.unref?.();
   }
   async function finish(entry, state, reason) {
     if (entry.finished) return;
     entry.finished = true;
+    entry.reason = reason;
     clearLiveTimers(entry);
     closeLog(entry);
-    await write(entry, state, reason ? { reason } : {});
-    if (active === entry) active = undefined;
+    try { await note(entry, state, reason ? { reason } : {}); }
+    finally { slots.delete(entry); }
   }
-  async function poll(entry) {
-    if (entry.polling || !entry.run_id || entry.finished) return;
-    entry.polling = true;
+  async function stopUnconfirmed(entry) {
+    if (entry.state === 'uncertain' && entry.reason === 'stop not confirmed') { emit(entry); return; }
+    entry.reason = 'stop not confirmed';
+    await note(entry, 'uncertain', { reason: entry.reason });
+  }
+  function poll(entry) {
+    if (entry.finished) return Promise.resolve();
+    entry.polling ||= (entry.run_id ? readState(entry) : findRun(entry)).catch((error) => log(`investigation poll failed: ${safe(String(error?.message))}`))
+      .finally(() => { entry.polling = undefined; if (!entry.finished && slots.has(entry)) schedulePoll(entry); });
+    return entry.polling;
+  }
+  async function readState(entry) {
+    let state;
     try {
-      const state = await readSource.investigationState(entry.card_key, entry.run_id);
-      if (entry.finished) return;
-      if (state?.error) throw new Error('state refused');
-      entry.stale = false;
-      if (Array.isArray(state.tests)) entry.tests = redactor.logSafeWindow(state.tests.map(({ command, exit_code, passed, failed, skipped, parsed }) =>
-        ({ command, exit_code, ...(parsed === false ? { parsed: false } : { passed, failed, skipped }) })));
-      if (entry.stopping) {
-        if (state.pods_gone === true) await finish(entry, 'stopped', entry.stopReason);
-        else { entry.state = 'uncertain'; entry.reason = 'stop not confirmed'; emit(entry); }
-      } else if (['completed', 'done', 'failed', 'stopped', 'expired'].includes(state.state) && state.pods_gone === true) {
-        if (state.report) entry.report = redactor.logSafeWindow(state.report);
-        const final = state.state === 'done' ? 'completed' : state.state;
-        await finish(entry, final);
-        if (final === 'completed') void announce(entry);
-      }
+      state = await readSource.investigationState(entry.card_key, entry.run_id);
+      if (!state || state.error) throw new Error('state refused');
     } catch {
-      if (!entry.finished) { entry.stale = true; if (entry.stopping) { entry.state = 'uncertain'; entry.reason = 'stop not confirmed'; } emit(entry); }
-    } finally {
-      entry.polling = false;
-      if (!entry.finished && active === entry) schedulePoll(entry);
+      if (entry.finished) return;
+      entry.stale = true;
+      if (entry.stopping) await stopUnconfirmed(entry);
+      else emit(entry);
+      return;
+    }
+    if (entry.finished) return;
+    entry.stale = false;
+    if (Array.isArray(state.tests)) entry.tests = redactor.logSafeWindow(readTests(state.tests));
+    entry.terminal = TERMINAL.has(state.state);
+    if (state.pods_gone === true && (entry.stopping || entry.terminal)) {
+      const final = state.state === 'done' ? 'completed' : state.state;
+      // a Stop that arrives after the run completed does not discard its report
+      const own = entry.terminal && (!entry.stopping || (final === 'completed' && !!state.report));
+      if (own && state.report) entry.report = redactor.logSafeWindow(state.report);
+      await finish(entry, own ? final : 'stopped', own ? undefined : entry.stopReason);
+      if (own && final === 'completed') void announce(entry);
+    } else if (entry.stopping) {
+      if (now() - entry.stopAt >= GRACE_MS) await stopUnconfirmed(entry);
+      else { entry.state = 'stopping'; delete entry.reason; emit(entry); }
     }
   }
-  async function stopEntry(entry, reason) {
+  // a card without a run id: the start was not confirmed, so ask CFactory until it says what happened
+  async function findRun(entry) {
+    let found;
+    let stale = false;
+    try { found = await readSource.investigationRecord(entry.card_key); }
+    catch { stale = true; }
+    if (entry.finished) return;
+    entry.stale = stale;
+    const runId = found?.detail?.run_id ?? found?.run_id;
+    if (typeof runId === 'string' && runId) {
+      entry.run_id = runId;
+      entry.unconfirmed = false;
+      if (entry.stopping) await sendStop(entry);
+      else await goRunning(entry);
+    } else if (found && !found.error && (found.status === 'refused' ||
+        // 'created' is final once CFactory has answered; after a lost reply the dispatch may still be on its way
+        (found.status === 'created' && (entry.replied || now() - entry.dispatchedAt >= GRACE_MS)))) {
+      await finish(entry, entry.stopping ? 'stopped' : 'rejected', entry.stopping ? entry.stopReason : 'start refused');
+    } else if (now() - entry.dispatchedAt >= RUN_MS + GRACE_MS) {
+      // no run outlives the run limit, and one without a lease dies within the grace: nothing can still be running
+      await finish(entry, 'failed', 'start not confirmed; freed after the run limit');
+    } else if (stale) emit(entry);
+  }
+  async function sendStop(entry) {
+    entry.stopAt = now();
+    delete entry.reason;
+    await note(entry, 'stopping', { reason: entry.stopReason });
+    try { await writer.stopInvestigation(entry.card_key, entry.run_id); }
+    catch { /* A failed Stop is retried at recovery; confirmation comes from the state read. */ }
+  }
+  function stopEntry(entry, reason) {
     if (entry.finished || entry.stopping) return entry.stopPromise;
     entry.stopping = true;
     entry.stopReason = reason;
+    entry.stopAt = now();
     entry.token++;
     clearLiveTimers(entry);
     if (pending === entry) pending = undefined;
     closeLog(entry);
     entry.stopPromise = (async () => {
-      try { await write(entry, 'stopping', { reason }); }
-      catch { /* An audit write failure cannot prevent a known run from being stopped. */ }
-      if (!entry.run_id) {
-        if (entry.dispatching || entry.startUncertain) return; // a run may exist without a confirmed id.
-        await finish(entry, 'stopped', reason);
-        return;
+      if (entry.unconfirmed) { // still "start not confirmed": there is no run id to stop yet
+        schedulePoll(entry);
+        await note(entry, 'uncertain', { reason: entry.reason });
+      } else if (entry.run_id) { await sendStop(entry); await poll(entry); }
+      else {
+        await note(entry, 'stopping', { reason });
+        if (!entry.dispatching && !entry.unconfirmed && !entry.run_id) await finish(entry, 'stopped', reason);
       }
-      try { await writer.stopInvestigation(entry.card_key, entry.run_id); }
-      catch { /* A failed Stop is retried at recovery; confirmation still comes from the state read. */ }
-      if (!entry.finished) await poll(entry);
     })();
     return entry.stopPromise;
   }
@@ -161,13 +239,14 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     if (entry.state !== 'proposed') return;
     clear(entry.proposalTimer);
     if (pending === entry) pending = undefined;
-    await write(entry, 'expired');
+    entry.finished = true;
+    await note(entry, 'expired');
   }
   async function request(text, speaker, show_log = false) {
     if (!enabled || !scope.investigations_enabled) return reply(403, OFF);
     if (typeof show_log !== 'boolean') return reply(400, "I can't do that.");
     if (generation === undefined) return reply(409, 'There is no call right now.');
-    if (active) return reply(409, 'An investigation is already in progress.');
+    if (slots.size) return reply(409, 'An investigation is already in progress.');
     if (pending) return reply(409, 'An investigation is waiting for approval.');
     const call = generation;
     let context;
@@ -182,14 +261,14 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       show_log, proposed_by: safe(String(speaker || 'Unknown')),
       proposed_at: new Date(now()).toISOString(), expires_at: new Date(now() + PROPOSAL_MS).toISOString() });
     if (!revalidate(payload, now(), { scope, repo: context.repo, redactor })) return reply(400, "I can't do that.");
-    if (pending || active) return reply(409, 'An investigation is already in progress.');
+    if (pending || slots.size) return reply(409, 'An investigation is already in progress.');
     const entry = { payload, hash: hashPayload(payload), generation: call, state: 'proposed', token: 0 };
     pending = entry;
     const approval_text = investigationApprovalText(payload);
     try { await write(entry, 'proposed', { approval_text }); }
     catch { if (pending === entry) pending = undefined; return reply(500, 'The investigation could not be recorded.'); }
     if (pending !== entry || call !== generation) return reply(409, 'The call has ended.');
-    entry.proposalTimer = timer(() => { if (entry.state === 'proposed') void expire(entry); else void stopEntry(entry, 'expired'); }, PROPOSAL_MS);
+    entry.proposalTimer = timer(() => { void expire(entry); }, PROPOSAL_MS);
     entry.proposalTimer.unref?.();
     const boardRunning = show_log && shares?.list?.().running?.view === 'board';
     return reply(202, `Approve the investigation on the RFactory page.${boardRunning ? ' To show the log, stop the board share first.' : ''}`,
@@ -210,75 +289,72 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       if (typeof card?.card_key === 'string' && card.card_key) entry.card_key = card.card_key;
       if (!valid(entry, token)) return;
       if (card?.error || !entry.card_key) { await finish(entry, 'rejected', 'card refused'); return; }
+      entry.dispatchedAt = now();
       await write(entry, 'starting'); // persist the recovery key before the possibly uncertain dispatch.
       if (!valid(entry, token)) return;
       entry.dispatching = true;
       let result;
       try { result = await writer.investigate(entry.card_key, {
         request: entry.payload.request, sha: entry.payload.sha, test_command: entry.payload.test_command, limits: entry.payload.limits }); }
-      catch {
-        entry.dispatching = false;
-        entry.startUncertain = true;
-        entry.reason = 'start not confirmed';
-        await write(entry, 'uncertain', { reason: entry.reason });
-        return;
-      }
+      catch { await unconfirmed(entry, false); return; }
       entry.dispatching = false;
-      if (typeof result?.run_id === 'string' && result.run_id) entry.run_id = result.run_id;
-      if (entry.stopping) { if (entry.run_id) await stopEntryAfterLateStart(entry); else await finish(entry, 'stopped', entry.stopReason); return; }
-      if (!valid(entry, token)) return;
-      if (result?.error) { await finish(entry, 'rejected', 'start refused'); return; }
-      if (!entry.run_id) {
-        entry.startUncertain = true;
-        entry.reason = 'start not confirmed';
-        await write(entry, 'uncertain', { reason: entry.reason });
-        return;
-      }
-      await write(entry, 'running');
-      if (!valid(entry, token)) return;
-      clear(entry.proposalTimer);
-      entry.lifeTimer = timer(() => { void stopEntry(entry, 'lifetime'); }, Math.max(0, entry.approvedAt + RUN_MS - now()));
-      entry.lifeTimer.unref?.();
-      scheduleLease(entry);
-      schedulePoll(entry);
-      if (entry.payload.show_log && shares) {
-        const opened = await shares.openFor(entry.approved_by, { view: 'log', title: `Investigation: ${entry.payload.repo}`,
-          provider: async () => {
-            const logs = await readSource.investigationLogs(entry.card_key, entry.run_id, entry.cursor || 0, 200);
-            if (logs?.error || !Array.isArray(logs?.entries)) throw new Error('log read failed');
-            entry.cursor = logs.cursor;
-            return { repo: entry.payload.repo, sha: entry.payload.sha, at: new Date(now()).toISOString(),
-              lines: logs.entries.map((item) => item.line) };
-          } });
-        if (opened.status === 200) {
-          entry.logShareId = opened.share?.id;
-          if (!valid(entry, token)) closeLog(entry);
-        }
-      }
-    } catch {
-      if (entry.stopping) return;
-      if (entry.startUncertain) return;
-      if (entry.run_id) { entry.reason = 'start not confirmed'; try { await write(entry, 'uncertain', { reason: entry.reason }); } catch {} }
-      else await finish(entry, 'failed', 'start failed');
+      if (typeof result?.run_id !== 'string' || !result.run_id) { await unconfirmed(entry, !!result?.error); return; }
+      entry.run_id = result.run_id;
+      // a canceled dispatch still created a run: keep the slot until its pod is gone
+      if (entry.stopping) { await sendStop(entry); await poll(entry); return; }
+      await goRunning(entry);
+    } catch (error) {
+      if (entry.finished || entry.stopping) return;
+      log(`investigation start failed: ${safe(String(error?.message))}`);
+      if (!entry.run_id) await finish(entry, 'failed', 'start failed');
     }
   }
-  async function stopEntryAfterLateStart(entry) {
-    // A canceled dispatch can still have created a run. Keep the slot until its pod is gone.
-    try { await write(entry, 'stopping', { reason: entry.stopReason }); } catch {}
-    try { await writer.stopInvestigation(entry.card_key, entry.run_id); } catch {}
-    await poll(entry);
+  // no run id after dispatch: an error, a timeout or an empty reply cannot say that nothing started
+  async function unconfirmed(entry, replied) {
+    Object.assign(entry, { dispatching: false, unconfirmed: true, replied, reason: 'start not confirmed' });
+    if (replied) await poll(entry); // CFactory answered, so its card record is final
+    if (entry.finished || !entry.unconfirmed) return;
+    schedulePoll(entry);
+    await note(entry, 'uncertain', { reason: entry.reason });
+  }
+  async function goRunning(entry) {
+    const token = entry.token;
+    delete entry.reason;
+    entry.leasedAt = now();
+    await note(entry, 'running');
+    if (!valid(entry, token)) return;
+    scheduleLease(entry);
+    schedulePoll(entry);
+    if (entry.payload.show_log && shares) void openLog(entry, token);
+  }
+  async function openLog(entry, token) {
+    const { repo, sha } = entry.payload;
+    try {
+      const opened = await shares.openFor(entry.approved_by, { view: 'log', title: `Investigation: ${repo}`, initial: { repo, sha },
+        provider: async () => {
+          const logs = await readSource.investigationLogs(entry.card_key, entry.run_id, entry.cursor || 0, 200);
+          if (logs?.error || !Array.isArray(logs?.entries)) throw new Error('log read failed');
+          entry.cursor = logs.cursor;
+          return { repo, sha, at: new Date(now()).toISOString(), lines: logs.entries.map((item) => item.line) };
+        } });
+      if (opened.status !== 200) return;
+      entry.logShareId = opened.share?.id;
+      if (!valid(entry, token)) closeLog(entry);
+    } catch (error) { log(`investigation log view failed: ${safe(String(error?.message))}`); }
   }
   async function approve(id, email, hash) {
     if (!recovered) return reply(503, 'Investigations are recovering.');
     if (!roles.has(email, 'approver')) return reply(403, 'Forbidden.');
     const entry = pending;
     if (!entry || entry.payload.id !== id || entry.hash !== hash || entry.state !== 'proposed') return reply(409, 'This investigation is no longer pending.');
-    if (active) return reply(409, 'An investigation is already in progress.');
+    if (slots.size) return reply(409, 'An investigation is already in progress.');
     if (now() >= Date.parse(entry.payload.expires_at) || entry.generation !== generation) { await expire(entry); return reply(409, 'This investigation has expired.'); }
     pending = undefined;
-    active = entry; // the slot is claimed before the first await.
+    slots.add(entry); // the slot is claimed before the first await.
+    clear(entry.proposalTimer);
     entry.approved_by = String(email).toLowerCase();
-    entry.approvedAt = now();
+    entry.lifeTimer = timer(() => { void stopEntry(entry, 'lifetime'); }, RUN_MS);
+    entry.lifeTimer.unref?.();
     const token = ++entry.token;
     try { await write(entry, 'approved'); }
     catch { await finish(entry, 'failed', 'record failed'); return reply(500, 'The investigation could not be recorded.'); }
@@ -292,21 +368,26 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     const entry = pending;
     if (!entry || entry.payload.id !== id || entry.hash !== hash || entry.state !== 'proposed') return reply(409, 'This investigation is no longer pending.');
     pending = undefined; clear(entry.proposalTimer);
-    await write(entry, 'rejected', { rejected_by: String(email).toLowerCase() });
+    entry.finished = true;
+    await note(entry, 'rejected', { rejected_by: String(email).toLowerCase() });
     return reply(200, 'Investigation rejected.');
   }
-  async function stop(email) {
+  // Stop names the investigation the member saw, so a late click cannot stop a different one
+  async function stop(email, id) {
     if (!roles.has(email, 'member')) return reply(403, 'Forbidden.');
-    if (pending) await expire(pending);
-    if (active) await stopEntry(active, 'manual');
-    return reply(200, active ? 'Stop not confirmed.' : 'Investigation stopped.');
+    if (pending && pending.payload.id === id) { await expire(pending); return reply(200, 'Investigation stopped.'); }
+    const entry = [...slots].find((item) => item.payload.id === id);
+    if (!entry) return reply(409, 'This investigation is no longer active.');
+    await stopEntry(entry, 'manual');
+    return reply(200, slots.has(entry) ? 'Stop not confirmed yet.' : 'Investigation stopped.');
   }
-  function list() { return { pending: pending ? [{ ...publicEntry(pending), approval_text: investigationApprovalText(pending.payload) }] : [],
-    running: active ? publicEntry(active) : null, history: history.map(safe) }; }
+  function list() { const [running] = slots; return { pending: pending ? [publicEntry(pending)] : [],
+    running: running ? publicEntry(running) : null, history: history.map(safe) }; }
   async function endCall() {
     generation = undefined;
+    const ending = [...slots]; // taken now: a new call's investigation is not ours to stop
     if (pending) await expire(pending);
-    if (active) await stopEntry(active, 'call-ended');
+    await Promise.all(ending.map((entry) => stopEntry(entry, 'call-ended')));
   }
   async function startCall(nextGeneration) {
     const ending = endCall(); // its synchronous part clears the old call; an unconfirmed stop must not delay the new one
@@ -319,24 +400,18 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
         request: item.request, test_command: item.test_command, limits: item.limits, show_log: item.show_log,
         proposed_by: item.proposed_by, proposed_at: item.proposed_at, expires_at: item.expires_at },
       hash: item.hash, approved_by: item.approved_by, card_key: item.card_key, run_id: item.run_id,
-      generation, state: 'uncertain', token: 0, stopping: true, stopReason: 'restart', reason: 'stop not confirmed' };
-      active = entry;
-      // no card means nothing was dispatched; a card whose CFactory record shows no run and no live dispatch has none
-      // either (an orphan run without RFactory's lease is ended by AIFactory's watchdog within 60 s)
-      let noRun = !entry.card_key;
-      if (!entry.run_id && entry.card_key) {
-        try {
-          const found = await readSource.investigationRecord(entry.card_key);
-          const runId = found?.detail?.run_id ?? found?.run_id;
-          if (typeof runId === 'string' && runId) entry.run_id = runId;
-          else noRun = !!found && typeof found === 'object' && !found.error && found.status !== 'starting';
-        } catch {}
+      generation, state: 'uncertain', token: 0, stopping: true, stopReason: 'restart', stopAt: now() };
+      // no card means nothing was dispatched
+      if (!entry.card_key && !entry.run_id) { slots.add(entry); await finish(entry, 'stopped', 'restart'); continue; }
+      slots.add(entry);
+      if (entry.run_id) await sendStop(entry);
+      else {
+        Object.assign(entry, { unconfirmed: true, reason: 'start not confirmed',
+          dispatchedAt: Date.parse(item.dispatched_at) || Date.parse(item.at) || now() });
+        await poll(entry); // asks the card; a run id found there is stopped
       }
-      if (entry.run_id) {
-        try { await writer.stopInvestigation(entry.card_key, entry.run_id); } catch {}
-        await poll(entry);
-      } else if (noRun) await finish(entry, 'stopped', 'restart');
-      if (!entry.finished) { await write(entry, 'uncertain', { reason: 'stop not confirmed' }); schedulePoll(entry); }
+      if (entry.run_id) await poll(entry);
+      if (!entry.finished && !entry.run_id) await note(entry, 'uncertain', { reason: entry.reason });
     }
     recovered = true;
   }

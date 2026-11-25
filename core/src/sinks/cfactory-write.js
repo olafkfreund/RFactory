@@ -51,10 +51,11 @@ function createCfactoryWriter({ mcpUrl, writeKeyFile, redactor, client, connectC
   async function invoke(name, args) {
     let timer;
     let reply;
+    let expired = false; // a connection that arrives after the timeout must not send
     try {
       reply = await Promise.race([
-        getClient().then((c) => c.callTool({ name, arguments: args })),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('write-timeout')), timeoutMs); }),
+        getClient().then((c) => { if (expired) throw new Error('write-timeout'); return c.callTool({ name, arguments: args }); }),
+        new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error('write-timeout')); }, timeoutMs); }),
       ]);
     } catch (error) {
       connected = undefined;

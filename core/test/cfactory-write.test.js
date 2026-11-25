@@ -169,3 +169,14 @@ test('investigation writes: a refusal gives {error}; timeout and unparsable repl
   await assert.rejects(setup(t, () => new Promise(() => {})).writer.stopInvestigation('FCT-20', 'r1'), /write-timeout/);
   await assert.rejects(setup(t, { content: [{ type: 'text', text: '{bad' }] }).writer.stopInvestigation('FCT-20', 'r1'), /write-unparsable/);
 });
+
+test('an investigation write is never sent when the connection arrives after its timeout', async (t) => {
+  const s = setup(t);
+  let connect;
+  const writer = createCfactoryWriter({ writeKeyFile: s.file, redactor: s.redactor,
+    connectClient: () => new Promise((resolve) => { connect = resolve; }), timeoutMs: 5 });
+  await assert.rejects(writer.investigate('FCT-20', {}), /write-timeout/);
+  connect({ callTool: (request) => { s.calls.push(request); return reply({ run_id: 'r1' }); } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.calls.length, 0);
+});

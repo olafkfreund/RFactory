@@ -365,10 +365,19 @@ test('investigation panel: limits, approval for approvers only, unconfirmed stat
     assert.ok(list.textContent.includes(`State: ${reason}`));
     assert.deepEqual(labels(), ['Stop']);
   }
-  send({ state: 'completed', tests: [{ command: hostile, exit_code: 1, passed: 41, failed: 1, skipped: 0 }],
+  let sent;
+  global.fetch = async (url, options) => { sent = [url, JSON.parse(options.body)]; return { ok: true, json: async () => ({ text: 'ok' }) }; };
+  try { await list.all().find((n) => n.tag === 'button').listeners.click(); } finally { global.fetch = realFetch; }
+  assert.deepEqual(sent, ['/api/investigations/stop', { id: 'i1' }]);
+  // a late GET answer must not overwrite the newer event-stream state
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [], running: { ...base, state: 'running' }, history: [], can_approve: true }) });
+  try { await loadInvestigations(doc); } finally { global.fetch = realFetch; }
+  assert.ok(list.textContent.includes('State: stop not confirmed'));
+  send({ state: 'completed', tests: [{ command: 'x', exit_code: 1 }], test_sentences: [`${hostile}: 41 passed, 1 failed, 0 skipped.`],
     report: { findings: hostile, refs: [{ file: hostile, line: 3 }] } });
   assert.equal(list.children.length, 1);
-  assert.ok(list.textContent.includes(`${hostile}: 41 passed, 1 failed, 0 skipped`));
+  assert.ok(list.textContent.includes(`${hostile}: 41 passed, 1 failed, 0 skipped.`));
+  assert.ok(!list.textContent.includes('undefined'));
   assert.ok(list.textContent.includes(`${hostile}:3`));
   assert.ok(!list.all().some((n) => ['img', 'script'].includes(n.tag)));
   assert.deepEqual(labels(), []);

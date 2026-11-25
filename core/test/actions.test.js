@@ -110,12 +110,9 @@ test('canonical JSON and SHA-256 are stable across key order, including nested o
   assert.equal(hashPayload(a), hashPayload(b));
 });
 
-test('investigation tools accept only their specified arguments; card tools stay unchanged', () => {
-  assert.deepEqual(ok('investigate', { request: 'Why do tests fail?' }).args, { request: 'Why do tests fail?' });
-  assert.deepEqual(ok('stop_investigation', {}).args, {});
-  for (const args of [{}, { request: '' }, { request: '  ' }, { request: 'x', command: 'rm -rf /' },
-    { request: 'x'.repeat(2001) }, { request: 'password=hunter2' }]) refused('investigate', args);
-  refused('stop_investigation', { run_id: 'other' });
+test('the #10 action path refuses the investigation tools; card tools stay unchanged', () => {
+  refused('investigate', { request: 'Why do tests fail?' });
+  refused('stop_investigation', {});
   assert.deepEqual(ok('run_card', { card_key: 'FCT-9' }).args, { card_key: 'FCT-9' });
 });
 
@@ -131,7 +128,7 @@ test('investigation payload accepts only the approved shape and scope', () => {
     scope: { investigations_enabled: true, source: { kind: 'github', owner: 'owner', repo: 'notes-api' } } }).ok, false);
   assert.equal(validateInvestigation({ ...payload, test_command: null }, check).ok, true);
   const bad = [
-    { id: '' }, { kind: 'run' }, { repo: 'other/repo' }, { sha: 'a'.repeat(39) },
+    { id: '' }, { kind: 'run' }, { repo: 'other/repo' }, { sha: 'a'.repeat(39) }, { sha: ['a'.repeat(40)] },
     { request: '' }, { test_command: 4 }, { limits: { ...payload.limits, turns: 201 } },
     { limits: { ...payload.limits, extra: 1 } }, { show_log: 'yes' }, { proposed_by: '' },
     { proposed_at: 'bad' }, { proposed_at: 1 }, { expires_at: 'bad' }, { request: 'password=hunter2' },
