@@ -241,6 +241,9 @@ test('each test run is spoken from run_tests results; prose counts are dropped; 
 test('no test runs are said plainly, and a failing brain still leaves the counts', async () => {
   const none = await result({ tests: [] }, { context: () => ({ repository_id: 7, repo: 'owner/notes-api', sha: SHA, test_command: null }) });
   assert.deepEqual(none.event.counts, ['No tests were run: none are configured.']);
+  // AIFactory's own shape when no run_tests call was made (#18 live test)
+  const nulled = await result({ tests: null, report: { findings: 'x', refs: [], tests: null } }, { context: () => ({ repository_id: 7, repo: 'owner/notes-api', sha: SHA, test_command: null }) });
+  assert.deepEqual(nulled.event.counts, ['No tests were run: none are configured.']);
   assert.equal(none.event.summary, '');
   const failed = await result({ tests: [], report: { findings: 'x' } }, { brain: () => { throw new Error('brain-timeout'); } });
   assert.deepEqual(failed.event.counts, ['No tests were run.']);
@@ -422,9 +425,12 @@ test('the log share closes by id when it opens after the run has finished', asyn
 
 test('a summary sentence is dropped only when it counts tests', async () => {
   const kept = ['The failing test is test_utf8, which reads bytes as text.', 'The failing test is test_parse_date, because the parser drops the time zone.', 'The suite is green.',
-    'All three parsers drop the time zone.', 'Line 40 reads the wrong field.', 'The failing test is test_utf8, which reads bytes as text.'];
+    'All three parsers drop the time zone.', 'Line 40 reads the wrong field.', 'The failing test is test_utf8, which reads bytes as text.',
+    // the #18 live test's own summary: "no" and "test files" far apart are not a count
+    'The investigation found no notes API in this repository: searching for "notes" only matched documentation headings in Markdown files, and no source or test files mention it.'];
   const dropped = ['Fifty tests passed.', 'All the tests pass now.', 'No tests failed.', '41 passed.', 'A dozen tests fail.',
-    'Both tests fail.', 'The checks recorded 41 successes and 1 error.', 'Two specs and 3 assertions broke.', 'All cases are green.', 'Most of the suite is skipped.', 'Twenty-one tests failed.', 'A few tests are failing.', 'One failure remains.'];
+    'Both tests fail.', 'The checks recorded 41 successes and 1 error.', 'Two specs and 3 assertions broke.', 'All cases are green.', 'Most of the suite is skipped.', 'Twenty-one tests failed.', 'A few tests are failing.', 'One failure remains.',
+    'Tests passed: 41.', 'No tests are configured, so nothing was run.'];
   const f = setup({ brain: () => ({ text: [...dropped, ...kept].join(' ') }) });
   assert.equal(await f.manager.summarize({ findings: 'x' }), kept.join(' '));
 });
