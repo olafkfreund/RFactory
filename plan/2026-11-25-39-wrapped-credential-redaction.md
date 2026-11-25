@@ -63,7 +63,7 @@ Self-contained: an implementer needs only this file and the files a step names.
 ## Tests
 
 - `cd core && npm test`: all pass, including the new redaction and timing tests.
-- `cd web && npm test`: all pass, including the share flag tests.
+- `cd web && NODE_PATH=$PWD/../bot/node_modules npm test`: all pass, including the share flag tests (`shell-browser.test.js` needs `playwright-core` from `bot/`).
 - `cd bot && npm test`: the bot uses `makeRedactor` (`bot/run.js:9`), so it must still pass.
 
 ## Rollback
