@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 39
 intent: intent/2026-11-25-39-wrapped-credential-redaction.md
 ---
