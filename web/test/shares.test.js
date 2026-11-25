@@ -261,3 +261,35 @@ test('close(id) ends only that share and leaves a pending board proposal', async
   await f.manager.close(third.share.id);
   assert.equal(f.manager.list().pending[0].id, board.id);
 });
+
+test('a private key stays hidden after its BEGIN leaves the log buffer, until its matching END leaves too', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { desktop: f.desktop });
+  const body = (count) => Array(count).fill('private data');
+  const ok = (count) => Array(count).fill('test passed');
+  const batches = [
+    ['-----BEGIN RSA PRIVATE KEY-----', ...body(450)], // one poll over 400 lines drops BEGIN at once
+    body(10),
+    ['-----END CERTIFICATE-----', ...body(5)],
+    body(420), // the mismatched END leaves the buffer
+    ['-----END RSA PRIVATE KEY-----', 'benign after', ...ok(10)],
+    ok(389), // END is the oldest line still buffered
+    ok(1), // END leaves
+  ];
+  const provider = async () => ({ repo: 'notes-api', sha: 'a'.repeat(40), at: new Date(f.clock.now()).toISOString(), lines: batches.shift() });
+  await f.manager.openFor('owner@example.com', { view: 'log', provider, title: 'Log' });
+  await until(() => f.entries.at(-1).state === 'running');
+  const updates = () => f.calls.filter((c) => c[0] === 'updateView');
+  const poll = async () => {
+    const count = updates().length;
+    await tick(); f.clock.advance(5000);
+    await until(() => updates().length > count);
+    return updates().at(-1)[2].lines;
+  };
+  const hidden = (lines) => assert.deepEqual(lines, Array(200).fill('[redacted]'));
+  hidden(f.calls.find((c) => c[0] === 'openView')[3].lines);
+  for (let i = 0; i < 3; i++) hidden(await poll());
+  assert.deepEqual((await poll()).slice(-12), ['[redacted]', 'benign after', ...ok(10)]);
+  assert.deepEqual(await poll(), ok(200));
+  assert.deepEqual(await poll(), ok(200));
+  await f.manager.stop('owner@example.com');
+});
