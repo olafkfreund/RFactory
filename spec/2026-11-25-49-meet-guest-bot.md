@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 49
 intent: intent/2026-11-25-49-meet-guest-bot.md
 ---
