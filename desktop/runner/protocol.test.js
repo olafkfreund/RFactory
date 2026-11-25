@@ -139,3 +139,14 @@ test('call-config avatar: a short lowercase id is accepted, anything else is dro
   assert.deepEqual(messages.map((m) => m.avatar), ['ada1']);
   assert.equal(drops.length, 2);
 });
+
+test('call-config listen and language: valid values pass, anything else is dropped', () => {
+  const messages = [], drops = [];
+  const decoder = createDecoder((m) => messages.push(m), (r) => drops.push(r));
+  decoder.write(encode({ type: 'call-config', nonce: 'n', listen: 'audio', language: 'en-GB' }));
+  for (const extra of ['"listen":"both"', '"listen":5', '"language":"EN"', '"language":"e"', '"language":"en_GB"', `"language":"${'a'.repeat(36)}"`]) {
+    decoder.write(raw(`{"type":"call-config","nonce":"n",${extra}}`));
+  }
+  assert.deepEqual(messages.map((m) => [m.listen, m.language]), [['audio', 'en-GB']]);
+  assert.equal(drops.length, 6);
+});

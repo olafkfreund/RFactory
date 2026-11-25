@@ -85,7 +85,7 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
       host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] }));
       await host.context.addInitScript(MEET_GUEST);
-      await host.context.addInitScript(TEAMS_CAPTIONS);
+      if (env.RFACTORY_LISTEN !== 'audio') await host.context.addInitScript(TEAMS_CAPTIONS); // own transcription replaces the captions
       return host;
     },
     join: async (link, o) => {

@@ -8,6 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { makeRedactor } = require('../core/src/redact');
 const { buildRendererSource } = require('./avatar/renderer.js');
+const { installSttBridge } = require('./stt-bridge');
+const { SpeechGate } = require(path.join(__dirname, 'node_modules/@vibeconferencing/calls/hearing/speech-gate.js'));
 const portraits = require('./avatars/manifest.json').portraits;
 
 const MAX_IN = 4 * 1024 * 1024;
@@ -15,11 +17,21 @@ const MAX_OUT = 64 * 1024;
 const LIMIT_MS = 60 * 60 * 1000;
 const BOT_NAME = 'RFactory Bot (AI)';
 const TERMINAL = ['left', 'removed', 'error'];
+// Runs in the page: the in-call Leave control is gone AND the page says the call was left or ended. Chat or captions
+// saying "rejoin" cannot pass alone (Codex). Teams' provider reports no removal, so this also watches for one (#16).
+function pageLeft() {
+  return !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
+    && /leave by mistake|rejoin|you left|left the (meeting|call)|removed you|been removed|meeting (has )?ended|call ended/i
+      .test((document.body && document.body.innerText) || '');
+}
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {
-  const chatLine = `RFactory Bot (AI) is listening; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
+  const audio = env.RFACTORY_LISTEN === 'audio';
+  const chatLine = `RFactory Bot (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
   const d = {
-    clock: { setTimeout, clearTimeout },
+    clock: { setTimeout, clearTimeout, now: Date.now },
+    installSttBridge,
+    SpeechGate,
     mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
     rm: (p) => fs.promises.rm(p, { recursive: true, force: true }),
     readFile: (p) => fs.promises.readFile(p),
@@ -39,10 +51,155 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
 
   const ac = new AbortController();
   const handles = new Set();
-  let call = null, host = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
+  let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
+  let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
+  const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
   const finished = new Promise((r) => { finish = r; });
+
+  function speechHint(stream) {
+    const at = d.clock.now();
+    if (!closing && at - (lastSpeech.get(stream) ?? -Infinity) >= 300) {
+      lastSpeech.set(stream, at);
+      send({ type: 'speech', stream });
+    }
+  }
+
+  function newGate(stream) {
+    const gate = new d.SpeechGate({ onPartial: () => speechHint(stream), onFinal: ({ audio: samples, startAt, endAt }) => {
+      if (closing) return;
+      const state = recent.get(stream);
+      state.finalized = true;
+      const short = state.short;
+      const prefixLen = short && Math.round((startAt - short.start) * 16);
+      if (short && startAt > short.start && startAt - short.end <= 2000 && short.prefix
+          && prefixLen <= short.prefix.length && prefixLen + samples.length <= 25 * 16000) {
+        const joined = new Float32Array(prefixLen + samples.length);
+        joined.set(short.prefix.subarray(0, prefixLen));
+        joined.set(samples, prefixLen);
+        samples = joined;
+        startAt = short.start;
+      }
+      state.short = null;
+      const pcm = Buffer.allocUnsafe(samples.length * 2);
+      for (let i = 0; i < samples.length; i++) pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768))), i * 2);
+      const n = Math.ceil(pcm.length / 32768), seg = segment++;
+      for (let i = 0; i < n && !closing; i++) send({ type: 'audio', seg, i, n, at: startAt, end: endAt, stream,
+        data: pcm.subarray(i * 32768, (i + 1) * 32768).toString('base64') });
+    } });
+    gates.set(stream, gate);
+    recent.set(stream, { chunks: [], openAt: null, finalized: false, short: null });
+    return gate;
+  }
+
+  function prefix(state, start, end) {
+    const out = new Float32Array(Math.max(0, Math.round((end - start) * 16)));
+    for (const { samples, at } of state.chunks) {
+      const from = Math.max(0, Math.ceil((start - at) * 16));
+      const to = Math.min(samples.length, Math.ceil((end - at) * 16));
+      const offset = Math.round((at - start) * 16) + from;
+      if (to > from && offset >= 0) for (let i = from; i < to; i++) out[offset + i - from] = samples[i] / 32768;
+    }
+    return out;
+  }
+
+  function pushAudio(stream, samples, at) {
+    const gate = gates.get(stream), state = recent.get(stream);
+    const end = at + samples.length / 16;
+    state.chunks.push({ samples: samples.slice(), at });
+    while (state.chunks.length && state.chunks[0].at + state.chunks[0].samples.length / 16 < end - 4000) state.chunks.shift();
+    if (state.chunks.length && state.chunks[0].at < end - 4000) {
+      const first = state.chunks[0], drop = Math.floor((end - 4000 - first.at) * 16);
+      first.samples = first.samples.subarray(drop);
+      first.at += drop / 16;
+    }
+    // push in the gate's own 20 ms frames, so an open and a close inside one 256 ms tap chunk are both seen
+    for (let i = 0; i < samples.length; i += 320) {
+      const frame = samples.subarray(i, i + 320), fAt = at + i / 16, fEnd = fAt + frame.length / 16;
+      if (state.short && !gate.isOpen() && fAt - state.short.end > 2000) state.short = null;
+      const wasOpen = gate.isOpen();
+      gate.push(frame, fAt);
+      const open = gate.isOpen();
+      if (!wasOpen && open) {
+        state.openAt = fAt;
+        state.finalized = false;
+        if (state.short && fAt >= state.short.end && fAt - state.short.end <= 2000)
+          state.short.prefix = prefix(state, state.short.start, fEnd);
+      } else if (wasOpen && !open) {
+        if (!state.finalized) state.short = { start: Math.max(state.chunks[0].at, state.openAt - 300), end: fAt };
+        state.openAt = null;
+      }
+    }
+    if (gate.isOpen()) speechHint(stream);
+  }
+
+  function prunePlayback() {
+    for (let i = playback.length - 1; i >= 0; i--) {
+      if (playback[i].end < d.clock.now() - 60000) playback.splice(i, 1);
+    }
+  }
+
+  function onAudio({ stream, at, pcm, event }) {
+    if (closing) return;
+    if (event === 'attached') { newGate(stream); lastSpeech.delete(stream); return; }
+    if (event === 'detached') { gates.get(stream)?.flush(); gates.delete(stream); recent.delete(stream); lastSpeech.delete(stream); return; }
+    if (!pcm?.length || !gates.has(stream)) return;
+    if (!heardPcm) { heardPcm = true; if (noAudioTimer) d.clock.clearTimeout(noAudioTimer); send({ type: 'hearing', state: 'own' }); }
+    const first = at - pcm.length / 16;
+    prunePlayback();
+    const overlap = playback.filter((w) => w.start <= at && w.end > first);
+    let runStart = -1, cut = false;
+    for (let i = 0; i <= pcm.length; i++) {
+      const time = first + i / 16;
+      const blocked = i === pcm.length || overlap.some((w) => time >= w.start && time < w.end);
+      if (!blocked && runStart < 0) runStart = i;
+      if (blocked && runStart >= 0) {
+        pushAudio(stream, pcm.subarray(runStart, i), first + runStart / 16);
+        runStart = -1;
+      }
+      if (blocked && i < pcm.length) cut = true;
+      if (cut && !blocked) { discardOpen(gates.get(stream)); cut = false; }
+    }
+    if (cut) discardOpen(gates.get(stream));
+  }
+
+  function discardOpen(gate) {
+    // an echo cut ends any join: nothing from before or during the bot's own speech may reach a later segment
+    for (const [stream, current] of gates) if (current === gate) { const st = recent.get(stream); st.short = null; st.chunks = []; break; }
+    const final = gate.onFinal;
+    gate.onFinal = () => {};
+    try { gate.flush(); } finally { gate.onFinal = final; }
+  }
+
+  // every 4 s while in the call: a bot removed by someone, or a meeting ended for all, stops at once instead of
+  // holding its desktop VM until the 60-minute limit (owner's removal in the #16 Teams live check went unnoticed)
+  async function watchLeft() {
+    if (closing || !call) return;
+    const page = call._inner && call._inner.page;
+    try {
+      if (page && typeof page.evaluate === 'function' && await page.evaluate(pageLeft) === true) {
+        if (!closing) { sendState('removed'); stop('the platform shows the call was left', 0); }
+        return;
+      }
+    } catch { /* page busy or navigating: check again */ }
+    if (!closing) leftTimer = d.clock.setTimeout(watchLeft, 4000);
+  }
+
+  async function pollRoster() {
+    if (closing || !call) return;
+    try {
+      const others = (await call._inner.getParticipants()).filter((p) => !p.isSelf);
+      if (closing) return;
+      send({ type: 'roster', count: others.length, ...(others.length === 1 && others[0].name ? { name: others[0].name } : {}) });
+      if (!others.length && noAudioTimer) { d.clock.clearTimeout(noAudioTimer); noAudioTimer = null; }
+      if (others.length && !heardPcm && !noAudioTimer) noAudioTimer = d.clock.setTimeout(() => {
+        noAudioTimer = null;
+        if (!closing && !heardPcm) send({ type: 'hearing', state: 'no-audio' });
+      }, 20000);
+    } catch { if (!closing) log('roster poll failed'); }
+    if (!closing) rosterTimer = d.clock.setTimeout(pollRoster, 10000);
+  }
 
   const cancelAll = async () => {
     playGen++;
@@ -129,16 +286,21 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     const page = call._inner && call._inner.page;
     if (!page || typeof page.waitForFunction !== 'function') return;
     // the in-call Leave control is gone AND the page says the call was left: chat or captions saying "rejoin" can't pass (Codex)
-    const left = () => !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
-      && /leave by mistake|rejoin|you left|left the (meeting|call)|meeting (has )?ended|call ended/i.test((document.body && document.body.innerText) || '');
     // what is left of a 7 s budget from the start of stop: host close and profile removal must finish before web's 10 s SIGTERM
     const timeout = Math.max(1000, 7000 - (Date.now() - stopStarted));
-    try { await page.waitForFunction(left, null, { timeout }); } catch { log(`leave not confirmed by the page within ${timeout} ms`); }
+    try { await page.waitForFunction(pageLeft, null, { timeout }); } catch { log(`leave not confirmed by the page within ${timeout} ms`); }
   }
 
   // The one stop path: abort join, clear timers, cancel playback, leave, close host, remove profile.
   function stop(reason, code = 0) {
     if (stopping) return stopping;
+    closing = true;
+    gates.clear();
+    recent.clear();
+    if (rosterTimer) d.clock.clearTimeout(rosterTimer);
+    if (leftTimer) d.clock.clearTimeout(leftTimer);
+    if (noAudioTimer) d.clock.clearTimeout(noAudioTimer);
+    if (noticeTimer) d.clock.clearTimeout(noticeTimer);
     stopping = Promise.resolve().then(async () => {
       if (code) exitCode = code;
       stopStarted = Date.now();
@@ -148,6 +310,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       if (pollTimer) d.clock.clearTimeout(pollTimer);
       if (retryTimer) { d.clock.clearTimeout(retryTimer); retryTimer = null; retryResolve(); retryResolve = null; }
       if (starting) await starting;
+      if (bridge && call?._inner?.mediaPage) await bridge.stop(call._inner.mediaPage, { timeoutMs: 1000 });
       await idleAvatar();
       await cancelAll();
       if (call) { try { await call.leave(); } catch (e) { log(`leave failed: ${e.message}`); } }
@@ -163,6 +326,9 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   async function play(msg) {
     const myGen = playGen;
     let h = null, result;
+    if (audio) prunePlayback();
+    const window = audio ? { start: d.clock.now(), end: Infinity } : null;
+    if (window) playback.push(window);
     try {
       if (!call) throw new Error('not in a call');
       h = await call.speak(Buffer.from(msg.wav, 'base64'));
@@ -175,12 +341,20 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       log(`speak failed: ${e.name || 'Error'}`);
     } finally {
       if (h) handles.delete(h);
+      if (window) window.end = d.clock.now() + 800;
     }
     send({ type: 'spoke', seq: msg.seq, result });
   }
 
   async function afterJoin() {
-    try { await call.chat.send(chatLine); } catch (e) { log(`chat line failed: ${e.message}`); }
+    try { await call.chat.send(chatLine); } catch (e) {
+      log(`chat line failed: ${e.message}`);
+      if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
+        noticeTimer = null;
+        if (closing) return;
+        try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
+      }, 10000);
+    }
     if (stopping) return;
     if (env.RFACTORY_AVATAR) startAvatar();
     try {
@@ -200,6 +374,8 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       const join = d.join || require('@vibeconferencing/calls').join;
       const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
       host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
+      if (audio && !closing) bridge = await d.installSttBridge(host, { onAudio, log });
+      if (closing) return;
       call = await join(link, {
         name: BOT_NAME, host, timeoutMs: 300000, signal: ac.signal,
         onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
@@ -209,8 +385,14 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       return;
     }
     sendState('in-call');
-    call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
+    if (!audio) call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
     call.on('state', (s) => { if (TERMINAL.includes(s)) { sendState(s); stop(`state ${s}`, s === 'error' ? 1 : 0); } });
+    if (audio && !closing) {
+      bridge.bind(call);
+      try { await bridge.start(call._inner.mediaPage); } catch { if (!closing) log('stt tap start failed'); }
+      if (!closing) pollRoster();
+    }
+    if (!closing) leftTimer = d.clock.setTimeout(watchLeft, 4000);
     if (!stopping) afterJoin();
   }
 

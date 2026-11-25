@@ -1,0 +1,13 @@
+2026-11-23T19:29:44.244Z state "joining"
+2026-11-23T19:29:54.253Z state "in-call"
+2026-11-23T19:29:54.568Z hearing "own"
+2026-11-23T19:31:44.334Z roster 1
+2026-11-23T19:31:49.743Z segment {"stream":"remote-media-1","seconds":2,"stt":200,"stt_ms":1224,"wake":true,"text":"Our factory stand up."}
+2026-11-23T19:31:54.336Z roster 1
+2026-11-23T19:32:04.338Z roster 1
+2026-11-23T19:32:14.340Z roster 1
+2026-11-23T19:32:21.722Z segment {"stream":"remote-media-1","seconds":2,"stt":200,"stt_ms":1223,"wake":true,"text":"Our factory, stand up."}
+2026-11-23T19:32:24.341Z roster 1
+2026-11-23T19:32:34.343Z roster 1
+2026-11-23T19:32:41.493Z state "left"
+bot exit 0

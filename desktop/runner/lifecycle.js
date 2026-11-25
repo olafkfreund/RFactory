@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const net = require('node:net');
 const { StringDecoder } = require('node:string_decoder');
-const { createDecoder, tag, encode } = require('./protocol');
+const { createDecoder, tag, encode, LANGUAGE } = require('./protocol');
 const { nonce: newNonce } = require('../guest/agent/share');
 const { buildPolicy } = require('./k8s-policy');
 
@@ -112,7 +112,8 @@ function createLifecycle(config, deps) {
     if (!vm.nonce || !vm.agent) return;
     vm.configSent = true; // first message on every control connection; the guest keeps one worker and ignores repeats
     vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.proxy ? { proxy: vm.proxy } : {}),
-      ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}), ...(vm.avatar ? { avatar: vm.avatar } : {}) }));
+      ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}), ...(vm.avatar ? { avatar: vm.avatar } : {}),
+      ...(vm.listen ? { listen: vm.listen } : {}), ...(vm.language ? { language: vm.language } : {}) }));
   }
   const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop_scroll', 'desktop_screenshot']);
   async function toGuest(id, message, timeoutMs = 30000, corrupt = false) {
@@ -321,7 +322,7 @@ function createLifecycle(config, deps) {
     await live();
     await deps.k8s.unpauseVmi(vmiName);
   }
-  async function start(call_id, scope, diskSpec, platform, avatar) {
+  async function start(call_id, scope, diskSpec, platform, avatar, listen, language) {
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     // Reserve the slot synchronously (no await before vms.set): two concurrent creates cannot both pass.
     if (vms.size >= config.maxVms) return { error: 'capacity', message: 'no desktop slot is free' };
@@ -329,7 +330,7 @@ function createLifecycle(config, deps) {
     const now = clock.now();
     const vm = { id, sock: id, created: now,
       lastWorker: now + (config.bootGraceMs || 0), lastServer: now + (config.bootGraceMs || 0), lastActivity: now, call_id, scope,
-      pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec, avatar };
+      pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec, avatar, listen, language };
     vms.set(id, vm);
     try { await boot(vm, platform); } catch (error) {
       await destroy(id, 'boot-failed');
@@ -340,9 +341,11 @@ function createLifecycle(config, deps) {
   }
 
   // diskSpec (a profile's disk and volume) comes only from in-process callers, never from the HTTP body.
-  async function create({ call_id, scope, platform, avatar }, diskSpec = null) {
+  async function create({ call_id, scope, platform, avatar, listen, language }, diskSpec = null) {
     if (typeof call_id !== 'string' || typeof scope !== 'string' || !call_id || !scope) return { error: 'bad-request' };
     if (avatar !== undefined && !(typeof avatar === 'string' && /^[a-z0-9]{1,16}$/.test(avatar))) return { error: 'bad-request', message: 'bad avatar' };
+    if (listen !== undefined && listen !== 'platform' && listen !== 'audio') return { error: 'bad-request', message: 'bad listen' };
+    if (language !== undefined && !(typeof language === 'string' && LANGUAGE.test(language))) return { error: 'bad-request', message: 'bad language' };
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
     if (deps.preflight) { // the pinned media ranges must answer before any call joins: a clear refusal, never an unusable call
       if (typeof platform !== 'string' || !platform) return { error: 'bad-request', message: 'platform is required' };
@@ -350,7 +353,7 @@ function createLifecycle(config, deps) {
     }
     const cold = [...vms.values()].find(v => v.spare && v.cold);
     if (cold) vms.delete(cold.id);
-    return start(call_id, scope, diskSpec, platform, avatar);
+    return start(call_id, scope, diskSpec, platform, avatar, listen, language);
   }
 
   // A spare only reserves capacity; its VMI is created when it is claimed (the platform and scope policy cannot be fixed before).
