@@ -61,15 +61,12 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
     c = next;
   }
-  async function call(name, deadline = Date.now() + timeoutMs, args = {}) {
+  // one retry after reconnecting: a CFactory restart leaves the old MCP session dead (#18 live test)
+  async function withClient(op, deadline) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = c;
       try {
-        const r = await within(current.callTool({ name, arguments: args }), deadline);
-        const text = (r.content || []).map((x) => x.text || '').join('');
-        if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
-        const v = JSON.parse(text);
-        return v && typeof v === 'object' ? v : {};
+        return await within(op(current), deadline);
       } catch (error) {
         if (attempt || error.message === 'source-timeout') throw error;
         if (!reconnecting && c === current) reconnecting = (async () => {
@@ -79,6 +76,15 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
         if (reconnecting) await within(reconnecting, deadline);
       }
     }
+  }
+  function call(name, deadline = Date.now() + timeoutMs, args = {}) {
+    return withClient(async (current) => {
+      const r = await current.callTool({ name, arguments: args });
+      const text = (r.content || []).map((x) => x.text || '').join('');
+      if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
+      const v = JSON.parse(text);
+      return v && typeof v === 'object' ? v : {};
+    }, deadline);
   }
   const repoList = async (deadline) => {
     const r = await call('cfactory_list_git_repositories', deadline);
@@ -162,7 +168,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: repositoryId }),
     // Hidden by CFactory while it drains.
     async investigateAvailable() {
-      const { tools = [] } = await within(c.listTools(), Date.now() + timeoutMs);
+      const { tools = [] } = await withClient((current) => current.listTools(), Date.now() + timeoutMs);
       return tools.some((tool) => tool.name === 'cfactory_investigate_card');
     },
     // { state, pods_gone, tests, report?: { findings, refs, tests, sha } }
