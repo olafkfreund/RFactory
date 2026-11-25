@@ -111,6 +111,14 @@ No log text, and no report text beyond the counts.
    - **The Stop reply says what was observed:** completed, stopped, "ended: it failed" or "ended: it reached its time limit", else "Stop not confirmed yet."
    - **The summary filter's test words** also cover success(es), error(s), checks, cases, specs and assertions, and numbers match only as whole words (`\b\d+\b`), so a name like `test_utf8` is not treated as a count.
 
+8. **Steps 9-10: post-deploy fixes and live results (lead).**
+   - **Runner pin (#41):** the runner digest is per node after `ctr import`; the pin used the agent node's and the pod got `ErrImageNeverPull`. It now pins the server node's digest, and `deploy/k3d/import-images.sh` prints each node's digest and warns when they differ (#43).
+   - **CFactory reconnect (#42):** after a CFactory restart the MCP session was stale; `core/src/sources/cfactory.js` `withClient()` retries once on a new session for `call()` and `investigateAvailable()`.
+   - **Spoken result (#44):** AIFactory sends `tests: null` when no tests are configured; that now means "No tests were run: none are configured." instead of "I could not read the test results". The summary filter counts a quantity word or number next to a test word, not any number.
+   - **CFactory keys:** RFactory's write key was missing from CFactory's key store, and two of my kubectl reads printed Secret values. All three keys in `cfactory-api-keys` were rotated and the write key added; the agenix copy is nixos_config#3217.
+   - **Verified live** (2026-11-25, `rfactory.freundcloud.org.uk`): the proposal with the three limits; Approve; card and run in about 2.5 s; the log share in the Meet; a second request refused; the run completed in about 36 s; the share closed and the slot freed.
+   - **Not yet verified live:** the spoken result after #44 and Stop (the test Meet refused the bot twice; it needs a rerun with the owner as host). "Investigations are turned off here." is covered by unit tests only.
+
 ## Steps
 
 **Before implementation:**
