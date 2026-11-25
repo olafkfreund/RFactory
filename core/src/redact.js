@@ -17,16 +17,19 @@ const HEX_WINDOW = /\b[A-Fa-f0-9]{40,}\b/g;
 const BASE64_WINDOW = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])/g;
 const CHAIN_HEAD = /^[A-Za-z0-9_.~+/=-]+/;
 const WRAP_MIN = 40;
-// the token rules for the joined window: a closed break counts as a word boundary (`lead`/`trail`), so a token glued to
-// the word across a join still matches; `min` is the shortest valid match when a glued tail is cut back to a join
+// The token rules for the joined window. Each `re` keeps its leading anchor, so a search never restarts inside a run
+// (linear); `join` is the same rule unanchored, tried only at each join, for a token glued to the word in front of it.
+// `inside` is the rule's class for the trailing edge, checked in code: a join counts as an edge, and a match glued
+// behind is cut back to the last join inside it if `min` allows, else the search retries one character later.
 const JOINED_RULES = [
   ...PATTERNS.filter((pattern) => !pattern.source.startsWith('\\b')).map((re) => ({ re })),
-  { re: /(?:acw|cfk)_[A-Za-z0-9]{16,}/g, lead: true },
-  { re: /bearer[ \t]+[A-Za-z0-9._~+\/=-]{16,}/gi }, // no kept break: the one-break rule is the single-line pass's
-  { re: /(?:AKIA|ASIA)[0-9A-Z]{16}/g, lead: true, trail: true },
-  { re: /[A-Fa-f0-9]{40,}/g, lead: true, trail: true, min: 40 },
-  { re: /[A-Za-z0-9+/]{40,}={0,2}/g, lead: true, trail: true, min: 40, inside: (code) => word(code) && code !== 95 || code === 43 || code === 47 || code === 61 },
-].map((rule) => ({ ...rule, sticky: new RegExp(rule.re.source, rule.re.flags.replace('g', '') + 'y') }));
+  { re: /\b(?:acw|cfk)_[A-Za-z0-9]{16,}/g, join: /(?:acw|cfk)_[A-Za-z0-9]{16,}/y },
+  { re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}/g, join: /(?:AKIA|ASIA)[0-9A-Z]{16}/y, inside: word },
+  { re: /\b[A-Fa-f0-9]{40,}/g, join: /[A-Fa-f0-9]{40,}/y, inside: word, min: 40 },
+  { re: /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g, join: /[A-Za-z0-9+/]{40,}={0,2}/y, inside: base64, min: 40 },
+];
+function base64(code) { return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 43 || code === 47 || code === 61; }
+const tokenChar = (code) => base64(code) || code === 45 || code === 46 || code === 95 || code === 126; // BEARER's [A-Za-z0-9._~+/=-]
 function word(code) { return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95; }
 
 // every occurrence of `pattern` in `text`, overlapping ones merged, in linear time (KMP)
@@ -224,16 +227,13 @@ function makeRedactor(secrets) {
     let joined = '';
     const segments = []; // [start in joined, start in value, length]
     const joinPoints = []; // offsets in joined where a break was closed
-    let tail = '';
     for (let i = 0; i < lines.length; i++) {
       const text = content(i);
       const from = i > 0 && joins(i - 1) ? indentOf(text) : 0;
       if (i > 0 && joins(i - 1)) joinPoints.push(joined.length);
       segments.push([joined.length, offsets[i] + from, text.length - from]);
       joined += text.slice(from);
-      tail = (tail + text.slice(from)).slice(-6); // not joined.slice(): that flattens the growing string every line
-      if (!joins(i) && i + 1 < lines.length) { joined += '\n'; tail = ''; }
-      else if (joins(i) && /bearer$/i.test(tail)) joined += ' '; // the break after the keyword was its separator (`Bear` + `er` too)
+      if (!joins(i) && i + 1 < lines.length) joined += '\n';
     }
     const after = (list, at) => { // first entry of a sorted list greater than `at`, or Infinity
       let low = 0;
@@ -265,53 +265,57 @@ function makeRedactor(secrets) {
         while (low < high) { const mid = (low + high) >> 1; if (joinPoints[mid] < at) low = mid + 1; else high = mid; }
         return low ? joinPoints[low - 1] : -1;
       };
-      // a match edge is real at the text's ends, at a join, or where the character class changes
-      const edge = (at, inside = word) => at <= 0 || at >= joined.length || joinAt.has(at) ||
-        !inside(joined.charCodeAt(at - 1)) || !inside(joined.charCodeAt(at));
+      const trailOk = (rule, end) => !rule.inside || end >= joined.length || joinAt.has(end) || !rule.inside(joined.charCodeAt(end));
+      const take = (rule, start, end) => { // the match, its end cut back to a join when glued behind, or null
+        if (trailOk(rule, end)) return end;
+        const point = before(end);
+        return rule.min && point > start && point - start >= rule.min ? point : null;
+      };
       for (const rule of JOINED_RULES) {
-        for (const found of joined.matchAll(rule.re)) {
-          let start = found.index;
-          let end = start + found[0].length;
-          if (rule.lead && !edge(start, rule.inside)) { // glued in front: the token may start at a join inside the match
-            const point = after(joinPoints, start);
-            if (point >= end) continue;
-            rule.sticky.lastIndex = point;
-            const again = rule.sticky.exec(joined);
-            if (!again) continue;
-            start = point;
-            end = point + again[0].length;
-          }
-          if (rule.trail && !edge(end, rule.inside)) { // glued behind: cut back to the last join inside the match
-            const point = before(end);
-            if (!rule.min || point <= start || point - start < rule.min) continue;
-            end = point;
-          }
-          if (crosses(start, end)) addJoined(start, end);
+        rule.re.lastIndex = 0;
+        const matched = []; // this rule's matches, in order: a join inside one needs no second try
+        let found;
+        while ((found = rule.re.exec(joined)) !== null) {
+          const end = take(rule, found.index, found.index + found[0].length);
+          if (end === null) { rule.re.lastIndex = found.index + 1; continue; }
+          matched.push([found.index, found.index + found[0].length]);
+          if (crosses(found.index, end)) addJoined(found.index, end);
         }
+        if (!rule.join) continue;
+        let k = 0;
+        let reach = -1; // end of the last match that covers a join already tried or matched
+        for (const point of joinPoints) { // a token glued to the word in front starts at the join
+          while (k < matched.length && matched[k][0] <= point) reach = Math.max(reach, matched[k++][1]);
+          if (point < reach) continue; // inside a match of this rule: tried already
+          if (!word(joined.charCodeAt(point - 1)) && !base64(joined.charCodeAt(point - 1))) continue; // a real edge: `re` saw it
+          rule.join.lastIndex = point;
+          const again = rule.join.exec(joined);
+          if (!again) continue;
+          reach = Math.max(reach, point + again[0].length);
+          const end = take(rule, point, point + again[0].length);
+          if (end !== null && crosses(point, end)) addJoined(point, end);
+        }
+      }
+      // Bearer, in code: after the keyword, spaces, at most one kept break, or a join; then 16+ token characters
+      for (const found of joined.matchAll(/bearer/gi)) {
+        const after = found.index + 6;
+        let at = after;
+        while (at < joined.length && (joined[at] === ' ' || joined[at] === '\t')) at++;
+        if (joined[at] === '\n') {
+          at++;
+          while (at < joined.length && (joined[at] === ' ' || joined[at] === '\t')) at++;
+        }
+        if (at === after && !joinAt.has(after)) continue; // no separator: not a Bearer token
+        let end = at;
+        while (end < joined.length && tokenChar(joined.charCodeAt(end))) end++;
+        if (end - at >= 16 && crosses(found.index, end)) addJoined(found.index, end);
       }
       for (const [start, end] of jwtSpans(joined, true)) if (crosses(start, end)) addJoined(start, end);
       const newlines = [];
       for (let at = joined.indexOf('\n'); at >= 0; at = joined.indexOf('\n', at + 1)) newlines.push(at);
       // a quoted value may not cross a join or a kept break; the whole match must cross a join (so a split key counts)
       const quoteLimit = (start) => Math.min(after(joinPoints, start), after(newlines, start));
-      // only a match starting near a join can cross it: before it, the key and separator, and the unbroken value run up to it
-      let scanned = 0;
-      for (const point of joinPoints) {
-        let from = point;
-        while (from > scanned && !space(joined.charCodeAt(from - 1))) from--; // the value run
-        while (from > scanned && space(joined.charCodeAt(from - 1))) from--; // spaces after the separator
-        from = Math.max(scanned, from - 64); // the key and the separator
-        // to the next join or kept break: a split key, its separator and a (quoted) value all end before it
-        const to = Math.min(quoteLimit(point), joined.length);
-        // search a slice, so a search that finds nothing stops at its end instead of the window's
-        const piece = joined.slice(from, to);
-        for (const found of keyValueSpans(piece, (start) => quoteLimit(start + from) - from)) {
-          const match = [found.match[0] + from, found.match[1] + from];
-          if (crosses(...match)) addJoined(found.value[0] + from, found.value[1] + from);
-          scanned = Math.max(scanned, match[1]);
-        }
-        scanned = Math.max(scanned, to);
-      }
+      for (const found of keyValueSpans(joined, quoteLimit)) if (crosses(...found.match)) addJoined(...found.value);
     }
 
     // span extension: a span reaching the end of a wrap-length line also covers the next line's leading token run

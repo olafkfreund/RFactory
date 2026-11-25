@@ -24,7 +24,6 @@
   "89": "bot run()",
   "92": "test test/board.test.js",
   "93": "desktop desktop/package.json",
-  "95": "web web/package.json",
   "101": "k3d k14-env.sh",
   "102": "verify handover.sh",
   "106": "verify lifecycle.sh",

@@ -351,3 +351,36 @@ test('review round 3 (agy): Bear/er before a wrapped token, base64 glued to a wo
   check('split key, spaced separator', ['context '.repeat(7) + 'tok', 'en:' + ' '.repeat(80) + 'hunter2secretvalue done'],
     ['context '.repeat(7) + 'tok', 'en:' + ' '.repeat(80) + '[redacted] done']);
 });
+
+test('review round 4: keys over several joins, no inserted Bearer space, base64 after =, short Bearer line, overlapping AWS, 39-character runs', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected, redactor = r) => {
+    assert.deepEqual(redactor.logSafeWindow(input), expected, name);
+    assert.equal(redactor.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const L = 'context '.repeat(5);
+  const lead = 'context '.repeat(7);
+  const I = (n) => ' '.repeat(n);
+  check('key after an earlier join', [L + 'note', L + 'tok', 'en=sample-value'], [L + 'note', L + 'tok', 'en=[redacted]']);
+  check('key over two joins', [L + 'tok', I(38) + 'en', '=sample-value'], [L + 'tok', I(38) + 'en', '=[redacted]']);
+  check('value over two joins', [L + 'token=abcd', I(36) + 'efgh', 'ijkl:mnop'], [L + 'token=[redacted]', I(36) + '[redacted]', '[redacted]']);
+  check('padded separator over a join', [lead + 'password', I(42) + '=', 'hunter2secretvalue done'], [lead + 'password', I(42) + '=', '[redacted] done']);
+  check('key in three parts', [lead + 'pa', I(38) + 'ss', 'word=hunter2secretvalue done'], [lead + 'pa', I(38) + 'ss', 'word=[redacted] done']);
+  check('secret containing bearer', [L + 'fake!bearer', '-tail?'], [L + '[redacted]', '[redacted]'], makeRedactor(['fake!bearer-tail?']));
+  check('base64 after =', [L + 'blob=' + 'G'.repeat(20), 'H'.repeat(20) + '=='], [L + 'blob=[redacted]', '[redacted]']);
+  check('Bearer on a short line', ['Bearer', I(36) + 'abcd', 'efghijklmnop'], ['[redacted]', I(36) + '[redacted]', '[redacted]']);
+  check('AWS after a false start', [L + 'ASIA12', I(34) + 'ASIA12', I(36) + '3456', '7890123456'],
+    [L + 'ASIA12', I(34) + '[redacted]', I(36) + '[redacted]', '[redacted]']);
+  check('base64 run split after beaRer', [L + 'Q'.repeat(30) + 'xbeaRer', 'Z'.repeat(30)], [L + '[redacted]', '[redacted]']);
+  const slow = makeRedactor(['scopeSecretValue123']);
+  for (const piece of ['a'.repeat(39) + '=', 'a'.repeat(39) + ' ', 'f'.repeat(39) + '-', 'a'.repeat(39) + '===']) {
+    const lines = Array(400).fill(piece.repeat(Math.ceil(4000 / piece.length)).slice(0, 4000));
+    let best = Infinity;
+    for (let run = 0; run < 5; run++) {
+      const start = performance.now();
+      slow.logSafeWindow(lines);
+      best = Math.min(best, performance.now() - start);
+    }
+    assert.ok(best < 200, `39-character runs of ${JSON.stringify(piece.slice(-3))} took ${Math.round(best)} ms`);
+  }
+});
