@@ -13,9 +13,12 @@ const HISTORY_LIMIT = 50;
 const TERMINAL = new Set(['completed', 'done', 'failed', 'stopped', 'expired']);
 const reply = (status, text, investigation) => ({ status, text, ...(investigation ? { investigation } : {}) });
 const OFF = 'Investigations are turned off here.';
-// a summary sentence that counts tests is dropped: only the server speaks results, from run_tests
-const ABOUT_TESTS = /\b(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped|suite|success(?:es)?|errors?|checks?|cases?|specs?|assertions?)\b/i;
-const QUANTITY = /\b\d+\b|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|dozens?|all|every|none|no|both|each|most|half|several|many|few)\b/i;
+// a summary sentence that counts tests is dropped: only the server speaks results, from run_tests.
+// A count is a quantity right before a test word ("50 tests", "all the tests", "most of the suite")
+// or a number right after one ("passed: 41"); "no source or test files" is not a count (#18 live test).
+const TEST_WORD = String.raw`(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped|suite|success(?:es)?|errors?|checks?|cases?|specs?|assertions?)`;
+const QUANTITY = String.raw`(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|dozens?|all|every|none|no|both|each|most|half|several|many|few)`;
+const COUNT_CLAIM = new RegExp(String.raw`\b${QUANTITY}(?:\W+(?:of|the|these|those|our|its|their|your|my|a|an))*\W+${TEST_WORD}\b|\b${TEST_WORD}(?:\W+\w+)?\W+\d+\b`, 'i');
 const count = (value) => Number.isInteger(value) && value >= 0;
 
 // run_tests results are checked once, as they arrive; what cannot be read is reported as unread
@@ -72,7 +75,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry) });
   async function summarize(report) {
     const result = await brain.summarize(redactor.logSafeWindow(report)); // a brain without summarize() throws: no summary
-    return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !(ABOUT_TESTS.test(sentence) && QUANTITY.test(sentence))).join(' ');
+    return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !COUNT_CLAIM.test(sentence)).join(' ');
   }
   // the spoken result: server-written counts, then the brain's summary (the caller redacts it again before speech)
   async function announce(entry) {
@@ -181,7 +184,9 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     }
     if (entry.finished) return;
     entry.stale = false;
-    if (Array.isArray(state.tests)) entry.tests = redactor.logSafeWindow(readTests(state.tests));
+    // AIFactory sends tests: null when no run_tests call was made (#18 live test): that is "no tests were run"
+    const tests = state.tests === null ? [] : state.tests;
+    if (Array.isArray(tests)) entry.tests = redactor.logSafeWindow(readTests(tests));
     entry.terminal = TERMINAL.has(state.state);
     if (state.pods_gone === true && (entry.stopping || entry.terminal)) {
       const final = state.state === 'done' ? 'completed' : state.state;
