@@ -35,23 +35,28 @@ env_of() {
 if ! writes=$(env_of RFACTORY_WRITES) || ! shares=$(env_of RFACTORY_SHARES); then
   echo "cannot read deploy/rfactory's switches; is factory-gitops synced?" >&2; exit 2
 fi
-if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ ]]; then
-  echo "deploy/rfactory's RFACTORY_WRITES and RFACTORY_SHARES must be on or off" >&2; exit 2
+# #18: an absent RFACTORY_INVESTIGATIONS is off (the web app reads it that way too)
+investigations=$(env_of RFACTORY_INVESTIGATIONS) || investigations=
+investigations=${investigations:-off}
+if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ || ! $investigations =~ ^(on|off)$ ]]; then
+  echo "deploy/rfactory's RFACTORY_WRITES, RFACTORY_SHARES and RFACTORY_INVESTIGATIONS must be on or off" >&2; exit 2
 fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-python3 - "$cfg" "$writes" "$shares" "$tmp" <<'PY'
+python3 - "$cfg" "$writes" "$shares" "$investigations" "$tmp" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
-cfg, writes, shares, tmp = sys.argv[1:]
+cfg, writes, shares, investigations, tmp = sys.argv[1:]
 try:
     scope = json.loads((pathlib.Path(cfg) / 'scope.cluster.json').read_text())
     if scope['writes_enabled'] is not (writes == 'on') or scope['shares_enabled'] is not (shares == 'on'):
         raise ValueError("scope's writes_enabled/shares_enabled disagree with deploy/rfactory")
+    if scope.get('investigations_enabled', False) is not (investigations == 'on'):
+        raise ValueError("scope's investigations_enabled disagrees with deploy/rfactory")
     lines = (pathlib.Path(cfg) / 'roles.env').read_text().splitlines()
     if len(lines) != 3 or any(not line.startswith(name + '=') for line, name in zip(lines, ('ALLOWED', 'APPROVERS', 'ADMINS'))):
         raise ValueError('roles.env needs ALLOWED, APPROVERS, ADMINS in order')
