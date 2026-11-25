@@ -117,7 +117,10 @@ No log text, and no report text beyond the counts.
    - **Spoken result (#44):** AIFactory sends `tests: null` when no tests are configured; that now means "No tests were run: none are configured." instead of "I could not read the test results". The summary filter counts a quantity word or number next to a test word, not any number.
    - **CFactory keys:** RFactory's write key was missing from CFactory's key store, and two of my kubectl reads printed Secret values. All three keys in `cfactory-api-keys` were rotated and the write key added; the agenix copy is nixos_config#3217.
    - **Verified live** (2026-11-25, `rfactory.freundcloud.org.uk`): the proposal with the three limits; Approve; card and run in about 2.5 s; the log share in the Meet; a second request refused; the run completed in about 36 s; the share closed and the slot freed.
-   - **Not yet verified live:** the spoken result after #44 and Stop (the test Meet refused the bot twice; it needs a rerun with the owner as host). "Investigations are turned off here." is covered by unit tests only.
+   - **Verified live, second run** (2026-11-25 17:02–17:13 UTC, `sha-21a28d6`, the bot admitted on the first try with only an observer in the test Meet):
+     - **Spoken result:** the run completed in about 36 s, and the Meet captions show the bot saying "No tests were run, none are configured." followed by the brain's summary.
+     - **Stop:** pressed about 8 s after `running`; `stopping`, then `stopped` (`manual`) 8 s later, which the page shows only once AIFactory reports the pods gone. No run pod was left, and the bot said "The investigation was stopped."
+   - **Unit tests only:** "Investigations are turned off here."
 
 ## Steps
 
