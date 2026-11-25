@@ -144,9 +144,9 @@
     "semantic_hash": "f88df979b864528309c4b3b2949d8a6e"
   },
   "core/src/redact.js": {
-    "mtime": 1795613724.3028548,
-    "seen": 1795613809.8357573,
-    "ast_hash": "fada9c36d348a52a451ab9f45f09d890",
+    "mtime": 1795618480.9283366,
+    "seen": 1795618550.212715,
+    "ast_hash": "551a9d8b5d843e581e7388e25246b410",
     "semantic_hash": ""
   },
   "core/src/roles.js": {
@@ -294,9 +294,9 @@
     "semantic_hash": "d61efa4fa37775eea9d2ca89128dfbdd"
   },
   "core/test/redact.test.js": {
-    "mtime": 1795613781.8698752,
-    "seen": 1795613809.8358412,
-    "ast_hash": "85de628775b5e5a48a81743c35346d4a",
+    "mtime": 1795618516.847848,
+    "seen": 1795618550.2127943,
+    "ast_hash": "69e50022f4a26faa16a7cd49e7893d07",
     "semantic_hash": ""
   },
   "core/test/roles.test.js": {
@@ -858,8 +858,8 @@
     "semantic_hash": ""
   },
   "web/shares.js": {
-    "mtime": 1795611819.095471,
-    "seen": 1795611824.6122873,
+    "mtime": 1795616408.3784688,
+    "seen": 1795618250.8288403,
     "ast_hash": "ad70c69d150631f1c8b0aec08b242e16",
     "semantic_hash": ""
   },
@@ -924,8 +924,8 @@
     "semantic_hash": ""
   },
   "web/test/shares.test.js": {
-    "mtime": 1795612666.0008926,
-    "seen": 1795612694.6743808,
+    "mtime": 1795616408.3785708,
+    "seen": 1795618250.8288796,
     "ast_hash": "b3161bc81755aafea7ea680d9a5a2197",
     "semantic_hash": ""
   },
@@ -1548,20 +1548,20 @@
     "semantic_hash": ""
   },
   "intent/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795609624.5527098,
-    "seen": 1795611824.6124535,
+    "mtime": 1795616408.3780444,
+    "seen": 1795618250.8290243,
     "ast_hash": "cb9f03275209f8fbb2ab9ec91b5f48d7",
     "semantic_hash": ""
   },
   "plan/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795613801.8897383,
-    "seen": 1795613809.8363304,
-    "ast_hash": "667ba081380c3a98932510c51ea23878",
+    "mtime": 1795618542.1357455,
+    "seen": 1795618550.2132845,
+    "ast_hash": "f37b1e4ad259449b2f781ca398d694f8",
     "semantic_hash": ""
   },
   "spec/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795610369.6321895,
-    "seen": 1795611824.6125243,
+    "mtime": 1795616408.3782713,
+    "seen": 1795618250.8291018,
     "ast_hash": "518d46e0ca3a05b866aef52451fdd7a9",
     "semantic_hash": ""
   }
