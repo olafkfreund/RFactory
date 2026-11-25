@@ -329,6 +329,37 @@ Found in the plan reviews. Each corrects a detail the spec got wrong against the
     - The volume, the images and `scope.json` are kept for 7 days.
     - A follow-up issue covers day 7: remove the podman volume and images, and delete the `127.0.0.1` callback.
 
+## Landing record (2026-11-24)
+
+- **8.3:** factory-gitops PR #419 merged (`9504b38`) after merging main to resolve a conflict with #421 (the mirror exemption in the coverage rule; both kept; the list check and the 34 Kyverno CLI v1.18.2 tests pass). Argo synced with `replicas: 0`.
+  - Positive dry runs: `kyverno.io/verify-images` is `pass` for both pinned digests.
+  - Negative dry run: the `.sig` artifact `rfactory-web@sha256:7c86a3c2…` is refused by `verify-rfactory-signature` ("no signatures found").
+- **9:** the five Secrets were created with `--rotated --no-restart`.
+- **10:** factory-gitops PR #422 set `replicas: 1`. The pod came up 4/4 Ready with no restarts. The p620 records (`2026-11-17.jsonl`, `2026-11-19.jsonl`) were copied in, and their sha256 sums match before and after `rollout restart`.
+- **11:**
+  - Keycloak client `rfactory` has both callbacks. The `127.0.0.1` one stays until day 7.
+  - **Trap:** step 11.2's `<tunnel>` is the **cluster's** tunnel, `55338418-…` (the `tunnel:` line in `infra/cloudflared/cloudflared.yaml`). The credentials file on p620 (`db4e80d3-…`) is a different tunnel, and routing to it gave its catch-all 404. Fixed with `--overwrite-dns`.
+  - cloudflared was restarted after a bus post. Every other Factory hostname answered afterwards.
+
+### Live check results (step 12)
+
+| Check | Result |
+|---|---|
+| 1. Login and roles | **Pass.** Passed from the proxy side inside the pod:<ul><li>an unauthenticated `GET /` gets 302 to Keycloak `factory` (client `rfactory`, PKCE);</li><li>no identity gets 401, a non-member 403, and both owner addresses 200 with `can_approve: true`;</li><li>a test-only member got `can_approve: false` and 403 on approve;</li><li>an approver with the page `Origin` passes the same-origin check (409, no such action), and with a foreign `Origin` gets 403.</li></ul>A forged header with no session gets 302, and the proxy sets `X-Forwarded-Email` itself through `injectRequestHeaders`. **Owner browser login: pass** (2026-11-24, the owner signed in and saw the standup). **Second provider: pass** (2026-11-25, GitHub sign-in through Keycloak reached the standup). **Forged header for a signed-in user: pass:** from the signed-in page, `GET /api/shares` with `X-Forwarded-Email` set to a non-member address returned 200 and `can_approve: true` (the session's identity); a trusted header would have given 403. |
+| 2. Isolation | Pass. From an unlabelled pod, 4180, 8080 and 8081 are all blocked. |
+| 3. Hardened runtime | Pass.<ul><li>Brain: a real `claude-cli` turn with the deployed scope in 3.1 s; the approved hash matches.</li><li>Piper: `piper:en_US-ljspeech-medium` at 22050 Hz.</li><li>Whisper transcribed the Piper sentence exactly in 1.3 s.</li><li>No container logged `EROFS` or `EACCES`.</li></ul> |
+| 4. Restart | Pass. After a pod delete, the switches, roles and record sums are unchanged and a brain turn works. |
+| 5. Images | Pass. The running digests are the pinned, signed ones (`verify-images: pass`), and `/api/config` reports commit `16f3d65`. |
+| 6. Calls and features | **mTLS passes:** without a client certificate the runner Service refuses (`CERTIFICATE_REQUIRED`); with one it answers. <ul><li>**#3, pass:** a `platform` (captions) call from the cluster ran in a desktop VM and answered "stand up" and "what is in progress" correctly.</li><li>**#28 standup panel:** shown to the owner.</li><li>**#16 `audio`, not passed:**<ul><li>of 4 starts, 3 ended in `error` about 60–90 s after `joining` (2 into an empty room, 1 with an observer already in);</li><li>the one that joined heard nothing: no `speech` or `stt` lines while Meet's captions showed all 5 questions.</li></ul>The guest images and the web image are the ones #16 passed on (stream fix `094e27d` is in both). The cause is not found; the guest's error code was not captured. **Compared on p620 (same desktop VMs, web build `1d2c18f`): the same failure.** The bot joined, greeted and reported `hearing: own` (PCM arrived), Meet's captions showed all 3 questions, but no `speech` hint was sent and the manager stopped with `stt pending=0 dropped=0`. So it is not caused by the cluster move; tracked in #38.</li><li>**#12, pass:** in a `platform` call from the cluster, the bot heard "share the board" and proposed a share. The approver approved it through `POST /api/shares/:id/approve` (same-origin check passed). The VM presented the read-only CFactory board in Meet (`proposed` → `starting` → `running`), and `POST /api/shares/stop` stopped it. A request asked about 20 s after the bot joined was missed because its captions were not on yet; the retry was heard. The test harness first got 403 because Node's `fetch` drops a custom `Host` header; the check used `http.request`.</li><li>**#28 review panel, pass:** `GET /api/review` returns the stages from live CFactory data (nothing in progress at the time), a card's detail returns its stages and discussion, and an unknown card gets 404.</li></ul> |
+| 7. Secrets | Pass.<ul><li>None of the 7 values (5 secrets, 2 addresses) appears in either repository's `main`, the Deployment, the container logs, or a `last-applied-configuration` annotation.</li><li>A member added through the script took effect after the roll and was removed again the same way.</li></ul> |
+| 8. Argo | Pass. `Synced` and `Healthy`; a manual `strategy` edit was reverted by self-heal in about 10 s. |
+
+- **13, cutover (2026-11-24):** after a bus post, `deploy/pod.sh down` on p620 (it needs `RFACTORY_ALLOWED_EMAILS` set even for `down`). The pod is gone and port 4180 is free. The `rfactory-actions` volume and the images are kept. The cluster hostname still answers 302. Day-7 cleanup: #37.
+
+**Cluster restart (2026-11-24 16:04 UTC):** every pod in `k3d-factory` stopped at once (`Unknown/255`): the planned Docker store move (nixos_config #3208, announced on the bus). On the way back `rfactory-web` exited once ("Streamable HTTP error": CFactory's MCP was not up yet) and the next start was healthy. A start that waits for CFactory instead of exiting would be gentler; not changed.
+
+**Noted, not changed:** `POST /api/standup` has no `Origin` check. It is a read-only summary, and the write routes do check. That predates #33.
+
 ## Tests
 
 | Where | Command | Expected |
