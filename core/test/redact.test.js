@@ -384,3 +384,25 @@ test('review round 4: keys over several joins, no inserted Bearer space, base64 
     assert.ok(best < 200, `39-character runs of ${JSON.stringify(piece.slice(-3))} took ${Math.round(best)} ms`);
   }
 });
+
+test('review round 5: a key after a swallowing value, AWS retries, one scan per Bearer run', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected) => {
+    assert.deepEqual(r.logSafeWindow(input), expected, name);
+    assert.equal(r.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const P = 'context '.repeat(5);
+  check('key after a value that runs over its join', [P + 'token=x', ' '.repeat(37) + 'tok', 'en: "my secret" tail'],
+    [P + 'token=[redacted]', ' '.repeat(37) + '[redacted]', '[redacted] [redacted] tail']);
+  check('AWS after a rejected join try', [P + 'note', ' '.repeat(34) + 'ASIA12', ' '.repeat(34) + 'ASIA12', ' '.repeat(36) + '3456', '7890123456'],
+    [P + 'note', ' '.repeat(34) + 'ASIA12', ' '.repeat(34) + '[redacted]', ' '.repeat(36) + '[redacted]', '[redacted]']);
+  check('AWS after a rejected two-break candidate', ['ASIA12', 'ASIA123456', '7890 123456'], ['ASIA12', '[redacted]', '[redacted]']);
+  const lines = Array(400).fill('-'.repeat(3994) + 'bearer');
+  let best = Infinity;
+  for (let run = 0; run < 5; run++) {
+    const start = performance.now();
+    r.logSafeWindow(lines);
+    best = Math.min(best, performance.now() - start);
+  }
+  assert.ok(best < 200, `Bearer runs took ${Math.round(best)} ms`);
+});

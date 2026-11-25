@@ -68,6 +68,11 @@ Self-contained: an implementer needs only this file and the files a step names.
    - **`Bearer` is matched in code:** after the keyword, spaces, at most one kept break, or a join, then 16+ token characters across any joins. No space is inserted into the joined window any more, so a secret or base64 run containing `bearer` at a break is matched again.
    - **`KEY_VALUE` runs once over the whole joined window** (the slices around each join missed a key or separator spanning two joins and cut values at the next join); a quoted value still may not cross a join or a kept break.
 
+6. **Step 4 review round 5 (Codex in a fresh session; fixes by the lead).** Each fix has a test that fails on the round 4 commit.
+   - **`KEY_VALUE` is also tried at each of the 12 positions before every join** (`authorization` is 13 characters), because an earlier unquoted value running over that join swallowed the key's first part.
+   - **Retries one character on:** a join try for a rule marks its range as tried only when its match is accepted, and the single-line AWS rule retries one character after a candidate rejected for crossing two breaks.
+   - **Each `Bearer` token run is scanned once,** so a window of `bearer` at every line end is linear again (3.1 s → about 70 ms).
+
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).

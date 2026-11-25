@@ -136,23 +136,36 @@ function jwtSpans(text, every = false) {
 
 // KEY_VALUE_WINDOW matches as { match, value } ranges; a quoted value must close before `limit(start)` (its line's end, or a join point)
 const space = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code))); // as the regex's \s
-function keyValueSpans(text, limit, from = 0, before = Infinity) { // matches starting in [from, before)
+const KEY_VALUE_AT = new RegExp(KEY_VALUE_WINDOW.source, 'iy');
+// the value of a KEY_VALUE_WINDOW match; a quoted value must close before `limit(start)` (its line's end, or a join)
+function keyValueMatch(text, match, limit) {
+  const start = match.index + match[1].length + match[2].length;
+  if (start >= text.length || space(text.charCodeAt(start))) return null;
+  let end = start;
+  if (text[start] === '"' || text[start] === "'") {
+    const close = text.indexOf(text[start], start + 1);
+    if (close > start + 1 && close < limit(start)) end = close + 1;
+  }
+  if (end === start) while (end < text.length && !space(text.charCodeAt(end))) end++;
+  return { match: [match.index, end], value: [start, end] };
+}
+function keyValueSpans(text, limit) {
   const found = [];
-  KEY_VALUE_WINDOW.lastIndex = from;
+  KEY_VALUE_WINDOW.lastIndex = 0;
   let match;
-  while ((match = KEY_VALUE_WINDOW.exec(text)) !== null && match.index < before) {
-    const start = match.index + match[1].length + match[2].length;
-    if (start >= text.length || space(text.charCodeAt(start))) continue;
-    let end = start;
-    if (text[start] === '"' || text[start] === "'") {
-      const close = text.indexOf(text[start], start + 1);
-      if (close > start + 1 && close < limit(start)) end = close + 1;
-    }
-    if (end === start) while (end < text.length && !space(text.charCodeAt(end))) end++;
-    found.push({ match: [match.index, end], value: [start, end] });
-    KEY_VALUE_WINDOW.lastIndex = end;
+  while ((match = KEY_VALUE_WINDOW.exec(text)) !== null) {
+    const one = keyValueMatch(text, match, limit);
+    if (!one) continue;
+    found.push(one);
+    KEY_VALUE_WINDOW.lastIndex = one.match[1];
   }
   return found;
+}
+// the KEY_VALUE_WINDOW match starting exactly at `at`, or null
+function keyValueAt(text, at, limit) {
+  KEY_VALUE_AT.lastIndex = at;
+  const match = KEY_VALUE_AT.exec(text);
+  return match ? keyValueMatch(text, match, limit) : null;
 }
 
 function makeRedactor(secrets) {
@@ -204,11 +217,14 @@ function makeRedactor(secrets) {
     const spans = [...pem];
     const add = (start, end) => spans.push([start, end]);
     for (const secret of values) for (const span of occurrences(value, secret)) add(...span);
-    for (const pattern of [...PATTERNS, BEARER_WINDOW, AWS_WINDOW, HEX_WINDOW, BASE64_WINDOW]) {
-      for (const match of value.matchAll(pattern)) {
-        if (pattern === AWS_WINDOW && match[0].split('\n').length > 2) continue; // at most one break in an AWS key
-        add(match.index, match.index + match[0].length);
-      }
+    for (const pattern of [...PATTERNS, BEARER_WINDOW, HEX_WINDOW, BASE64_WINDOW]) {
+      for (const match of value.matchAll(pattern)) add(match.index, match.index + match[0].length);
+    }
+    AWS_WINDOW.lastIndex = 0;
+    for (let match; (match = AWS_WINDOW.exec(value)) !== null;) {
+      // at most one break in an AWS key; a rejected candidate retries one character on, where a valid key may start
+      if (match[0].split('\n').length > 2) { AWS_WINDOW.lastIndex = match.index + 1; continue; }
+      add(match.index, match.index + match[0].length);
     }
     const lineEnd = (at) => { // offset of the break ending the line that holds `at`
       let low = 0;
@@ -291,13 +307,16 @@ function makeRedactor(secrets) {
           rule.join.lastIndex = point;
           const again = rule.join.exec(joined);
           if (!again) continue;
-          reach = Math.max(reach, point + again[0].length);
           const end = take(rule, point, point + again[0].length);
-          if (end !== null && crosses(point, end)) addJoined(point, end);
+          if (end === null) continue; // rejected: a later join inside it may still start a token
+          reach = Math.max(reach, point + again[0].length);
+          if (crosses(point, end)) addJoined(point, end);
         }
       }
       // Bearer, in code: after the keyword, spaces, at most one kept break, or a join; then 16+ token characters
+      let bearerRun = -1; // end of the token run the last Bearer scanned: a later Bearer inside it is covered already
       for (const found of joined.matchAll(/bearer/gi)) {
+        if (found.index < bearerRun) continue;
         const after = found.index + 6;
         let at = after;
         while (at < joined.length && (joined[at] === ' ' || joined[at] === '\t')) at++;
@@ -308,6 +327,7 @@ function makeRedactor(secrets) {
         if (at === after && !joinAt.has(after)) continue; // no separator: not a Bearer token
         let end = at;
         while (end < joined.length && tokenChar(joined.charCodeAt(end))) end++;
+        bearerRun = end;
         if (end - at >= 16 && crosses(found.index, end)) addJoined(found.index, end);
       }
       for (const [start, end] of jwtSpans(joined, true)) if (crosses(start, end)) addJoined(start, end);
@@ -316,6 +336,14 @@ function makeRedactor(secrets) {
       // a quoted value may not cross a join or a kept break; the whole match must cross a join (so a split key counts)
       const quoteLimit = (start) => Math.min(after(joinPoints, start), after(newlines, start));
       for (const found of keyValueSpans(joined, quoteLimit)) if (crosses(...found.match)) addJoined(...found.value);
+      // a key split by a join starts at most 12 characters before it ('authorization' is 13); the pass above can
+      // miss it when an earlier value ran over that join and swallowed the key's first part
+      for (const point of joinPoints) {
+        for (let at = Math.max(0, point - 12); at < point; at++) {
+          const found = keyValueAt(joined, at, quoteLimit);
+          if (found && crosses(...found.match)) addJoined(...found.value);
+        }
+      }
     }
 
     // span extension: a span reaching the end of a wrap-length line also covers the next line's leading token run
