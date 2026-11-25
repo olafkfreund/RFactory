@@ -279,3 +279,30 @@ test('toModel PEM matches main when BEGIN and END share dashes', () => {
   assert.equal(r.toModel('-----BEGIN PRIVATE KEY-----END PRIVATE KEY-----\nprivate payload\n-----END PRIVATE KEY-----'), '[redacted]');
   assert.equal(r.toModel('-----BEGIN RSA PRIVATE KEY-----END RSA PRIVATE KEY-----'), '-----BEGIN RSA PRIVATE KEY-----END RSA PRIVATE KEY-----');
 });
+
+test('review round 2: splits over three lines, glued dots, overlapping secrets and long values', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected, redactor = r) => {
+    assert.deepEqual(redactor.logSafeWindow(input), expected, name);
+    assert.equal(redactor.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const L = 'context '.repeat(5);
+  const lead = 'context '.repeat(7);
+  const pad = ' '.repeat(38);
+  check('sk- over three lines', [L + 'sk-abcdefgh', ' '.repeat(32) + 'ijklmnop', 'qrstuvwx'],
+    [L + '[redacted]', ' '.repeat(32) + '[redacted]', '[redacted]']);
+  check('JWT after a glued x.', [L + 'x.', ' '.repeat(18) + 'gggggggggg.hhhhhhhhhh.', 'jjjjjjjjjjjjjjjjjjjj ok'],
+    [L + 'x.', ' '.repeat(18) + '[redacted]', '[redacted] ok']);
+  check('overlapping secret', [L + '!ab!a', 'b!ab!a tail'], [L + '[redacted]', '[redacted] tail'], makeRedactor(['!ab!ab!a']));
+  check('long value after a split key', [lead + 'tok', 'en=' + '!'.repeat(520) + ' done'], [lead + 'tok', 'en=[redacted] done']);
+  check('no boundary made by a cut', ['_cfk_' + 'G'.repeat(508), 'HIJKLM ok'], ['_cfk_[redacted]', '[redacted] ok']);
+  check('JWT-like needs word characters at its ends', ['-'.repeat(45) + '.a.b'], ['-'.repeat(45) + '.a.b']);
+  for (const [name, parts] of [['AWS', ['AKIA12345678', '9012', '3456']], ['ghp_', ['ghp_' + 'G'.repeat(20), 'GGGG', 'G'.repeat(20)]],
+    ['Bearer', ['Bearer abcdefgh', 'ijkl', 'mnopqrst']], ['hex', ['f'.repeat(30), 'ffff', 'f'.repeat(40)]]]) {
+    check(`${name} through an indented short middle`, [lead + parts[0], pad + parts[1], parts[2] + ' ok'],
+      [lead + '[redacted]', pad + '[redacted]', '[redacted] ok']);
+  }
+  const start = performance.now();
+  assert.equal(r.logSafeWindow('token="a" '.repeat(100000)), 'token=[redacted] '.repeat(100000));
+  assert.ok(performance.now() - start < 400, 'one 1 MB line of quoted values stays linear');
+});

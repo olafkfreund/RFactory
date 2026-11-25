@@ -40,7 +40,14 @@ Self-contained: an implementer needs only this file and the files a step names.
    - **AWS:** a match with more than one break is dropped, as the one-break decision says. An AWS key split in three needs a middle line under 40 characters, so it is not joined.
    - **`toModel` PEM** matches main exactly: the `END` search starts after the whole `BEGIN` marker.
    - **Timing test** runs with a scope secret (as production does), adds the shapes the reviews found (`-a`, ` a`, `x … ab`, `a…!`, `a.`, BEGIN/END pairs) and takes the best of three runs, because the suite runs files in parallel.
-   - **Accepted limits added:** a quoted value with spaces wrapped across lines shows its part after the break (quoted values never cross a break); a token after `Bearer ` split over three lines with a short middle part is not joined; a match crossing a join point with more than 512 characters on one side is not joined there (that side already matches on its own, except for exact secrets, which use the whole-window join).
+   - **Accepted limits added:** a quoted value with spaces wrapped across lines shows its part after the break (quoted values never cross a break). The join-point design and its other limits were replaced in round 2 (deviation 2).
+
+2. **Step 4 review round 2 (Codex, fresh session; Opus agent; fixes by the lead).** Each fix has a test that fails on the round 1 commit.
+   - **Join points replaced by one joined window.** Pairs of lines missed a credential split over three lines with a short middle part (`sk-…`, AWS, `ghp_`, `Bearer`, hex through an indented middle line), and the 512-character cut left a value visible after a split key and made a word boundary that did not exist. Now every rule (scope secrets, `PATTERNS`, `BEARER`, AWS, hex, base64, JWT-like, `KEY_VALUE`) also runs on the window with every join closed (leading spaces and tabs of the next line dropped; other breaks kept as `\n`), and a match that crosses a join is mapped back per line. `KEY_VALUE` counts when its whole match crosses a join and redacts the value; a quoted value may not cross a join or a kept break. There is no 8-line or 512-character limit: a split over any number of joined lines is found.
+   - **JWT-like in the joined window tries every triple,** so an unrelated `x.` glued in front cannot hide a token; single-line text keeps main's left-to-right triples. Both now trim leading and trailing `-` from a triple as main's `\b` does; parts made only of `-` or `_` can still differ from main, a shape no real token has.
+   - **Overlapping matches of a scope secret** are all redacted (the search advances one character, not the secret's length).
+   - **Linear on one long line:** the quote limit and the line end come from binary searches over the line offsets and join points, not a newline search per match; hot loops use character codes. A 1 MB line of `token="a" ` takes about 70 ms.
+   - **Accepted limits now:** a quoted value with spaces wrapped across lines shows its part after the break; the word before a long run that starts the next line can be redacted (as the word after a credential can); wraps under 40 columns are not joined.
 
 ## Steps
 

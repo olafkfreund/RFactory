@@ -19,7 +19,6 @@ const JWT_RUN = /[A-Za-z0-9_.-]+/g;
 const CHAIN_HEAD = /^[A-Za-z0-9_.~+/=-]+/;
 const AWS_CHAIN = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const WRAP_MIN = 40;
-const JOIN_REACH = 512; // shortcut: a match crossing a join with more than this on one side is not joined; that side alone already matches every rule but exact secrets, which use the whole-window join
 const PEM_MARKER = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
 
 function pemSpans(text, openLabel = null) {
@@ -63,9 +62,10 @@ function redactLegacyPem(text) {
   return result + text.slice(cursor);
 }
 
-// main's /\b[\w-]+\.[\w-]+\.[\w-]+\b/ (kept when 40+), as consecutive dot-separated triples of one run; only runs with a dot are visited
+// main's /\b[\w-]+\.[\w-]+\.[\w-]+\b/ (kept when 40+), as consecutive dot-separated triples of one run; only runs with a dot are visited.
+// `every` tries every triple, not only main's left-to-right ones: a joined window can glue an unrelated `x.` before a token.
 const runChar = (code) => (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 45 || code === 46;
-function jwtSpans(text) {
+function jwtSpans(text, every = false) {
   const spans = [];
   let dot = text.indexOf('.');
   while (dot >= 0) {
@@ -74,15 +74,20 @@ function jwtSpans(text) {
     let end = dot;
     while (end < text.length && runChar(text.charCodeAt(end))) end++;
     const parts = text.slice(start, end).split('.');
-    let at = start;
+    const at = [start];
+    for (let i = 1; i < parts.length; i++) at.push(at[i - 1] + parts[i - 1].length + 1);
     for (let i = 0; i + 2 < parts.length;) {
-      if (parts[i] && parts[i + 1] && parts[i + 2]) {
-        const length = parts[i].length + parts[i + 1].length + parts[i + 2].length + 2;
-        if (length >= 40) spans.push([at, at + length]);
-        at += length + 1;
-        i += 3;
+      // \b: the match starts at the first word character of the first part and ends after the last one of the third
+      let lead = 0;
+      while (lead < parts[i].length && parts[i].charCodeAt(lead) === 45) lead++;
+      let trail = 0;
+      while (trail < parts[i + 2].length && parts[i + 2].charCodeAt(parts[i + 2].length - 1 - trail) === 45) trail++;
+      if (parts[i].length > lead && parts[i + 1] && parts[i + 2].length > trail) {
+        const from = at[i] + lead;
+        const to = at[i + 2] + parts[i + 2].length - trail;
+        if (to - from >= 40) spans.push([from, to]);
+        i += every ? 1 : 3;
       } else {
-        at += parts[i].length + 1;
         i++;
       }
     }
@@ -92,19 +97,20 @@ function jwtSpans(text) {
 }
 
 // KEY_VALUE_WINDOW matches as { match, value } ranges; a quoted value must close before `limit(start)` (its line's end, or a join point)
+const space = (code) => code === 32 || (code >= 9 && code <= 13);
 function keyValueSpans(text, limit) {
   const found = [];
   KEY_VALUE_WINDOW.lastIndex = 0;
   let match;
   while ((match = KEY_VALUE_WINDOW.exec(text)) !== null) {
     const start = match.index + match[1].length + match[2].length;
-    if (!text[start] || /\s/.test(text[start])) continue;
+    if (start >= text.length || space(text.charCodeAt(start))) continue;
     let end = start;
     if (text[start] === '"' || text[start] === "'") {
       const close = text.indexOf(text[start], start + 1);
       if (close > start + 1 && close < limit(start)) end = close + 1;
     }
-    if (end === start) while (end < text.length && !/\s/.test(text[end])) end++;
+    if (end === start) while (end < text.length && !space(text.charCodeAt(end))) end++;
     found.push({ match: [match.index, end], value: [start, end] });
     KEY_VALUE_WINDOW.lastIndex = end;
   }
@@ -160,11 +166,7 @@ function makeRedactor(secrets) {
     const spans = [...pem];
     const add = (start, end) => spans.push([start, end]);
     for (const secret of values) {
-      let at = 0;
-      while ((at = value.indexOf(secret, at)) >= 0) {
-        add(at, at + secret.length);
-        at += secret.length;
-      }
+      for (let at = value.indexOf(secret); at >= 0; at = value.indexOf(secret, at + 1)) add(at, at + secret.length); // overlaps too
     }
     for (const pattern of [...PATTERNS, BEARER_WINDOW, AWS_WINDOW, HEX_WINDOW, BASE64_WINDOW]) {
       for (const match of value.matchAll(pattern)) {
@@ -172,7 +174,12 @@ function makeRedactor(secrets) {
         add(match.index, match.index + match[0].length);
       }
     }
-    const lineEnd = (at) => { const next = value.indexOf('\n', at); return next < 0 ? value.length : next; };
+    const lineEnd = (at) => { // offset of the break ending the line that holds `at`
+      let low = 0;
+      let high = lines.length - 1;
+      while (low < high) { const mid = (low + high + 1) >> 1; if (offsets[mid] <= at) low = mid; else high = mid - 1; }
+      return offsets[low] + lines[low].length;
+    };
     for (const found of keyValueSpans(value, lineEnd)) add(...found.value);
     for (const span of jwtSpans(value)) add(...span);
     const content = (i) => lines[i].replace(/\r$/, '');
@@ -180,16 +187,25 @@ function makeRedactor(secrets) {
     // a break joins only after a wrap-length line and before a non-blank one
     const joins = (i) => i + 1 < lines.length && content(i).length >= WRAP_MIN && content(i + 1).trim() !== '';
 
-    // whole-window join for exact scope secrets and JWT-like triples, which need every part at once
+    // every rule also runs on the window with each join closed (other breaks kept as \n), so a match can span any number of joined lines
     let joined = '';
     const segments = []; // [start in joined, start in value, length]
+    const joinPoints = []; // offsets in joined where a break was closed
     for (let i = 0; i < lines.length; i++) {
       const text = content(i);
       const from = i > 0 && joins(i - 1) ? indentOf(text) : 0;
+      if (from || (i > 0 && joins(i - 1))) joinPoints.push(joined.length);
       segments.push([joined.length, offsets[i] + from, text.length - from]);
       joined += text.slice(from);
       if (!joins(i) && i + 1 < lines.length) joined += '\n';
     }
+    const after = (list, at) => { // first entry of a sorted list greater than `at`, or Infinity
+      let low = 0;
+      let high = list.length;
+      while (low < high) { const mid = (low + high) >> 1; if (list[mid] > at) high = mid; else low = mid + 1; }
+      return low < list.length ? list[low] : Infinity;
+    };
+    const crosses = (start, end) => after(joinPoints, start) < end;
     const addJoined = (start, end) => {
       let low = 0;
       let high = segments.length - 1;
@@ -204,36 +220,21 @@ function makeRedactor(secrets) {
         if (a < b) add(from + a - at, from + b - at);
       }
     };
-    for (const secret of values) {
-      let at = 0;
-      while ((at = joined.indexOf(secret, at)) >= 0) {
-        addJoined(at, at + secret.length);
-        at += secret.length;
+    if (joinPoints.length) {
+      for (const secret of values) {
+        for (let at = joined.indexOf(secret); at >= 0; at = joined.indexOf(secret, at + 1)) addJoined(at, at + secret.length);
       }
-    }
-    for (const [start, end] of jwtSpans(joined)) addJoined(start, end);
-
-    // each join point: the last JOIN_REACH characters before it and the first after it, so a match can cross it
-    for (let i = 0; i + 1 < lines.length; i++) {
-      if (!joins(i)) continue;
-      const before = content(i);
-      const next = content(i + 1);
-      const indent = indentOf(next);
-      const cut = Math.max(0, before.length - JOIN_REACH);
-      const left = before.slice(cut);
-      const pair = left + next.slice(indent, indent + JOIN_REACH);
-      const point = left.length;
-      const map = (j) => (j < point ? offsets[i] + cut + j : offsets[i + 1] + indent + j - point);
-      const crossing = ([start, end], [from, to] = [start, end]) => {
-        if (start >= point || end <= point) return;
-        if (from < point) add(map(from), map(Math.min(to, point) - 1) + 1);
-        if (to > point) add(map(Math.max(from, point)), map(to - 1) + 1);
-      };
       for (const pattern of [...PATTERNS, BEARER, AWS_CHAIN, HEX_WINDOW, BASE64_WINDOW]) {
-        for (const found of pair.matchAll(pattern)) crossing([found.index, found.index + found[0].length]);
+        for (const found of joined.matchAll(pattern)) {
+          if (crosses(found.index, found.index + found[0].length)) addJoined(found.index, found.index + found[0].length);
+        }
       }
-      // the key may be the part that crosses: test the whole match, redact only the value
-      for (const found of keyValueSpans(pair, (start) => (start < point ? point : pair.length))) crossing(found.match, found.value);
+      for (const [start, end] of jwtSpans(joined, true)) if (crosses(start, end)) addJoined(start, end);
+      const newlines = [];
+      for (let at = joined.indexOf('\n'); at >= 0; at = joined.indexOf('\n', at + 1)) newlines.push(at);
+      // a quoted value may not cross a join or a kept break; the whole match must cross a join (so a split key counts)
+      const quoteLimit = (start) => Math.min(after(joinPoints, start), after(newlines, start));
+      for (const found of keyValueSpans(joined, quoteLimit)) if (crosses(...found.match)) addJoined(...found.value);
     }
 
     // span extension: a span reaching the end of a wrap-length line also covers the next line's leading token run

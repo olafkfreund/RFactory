@@ -144,9 +144,9 @@
     "semantic_hash": "f88df979b864528309c4b3b2949d8a6e"
   },
   "core/src/redact.js": {
-    "mtime": 1795612551.2002568,
-    "seen": 1795612694.6739535,
-    "ast_hash": "0ac0d484182010c26985592d0dea0746",
+    "mtime": 1795612972.8838036,
+    "seen": 1795613038.2062068,
+    "ast_hash": "e3dead05fb3f9e6b5ab36d1c02cdec49",
     "semantic_hash": ""
   },
   "core/src/roles.js": {
@@ -294,9 +294,9 @@
     "semantic_hash": "d61efa4fa37775eea9d2ca89128dfbdd"
   },
   "core/test/redact.test.js": {
-    "mtime": 1795612618.7611156,
-    "seen": 1795612694.6740413,
-    "ast_hash": "7fc0ae08cddee6ef8cbeea8075d2c0e0",
+    "mtime": 1795613006.6479385,
+    "seen": 1795613038.2062738,
+    "ast_hash": "65772acceb7ab331e2202d001b622a64",
     "semantic_hash": ""
   },
   "core/test/roles.test.js": {
@@ -1554,9 +1554,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795612689.446744,
-    "seen": 1795612694.6745536,
-    "ast_hash": "7b426487437bb3e56898d4beed0124dc",
+    "mtime": 1795613030.1968334,
+    "seen": 1795613038.2066958,
+    "ast_hash": "eee395c26cc80db15f094da9b19d8e97",
     "semantic_hash": ""
   },
   "spec/2026-11-25-39-wrapped-credential-redaction.md": {
