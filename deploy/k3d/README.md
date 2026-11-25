@@ -84,6 +84,9 @@ deploy/k3d/import-images.sh image-guard       # only one, after a guard change
 ```
 
 It builds with nix and loads each image into the containerd of both nodes.
+It prints one line per image and node: `<image> <node> repo:tag@digest`.
+**Pin the digest of the node the pod runs on.** `ctr import` can give the same image a different digest on each node; the script warns when it does.
+The runner is scheduled on `k3d-factory-server-0`, so its pin takes that node's digest (on 2026-11-25 the agent's digest left the runner in `ErrImageNeverPull`).
 The images exist only in the nodes, so the manifests use `imagePullPolicy: Never`.
 Repeat the import after the cluster is recreated.
 
