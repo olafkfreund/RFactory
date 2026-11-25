@@ -17,27 +17,28 @@ Self-contained: an implementer needs only this file and the files a step names.
 
 ## Decisions carried over (approved intent and spec)
 
-- **Scope:** generic secrets (hex 40+, base64 40+ with `=` padding, JWT-like 40+), prefixed tokens (`PATTERNS`, `BEARER`, AWS, the `KEY_VALUE` value), the scope's secret values, and PEM private-key blocks.
+- **Scope:** generic secrets (hex 40+, base64 40+ with optional `=` padding, JWT-like 40+), prefixed tokens (`PATTERNS`, `BEARER`, AWS, the `KEY_VALUE` value), the scope's secret values, and PEM private-key blocks.
 - **Find first, replace once.** `logSafeWindow` on a string collects spans `[start, end)` (UTF-16 offsets) from every rule on the **original, unredacted** text, merges overlapping and touching spans, and renders each line once: every covered segment of a line becomes `[redacted]`; uncovered text and indentation stay. **The line count is kept.** Lines split on `\n`; a trailing `\r` is not content and is restored on render.
-- **`toModel` output is unchanged** (records, errors, actions); only its PEM rule switches to the scanner for run time. Its existing tests must pass untouched.
+- **`toModel` output is unchanged** (records, errors, actions). It keeps its own `KEY_VALUE` (multi-line quoted values allowed) and its PEM semantics: from a `BEGIN` whose label ends in `PRIVATE KEY` to the next `END` whose label ends in `PRIVATE KEY`, one `[redacted]`; an unclosed `BEGIN` is left as is; certificates are untouched. Only the implementation changes, to a linear `indexOf` scan, for run time. Its existing tests must pass untouched.
 - **A break** is `\n` or `\r\n` plus the next line's leading spaces and tabs. A blank line is never a break.
 - **Wrap-length:** a line whose content has at least `WRAP_MIN = 40` characters. Shorter lines never join.
-- **Chains:** from each wrap-length line, its maximal tail run of `[A-Za-z0-9_.~+/=-]`, then following lines stripped of leading `[ \t]`, while the previous line was wrap-length and the next is not blank, at most 8 lines; the last line contributes only its leading token run. A tail run ending in `bearer` (any case) is followed by one space. The single-text rules run on each chain; only matches crossing a line boundary are kept, mapped back to per-line spans.
+- **Chains:** from each wrap-length line, its maximal tail run of `[A-Za-z0-9_.~+/=-]`, then following lines stripped of leading `[ \t]`, while the previous line was wrap-length and the next is not blank, at most 8 lines; the last line contributes only its leading token run. A tail run ending in `bearer` (any case) is followed by one space, and a tail run preceded on its line by `bearer` and spaces starts the chain with `Bearer ` (so a token split after a short first part still matches `BEARER`). The single-text rules run on each chain; only matches crossing a line boundary are kept, mapped back to per-line spans.
 - **Span extension:** a span that reaches the end of a wrap-length line also covers the next line's leading token run, and continues while that line is fully covered and wrap-length.
-- **PEM scanner:** one linear scan of `-----BEGIN <L>-----` / `-----END <L>-----` (`[A-Z0-9 ]+`). BEGIN opens with its label; only END with the same label closes. Spans: BEGIN..END; open BEGIN..window end; an END with no open block, window start..END. Optional input: an already-open label (from the share flag).
-- **Linear rules:** JWT-like becomes one scan of maximal `[A-Za-z0-9_.-]` runs (40+ characters, two or more dots between non-empty parts); `KEY_VALUE` quoted values exclude `\n`; the lazy PEM regexes go.
-- **Share flag:** before `rawLines` is trimmed to 400, the scanner runs over the lines about to drop, from the current `entry.pemOpen`; the flag becomes the open label or `null`. While set, the window is redacted as if it started inside that block.
+- **PEM scanner:** one linear scan of `-----BEGIN <L>-----` / `-----END <L>-----` (`[A-Z0-9 ]+`). BEGIN opens with its label; only END with the same label closes. Spans: BEGIN..END; open BEGIN..window end; an END with no open block, window start..END. While a block is open, a further `BEGIN` is ignored: the first block keeps its start and label until its own `END`. Optional input: an already-open label (from the share flag), which makes the window start inside that block.
+- **Linear rules:** JWT-like becomes one scan of maximal `[A-Za-z0-9_.-]` runs (40+ characters, two or more dots between non-empty parts); window mode has its own `KEY_VALUE` whose quoted values exclude `\n`; the lazy PEM regexes go from window mode.
+- **Whitespace-aware rules in window mode** (AWS, `BEARER`, the `KEY_VALUE` separator) may cross at most one break and never a blank line: `\s*` / `\s+` become `[ \t]*(?:\r?\n[ \t]*)?` (at least one space or break for `BEARER`). AWS keeps its `\b` boundaries and its span ends at the last key character.
+- **Share flag:** the stored flag advances only over lines leaving the buffer: before `rawLines` is trimmed to 400, the scanner runs over the lines about to drop, from the current `entry.pemOpen`; the flag becomes the open label or `null`. While set, the window is redacted as if it started inside that block; a matching `END` still in the window lets the lines after it render, and the flag clears once that `END` drops.
 - **Accepted limits:** wraps under 40 columns are not joined; the next line's leading word after a credential ending a wrap-length line is redacted; a stray BEGIN hides the rest of that share; the first part of a wrapped secret can show on the poll before its last part arrives.
 - **No change** to CFactory, AIFactory, or the share, page and speech call sites other than `web/shares.js:49-51`.
 
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).
-   - Add `pemSpans(text, openLabel)` returning `{ spans, openLabel }`, and the linear JWT-like scan.
-   - `KEY_VALUE` quoted alternatives become `"[^"\n]+"` and `'[^'\n]+'`.
-   - Rewrite the string branch of `logSafeWindow` (`redact.js:46-60`) to collect spans from: scope secrets, `PATTERNS` minus the PEM regex, `BEARER`, the `KEY_VALUE` value group, AWS (`(?:AKIA|ASIA)(?:[0-9A-Z]\s*){16}`), JWT-like, hex, base64 (`[A-Za-z0-9+/]{40,}={0,2}`), and `pemSpans`; merge; render per line. Accept an optional `{ pemOpen }` argument for step 3. The array branch keeps joining with `\n` and splitting the result, now with the same length.
-   - `toModel`'s PEM handling uses `pemSpans` on its own text, replacing each closed block with one `[redacted]` as today.
-   - Tests: update the two collapse assertions in `logSafeWindow removes a PEM block cut by the window at either end` (`redact.test.js:74-79`) to the kept line count; add a mismatched `END CERTIFICATE` inside an open block; the four hostile 400×4000-character windows (`a-a-a-…`, base64 runs, repeated BEGIN with no END, repeated `token="a `) each under 200 ms; benign lines unchanged (`1 passing`, `✓ notes api returns 200`, a path, consecutive 32-character hashes, `abc1234` then `Done`).
+   - Add `pemSpans(text, openLabel)` returning `{ spans, openLabel }`, and the linear JWT-like scan. Export it: `makeRedactor` returns `{ toModel, logSafe: toModel, logSafeWindow, pemSpans }`, so step 3 needs no edit in `core/`.
+   - A window-mode `KEY_VALUE_WINDOW`, quoted alternatives `"[^"\n]+"` and `'[^'\n]+'`, separator as in the whitespace decision. `toModel` keeps `KEY_VALUE` as is.
+   - Rewrite the string branch of `logSafeWindow` (`redact.js:46-60`) to collect spans from: scope secrets, `PATTERNS` minus the PEM regex, `BEARER`, the `KEY_VALUE` value group, AWS (`\b(?:AKIA|ASIA)(?:[0-9A-Z][ \t]*(?:\r?\n[ \t]*)?){15}[0-9A-Z]\b`), JWT-like, hex (`\b[A-Fa-f0-9]{40,}\b`), base64 (`(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])`, so padding and a trailing `+` or `/` are inside the span), and `pemSpans`; merge; render per line. Accept an optional second argument `{ pemOpen }`; the array branch joins with `\n`, passes the option through, and splits the result (same length); the other branches call `logSafeWindow(item)` explicitly, never `value.map(logSafeWindow)`, which would pass the index as the option.
+   - `toModel`'s PEM rule becomes the linear legacy scan described in the decisions (private-key labels only, closed blocks only, one `[redacted]` each).
+   - Tests, each with exact output and kept line count, as a line array and as one string: update the two collapse assertions in `logSafeWindow removes a PEM block cut by the window at either end` (`redact.test.js:75-81`, assertions at `:77-78`); the four PEM cases with exact output (both markers, only `BEGIN`, only `END`, a mismatched `END CERTIFICATE` inside an open block) plus a second `BEGIN` inside an open block followed by the second label's `END` (still hidden); the existing short-line AWS case (`redact.test.js:9`) plus an AWS key with a blank line inside (not joined) and `BEARER` / `KEY_VALUE` across a blank line (not joined); `toModel` with a multi-line quoted value and with a certificate (unchanged); benign lines unchanged (`1 passing`, `✓ notes api returns 200`, a path, consecutive 32-character hashes, `abc1234` then `Done`); the four hostile 400×4000-character windows (`a-a-a-…`, base64 runs, repeated BEGIN with no END, repeated `token="a `) each under 200 ms, run on p620.
    - Check: `cd core && npm test`.
    - Traps: keep `BEARER` before `KEY_VALUE` semantics (a `Bearer` token span must cover the token, not only the word); span offsets are UTF-16 (`String.prototype` indices), end-exclusive; do not change `toModel`'s output for any existing test.
 
@@ -48,16 +49,16 @@ Self-contained: an implementer needs only this file and the files a step names.
    - Traps: the chain's first run must start at a real boundary (maximal run), never glued to the previous line; map match ends end-exclusive so a match ending at a line's end does not spill into the next; keep each chain at most 8 lines.
 
 3. **Share flag** (`web/shares.js:49-51`, the entry at `:237`, `web/test/shares.test.js`).
-   - Add `pemOpen: null` to the entry. Before `slice(-400)`, compute the dropped prefix, run `pemSpans` over it from `entry.pemOpen`, and store the resulting `openLabel`. Pass `{ pemOpen: entry.pemOpen }` to `logSafeWindow`.
+   - Add `pemOpen: null` to the entry. After the push and before `slice(-400)`, take the lines about to drop (`rawLines.slice(0, -400)`), run `pemSpans` over their joined text from `entry.pemOpen`, and store the resulting `openLabel`. Then trim and call `logSafeWindow(entry.rawLines, { pemOpen: entry.pemOpen })`.
    - Tests: a key block whose BEGIN drops out before its END arrives is hidden on every poll, including a single poll of over 400 lines; a mismatched END does not clear the flag; the flag clears on the matching END and the benign line right after it is shown.
    - Check: `cd web && npm test`.
    - Traps: the redactor comes in as `redactor`; `pemSpans` must be exposed by `makeRedactor` (or exported) for this step; do not change the 200-line, 400-character and 48 KiB limits after redaction.
 
 4. **Reviews (lead):** a fresh Opus agent given this plan and `git diff main`, plus the `reviewers:` above, all read-only. Findings fixed with tests that fail on the old code.
 5. **Final suites (lead):** the Tests block on the branch after the fixes; `graphify update .`.
-6. **Deploy (lead; owner's OK; agent bus first):** merge the PR; CI builds and signs the web image; pin its `sha-<7>` digest in factory-gitops `apps/rfactory/kustomization.yaml`; smoke check `GET /api/investigations` 200.
-7. **Live check (with the owner hosting the test Meet, together with #18's remaining checks):** an investigation of a test repository whose test prints a wrapped fake token shows `[redacted]` on each of its lines in the log share.
-8. **PR** linking intent, spec and plan, saying which steps Codex and the coder did.
+6. **PR (lead)** linking intent, spec and plan, saying which steps Codex and the coder did.
+7. **Deploy (lead; owner's OK; agent bus first):** merge the PR; CI builds and signs the web image; pin its `sha-<7>` tag and digest in factory-gitops `apps/rfactory/manifests/kustomization.yaml`; smoke check `GET /api/investigations` 200.
+8. **Live check (with the owner hosting the test Meet, together with #18's remaining checks):** an investigation of a test repository whose test prints a wrapped fake token shows `[redacted]` on each of its lines in the log share.
 
 ## Tests
 
@@ -67,4 +68,4 @@ Self-contained: an implementer needs only this file and the files a step names.
 
 ## Rollback
 
-Revert the PR and pin the previous web digest in factory-gitops (`sha-b42b601@sha256:8f24b4be…`). No data or schema changes.
+Revert the PR and pin the previous web digest in factory-gitops in `apps/rfactory/manifests/kustomization.yaml`: `newTag: sha-b42b601`, `digest: sha256:8f24b4be32b7724af1ee27836f116d318f396b24d6a14c0c98f1bd75434b1a47`. No data or schema changes.
