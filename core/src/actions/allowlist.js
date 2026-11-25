@@ -83,7 +83,7 @@ function revalidate(payload, now, context) {
 
 function investigationApprovalText(payload) {
   const tests = payload.test_command === null ? 'no tests: none configured' : `runs \`${payload.test_command}\``;
-  return `Investigate in ${payload.repo} @ ${payload.sha.slice(0, 7)}: ${payload.request}. Read-only; ${tests}; at most 30 minutes, 2 M tokens and 200 turns${payload.show_log ? '; show the log in the call' : ''}.`;
+  return `Investigate in ${payload.repo} @ ${payload.sha.slice(0, 7)}: ${payload.request.replace(/\.+$/, '')}. Read-only; ${tests}; at most 30 minutes, 2 M tokens and 200 turns${payload.show_log ? '; show the log in the call' : ''}.`;
 }
 
 module.exports = { validate, canonical, hashPayload, INVESTIGATION_LIMITS, validateInvestigation, revalidate, investigationApprovalText };

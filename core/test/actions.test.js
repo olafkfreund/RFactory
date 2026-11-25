@@ -151,5 +151,6 @@ test('investigation payload accepts only the approved shape and scope', () => {
   assert.equal(revalidate({ ...payload, limits: { ...payload.limits, tokens: 1 } }, Date.parse(payload.proposed_at), check), false);
   assert.match(investigationApprovalText(payload), /30 minutes, 2 M tokens and 200 turns; show the log in the call/);
   assert.match(investigationApprovalText(payload), /owner\/notes-api @ aaaaaaa: Why do tests fail\?/);
+  assert.match(investigationApprovalText({ ...payload, request: 'Find out why the tests fail.' }), /tests fail\. Read-only;/);
   assert.match(investigationApprovalText({ ...payload, test_command: null, show_log: false }), /no tests: none configured/);
 });

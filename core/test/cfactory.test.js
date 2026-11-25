@@ -288,3 +288,15 @@ test('investigateAvailable follows the tool list', async () => {
   assert.equal(await src(inv({}, ['cfactory_list_cards', 'cfactory_investigate_card'])).investigateAvailable(), true);
   assert.equal(await src(inv({}, ['cfactory_list_cards'])).investigateAvailable(), false);
 });
+
+test('investigateAvailable reconnects once when the session is dead (a CFactory restart)', async () => {
+  let created = 0, closed = 0;
+  const dead = { ...inv({ cfactory_list_git_repositories: repos }, ['cfactory_investigate_card']), async connect() {}, async listTools() { throw new Error('Session not found'); }, async close() { closed++; } };
+  const fresh = { ...inv({ cfactory_list_git_repositories: repos }, ['cfactory_list_cards', 'cfactory_investigate_card']), async connect() {}, async close() {} };
+  const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2,
+    clientFactory: () => (++created === 1 ? dead : fresh), timeoutMs: 100 });
+  await s.start();
+  assert.equal(await s.investigateAvailable(), true);
+  assert.equal(closed, 1);
+  assert.equal(created, 2);
+});
