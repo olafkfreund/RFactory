@@ -141,8 +141,10 @@ test('hostile windows finish within 200 ms', () => {
     Array(400).fill('-----BEGIN A----------END A-----'.repeat(120)),
   ];
   for (const [index, lines] of windows.entries()) {
-    let best = Infinity; // best of three: the suite runs files in parallel, so one run can include other tests' load
-    for (let run = 0; run < 3; run++) {
+    // best of five: the suite runs files in parallel processes, so one run can include their load
+    // (CPU time is no better: it counts the garbage collector's other threads)
+    let best = Infinity;
+    for (let run = 0; run < 5; run++) {
       const start = performance.now();
       assert.equal(r.logSafeWindow(lines).length, 400);
       best = Math.min(best, performance.now() - start);
@@ -327,4 +329,25 @@ test('review round 3: glued token edges, the Bearer separator, blank lines, over
   const start = performance.now();
   assert.equal(long.logSafeWindow('!'.repeat(64000)), '[redacted]');
   assert.ok(performance.now() - start < 200, 'overlapping matches of a long secret stay linear');
+});
+
+test('review round 3 (agy): Bear/er before a wrapped token, base64 glued to a word, split key with spaced separator', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected) => {
+    assert.deepEqual(r.logSafeWindow(input), expected, name);
+    assert.equal(r.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const L = 'context '.repeat(5);
+  check('Bearer with no trailing space', [L + 'Bearer', ' '.repeat(34) + 'abcdef', 'ghijklmnop ok'],
+    [L + '[redacted]', ' '.repeat(34) + '[redacted]', '[redacted] ok']);
+  check('Bear/er then a token', [L + 'Bear', ' '.repeat(38) + 'er', '0123456789abcdef ok'],
+    [L + '[redacted]', ' '.repeat(38) + '[redacted]', '[redacted] ok']);
+  check('base64 padding glued to a word', [L + 'G'.repeat(20), ' '.repeat(18) + 'H'.repeat(20) + '==', 'done'],
+    [L + '[redacted]', ' '.repeat(18) + '[redacted]', '[redacted]']);
+  check('word before cfk_', [L + 'mykey', ' '.repeat(30) + 'cfk_123456', '7890123456 ok'], [L + 'mykey', ' '.repeat(30) + '[redacted]', '[redacted] ok']);
+  check('word before ASIA', [L + 'label', ' '.repeat(35) + 'ASIA1', ' '.repeat(35) + '23456', '7890123456 ok'],
+    [L + 'label', ' '.repeat(35) + '[redacted]', ' '.repeat(35) + '[redacted]', '[redacted] ok']);
+  check('Bear/er then blank lines', [L + 'Bear', 'er', '', '', 'package-lock.json'], [L + 'Bear', 'er', '', '', 'package-lock.json']);
+  check('split key, spaced separator', ['context '.repeat(7) + 'tok', 'en:' + ' '.repeat(80) + 'hunter2secretvalue done'],
+    ['context '.repeat(7) + 'tok', 'en:' + ' '.repeat(80) + '[redacted] done']);
 });

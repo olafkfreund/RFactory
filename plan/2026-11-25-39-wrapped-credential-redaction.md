@@ -56,6 +56,13 @@ Self-contained: an implementer needs only this file and the files a step names.
    - **Whitespace in `KEY_VALUE` values is the regex's `\s`** again, Unicode spaces included.
    - Glued neighbours that are base64 characters join a base64 run and are redacted with it: over-redaction next to a credential, as already accepted.
 
+4. **Step 4 review round 3, agy (on the round 2 commit; fixes by the lead).** Each fix has a test that fails on the deviation 3 commit.
+   - **Base64 edges at joins:** the joined base64 rule checks its edges in code, with a join counting as an edge, so `==` padding glued to the next line's word still matches.
+   - **`Bearer` separator after `Bear` + `er`:** the space is added when the joined text, not the single line, ends in `bearer`.
+   - **Linear joined `KEY_VALUE`:** it searches only a slice around each join (from the key and separator before the value run, to the next join or kept break), so a search that finds nothing stops there; a key with long spacing before its value still counts.
+   - **Scope secrets** use the native search when matches cannot overlap and KMP only when they can.
+   - **Timing test** takes the best of five wall-clock runs (CPU time counts the garbage collector's other threads, so it was no better).
+
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).
