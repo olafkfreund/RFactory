@@ -16,6 +16,9 @@ const AWS_WINDOW = /\b(?:AKIA|ASIA)(?:[0-9A-Z][ \t]*(?:\r?\n[ \t]*)?){15}[0-9A-Z
 const HEX_WINDOW = /\b[A-Fa-f0-9]{40,}\b/g;
 const BASE64_WINDOW = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])/g;
 const JWT_RUN = /[A-Za-z0-9_.-]+/g;
+const CHAIN_TAIL = /[A-Za-z0-9_.~+/=-]+$/;
+const CHAIN_HEAD = /^[A-Za-z0-9_.~+/=-]+/;
+const AWS_CHAIN = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const PEM_MARKER = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
 
 function pemSpans(text, openLabel = null) {
@@ -104,7 +107,15 @@ function makeRedactor(secrets) {
     if (value instanceof Error) return logSafeWindow(toModel(value));
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, logSafeWindow(item)]));
     if (typeof value !== 'string') return value;
-    const spans = pemSpans(value, options.pemOpen ?? null).spans;
+    const lines = value.split('\n');
+    const offsets = [];
+    for (let at = 0, i = 0; i < lines.length; i++) {
+      offsets.push(at);
+      at += lines[i].length + 1;
+    }
+    const lineEnds = new Set(lines.map((line, i) => offsets[i] + line.length - (line.endsWith('\r') ? 1 : 0)));
+    const pem = pemSpans(value, options.pemOpen ?? null).spans;
+    const spans = [...pem];
     const add = (start, end) => spans.push([start, end]);
     for (const secret of values) {
       let at = 0;
@@ -124,14 +135,12 @@ function makeRedactor(secrets) {
       let end = start;
       if (value[start] === '"' || value[start] === "'") {
         const close = value.indexOf(value[start], start + 1);
-        const newline = value.indexOf('\n', start + 1);
-        if (close > start + 1 && (newline < 0 || close < newline)) end = close + 1;
+        if (close > start + 1 && !value.slice(start + 1, close).includes('\n')) end = close + 1;
       }
       if (end === start) while (end < value.length && !/\s/.test(value[end])) end++;
       add(start, end);
       KEY_VALUE_WINDOW.lastIndex = end;
     }
-    // Step 2 adds crossing-line chain spans here before the merge.
     for (const run of value.matchAll(JWT_RUN)) {
       if (run[0].length < 40) continue;
       let dots = 0;
@@ -139,6 +148,89 @@ function makeRedactor(secrets) {
         if (run[0][i] === '.' && run[0][i - 1] !== '.' && /[A-Za-z0-9_-]/.test(run[0][i + 1])) dots++;
       }
       if (dots >= 2) add(run.index, run.index + run[0].length);
+    }
+    let coveredEnds;
+    const wrapMin = 40;
+    for (let first = 0; first + 1 < lines.length; first++) {
+      const firstLine = lines[first].replace(/\r$/, '');
+      if (firstLine.length < wrapMin) continue;
+      const tail = CHAIN_TAIL.exec(firstLine);
+      if (!tail) continue;
+      if (!coveredEnds) {
+        coveredEnds = new Map();
+        for (const [start, end] of spans) {
+          if (lineEnds.has(end) && (!coveredEnds.has(end) || start < coveredEnds.get(end))) coveredEnds.set(end, start);
+        }
+      }
+      const tailStart = offsets[first] + tail.index;
+      const lineEnd = offsets[first] + firstLine.length;
+      if (coveredEnds.has(lineEnd) && coveredEnds.get(lineEnd) <= tailStart) continue;
+      if (pem.some(([start, end]) => start <= tailStart && end >= lineEnd)) continue;
+      let endLine = first;
+      while (endLine + 1 < lines.length && endLine - first < 7) {
+        const current = lines[endLine].replace(/\r$/, '');
+        const next = lines[endLine + 1].replace(/\r$/, '').replace(/^[ \t]*/, '');
+        if (current.length < wrapMin || !next || !CHAIN_HEAD.test(next)) break;
+        endLine++;
+      }
+      if (endLine === first) continue;
+      const before = firstLine.slice(0, tail.index);
+      const bearer = /\bbearer[ \t]+$/i.exec(before);
+      const parts = [];
+      let chain = '';
+      for (let line = first; line <= endLine; line++) {
+        const content = lines[line].replace(/\r$/, '');
+        const indent = /^[ \t]*/.exec(content)[0].length;
+        const start = line === first ? (bearer ? bearer.index : tail.index) : indent;
+        const end = line === endLine ? start + CHAIN_HEAD.exec(content.slice(start))[0].length : content.length;
+        const piece = content.slice(start, end);
+        parts.push({ from: chain.length, to: chain.length + piece.length, source: offsets[line] + start });
+        chain += piece;
+        if (line === first && /bearer$/i.test(tail[0])) chain += ' ';
+      }
+      if (!values.length && !chain.includes('.') && !/[A-Za-z0-9+/]/.test(tail[0].at(-1)) &&
+          !/(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|acw_|cfk_|AKIA|ASIA|bearer|authorization|token|password|api[_-]?key|x-api-key)/i.test(chain)) continue;
+      const crossing = (start, end) => {
+        const covered = parts.filter((part) => start < part.to && end > part.from);
+        if (covered.length < 2) return;
+        for (const part of covered) add(part.source + Math.max(start, part.from) - part.from,
+          part.source + Math.min(end, part.to) - part.from);
+      };
+      for (const secret of values) {
+        let at = 0;
+        while ((at = chain.indexOf(secret, at)) >= 0) {
+          crossing(at, at + secret.length);
+          at += secret.length;
+        }
+      }
+      for (const pattern of [...PATTERNS, BEARER, AWS_CHAIN, HEX_WINDOW, BASE64_WINDOW]) {
+        for (const found of chain.matchAll(pattern)) crossing(found.index, found.index + found[0].length);
+      }
+      for (const found of chain.matchAll(KEY_VALUE)) {
+        const start = found.index + found[1].length + found[2].length;
+        crossing(start, start + found[3].length);
+      }
+      for (const run of chain.matchAll(JWT_RUN)) {
+        if (run[0].length < 40) continue;
+        let dots = 0;
+        for (let i = 1; i < run[0].length - 1; i++) {
+          if (run[0][i] === '.' && run[0][i - 1] !== '.' && /[A-Za-z0-9_-]/.test(run[0][i + 1])) dots++;
+        }
+        if (dots >= 2) crossing(run.index, run.index + run[0].length);
+      }
+    }
+    const ends = new Set();
+    for (const [, end] of spans) if (lineEnds.has(end)) ends.add(end);
+    for (let i = 0; i + 1 < lines.length; i++) {
+      const content = lines[i].replace(/\r$/, '');
+      if (content.length < wrapMin || !ends.has(offsets[i] + content.length)) continue;
+      const next = lines[i + 1].replace(/\r$/, '');
+      const indent = /^[ \t]*/.exec(next)[0].length;
+      const head = CHAIN_HEAD.exec(next.slice(indent));
+      if (!head) continue;
+      const end = offsets[i + 1] + indent + head[0].length;
+      add(offsets[i + 1] + indent, end);
+      if (end === offsets[i + 1] + next.length) ends.add(end);
     }
     spans.sort((a, b) => a[0] - b[0]);
     const merged = [];
@@ -149,7 +241,7 @@ function makeRedactor(secrets) {
     }
     let lineStart = 0;
     let spanIndex = 0;
-    return value.split('\n').map((line) => {
+    return lines.map((line) => {
       const contentEnd = lineStart + line.length - (line.endsWith('\r') ? 1 : 0);
       const indent = /^[ \t]*/.exec(line)[0];
       let cursor = lineStart + indent.length;

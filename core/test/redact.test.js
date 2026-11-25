@@ -112,7 +112,7 @@ test('window rules redact exact spans and preserve line endings', () => {
   check(['token:', '  credential', 'after'], ['token:', '  [redacted]', 'after']);
   check(['token:', '', 'credential'], ['token:', '', 'credential']);
   check(['x-api-key: "one', 'two"'], ['x-api-key: [redacted]', 'two"']);
-  check(['  ' + 'a'.repeat(40) + '==\r', 'next'], ['  [redacted]\r', 'next']);
+  check(['  ' + 'a'.repeat(40) + '==\r', 'next'], ['  [redacted]\r', '[redacted]']);
   check(['Bearer ' + 'a'.repeat(16), 'token: value'], ['[redacted]', 'token: [redacted]']);
   check(['1 passing', '✓ notes api returns 200', '/home/user/project', 'a'.repeat(32) + ' ' + 'b'.repeat(32), 'abc1234', 'Done'],
     ['1 passing', '✓ notes api returns 200', '/home/user/project', 'a'.repeat(32) + ' ' + 'b'.repeat(32), 'abc1234', 'Done']);
@@ -139,4 +139,94 @@ test('hostile windows finish within 200 ms', () => {
     assert.equal(r.logSafeWindow(lines).length, 400);
     assert.ok(performance.now() - start < 200, 'hostile window exceeded 200 ms');
   }
+});
+
+test('wrapped credentials redact exact fragments in arrays and strings', () => {
+  const scoped = 's~'.repeat(60);
+  const r = makeRedactor([scoped]);
+  const check = (name, input, expected) => {
+    assert.deepEqual(r.logSafeWindow(input), expected, name);
+    assert.equal(r.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const lead = 'context '.repeat(7);
+  const credentials = {
+    hex: 'f'.repeat(120),
+    base64_padding: 'g'.repeat(120) + '==',
+    base64_plus: 'g'.repeat(120) + '+',
+    base64_slash: 'g'.repeat(120) + '/',
+    jwt: `${'g'.repeat(45)}.${'h'.repeat(45)}.${'j'.repeat(45)}`,
+    ghp: 'ghp_' + 'G'.repeat(120),
+    github_pat: 'github_pat_' + 'G_'.repeat(60),
+    sk: 'sk-' + 'G'.repeat(120),
+    xoxb: 'xoxb-' + 'G'.repeat(120),
+    acw: 'acw_' + 'G'.repeat(120),
+    cfk: 'cfk_' + 'G'.repeat(120),
+    scope: scoped,
+  };
+  for (const [name, token] of Object.entries(credentials)) {
+    for (const indent of ['', '  ']) {
+      for (const cuts of [[8], [50], [8, 60], [50, 100]]) {
+        const pieces = [token.slice(0, cuts[0]), ...(cuts.length === 2 ? [token.slice(cuts[0], cuts[1]), token.slice(cuts[1])] : [token.slice(cuts[0])])];
+        const input = [lead + pieces[0], ...pieces.slice(1).map((piece) => indent + piece)];
+        const expected = [lead + '[redacted]', ...pieces.slice(1).map(() => indent + '[redacted]')];
+        check(`${name} ${cuts.length + 1} parts indent=${indent.length}`, input, expected);
+      }
+    }
+  }
+});
+
+test('wrapped AWS, Bearer, and named values redact exact fragments', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected) => {
+    assert.deepEqual(r.logSafeWindow(input), expected, name);
+    assert.equal(r.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const lead = 'context '.repeat(7);
+  const aws = 'AKIA' + 'A'.repeat(16);
+  const token = 'g'.repeat(120);
+  for (const indent of ['', '  ']) {
+    check('AWS two', [lead + aws.slice(0, 10), indent + aws.slice(10)], [lead + '[redacted]', indent + '[redacted]']);
+    check('AWS three', [lead + aws.slice(0, 8), indent + aws.slice(8, 15), indent + aws.slice(15)],
+      [lead + '[redacted]', indent + '[redacted]', indent + '[redacted]']);
+    check('Bearer keyword two', [lead + 'Bearer', indent + token], [lead + '[redacted]', indent + '[redacted]']);
+    check('Bearer keyword three', [lead + 'Bearer', indent + token.slice(0, 50), indent + token.slice(50)],
+      [lead + '[redacted]', indent + '[redacted]', indent + '[redacted]']);
+    check('Bearer short token', [lead + 'Bearer abc', indent + token], [lead + '[redacted]', indent + '[redacted]']);
+    check('Bearer token two', [lead + 'Bearer ' + token.slice(0, 50), indent + token.slice(50)],
+      [lead + '[redacted]', indent + '[redacted]']);
+    check('Bearer token three', [lead + 'Bearer ' + token.slice(0, 50), indent + token.slice(50, 100), indent + token.slice(100)],
+      [lead + '[redacted]', indent + '[redacted]', indent + '[redacted]']);
+    check('value two', [lead + 'token: ' + token.slice(0, 50), indent + token.slice(50)],
+      [lead + 'token: [redacted]', indent + '[redacted]']);
+    check('value three', [lead + 'token: ' + token.slice(0, 50), indent + token.slice(50, 100), indent + token.slice(100)],
+      [lead + 'token: [redacted]', indent + '[redacted]', indent + '[redacted]']);
+  }
+});
+
+test('wrap boundaries, CRLF, and ordinary prose stay precise', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected) => {
+    assert.deepEqual(r.logSafeWindow(input), expected, name);
+    assert.equal(r.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const token = 'ghp_' + 'G'.repeat(120);
+  const first = 'export TOKEN=' + token.slice(0, 67);
+  assert.equal(first.length, 80);
+  check('80 column export', [first, token.slice(67)], ['export TOKEN=[redacted]', '[redacted]']);
+  check('Done before key', ['Done', 'context '.repeat(7) + 'cfk_' + 'G'.repeat(48), 'G'.repeat(40)],
+    ['Done', 'context '.repeat(7) + '[redacted]', '[redacted]']);
+  check('CRLF', ['context '.repeat(7) + token.slice(0, 50) + '\r', '  ' + token.slice(50) + '\r'],
+    ['context '.repeat(7) + '[redacted]\r', '  [redacted]\r']);
+  check('blank', ['context '.repeat(7) + token.slice(0, 20), '', token.slice(20)],
+    ['context '.repeat(7) + token.slice(0, 20), '', '[redacted]']);
+  check('prose', ['ordinary words describe a useful passing result', 'another ordinary word follows'],
+    ['ordinary words describe a useful passing result', 'another ordinary word follows']);
+  check('short hex', ['f'.repeat(30), 'f'.repeat(30)], ['f'.repeat(30), 'f'.repeat(30)]);
+  check('match stops before prose', ['context '.repeat(7) + token.slice(0, 8), token.slice(8) + ' Done'],
+    ['context '.repeat(7) + '[redacted]', '[redacted] Done']);
+  const scope = 's~'.repeat(22) + 's';
+  const scoped = makeRedactor([scope]);
+  const nine = Array(9).fill(' '.repeat(35)).map((indent, i) => indent + scope.slice(i * 5, i * 5 + 5));
+  assert.deepEqual(scoped.logSafeWindow(nine), nine, 'chain stops at eight lines');
+  assert.equal(scoped.logSafeWindow(nine.join('\n')), nine.join('\n'));
 });
