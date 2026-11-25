@@ -76,6 +76,8 @@ No log text, and no report text beyond the counts.
 
 2. **Desktop test command needs `NODE_PATH`.** `desktop/` has no `playwright-core` of its own, so with `RFACTORY_REQUIRE_BROWSER=1` the viewer tests fail unless it comes from `bot/node_modules`: run the desktop suite as `NODE_PATH=$PWD/../bot/node_modules RF_TEST_CHROME=$(command -v google-chrome-stable) RFACTORY_REQUIRE_BROWSER=1 npm test`. Also, main's `web/test/shell-browser.test.js` stub lacked `standupData` (since #28) and is fixed on this branch, as on #16's.
 
+3. **Step 9 deploys to the factory cluster, not the p620 pod.** #33 moved RFactory into `k3d-factory` (factory-gitops `apps/rfactory`) and stopped the p620 pod on 2026-11-24. So the switch reaches production in three places, all lead work in step 9: `RFACTORY_INVESTIGATIONS` in factory-gitops `apps/rfactory/manifests/manifests.yaml` (git owns the switches); `investigations_enabled` in `~/.config/rfactory/scope.cluster.json`; and `deploy/k8s/bootstrap-secrets.sh` (+ its test), which refuses a scope that disagrees with the Deployment, extended to the new switch like `RFACTORY_SHARES`. Images are built by CI and pinned by digest in factory-gitops, signed (Kyverno `verify-rfactory-signature`). Step 6's `deploy/pod.sh` change stays (development path). The live test (step 10) runs against `rfactory.freundcloud.org.uk`.
+
 ## Steps
 
 **Before implementation:**
