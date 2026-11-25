@@ -47,8 +47,11 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     if (next?.error) return next;
     if (!Array.isArray(next?.lines) || !next.lines.every((line) => typeof line === 'string')) throw new Error('invalid log lines');
     entry.rawLines.push(...next.lines);
+    // a private-key block stays hidden after its BEGIN line leaves the buffer
+    const dropped = entry.rawLines.slice(0, -400);
+    if (dropped.length) entry.pemOpen = redactor.pemSpans(dropped.join('\n'), entry.pemOpen).openLabel;
     entry.rawLines = entry.rawLines.slice(-400);
-    let lines = redactor.logSafeWindow(entry.rawLines).slice(-200).map((line) => Array.from(line).slice(0, 400).join(''));
+    let lines = redactor.logSafeWindow(entry.rawLines, { pemOpen: entry.pemOpen }).slice(-200).map((line) => Array.from(line).slice(0, 400).join(''));
     const data = { repo: next.repo, sha: next.sha, at: next.at, lines };
     while (lines.length && Buffer.byteLength(JSON.stringify(data)) > 48 * 1024) {
       lines = lines.slice(1);
@@ -234,7 +237,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     if (active) return reply(409, `Stop the ${active.payload.view} share first.`);
     const entry = { payload: Object.freeze({ id: randomUUID(), view, title: safe(String(title || 'Investigation log')),
       proposed_by: safe(String(owner)), proposed_at: new Date(now()).toISOString() }),
-      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, initial, rawLines: [] };
+      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, initial, rawLines: [], pemOpen: null };
     active = entry; // claim the desktop before the first await
     entry.approved_by = String(owner).toLowerCase();
     try { await write(entry, 'approved', { approved_by: entry.approved_by }); }
