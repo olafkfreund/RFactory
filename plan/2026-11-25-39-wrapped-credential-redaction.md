@@ -73,6 +73,8 @@ Self-contained: an implementer needs only this file and the files a step names.
    - **Retries one character on:** a join try for a rule marks its range as tried only when its match is accepted, and the single-line AWS rule retries one character after a candidate rejected for crossing two breaks.
    - **Each `Bearer` token run is scanned once,** so a window of `bearer` at every line end is linear again (3.1 s → about 70 ms).
 
+7. **Step 8 replaced by the in-pod check (owner's decision, 2026-11-25).** The investigation's test repository (`olafkfreund/aifactory-demo`) has no tests, so a live run cannot print a planted token without a new commit there and a test command in the scope. Instead, the deployed redactor (`sha-21a28d6`, `/app/core/src/redact.js` in the pod) was checked on a key split over two joins (`=[redacted]`) and a `Bearer` token split over lines (all three lines `[redacted]`). The log share itself was verified live by #18 on the same image.
+
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).
