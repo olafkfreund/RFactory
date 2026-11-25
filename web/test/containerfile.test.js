@@ -18,4 +18,5 @@ test('Containerfile copies every relative require of the web desktop path', () =
     }
   }
   assert.ok(isCopied('desktop/runner/protocol.js'));
+  assert.ok(isCopied('web/investigations.js'));
 });

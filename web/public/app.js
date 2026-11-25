@@ -432,7 +432,8 @@ function renderShare(doc) {
         li.appendChild(row);
       }
     } else {
-      li.appendChild(el(doc, 'span', s.state === 'running' ? 'Sharing: CFactory board' : `${s.state}: CFactory board`, 'action-text'));
+      const what = s.view === 'log' ? 'investigation log' : 'CFactory board';
+      li.appendChild(el(doc, 'span', s.state === 'running' ? `Sharing: ${what}` : `${s.state}: ${what}`, 'action-text'));
       const row = el(doc, 'div', undefined, 'share-buttons');
       row.appendChild(button('Stop', () => decideShare(doc, 'stop')));
       li.appendChild(row);
@@ -475,11 +476,91 @@ async function loadShares(doc) {
   } catch { /* panel stays hidden */ }
 }
 
+// Investigation (#18): one store per document, keyed by id; a finished one stays, with its test counts and report.
+const investigationStores = new WeakMap();
+const investigationStoreOf = (doc) => { if (!investigationStores.has(doc)) investigationStores.set(doc, { items: new Map(), canApprove: false }); return investigationStores.get(doc); };
+const INVESTIGATION_LIVE = new Set(['approved', 'starting', 'running', 'stopping', 'uncertain']);
+
+function investigationStateText(s) {
+  if (s.state === 'uncertain') return s.reason || 'stop not confirmed';
+  if (s.state === 'stopping') return 'stopping, not yet confirmed';
+  return `${s.state}${s.reason ? `: ${s.reason}` : ''}${s.stale ? ' (not updating)' : ''}`;
+}
+
+function renderInvestigation(doc) {
+  const store = investigationStoreOf(doc);
+  const ul = doc.getElementById('investigation-list');
+  clear(ul);
+  for (const s of [...store.items.values()].reverse()) {
+    const li = el(doc, 'li', undefined, 'card');
+    li.appendChild(el(doc, 'span', s.approval_text && s.state === 'proposed' ? s.approval_text
+      : `Investigate in ${s.repo} @ ${String(s.sha).slice(0, 7)}: ${s.request}`, 'action-text'));
+    const limits = s.limits || {};
+    li.appendChild(el(doc, 'div', `Limits: ${limits.minutes} minutes, ${limits.tokens} tokens, ${limits.turns} turns`, 'evidence'));
+    li.appendChild(el(doc, 'div', `State: ${investigationStateText(s)}`, 'evidence'));
+    if (s.proposed_by) li.appendChild(el(doc, 'div', `Proposed by ${s.proposed_by} (display name, not verified)`, 'evidence'));
+    for (const t of s.tests || []) {
+      li.appendChild(el(doc, 'div', t.parsed === false ? `${t.command}: exit code ${t.exit_code}, counts not read`
+        : `${t.command}: ${t.passed} passed, ${t.failed} failed, ${t.skipped} skipped`, 'evidence'));
+    }
+    if (s.report) {
+      const findings = s.report.findings;
+      li.appendChild(el(doc, 'pre', typeof findings === 'string' ? findings : JSON.stringify(findings, null, 2), 'action-payload'));
+      for (const ref of Array.isArray(s.report.refs) ? s.report.refs : []) li.appendChild(el(doc, 'div', `${ref.file}:${ref.line}`, 'evidence'));
+    }
+    const row = el(doc, 'div', undefined, 'investigation-buttons');
+    const button = (label, tail, hash) => {
+      const b = el(doc, 'button', label, 'btn');
+      b.setAttribute('type', 'button');
+      b.addEventListener('click', () => decideInvestigation(doc, tail, hash));
+      row.appendChild(b);
+    };
+    if (s.state === 'proposed' && store.canApprove) {
+      button('Approve', `${encodeURIComponent(s.id)}/approve`, s.hash);
+      button('Reject', `${encodeURIComponent(s.id)}/reject`, s.hash);
+    } else if (INVESTIGATION_LIVE.has(s.state)) button('Stop', 'stop');
+    if (row.firstChild) li.appendChild(row);
+    ul.appendChild(li);
+  }
+  doc.getElementById('investigation').hidden = !store.items.size;
+}
+
+function handleInvestigation(doc, event) {
+  const s = event.investigation;
+  if (!s || typeof s.id !== 'string') return;
+  const store = investigationStoreOf(doc);
+  store.items.set(s.id, s);
+  renderInvestigation(doc);
+}
+
+async function decideInvestigation(doc, tail, hash) {
+  const status = doc.getElementById('investigation-status');
+  try {
+    const r = await fetch(`/api/investigations/${tail}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : {}) });
+    const body = await r.json();
+    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+  } catch { status.textContent = 'Failed: network'; }
+}
+
+async function loadInvestigations(doc) {
+  try {
+    const r = await fetch('/api/investigations');
+    if (!r.ok) return; // 404 when investigations are off: the panel stays hidden
+    const data = await r.json();
+    const store = investigationStoreOf(doc);
+    store.canApprove = !!data.can_approve;
+    for (const s of [...data.history, ...data.pending, ...(data.running ? [data.running] : [])]) store.items.set(s.id, s);
+    renderInvestigation(doc);
+  } catch { /* panel stays hidden */ }
+}
+
 // One call event at a time; every string lands via textContent.
 function handleCall(doc, event, now = Date.now()) {
   const set = (id, text) => { doc.getElementById(id).textContent = text; };
   if (event.type === 'action-pending' || event.type === 'action-updated') return handleAction(doc, event, now);
   if (typeof event.type === 'string' && event.type.startsWith('share-')) return handleShare(doc, event);
+  if (event.type === 'investigation-updated') return handleInvestigation(doc, event);
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
@@ -537,13 +618,14 @@ if (typeof document !== 'undefined') {
   }).catch(() => {});
   wireCall(document);
   loadShares(document);
+  loadInvestigations(document);
   loadActions(document).then(() => setInterval(() => renderActions(document), 30000));
   document.getElementById('run').addEventListener('click', () => run(document));
   run(document);
 }
 if (typeof module !== 'undefined') {
   module.exports = {
-    render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares,
+    render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares, loadInvestigations,
     renderReview, loadReview, renderReviewCard, loadReviewCard,
   };
 }

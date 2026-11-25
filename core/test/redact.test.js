@@ -77,4 +77,5 @@ test('logSafeWindow removes a PEM block cut by the window at either end', () => 
   assert.deepEqual(r.logSafeWindow(['ok', '-----BEGIN OPENSSH PRIVATE KEY-----', 'b3BlbnNzaC1rZXk', 'tail']), ['ok', '[redacted]']);
   assert.deepEqual(r.logSafeWindow(['b3BlbnNzaC1rZXk', 'short', '-----END OPENSSH PRIVATE KEY-----', 'after']), ['[redacted]', 'after']);
   assert.deepEqual(r.logSafeWindow(['1 passing', '2 failing']), ['1 passing', '2 failing']);
+  assert.deepEqual(r.logSafeWindow({ tests: [], refs: [] }), { tests: [], refs: [] });
 });

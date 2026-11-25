@@ -79,6 +79,13 @@ up() {
       share+=(-v rfactory-actions:/var/lib/rfactory/actions:U)
     fi
   fi
+  # #18: investigations only with RFACTORY_INVESTIGATIONS=on (and the scope's investigations_enabled and writes_enabled,
+  # which the web app checks); the write key and the record volume come with writes
+  investigate=()
+  if [ -n "${RFACTORY_INVESTIGATIONS:-}" ]; then
+    case $RFACTORY_INVESTIGATIONS in on | off) ;; *) echo "RFACTORY_INVESTIGATIONS must be on or off" >&2; exit 2 ;; esac
+    investigate=(-e RFACTORY_INVESTIGATIONS="$RFACTORY_INVESTIGATIONS")
+  fi
   desktop=()
   if [ -n "${RFACTORY_DESKTOP:-}" ]; then
     [ "$RFACTORY_DESKTOP" = 1 ] || { echo "RFACTORY_DESKTOP must be 1 or unset" >&2; exit 2; }
@@ -115,7 +122,7 @@ up() {
   fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${share[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
+    "${write[@]}" "${share[@]}" "${investigate[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \

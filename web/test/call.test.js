@@ -806,3 +806,65 @@ test('with shares off a share utterance is answered "Sharing is turned off here.
     const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
   } finally { process.kill = original; }
 });
+
+function fakeInvestigations(result) {
+  const s = { requests: [], started: [], ended: 0, subs: new Set(),
+    request: async (...args) => { s.requests.push(args); return result; },
+    startCall: async (...args) => { s.started.push(args); }, endCall: async () => { s.ended++; },
+    subscribe: (fn) => { s.subs.add(fn); return () => s.subs.delete(fn); },
+    fire: (event) => { for (const fn of s.subs) fn(event); } };
+  return s;
+}
+
+test('investigate utterances reach investigations, not the desktop; sentences are spoken once, only in the asking call', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const investigations = fakeInvestigations({ status: 202, text: 'Approve the investigation on the RFactory page.', investigation: { id: 'i1' } });
+    const f = await shareCall({ investigations, desktop: { request: async () => { throw new Error('desktop must not be asked'); } } });
+    await f.heard('RFactory, open a terminal on notes-api and run the tests');
+    assert.deepEqual(investigations.requests, [['open a terminal on notes-api and run the tests', 'Eve', false]]);
+    assert.deepEqual(investigations.started, [[1]]);
+    const update = (id, state, reason) => investigations.fire({ type: 'investigation-updated', investigation: { id, state, reason } });
+    update('other', 'running');
+    update('i1', 'running'); update('i1', 'running');
+    update('i1', 'uncertain', 'stop not confirmed'); update('i1', 'uncertain', 'stop not confirmed');
+    investigations.fire({ type: 'investigation-result', investigation: { id: 'other' }, counts: ['other counts.'], summary: '' });
+    for (let n = 0; n < 12; n++) await flush();
+    assert.equal(f.said().filter((s) => s === 'The investigation has started.').length, 1);
+    assert.equal(f.said().filter((s) => s === "The investigation's stop is not confirmed.").length, 1);
+    assert.ok(!f.said().includes('other counts.'));
+    assert.deepEqual(f.manager.current().filter((e) => e.type === 'investigation-updated').map((e) => e.investigation.id), ['other', 'i1']);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+    assert.equal(investigations.ended, 1);
+    const count = f.said().length;
+    update('i1', 'stopped');
+    await flush();
+    assert.equal(f.said().length, count);
+  } finally { process.kill = original; }
+});
+
+test('the summary is redacted again immediately before speech', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const investigations = fakeInvestigations({ status: 202, text: 'Approve it.', investigation: { id: 'i1' } });
+    const f = await shareCall({ investigations });
+    await f.heard('RFactory, find out why the tests fail');
+    investigations.fire({ type: 'investigation-result', investigation: { id: 'i1' },
+      counts: ['npm test: 41 passed, 1 failed, 0 skipped.'], summary: `The key is ${'f'.repeat(48)} in the config.` });
+    for (let n = 0; n < 12; n++) await flush();
+    assert.ok(f.said().includes('npm test: 41 passed, 1 failed, 0 skipped.'));
+    assert.ok(f.said().includes('The key is [redacted] in the config.'));
+    assert.ok(!f.said().join(' ').includes('ffffffff'));
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
+test('with investigations off an investigate utterance is answered "Investigations are turned off here."', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const f = await shareCall({});
+    await f.heard('RFactory, find out why the tests fail');
+    assert.ok(f.said().includes('Investigations are turned off here.'));
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});

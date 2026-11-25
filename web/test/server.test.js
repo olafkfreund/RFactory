@@ -438,6 +438,53 @@ test('writes off, shares on: the record is built and written, there is no writer
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.deepEqual(lines.at(-1) && [lines.at(-1).id, lines.at(-1).state, lines.at(-1).reason], ['s1', 'stopped', 'restart']);
     const off = await composeWrites({ scope: { ...scope, shares_enabled: false }, source, brain: fakeBrain, redactor, roles: rolesFor(ME, ME), dir });
-    assert.deepEqual(off, { actions: null, shares: null });
+    assert.deepEqual(off, { actions: null, shares: null, investigations: null });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('investigation routes are absent without a manager (404)', async (t) => {
+  const get = await startActions(t, {});
+  assert.equal((await get('/api/investigations', { method: 'GET' })).status, 404);
+  assert.equal((await get('/api/investigations/stop')).status, 404);
+});
+
+test('investigation approve, reject and stop: header, origin, member, approver and hash are checked', async (t) => {
+  const investigations = fakeShares(); // the same manager surface as shares
+  const get = await startActions(t, { investigations });
+  const path = '/api/investigations/abc-1/approve';
+  for (const p of [path, '/api/investigations/abc-1/reject', '/api/investigations/stop']) {
+    assert.equal((await get(p, { headers: { 'X-RFactory-Action': '0' } })).status, 403);
+    assert.equal((await get(p, { headers: { Origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await get(p, { headers: { Origin: '' } })).status, 403);
+    assert.equal((await get(p, { email: 'stranger@example.com' })).status, 403);
+  }
+  assert.deepEqual(investigations.calls, []);
+  assert.equal((await get(path, { email: 'other@example.com', body: { hash: 'good' } })).status, 403);
+  assert.equal((await get(path, { body: { hash: 'bad' } })).status, 409);
+  assert.equal((await get(path, { body: {} })).status, 400);
+  assert.equal((await get(path, { body: { hash: 'good' } })).status, 200);
+  assert.equal((await get('/api/investigations/abc-1/reject')).status, 200);
+  assert.equal((await get('/api/investigations/stop', { email: 'other@example.com', body: {} })).status, 200);
+  assert.deepEqual(investigations.calls.at(-1), ['stop', 'other@example.com']);
+  assert.equal((await (await get('/api/investigations', { method: 'GET' })).json()).can_approve, true);
+  assert.equal((await get('/api/shares', { method: 'GET' })).status, 404); // one manager does not open the other's routes
+});
+
+test('investigations are composed only when on, and recover before they are returned', async () => {
+  const { composeWrites } = require('../server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-investigations-'));
+  const writeKey = path.join(dir, 'write-key');
+  fs.writeFileSync(writeKey, `cfk_${'A'.repeat(16)}`, { mode: 0o600 });
+  const scope = { name: 'F', writes_enabled: true, investigations_enabled: true,
+    source: { kind: 'cfactory', repository_id: 1, mcp_url: 'https://cfactory.example/mcp', write_key_file: writeKey } };
+  const file = path.join(dir, `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  fs.writeFileSync(file, `${JSON.stringify({ kind: 'investigation', id: 'i1', state: 'starting' })}\n`); // no card: nothing was dispatched
+  const compose = (over) => composeWrites({ scope: { ...scope, ...over }, source, brain: fakeBrain, redactor: makeRedactor([]), roles: rolesFor(ME, ME), dir });
+  try {
+    assert.equal((await compose({ investigations_enabled: false })).investigations, null);
+    const { investigations } = await compose({});
+    assert.equal(investigations.list().running, null);
+    const last = JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').at(-1));
+    assert.deepEqual([last.id, last.state, last.reason], ['i1', 'stopped', 'restart']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

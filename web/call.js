@@ -18,7 +18,7 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, runner = null,
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
   stt = null }) {
   let sttConfigured = !!stt;
@@ -29,12 +29,14 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   const current = new Map();
   const actionEvents = new Map(); // latest event per action id, replayed on reload
   const shareEvents = new Map(); // latest event per share id, replayed on reload
+  const investigationEvents = new Map(); // latest event per investigation id, replayed on reload
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
     if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
+    if (event.type === 'investigation-updated') investigationEvents.set(event.investigation.id, event);
     for (const fn of listeners) fn(event);
   };
   if (actions) actions.subscribe((event) => {
@@ -51,6 +53,24 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (event.type === 'share-unavailable') queueSpeech(c, failed(reason));
     else if (state === 'running' && !c.announced.has(event.share.id)) { c.announced.add(event.share.id); queueSpeech(c, 'Sharing the board.'); } // once: refreshes also say running (review P2)
     else if (state === 'stopped' && reason !== 'restart') queueSpeech(c, 'Stopped sharing.');
+  });
+  // server-written sentences for an investigation's states; the result of a completed one arrives as its own event
+  const investigationSentence = ({ state, reason }) => ({ running: 'The investigation has started.',
+    stopped: 'The investigation was stopped.', failed: 'The investigation failed.', expired: 'The investigation expired.',
+    rejected: 'The investigation did not start.',
+    uncertain: reason === 'start not confirmed' ? "The investigation's start is not confirmed." : "The investigation's stop is not confirmed." })[state];
+  if (investigations) investigations.subscribe((event) => {
+    const result = event.type === 'investigation-result';
+    if (!result) emit(event);
+    const c = call;
+    const { id } = event.investigation;
+    if (!c || c.stopping || !c.investigations.has(id)) return; // spoken only in the call that asked
+    const text = result ? null : investigationSentence(event.investigation);
+    const key = `${id}:${result ? 'result' : text}`;
+    if ((!result && !text) || c.announced.has(key)) return;
+    c.announced.add(key);
+    // redacted again here, immediately before speech
+    queueSpeech(c, result ? [...event.counts, redactor.logSafeWindow(event.summary)].join(' ') : text);
   });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
@@ -88,6 +108,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     c.stopping = (async () => {
       log(`stopping: ${reason}`);
       if (actions) await Promise.resolve().then(() => actions.endCall()).catch((error) => log(`actions end failed: ${error.message}`));
+      // not awaited: a slow CFactory must not keep the bot in the call; the manager holds its slot until the stop is confirmed
+      if (investigations) Promise.resolve().then(() => investigations.endCall()).catch((error) => log(`investigations end failed: ${error.message}`));
       if (shares) await Promise.resolve().then(() => shares.endCall()).catch((error) => log(`shares end failed: ${error.message}`));
       send(c, { type: 'leave' });
       let timer = clock.setTimeout(() => killGroup(c, 'SIGTERM'), 10000);
@@ -219,12 +241,24 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     await queueSpeech(c, result.text, generation);
   }
 
+  async function requestInvestigation(c, item, generation) {
+    let result;
+    try { result = investigations ? await investigations.request(item.text, item.speaker, c.showLog) : { text: 'Investigations are turned off here.' }; }
+    catch (error) {
+      if (c.generation === generation && !c.stopping) log(`investigation failed: ${error.message}`);
+      result = { text: "Sorry, I can't do that right now." };
+    }
+    if (c.generation !== generation || c.stopping) return;
+    if (result.investigation) c.investigations.add(result.investigation.id);
+    await queueSpeech(c, result.text, generation);
+  }
+
   function drain(c) {
     if (c.working || !c.queue.length || c.stopping) return;
     c.working = true;
     const question = c.queue.shift();
     const generation = c.generation;
-    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
+    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => log(`answer failed: ${error.message}`)).finally(() => {
       c.working = false;
       drain(c);
     });
@@ -233,7 +267,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
-    question.desktop = !!desktop && question.kind !== 'share' && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
+    question.desktop = !!desktop && !['share', 'investigate'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
     if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question'; // no write path here: 1b behaviour
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
@@ -366,7 +400,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const exited = new Promise((resolve) => { exit = resolve; });
     const c = { child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
-      tts: callTts, voice: callTts.voice, shares: new Set(), announced: new Set(), listen: selected, language: whisperLanguage,
+      tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
       turn: null, turns: [], noticeFailed: false, roster: { count: 0 } };
     call = c;
@@ -397,11 +431,14 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     current.clear();
     actionEvents.clear();
     shareEvents.clear();
+    investigationEvents.clear();
     // startCall sets its generation synchronously; the returned promise only expires old pending items
     const generation = ++callCount;
     if (actions) Promise.resolve(actions.startCall(generation)).catch((error) => log(`actions start failed: ${error.message}`));
     // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
     const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
+    c.showLog = !!(shares && shareDesktop); // the log can only be shown through a share on this call's desktop
+    if (investigations) Promise.resolve(investigations.startCall(generation)).catch((error) => log(`investigations start failed: ${error.message}`));
     if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => log(`shares start failed: ${error.message}`));
     emit({ type: 'voice', voice: c.voice });
     emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',
@@ -410,7 +447,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     child.stdin.write(`${link}\n`);
   }
 
-  return { get running() { return !!call; }, config: { listen, sttConfigured }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values()],
+  return { get running() { return !!call; }, config: { listen, sttConfigured }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values(), ...investigationEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 
