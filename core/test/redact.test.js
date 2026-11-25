@@ -306,3 +306,25 @@ test('review round 2: splits over three lines, glued dots, overlapping secrets a
   assert.equal(r.logSafeWindow('token="a" '.repeat(100000)), 'token=[redacted] '.repeat(100000));
   assert.ok(performance.now() - start < 400, 'one 1 MB line of quoted values stays linear');
 });
+
+test('review round 3: glued token edges, the Bearer separator, blank lines, overlapping long secrets, Unicode spaces', () => {
+  const r = makeRedactor([]);
+  const check = (name, input, expected, redactor = r) => {
+    assert.deepEqual(redactor.logSafeWindow(input), expected, name);
+    assert.equal(redactor.logSafeWindow(input.join('\n')), expected.join('\n'), name);
+  };
+  const L = 'context '.repeat(5);
+  const I = ' '.repeat(36);
+  check('word glued before cfk_', [L + 'note', I + 'cfk_abc', 'defghijklmnop'], [L + 'note', I + '[redacted]', '[redacted]']);
+  // the word after a credential that ends a wrap-length line is the accepted span-extension limit
+  check('word glued after AWS', [L + 'ASIA12345678', I + '9012', I + '3456', 'done'], [L + '[redacted]', I + '[redacted]', I + '[redacted]', '[redacted]']);
+  // glued neighbours that are base64 characters join the base64 run: over-redaction, the safe direction
+  check('hex glued to words', [L + 'doing', I + 'f'.repeat(20), 'f'.repeat(20) + 'zz ok'], [L + '[redacted]', I + '[redacted]', '[redacted] ok']);
+  check('Bearer at a line end', [L + 'Bearer', I + 'abcd', 'efghijklmnopqrst'], [L + '[redacted]', I + '[redacted]', '[redacted]']);
+  check('Bearer across a blank line', ['Bearer', '', ' '.repeat(39) + 'a', 'bcdefghijklmnop'], ['Bearer', '', ' '.repeat(39) + 'a', 'bcdefghijklmnop']);
+  assert.equal(r.logSafeWindow('token=demo status=ok'), 'token=[redacted] status=ok');
+  const long = makeRedactor(['!'.repeat(32000)]);
+  const start = performance.now();
+  assert.equal(long.logSafeWindow('!'.repeat(64000)), '[redacted]');
+  assert.ok(performance.now() - start < 200, 'overlapping matches of a long secret stay linear');
+});

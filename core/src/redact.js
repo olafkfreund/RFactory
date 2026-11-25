@@ -17,8 +17,40 @@ const HEX_WINDOW = /\b[A-Fa-f0-9]{40,}\b/g;
 const BASE64_WINDOW = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])/g;
 const JWT_RUN = /[A-Za-z0-9_.-]+/g;
 const CHAIN_HEAD = /^[A-Za-z0-9_.~+/=-]+/;
-const AWS_CHAIN = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const WRAP_MIN = 40;
+// the token rules for the joined window: a closed break counts as a word boundary (`lead`/`trail`), so a token glued to
+// the word across a join still matches; `min` is the shortest valid match when a glued tail is cut back to a join
+const JOINED_RULES = [
+  ...PATTERNS.filter((pattern) => !pattern.source.startsWith('\\b')).map((re) => ({ re })),
+  { re: /(?:acw|cfk)_[A-Za-z0-9]{16,}/g, lead: true },
+  { re: /bearer[ \t]+[A-Za-z0-9._~+\/=-]{16,}/gi }, // no kept break: the one-break rule is the single-line pass's
+  { re: /(?:AKIA|ASIA)[0-9A-Z]{16}/g, lead: true, trail: true },
+  { re: /[A-Fa-f0-9]{40,}/g, lead: true, trail: true, min: 40 },
+  { re: BASE64_WINDOW },
+].map((rule) => ({ ...rule, sticky: new RegExp(rule.re.source, rule.re.flags.replace('g', '') + 'y') }));
+const word = (code) => (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+
+// every occurrence of `pattern` in `text`, overlapping ones merged, in linear time (KMP)
+function occurrences(text, pattern) {
+  const fail = [0];
+  for (let i = 1, k = 0; i < pattern.length; i++) {
+    while (k && pattern[i] !== pattern[k]) k = fail[k - 1];
+    if (pattern[i] === pattern[k]) k++;
+    fail.push(k);
+  }
+  const spans = [];
+  for (let i = 0, k = 0; i < text.length; i++) {
+    while (k && text[i] !== pattern[k]) k = fail[k - 1];
+    if (text[i] === pattern[k]) k++;
+    if (k === pattern.length) {
+      const start = i + 1 - k;
+      const last = spans[spans.length - 1];
+      if (last && start <= last[1]) last[1] = i + 1; else spans.push([start, i + 1]);
+      k = fail[k - 1];
+    }
+  }
+  return spans;
+}
 const PEM_MARKER = /-----(BEGIN|END) ([A-Z0-9 ]+)-----/g;
 
 function pemSpans(text, openLabel = null) {
@@ -97,7 +129,7 @@ function jwtSpans(text, every = false) {
 }
 
 // KEY_VALUE_WINDOW matches as { match, value } ranges; a quoted value must close before `limit(start)` (its line's end, or a join point)
-const space = (code) => code === 32 || (code >= 9 && code <= 13);
+const space = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code))); // as the regex's \s
 function keyValueSpans(text, limit) {
   const found = [];
   KEY_VALUE_WINDOW.lastIndex = 0;
@@ -165,9 +197,7 @@ function makeRedactor(secrets) {
     const pem = pemSpans(value, options.pemOpen ?? null).spans;
     const spans = [...pem];
     const add = (start, end) => spans.push([start, end]);
-    for (const secret of values) {
-      for (let at = value.indexOf(secret); at >= 0; at = value.indexOf(secret, at + 1)) add(at, at + secret.length); // overlaps too
-    }
+    for (const secret of values) for (const span of occurrences(value, secret)) add(...span);
     for (const pattern of [...PATTERNS, BEARER_WINDOW, AWS_WINDOW, HEX_WINDOW, BASE64_WINDOW]) {
       for (const match of value.matchAll(pattern)) {
         if (pattern === AWS_WINDOW && match[0].split('\n').length > 2) continue; // at most one break in an AWS key
@@ -194,10 +224,11 @@ function makeRedactor(secrets) {
     for (let i = 0; i < lines.length; i++) {
       const text = content(i);
       const from = i > 0 && joins(i - 1) ? indentOf(text) : 0;
-      if (from || (i > 0 && joins(i - 1))) joinPoints.push(joined.length);
+      if (i > 0 && joins(i - 1)) joinPoints.push(joined.length);
       segments.push([joined.length, offsets[i] + from, text.length - from]);
       joined += text.slice(from);
       if (!joins(i) && i + 1 < lines.length) joined += '\n';
+      else if (joins(i) && /bearer$/i.test(text)) joined += ' '; // the break after the keyword was its separator
     }
     const after = (list, at) => { // first entry of a sorted list greater than `at`, or Infinity
       let low = 0;
@@ -221,12 +252,34 @@ function makeRedactor(secrets) {
       }
     };
     if (joinPoints.length) {
-      for (const secret of values) {
-        for (let at = joined.indexOf(secret); at >= 0; at = joined.indexOf(secret, at + 1)) addJoined(at, at + secret.length);
-      }
-      for (const pattern of [...PATTERNS, BEARER, AWS_CHAIN, HEX_WINDOW, BASE64_WINDOW]) {
-        for (const found of joined.matchAll(pattern)) {
-          if (crosses(found.index, found.index + found[0].length)) addJoined(found.index, found.index + found[0].length);
+      for (const secret of values) for (const span of occurrences(joined, secret)) addJoined(...span);
+      const joinAt = new Set(joinPoints);
+      const before = (at) => { // last join point before `at`, or -1
+        let low = 0;
+        let high = joinPoints.length;
+        while (low < high) { const mid = (low + high) >> 1; if (joinPoints[mid] < at) low = mid + 1; else high = mid; }
+        return low ? joinPoints[low - 1] : -1;
+      };
+      const edge = (at) => at <= 0 || at >= joined.length || joinAt.has(at) || !word(joined.charCodeAt(at - 1)) || !word(joined.charCodeAt(at));
+      for (const rule of JOINED_RULES) {
+        for (const found of joined.matchAll(rule.re)) {
+          let start = found.index;
+          let end = start + found[0].length;
+          if (rule.lead && !edge(start)) { // glued in front: the token may start at a join inside the match
+            const point = after(joinPoints, start);
+            if (point >= end) continue;
+            rule.sticky.lastIndex = point;
+            const again = rule.sticky.exec(joined);
+            if (!again) continue;
+            start = point;
+            end = point + again[0].length;
+          }
+          if (rule.trail && !edge(end)) { // glued behind: cut back to the last join inside the match
+            const point = before(end);
+            if (!rule.min || point <= start || point - start < rule.min) continue;
+            end = point;
+          }
+          if (crosses(start, end)) addJoined(start, end);
         }
       }
       for (const [start, end] of jwtSpans(joined, true)) if (crosses(start, end)) addJoined(start, end);

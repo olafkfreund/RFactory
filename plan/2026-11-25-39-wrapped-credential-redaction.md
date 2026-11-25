@@ -49,6 +49,13 @@ Self-contained: an implementer needs only this file and the files a step names.
    - **Linear on one long line:** the quote limit and the line end come from binary searches over the line offsets and join points, not a newline search per match; hot loops use character codes. A 1 MB line of `token="a" ` takes about 70 ms.
    - **Accepted limits now:** a quoted value with spaces wrapped across lines shows its part after the break; the word before a long run that starts the next line can be redacted (as the word after a credential can); wraps under 40 columns are not joined.
 
+3. **Step 4 review round 3 (Codex, fresh session; fixes by the lead).** Each fix has a test that fails on the round 2 commit.
+   - **A closed break counts as a word boundary** for the boundary-anchored rules in the joined window (`acw_`/`cfk_`, AWS, hex), so a token glued to the word across a join (`note` + `cfk_…`, `…3456` + `done`) still matches: a match glued in front restarts at the join inside it, and a hex match glued behind is cut back to the last join.
+   - **`Bearer` at a line end keeps its separator:** the joined window has one space after a line ending in `bearer`. In the joined window `Bearer` may not cross a kept break, so it no longer crosses a blank line.
+   - **Scope secrets are found by a linear search (KMP)** with overlapping matches merged; restarting `indexOf` one character later was quadratic for a long periodic secret.
+   - **Whitespace in `KEY_VALUE` values is the regex's `\s`** again, Unicode spaces included.
+   - Glued neighbours that are base64 characters join a base64 run and are redacted with it: over-redaction next to a credential, as already accepted.
+
 ## Steps
 
 1. **Span engine, linear rules and PEM scanner** (`core/src/redact.js`, `core/test/redact.test.js`).
