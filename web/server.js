@@ -72,7 +72,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
   let busy = false;
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
@@ -143,17 +143,22 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       });
       return;
     }
-    if (shares && req.method === 'GET' && url === '/api/shares') {
-      return json(res, 200, { ...shares.list(), can_approve: roles.has(email, 'approver') });
+    // shares (#12) and investigations (#18) have the same routes and checks
+    const approvals = { shares, investigations };
+    const listed = req.method === 'GET' && /^\/api\/(shares|investigations)$/.exec(url);
+    if (listed && approvals[listed[1]]) {
+      return json(res, 200, { ...approvals[listed[1]].list(), can_approve: roles.has(email, 'approver') });
     }
-    const shr = shares && req.method === 'POST' && /^\/api\/shares\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
-    if (shr) {
+    const decision = req.method === 'POST' && /^\/api\/(shares|investigations)\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
+    if (decision && approvals[decision[1]]) {
+      const [, kind, id, verb, stop] = decision;
+      const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      if (shr[3]) { req.resume(); shares.stop(email).then(reply, () => json(res, 500, { error: 'internal' })); return; }
+      if (stop) { req.resume(); manager.stop(email).then(reply, () => json(res, 500, { error: 'internal' })); return; }
       readJson(req).then((body) => {
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
-        return shares[shr[2]](shr[1], email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
+        return manager[verb](id, email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
       });
       return;
     }
@@ -220,10 +225,11 @@ function refuseKeyEnv(env) {
   if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
-// The record exists when writes or shares are on; only writes build a writer and the action manager.
+// The record exists when writes, shares or investigations are on; only writes build a writer and its managers
+// (loadScope refuses investigations without writes).
 async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
-  let actions = null, shares = null;
-  if (!scope.writes_enabled && !scope.shares_enabled) return { actions, shares };
+  let actions = null, shares = null, investigations = null;
+  if (!scope.writes_enabled && !scope.shares_enabled) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
@@ -236,8 +242,12 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
     const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
     actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true });
     await actions.recover();
+    if (scope.investigations_enabled) {
+      investigations = require('./investigations.js').createInvestigationManager({ readSource: source, writer, brain, shares, record, redactor, scope, roles, enabled: true });
+      await investigations.recover();
+    }
   }
-  return { actions, shares };
+  return { actions, shares, investigations };
 }
 
 async function main() {
@@ -255,7 +265,7 @@ async function main() {
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  const { actions, shares } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
+  const { actions, shares, investigations } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
     const { createRunnerClient } = require('../desktop/runner/client.js');
@@ -281,10 +291,10 @@ async function main() {
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
-    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, desktop,
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, desktop,
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, redactor, roles, call, actions, shares, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  createApp({ source, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 

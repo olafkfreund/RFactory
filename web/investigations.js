@@ -8,8 +8,20 @@ const RUN_MS = 30 * 60 * 1000;
 const LEASE_MS = 10 * 1000;
 const POLL_MS = 5 * 1000;
 const reply = (status, text, investigation) => ({ status, text, ...(investigation ? { investigation } : {}) });
+const OFF = 'Investigations are turned off here.';
+// a count claimed in prose ("all 50 tests passed"): only the server speaks counts, from run_tests
+const COUNT_CLAIM = /\b(?:\d+|all|every|none|no|zero|one|two|three|four|five|six|seven|eight|nine|ten)\b(?:\W+\w+){0,2}?\W+(?:tests?|pass(?:ed|es|ing)?|fail(?:ed|s|ing|ures?)?|skipped)\b/i;
 
-function createInvestigationManager({ readSource, writer, shares, record, redactor, clock = Date, scope, roles, enabled }) {
+function testSentences(tests, testCommand) {
+  if (!Array.isArray(tests)) return ['I could not read the test results.'];
+  if (!tests.length) return [testCommand === null ? 'No tests were run: none are configured.' : 'No tests were run.'];
+  return tests.map(({ command, exit_code, passed, failed, skipped }) =>
+    [passed, failed, skipped].every(Number.isInteger)
+      ? `${command}: ${passed} passed, ${failed} failed, ${skipped} skipped.`
+      : `${command} exited with code ${Number.isInteger(exit_code) ? exit_code : 'unknown'}; I could not read the counts.`);
+}
+
+function createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock = Date, scope, roles, enabled }) {
   const now = () => clock.now();
   const timer = (fn, ms) => (clock.setTimeout || setTimeout).call(clock, fn, ms);
   const clear = (id) => { if (id) (clock.clearTimeout || clearTimeout).call(clock, id); };
@@ -23,6 +35,7 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
 
   function publicEntry(entry) {
     return safe({ ...entry.payload, hash: entry.hash, state: entry.state,
+      ...(entry.state === 'proposed' ? { approval_text: investigationApprovalText(entry.payload) } : {}),
       ...(entry.approved_by ? { approved_by: entry.approved_by } : {}),
       ...(entry.card_key ? { card_key: entry.card_key } : {}),
       ...(entry.run_id ? { run_id: entry.run_id } : {}),
@@ -31,9 +44,24 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
       ...(entry.reason ? { reason: entry.reason } : {}),
       ...(entry.stale ? { stale: true } : {}) });
   }
-  function emit(entry) {
-    const event = { type: 'investigation-updated', investigation: publicEntry(entry) };
+  function publish(event) {
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt the run. */ } }
+  }
+  const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry) });
+  async function summarize(report) {
+    const result = await brain.turn({ investigation_report: redactor.logSafeWindow(report) },
+      { instruction: 'Summarise these findings in two sentences. Do not state test counts.' });
+    return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !COUNT_CLAIM.test(sentence)).join(' ');
+  }
+  // the spoken result: server-written counts, then the brain's summary (the caller redacts it again before speech)
+  async function announce(entry) {
+    let summary = '';
+    if (entry.report) {
+      try { summary = await summarize(entry.report); }
+      catch { summary = 'I could not summarise the findings.'; }
+    }
+    publish({ type: 'investigation-result', investigation: { id: entry.payload.id },
+      counts: testSentences(entry.tests, entry.payload.test_command), summary });
   }
   async function write(entry, state, extra = {}) {
     entry.state = state;
@@ -97,7 +125,9 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
         else { entry.state = 'uncertain'; entry.reason = 'stop not confirmed'; emit(entry); }
       } else if (['completed', 'done', 'failed', 'stopped', 'expired'].includes(state.state) && state.pods_gone === true) {
         if (state.report) entry.report = redactor.logSafeWindow(state.report);
-        await finish(entry, state.state === 'done' ? 'completed' : state.state);
+        const final = state.state === 'done' ? 'completed' : state.state;
+        await finish(entry, final);
+        if (final === 'completed') void announce(entry);
       }
     } catch {
       if (!entry.finished) { entry.stale = true; if (entry.stopping) { entry.state = 'uncertain'; entry.reason = 'stop not confirmed'; } emit(entry); }
@@ -135,15 +165,17 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
     await write(entry, 'expired');
   }
   async function request(text, speaker, show_log = false) {
-    if (!enabled || !scope.investigations_enabled) return reply(403, 'Investigations are turned off here.');
+    if (!enabled || !scope.investigations_enabled) return reply(403, OFF);
     if (typeof show_log !== 'boolean') return reply(400, "I can't do that.");
     if (generation === undefined) return reply(409, 'There is no call right now.');
     if (active) return reply(409, 'An investigation is already in progress.');
     if (pending) return reply(409, 'An investigation is waiting for approval.');
     const call = generation;
     let context;
-    try { context = await readSource.investigationContext(); }
-    catch { return reply(503, 'The investigation context is unavailable.'); }
+    try {
+      if (!await readSource.investigateAvailable()) return reply(403, OFF); // CFactory hides the tool while it drains
+      context = await readSource.investigationContext();
+    } catch { return reply(503, 'The investigation context is unavailable.'); }
     if (call !== generation) return reply(409, 'The call has ended.');
     if (context?.error || context?.repository_id !== scope.source?.repository_id) return reply(503, 'The investigation context is unavailable.');
     const payload = Object.freeze({ id: randomUUID(), kind: 'investigate', repo: context.repo, sha: context.sha,
@@ -160,7 +192,9 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
     if (pending !== entry || call !== generation) return reply(409, 'The call has ended.');
     entry.proposalTimer = timer(() => { if (entry.state === 'proposed') void expire(entry); else void stopEntry(entry, 'expired'); }, PROPOSAL_MS);
     entry.proposalTimer.unref?.();
-    return reply(202, 'Approve the investigation on the RFactory page.', { ...publicEntry(entry), approval_text });
+    const boardRunning = show_log && shares?.list?.().running?.view === 'board';
+    return reply(202, `Approve the investigation on the RFactory page.${boardRunning ? ' To show the log, stop the board share first.' : ''}`,
+      publicEntry(entry));
   }
   async function start(entry, token) {
     try {
@@ -276,8 +310,9 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
     if (active) await stopEntry(active, 'call-ended');
   }
   async function startCall(nextGeneration) {
-    await endCall();
+    const ending = endCall(); // its synchronous part clears the old call; an unconfirmed stop must not delay the new one
     generation = nextGeneration;
+    await ending;
   }
   async function recover() {
     for (const item of record.unfinishedInvestigations()) {
@@ -307,7 +342,7 @@ function createInvestigationManager({ readSource, writer, shares, record, redact
     recovered = true;
   }
   return { request, approve, reject, stop, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    startCall, endCall, recover };
+    startCall, endCall, recover, summarize };
 }
 
 module.exports = { createInvestigationManager };

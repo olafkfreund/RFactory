@@ -44,7 +44,7 @@ function makeRedactor(secrets) {
   }
 
   function logSafeWindow(value) {
-    if (Array.isArray(value)) return value.every((item) => typeof item === 'string')
+    if (Array.isArray(value)) return value.length && value.every((item) => typeof item === 'string') // joining [] would give ['']
       ? logSafeWindow(value.join('\n')).split('\n') : value.map(logSafeWindow);
     if (value instanceof Error) return logSafeWindow(toModel(value));
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, logSafeWindow(item)]));

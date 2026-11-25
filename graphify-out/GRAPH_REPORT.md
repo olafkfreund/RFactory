@@ -1,17 +1,17 @@
-# Graph Report - 16-int  (2026-11-23)
+# Graph Report - 18-step6  (2026-11-25)
 
 ## Corpus Check
-- 275 files · ~362,837 words
+- 286 files · ~391,918 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 20 file(s) not represented in the graph (top: (none) 9, .nix 6, .css 4)
 
 ## Summary
-- 3018 nodes · 5449 edges · 206 communities (166 shown, 40 thin omitted)
-- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 678 edges (avg confidence: 0.89)
+- 3165 nodes · 5705 edges · 210 communities (172 shown, 38 thin omitted)
+- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 704 edges (avg confidence: 0.89)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `d919a927`
+- Built from commit: `0e4e04bc`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -23,8 +23,8 @@
 - public app.js
 - guard.js
 - zlib deflate.js
-- runner createLifecycle()
-- agent index.js
+- createLifecycle
+- agent.test.js
 - core rfb.js
 - core RFB
 - test desktop-ui.test.js
@@ -35,7 +35,7 @@
 - zlib trees.js
 - test github.test.js
 - runner runner.js
-- web createActionManager()
+- @rfactory/core
 - test server.test.js
 - test brain.test.js
 - test avatar-state.test.js
@@ -49,19 +49,19 @@
 - input GestureHandler
 - util browser.js
 - test claude-cli.test.js
-- src gateway.js
+- gateway.test.js
 - tts.test.js
 - runner client.test.js
 - core RSAAESAuthenticationState
 - ref_node_path
 - stt-bridge.test.js
-- H264Context
+- H264Decoder
 - test cfactory-write.test.js
 - runner kyverno-scope.test.js
 - verify verify.test.js
 - web desktop-routes.js
 - decoders TightDecoder
-- scope.js
+- makeRedactor
 - Design
 - verify net.sh
 - verify profiles.sh
@@ -70,38 +70,39 @@
 - spike hello-call.test.js
 - crypto crypto.js
 - input util.js
-- loadScope
-- proxy.test.js
+- createInvestigationManager
+- createActionManager
+- createProxy
 - runner protocol.js
 - util logging.js
 - crypto u8ArrayToBigInt()
-- HextileDecoder
+- proxy.js
 - util Cursor
 - avatars points
 - guard.test.js
-- items.test.js
+- gateway.js
 - reaper reaper.test.js
 - review.js
-- toModel
+- Steps
 - ref_node_assert
 - test cfactory.test.js
 - agent/call.test.js
-- ref_node_fs
+- proxy.test.js
 - core ._handleMouse()
 - bot bot/package.json
-- test gateway.test.js
-- ref_node_child_process
+- Design
+- avatar-renderer.test.js
 - runner k8s-lifecycle.test.js
 - web live-view.test.js
 - crypto md5.js
 - inflator.js
 - Design
-- viewer/board.test.js
+- Plan: run RFactory in the factory cluster
 - spike spike/package.json
 - input Keyboard
 - test run.test.js
-- core core/package.json
-- Deviations from the spec (for approval with this plan)
+- refused
+- cancel
 - ref_node_os
 - share.test.js
 - bot run()
@@ -111,14 +112,14 @@
 - desktop desktop/package.json
 - runner protocol.test.js
 - web web/package.json
-- test desktop-routes.test.js
+- extendedClipboardProvide
 - test source-guard.test.js
 - profiles.test.js
-- Plan: v1 roles in code (admin, approver, member), slice "roles" of #2
+- roles.test.js
 - Design
 - k3d k14-env.sh
 - verify handover.sh
-- heard
+- hearing.test.js
 - createGuard
 - Spec: the bot hears the call itself (its own speech-to-text)
 - verify lifecycle.sh
@@ -126,7 +127,7 @@
 - avatars.test.js
 - avatars portraits
 - k3d gate.sh
-- lifecycle.js
+- origin
 - crypto LegacyCrypto
 - crypto RSACipher
 - shell-browser.test.js
@@ -139,10 +140,10 @@
 - Steps
 - createCallManager
 - verify e2e.sh
-- kubevirt.test.js
+- index.js
 - k3d k11.sh
 - k3d mk-tls.sh
-- Plan: Show the CFactory board in the call
+- core/test/actions.test.js
 - verify liveview.sh
 - avatars anchors
 - avatars anchors
@@ -175,129 +176,132 @@
 - Steps
 - web/call.js
 - mapCard
-- createActionManager
-- H264Decoder
+- Desktop VMs on the k3d factory cluster
+- Steps
 - standup.test.js
 - Plan: Phase 0, the Linux call test
 - Design
-- stt.test.js
+- Socket
 - teams-tap-spike.js
 - Design
-- stt-languages.test.js
-- Design
-- createControl
+- effects.js
+- createStt
+- Intent: run a Claude terminal from the call, and show it
 - Design
 - share-desktop.test.js
-- stun.test.js
+- Intent: run RFactory in the factory cluster like the other Factory services
 - .sendKey
 - Spec: Phase 0, the Linux call test
 - Intent: A face for the bot that talks when it speaks
-- makeTable
+- renderer.js
 - Standalone mode S1: end-to-end results (#2 step 10)
 - Spec: Phase 3, act on the Factories from the call
 - Intent: Meeting agent Phase 3, act on the Factories from the call
 - Intent: Show the Factories in the call
 - Intent: Meeting agent Phase 1b, a voice standup in Google Meet
 - Intent: Review and control the Factories from the standup and the bot
-- fill_window
-- core/test/actions.test.js
+- bootstrap-secrets.test.sh
+- allowlist.js
 - Intent: Meeting agent web app for the Factories
 - Intent: Standalone mode, without the Factories
 - Intent: Agent workspace, a disposable desktop per call
 - Intent: Meeting agent Phase 1a, a text standup in the web UI
 - Third-party notices
-- Spec: Phase 1a, a text standup in the web UI
+- Design
 - speak
-- Approved decisions (copied from the spec, so this plan stands alone)
+- Intent: the bot hears the call itself (its own speech-to-text)
 - How the bot hears
-- websock.js
+- manifest.json
 - theme.js
 - Avatar portraits
 - CLAUDE.md
 - .claude/CLAUDE.md
 - check-image-stt.sh
 - SHELL_INVENTORY.md
+- bootstrap-secrets.sh
+- Plan: the bot hears the call itself (its own speech-to-text)
+- assert-signature-location.sh
 
 ## God Nodes (most connected - your core abstractions)
 1. `RFB` - 103 edges
 2. `createLifecycle()` - 45 edges
-3. `makeRedactor()` - 32 edges
+3. `makeRedactor()` - 33 edges
 4. `Display` - 32 edges
 5. `Websock` - 32 edges
 6. `checkFacts()` - 28 edges
-7. `createCallManager()` - 25 edges
-8. `portraits` - 23 edges
-9. `Profiles` - 23 edges
-10. `GestureHandler` - 23 edges
+7. `createCallManager()` - 26 edges
+8. `createInvestigationManager()` - 26 edges
+9. `portraits` - 23 edges
+10. `run()` - 23 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Steps` --references--> `event()`  [INFERRED]
-  plan/2026-11-21-16-own-speech-to-text.md → bot/test/stt-bridge.test.js
+- `Claude login: the shared `factory-cli-creds`, like CFactory` --references--> `checkClaudeHome()`  [INFERRED]
+  spec/2026-11-24-33-rfactory-in-cluster.md → core/src/brains/destination.js
+- `Proposed outcome` --references--> `heard()`  [INFERRED]
+  intent/2026-11-21-16-own-speech-to-text.md → core/src/call/hearing.js
 - `Verification` --references--> `heard()`  [INFERRED]
   spec/2026-11-21-16-own-speech-to-text.md → core/src/call/hearing.js
-- `Source offer to every remote user (AGPL §13)` --references--> `origin()`  [INFERRED]
-  spec/2026-11-17-13-talking-avatar.md → core/src/desktop/session.js
-- `Risks` --references--> `checkFacts()`  [INFERRED]
-  spec/2026-11-17-5-phase-1a-text-standup.md → core/src/facts.js
-- `Verification` --references--> `checkFacts()`  [INFERRED]
-  spec/2026-11-17-5-phase-1a-text-standup.md → core/src/facts.js
+- `Verification` --references--> `stopShare()`  [INFERRED]
+  spec/2026-11-17-3-agent-workspace.md → core/src/desktop/session.js
+- `Decisions carried over from the approved spec` --references--> `checkFacts()`  [INFERRED]
+  plan/2026-11-17-5-phase-1a-text-standup.md → core/src/facts.js
 
 ## Import Cycles
 - None detected.
 
-## Communities (206 total, 40 thin omitted)
+## Communities (210 total, 38 thin omitted)
 
 ### Community 0 - "verify lib.sh"
 Cohesion: 0.07
 Nodes (50): act(), admin(), api(), api_up(), approver(), as_pod_user(), ask(), beat() (+42 more)
 
 ### Community 1 - "runner k8s-policy.js"
-Cohesion: 0.05
-Nodes (46): crypto, FILE, fs, main(), net, parseCidrs(), path, refresh() (+38 more)
+Cohesion: 0.06
+Nodes (42): crypto, FILE, fs, main(), net, parseCidrs(), path, refresh() (+34 more)
 
 ### Community 3 - "test/call.test.js"
-Cohesion: 0.12
+Cohesion: 0.11
 Nodes (15): assert, { createCallManager }, { EventEmitter }, fakeActions(), a, fakeClock(), finishSpeech(), flush() (+7 more)
 
 ### Community 4 - "public app.js"
-Cohesion: 0.08
-Nodes (42): ago(), clear(), clock(), day(), decide(), decideShare(), el(), fill() (+34 more)
+Cohesion: 0.07
+Nodes (50): ago(), clear(), clock(), day(), decide(), decideInvestigation(), decideShare(), el() (+42 more)
 
 ### Community 5 - "guard.js"
 Cohesion: 0.19
 Nodes (13): binding(), cidrFamily(), command(), apply(), { execFile }, execFileAsync, findVeth(), fs (+5 more)
 
 ### Community 6 - "zlib deflate.js"
-Cohesion: 0.08
-Nodes (33): deflate(), deflateEnd(), deflateInit(), deflateInit2(), deflateReset(), deflateResetKeep(), deflateSetDictionary(), DeflateState() (+25 more)
+Cohesion: 0.09
+Nodes (32): deflate(), deflate_fast(), deflate_huff(), deflate_rle(), deflate_slow(), deflate_stored(), deflateSetDictionary(), DeflateState() (+24 more)
 
-### Community 7 - "runner createLifecycle()"
-Cohesion: 0.14
-Nodes (26): createLifecycle(), accept(), allowAccept(), attachAgent(), boot(), callAttach(), cancelNow(), check() (+18 more)
+### Community 7 - "createLifecycle"
+Cohesion: 0.05
+Nodes (58): nonce(), createLifecycle(), accept(), action(), allowAccept(), attachAgent(), boot(), callAttach() (+50 more)
 
-### Community 8 - "agent index.js"
-Cohesion: 0.10
-Nodes (23): assert, browser, { createAgent }, { createProfile }, { encode }, http, { startHeartbeat }, { test, mock } (+15 more)
+### Community 8 - "agent.test.js"
+Cohesion: 0.12
+Nodes (18): assert, browser, { createAgent }, { createProfile }, { encode }, http, { startHeartbeat }, { test, mock } (+10 more)
 
 ### Community 9 - "core rfb.js"
-Cohesion: 0.07
-Nodes (17): CopyRectDecoder, JPEGDecoder, RawDecoder, RREDecoder, ZlibDecoder, Deflator, encodings, _buildExtendedClipboardFlags() (+9 more)
+Cohesion: 0.06
+Nodes (15): CopyRectDecoder, HextileDecoder, JPEGDecoder, RawDecoder, RREDecoder, ZlibDecoder, encodings, _buildExtendedClipboardFlags() (+7 more)
 
 ### Community 10 - "core RFB"
 Cohesion: 0.07
-Nodes (4): clientEncodings(), RFB, setDesktopSize(), xvpOp()
+Nodes (5): clientEncodings(), enableContinuousUpdates(), RFB, setDesktopSize(), xvpOp()
 
 ### Community 11 - "test desktop-ui.test.js"
 Cohesion: 0.09
 Nodes (21): API(), boot(), clear(), countdownText(), el(), post(), render(), renderProfiles() (+13 more)
 
 ### Community 12 - "k14 results: agent workspace desktops on k3d with KubeVirt"
-Cohesion: 0.13
-Nodes (13): After k14 (2026-11-19), Checks, Evidence, Images under test, k14 results: agent workspace desktops on k3d with KubeVirt, Manual capacity checks (real desktops), Measurements, Open findings (+5 more)
+Cohesion: 0.22
+Nodes (9): After k14 (2026-11-19), Checks, Evidence, Images under test, k14 results: agent workspace desktops on k3d with KubeVirt, Manual capacity checks (real desktops), Measurements, Open findings (+1 more)
 
 ### Community 13 - "zlib inflate.js"
-Cohesion: 0.08
-Nodes (24): adler32(), inflate_fast(), fixedtables(), inflate(), inflateInit2(), inflateReset(), inflateReset2(), inflateResetKeep() (+16 more)
+Cohesion: 0.09
+Nodes (27): adler32(), crc32(), makeTable(), read_buf(), inflate_fast(), fixedtables(), inflate(), inflateInit2() (+19 more)
 
 ### Community 14 - "runner runner.test.js"
 Cohesion: 0.08
@@ -308,16 +312,16 @@ Cohesion: 0.16
 Nodes (28): bi_flush(), bi_reverse(), bi_windup(), build_bl_tree(), build_tree(), compress_block(), copy_block(), d_code() (+20 more)
 
 ### Community 17 - "test github.test.js"
-Cohesion: 0.10
-Nodes (22): { Client }, connect(), call(), fetchScope(), getItem(), itemActivity(), paged(), { execFileSync } (+14 more)
+Cohesion: 0.09
+Nodes (24): { Client }, connect(), call(), fetchScope(), getItem(), itemActivity(), paged(), { execFileSync } (+16 more)
 
 ### Community 18 - "runner runner.js"
-Cohesion: 0.11
-Nodes (24): clearInterval(), createK8s(), { bridgeViewOnly }, clientStatus(), createHandler(), { createK8s }, { createLifecycle }, createUpgrade() (+16 more)
+Cohesion: 0.06
+Nodes (36): clearInterval(), createK8s(), fs, assert, { createK8s }, fs, http, { inClusterConfig } (+28 more)
 
-### Community 19 - "web createActionManager()"
-Cohesion: 0.13
-Nodes (12): @rfactory/core, { deriveEffects, describe }, FINAL, { randomUUID }, { validate, hashPayload, canonical }, approve(), assert, { createActionManager } (+4 more)
+### Community 19 - "@rfactory/core"
+Cohesion: 0.15
+Nodes (12): @rfactory/core, { hashPayload }, { randomUUID }, approve(), assert, { createShareManager }, { loadRoles }, { makeRedactor } (+4 more)
 
 ### Community 20 - "test server.test.js"
 Cohesion: 0.10
@@ -328,12 +332,8 @@ Cohesion: 0.11
 Nodes (19): { createHash }, destinationHash(), fs, path, resolveDestination(), createBrain(), turn(), { destinationHash } (+11 more)
 
 ### Community 22 - "test avatar-state.test.js"
-Cohesion: 0.11
-Nodes (13): installAvatar(), draw(), portrait(), triangle(), { source }, stateFactory(), createState(), meshAt() (+5 more)
-
-### Community 23 - "Profiles"
-Cohesion: 0.17
-Nodes (5): fs, LABEL, name(), Profiles, { randomUUID, hkdfSync }
+Cohesion: 0.14
+Nodes (8): stateFactory(), createState(), meshAt(), approvedM01, assert, { createState, meshAt, source }, test, vm
 
 ### Community 24 - "runner vnc.test.js"
 Cohesion: 0.12
@@ -353,7 +353,7 @@ Nodes (18): assert, CLI, { destinationHash, claudeHash }, dir, env, { EventEmitt
 
 ### Community 29 - "web server.js"
 Cohesion: 0.13
-Nodes (21): { buildStandup, speakStandupHeadline }, createApp(), DESKTOP_STATIC, fs, HEADERS, http, keepAlive(), main() (+13 more)
+Nodes (20): { buildStandup, speakStandupHeadline }, createApp(), DESKTOP_STATIC, fs, HEADERS, http, keepAlive(), main() (+12 more)
 
 ### Community 31 - "util browser.js"
 Cohesion: 0.09
@@ -363,13 +363,13 @@ Nodes (5): dragThreshold, hasScrollbarGutter, isTouchDevice, supportsCursorURIs,
 Cohesion: 0.08
 Nodes (32): approveClaude(), ACTION_SYSTEM_PROMPT, ARGV, { checkFacts }, { claudeHash, checkClaudeHome }, createClaudeBrain(), propose(), run() (+24 more)
 
-### Community 33 - "src gateway.js"
-Cohesion: 0.10
-Nodes (26): ACTIONS, createSessions(), approveShare(), check(), get(), grant(), revoke(), origin() (+18 more)
+### Community 33 - "gateway.test.js"
+Cohesion: 0.08
+Nodes (23): createGateway(), call(), numberFrom(), snapshot(), assert, { createGateway }, { createSessions }, { makeRedactor } (+15 more)
 
 ### Community 34 - "tts.test.js"
-Cohesion: 0.17
-Nodes (11): Recorded GitHub inventory (pinned 1.14.0, captured 2026-11-17), after(), assert, { createTts }, { EventEmitter }, fs, os, { PassThrough } (+3 more)
+Cohesion: 0.11
+Nodes (18): Recorded GitHub inventory (pinned 1.14.0, captured 2026-11-17), Deviations, after(), assert, { createTts }, { EventEmitter }, fs, os (+10 more)
 
 ### Community 35 - "runner client.test.js"
 Cohesion: 0.10
@@ -380,16 +380,20 @@ Cohesion: 0.12
 Nodes (4): RA2Cipher, RSAAESAuthenticationState, EventTargetMixin, encodeUTF8()
 
 ### Community 37 - "ref_node_path"
-Cohesion: 0.12
-Nodes (13): fs, os, path, fs, path, assert, { createRecord }, fs (+5 more)
+Cohesion: 0.09
+Nodes (17): fs, path, assert, { createRecord }, fs, { makeRedactor }, os, path (+9 more)
 
 ### Community 38 - "stt-bridge.test.js"
-Cohesion: 0.10
-Nodes (9): installSttBridge(), assert, event(), fs, { installSttBridge }, path, setup(), test (+1 more)
+Cohesion: 0.09
+Nodes (10): installSttBridge(), assert, event(), fs, { installSttBridge }, path, setup(), test (+2 more)
+
+### Community 39 - "H264Decoder"
+Cohesion: 0.16
+Nodes (3): H264Context, H264Decoder, H264Parser
 
 ### Community 40 - "test cfactory-write.test.js"
-Cohesion: 0.07
-Nodes (31): makeRedactor(), redactString(), PATTERNS, { Client }, createCfactoryWriter(), { deriveEffects }, fs, { makeRedactor } (+23 more)
+Cohesion: 0.05
+Nodes (41): dependencies, @modelcontextprotocol/sdk, openai, engines, node, license, name, private (+33 more)
 
 ### Community 41 - "runner kyverno-scope.test.js"
 Cohesion: 0.14
@@ -400,12 +404,12 @@ Cohesion: 0.12
 Nodes (15): assert, beats(), CHECKS, fs, http, INPUT, { join }, LIB (+7 more)
 
 ### Community 43 - "web desktop-routes.js"
-Cohesion: 0.18
-Nodes (18): createDesktop(), handle(), request(), runnerState(), createDesktopQueue(), approve(), enqueue(), reject() (+10 more)
-
-### Community 45 - "scope.js"
 Cohesion: 0.10
-Nodes (18): source, commit, path, repo, DESTINATIONS, fs, LISTEN, { makeRedactor } (+10 more)
+Nodes (28): createDesktop(), handle(), request(), runnerState(), createDesktopQueue(), approve(), enqueue(), reject() (+20 more)
+
+### Community 45 - "makeRedactor"
+Cohesion: 0.09
+Nodes (27): makeRedactor(), logSafeWindow(), redactString(), toModel(), PATTERNS, DESTINATIONS, fs, LISTEN (+19 more)
 
 ### Community 46 - "Design"
 Cohesion: 0.22
@@ -424,32 +428,44 @@ Cohesion: 0.16
 Nodes (10): assert, { createVmSpawn }, { Duplex }, { test }, createVmSpawn(), { EventEmitter }, firstLine(), { PassThrough } (+2 more)
 
 ### Community 50 - "createShareManager"
-Cohesion: 0.13
-Nodes (27): createShareManager(), approve(), cleanup(), emit(), endCall(), expire(), reject(), request() (+19 more)
+Cohesion: 0.33
+Nodes (18): createShareManager(), approve(), cleanup(), emit(), endCall(), expire(), frameFor(), openFor() (+10 more)
 
 ### Community 51 - "spike hello-call.test.js"
-Cohesion: 0.13
-Nodes (12): Steps, botName(), path, run(), assert, { EventEmitter }, fs, JoinError (+4 more)
+Cohesion: 0.12
+Nodes (13): Steps, Pieces, botName(), path, run(), assert, { EventEmitter }, fs (+5 more)
 
 ### Community 53 - "input util.js"
 Cohesion: 0.15
 Nodes (5): DOMKeyTable, codepoints, getKey(), getKeycode(), getKeysym()
 
-### Community 55 - "loadScope"
-Cohesion: 0.16
-Nodes (18): loadScope(), fixture(), action(), Decisions carried over from the approved spec and intent, Deviations from the spec (approved with this plan), Plan: Phase 3, act on the Factories from the call, Rollback, Steps (+10 more)
+### Community 54 - "createInvestigationManager"
+Cohesion: 0.11
+Nodes (40): createInvestigationManager(), announce(), approve(), clearLiveTimers(), closeLog(), endCall(), expire(), finish() (+32 more)
 
-### Community 56 - "proxy.test.js"
-Cohesion: 0.06
-Nodes (45): addressBits(), BASE_PROTECTED, checkedAddresses(), createApi(), get(), createProxy(), addresses(), answerDns() (+37 more)
+### Community 55 - "createActionManager"
+Cohesion: 0.07
+Nodes (44): Decisions carried over from the approved spec and intent, Deviations from the spec (approved with this plan), Plan: Phase 3, act on the Factories from the call, Rollback, Steps, Tests, Waves, Decisions carried over (approved intent and spec) (+36 more)
+
+### Community 56 - "createProxy"
+Cohesion: 0.22
+Nodes (18): createApi(), get(), createProxy(), addresses(), answerDns(), entryFor(), handleConnect(), handleForward() (+10 more)
 
 ### Community 57 - "runner protocol.js"
-Cohesion: 0.20
-Nodes (14): board(), columns, count(), exact(), hosts(), identity, login(), optional() (+6 more)
+Cohesion: 0.22
+Nodes (16): board(), boolean(), columns, count(), exact(), identity, log(), login() (+8 more)
+
+### Community 58 - "util logging.js"
+Cohesion: 0.12
+Nodes (3): DataChannel, rawChannelProps, ReadyStates
 
 ### Community 59 - "crypto u8ArrayToBigInt()"
 Cohesion: 0.24
 Nodes (5): bigIntToU8Array(), modPow(), u8ArrayToBigInt(), DHCipher, DHPublicKey
+
+### Community 60 - "proxy.js"
+Cohesion: 0.18
+Nodes (15): addressBits(), BASE_PROTECTED, checkedAddresses(), crypto, dgram, dnsReply(), fs, http (+7 more)
 
 ### Community 62 - "avatars points"
 Cohesion: 0.12
@@ -459,9 +475,9 @@ Nodes (16): points, C, JL, JR, LB, LL, LM, LR (+8 more)
 Cohesion: 0.13
 Nodes (14): assert, { buildPolicy }, cniResult(), entry, { execFileSync }, fake(), fs, https (+6 more)
 
-### Community 64 - "items.test.js"
-Cohesion: 0.18
-Nodes (10): FAIL, failing(), labelNames(), logins(), mapGithub(), assert, { mapGithub, summarise }, mapping (+2 more)
+### Community 64 - "gateway.js"
+Cohesion: 0.12
+Nodes (16): DESKTOP, { mapGithub, summarise, STATES }, NAMES, { origin }, SCHEMAS, FAIL, failing(), labelNames() (+8 more)
 
 ### Community 65 - "reaper reaper.test.js"
 Cohesion: 0.17
@@ -471,25 +487,25 @@ Nodes (13): createReaper(), leaseStale(), tick(), fs, main(), assert, { createRe
 Cohesion: 0.15
 Nodes (17): discussionNote(), { FAILED }, issueUrl(), NOT_IN_CARD_DATA, reviewCard(), reviewProject(), stageRun(), STAGES (+9 more)
 
-### Community 67 - "toModel"
-Cohesion: 0.10
-Nodes (26): tools(), toModel(), ask(), raw(), Decisions carried over from the approved spec, Deviations from the spec (approved with this plan), Plan: Standalone mode, slice S1 (GitHub, read-only, OpenAI-compatible and Ollama brains), Rollback (+18 more)
+### Community 67 - "Steps"
+Cohesion: 0.13
+Nodes (18): tools(), ask(), raw(), Decisions carried over from the approved spec, Deviations from the spec (approved with this plan), Plan: Standalone mode, slice S1 (GitHub, read-only, OpenAI-compatible and Ollama brains), Rollback, Steps (+10 more)
 
 ### Community 68 - "ref_node_assert"
-Cohesion: 0.08
-Nodes (17): assert, { buildRendererSource }, { chromium }, fs, path, test, toSpeech(), assert (+9 more)
+Cohesion: 0.06
+Nodes (26): toSpeech(), assert, fs, path, root, test, assert, test (+18 more)
 
 ### Community 69 - "test cfactory.test.js"
-Cohesion: 0.13
+Cohesion: 0.12
 Nodes (7): assert, callTool(), cards, { createCfactorySource, mapCard, inScope }, reply(), repos, test
 
 ### Community 70 - "agent/call.test.js"
 Cohesion: 0.17
-Nodes (9): createCallWorker(), { createShare, callLaunchArgs }, { PassThrough }, assert, { createCallWorker, withProxy, TEAMS_CAPTIONS }, { EventEmitter }, fixture(), { test } (+1 more)
+Nodes (10): createCallWorker(), { createShare, callLaunchArgs }, { PassThrough }, assert, { createCallWorker, withProxy, TEAMS_CAPTIONS }, { EventEmitter }, fixture(), { test } (+2 more)
 
-### Community 71 - "ref_node_fs"
+### Community 71 - "proxy.test.js"
 Cohesion: 0.12
-Nodes (14): assert, fs, path, root, test, fs, assert, { createK8s } (+6 more)
+Nodes (11): assert, auth(), { createApi, createProxy, parseHello, checkedAddresses, parseDns }, entry, { EventEmitter }, fs, guard, os (+3 more)
 
 ### Community 72 - "core ._handleMouse()"
 Cohesion: 0.25
@@ -499,17 +515,17 @@ Nodes (3): extendedPointerEvent(), pointerEvent(), clientToElement()
 Cohesion: 0.14
 Nodes (13): dependencies, playwright-core, @vibeconferencing/calls, engines, node, playwright-core, @vibeconferencing/calls, license (+5 more)
 
-### Community 74 - "test gateway.test.js"
-Cohesion: 0.12
-Nodes (11): assert, base, { createGateway }, fetchScope(), fs, { loadScope }, { makeRedactor }, os (+3 more)
-
-### Community 75 - "ref_node_child_process"
+### Community 74 - "Design"
 Cohesion: 0.13
-Nodes (13): assert, fs, os, path, realPod, { spawnSync }, test, createTts() (+5 more)
+Nodes (14): Alternatives rejected, Claude login: the shared `factory-cli-creds`, like CFactory, Design, Images: built, signed and promoted by CI, like CFactory, One pod, as today, Order and cutover, Owner decisions (proposed defaults), Pod security (+6 more)
+
+### Community 75 - "avatar-renderer.test.js"
+Cohesion: 0.14
+Nodes (9): assert, { buildRendererSource }, { chromium }, fs, path, speechLevel(), test, Decisions carried over (approved intent and spec) (+1 more)
 
 ### Community 76 - "runner k8s-lifecycle.test.js"
-Cohesion: 0.19
-Nodes (9): assert, { createDecoder }, { createLifecycle }, { createUpgrade }, { EventEmitter }, pod, setup(), Socket (+1 more)
+Cohesion: 0.10
+Nodes (15): assert, { createDecoder }, { createLifecycle }, { createUpgrade }, { EventEmitter }, pod, setup(), Socket (+7 more)
 
 ### Community 77 - "web live-view.test.js"
 Cohesion: 0.15
@@ -519,13 +535,17 @@ Nodes (11): assert, client(), clientSession, { createApp }, fbUpdate, includes()
 Cohesion: 0.31
 Nodes (12): add(), cmn(), ff(), gg(), hh(), ii(), M(), MD5() (+4 more)
 
-### Community 80 - "Design"
-Cohesion: 0.14
-Nodes (15): Proposed outcome, Design, Effects are derived, not trusted, Keys and switches, Pending actions and approval, Reading CFactory's results, Recognising an action request, The action allowlist (the only things that can ever run) (+7 more)
+### Community 79 - "inflator.js"
+Cohesion: 0.36
+Nodes (4): Z_DEFAULT_COMPRESSION, Z_FULL_FLUSH, inflateInit(), ZStream()
 
-### Community 81 - "viewer/board.test.js"
-Cohesion: 0.18
-Nodes (11): assert, board(), browser, column(), open(), { test }, { viewerRoute, URL_BOARD }, fs (+3 more)
+### Community 80 - "Design"
+Cohesion: 0.15
+Nodes (14): Design, Effects are derived, not trusted, Execution: re-check, claim, record, dispatch once, Keys and switches, Pending actions and approval, Reading CFactory's results, Recognising an action request, The action allowlist (the only things that can ever run) (+6 more)
+
+### Community 81 - "Plan: run RFactory in the factory cluster"
+Cohesion: 0.14
+Nodes (13): Branches and worktrees, Corrections to the approved spec, Decisions (from the approved spec; owner defaults accepted 2026-11-24), Deviations, Landing record (2026-11-24), Lead steps, in order, Live check results (step 12), Plan: run RFactory in the factory cluster (+5 more)
 
 ### Community 82 - "spike spike/package.json"
 Cohesion: 0.15
@@ -535,25 +555,25 @@ Nodes (12): dependencies, playwright-core, @vibeconferencing/calls, playwright-c
 Cohesion: 0.15
 Nodes (12): assert, audioJoined(), { EventEmitter }, fs, joined(), { PassThrough }, path, { run } (+4 more)
 
-### Community 85 - "core core/package.json"
-Cohesion: 0.11
-Nodes (15): dependencies, @modelcontextprotocol/sdk, openai, engines, node, license, name, private (+7 more)
+### Community 85 - "refused"
+Cohesion: 0.20
+Nodes (9): refused(), 8. Problems we hit, control(), Decisions carried over from the approved spec revision, Deviations from the spec revision (Codex re-check and plan review, for approval with this plan), Plan: desktops as KubeVirt VMs in the k3d cluster (#3, revision), Rollback, Steps (+1 more)
 
-### Community 86 - "Deviations from the spec (for approval with this plan)"
-Cohesion: 0.16
-Nodes (15): label(), stopShare(), exec(), Decisions carried over from the approved spec, Deviations from the spec (for approval with this plan), Facts checked in the real repos, Open questions for the owner, Plan: Agent workspace, a disposable desktop per call (#3) (+7 more)
+### Community 86 - "cancel"
+Cohesion: 0.20
+Nodes (15): label(), stopShare(), cancel(), hosts(), Decisions carried over from the approved spec, Deviations from the spec (for approval with this plan), Facts checked in the real repos, Open questions for the owner (+7 more)
 
 ### Community 87 - "ref_node_os"
-Cohesion: 0.24
+Cohesion: 0.21
 Nodes (7): createProfile(), readHead(), assert, { createProfile }, KEY, setup(), { test }
 
 ### Community 88 - "share.test.js"
-Cohesion: 0.15
-Nodes (11): callLaunchArgs(), { randomBytes }, assert, browser, { createShare, titleFor, callLaunchArgs, installCaptureGuard }, http, pick(), { test } (+3 more)
+Cohesion: 0.09
+Nodes (21): { randomBytes }, assert, browser, { createShare, titleFor, callLaunchArgs, installCaptureGuard }, http, pick(), { test }, { URL_BOARD } (+13 more)
 
 ### Community 89 - "bot run()"
-Cohesion: 0.23
-Nodes (19): buildRendererSource(), run(), afterJoin(), discardOpen(), idleAvatar(), leftConfirmed(), newGate(), onAudio() (+11 more)
+Cohesion: 0.19
+Nodes (22): buildRendererSource(), pageLeft(), run(), afterJoin(), discardOpen(), idleAvatar(), leftConfirmed(), newGate() (+14 more)
 
 ### Community 90 - "avatars eyes"
 Cohesion: 0.22
@@ -572,28 +592,28 @@ Cohesion: 0.18
 Nodes (10): dependencies, playwright-core, engines, node, playwright-core, name, private, scripts (+2 more)
 
 ### Community 94 - "runner protocol.test.js"
-Cohesion: 0.20
+Cohesion: 0.18
 Nodes (7): assert, fs, { MAX, encode, createDecoder, tag }, net, os, path, { test }
 
 ### Community 95 - "web web/package.json"
 Cohesion: 0.14
 Nodes (13): dependencies, @rfactory/core, devDependencies, playwright-core, engines, node, playwright-core, license (+5 more)
 
-### Community 96 - "test desktop-routes.test.js"
-Cohesion: 0.18
-Nodes (9): assert, { createApp }, { createDesktop }, grant, { loadRoles }, { makeRedactor }, open, roles (+1 more)
+### Community 96 - "extendedClipboardProvide"
+Cohesion: 0.22
+Nodes (9): Deflator, extendedClipboardProvide(), deflateEnd(), deflateInit(), deflateInit2(), deflateReset(), deflateResetKeep(), err() (+1 more)
 
 ### Community 97 - "test source-guard.test.js"
 Cohesion: 0.18
 Nodes (10): Source adapters, assert, fs, git(), guard, os, path, repo() (+2 more)
 
 ### Community 98 - "profiles.test.js"
-Cohesion: 0.15
-Nodes (12): admin, assert, fakeK8s(), fixture(), fs, { hkdfSync }, MASTER, os (+4 more)
+Cohesion: 0.12
+Nodes (15): fs, LABEL, { randomUUID, hkdfSync }, admin, assert, fakeK8s(), fixture(), fs (+7 more)
 
-### Community 99 - "Plan: v1 roles in code (admin, approver, member), slice "roles" of #2"
-Cohesion: 0.19
-Nodes (10): loadRoles(), has(), rolesOf(), Decisions carried over from the approved spec, Decisions for this plan, Deviations, Plan: v1 roles in code (admin, approver, member), slice "roles" of #2, Rollback (+2 more)
+### Community 99 - "roles.test.js"
+Cohesion: 0.15
+Nodes (13): loadRoles(), has(), rolesOf(), assert, { loadRoles }, test, Decisions carried over from the approved spec, Decisions for this plan (+5 more)
 
 ### Community 100 - "Design"
 Cohesion: 0.18
@@ -607,17 +627,17 @@ Nodes (9): app_sync(), argo(), desktops(), env_of(), kc(), kubectl(), runner_res
 Cohesion: 0.42
 Nodes (8): fixture_reached(), hits(), open_page(), page_loaded(), session_of(), handover.sh script, trap_page(), wait_attached()
 
-### Community 103 - "heard"
-Cohesion: 0.14
-Nodes (15): createHearing(), heard(), assert, { createHearing }, fakeClock(), setup(), test, Affected users and systems (+7 more)
+### Community 103 - "hearing.test.js"
+Cohesion: 0.36
+Nodes (6): createHearing(), assert, { createHearing }, fakeClock(), setup(), test
 
 ### Community 104 - "createGuard"
 Cohesion: 0.35
 Nodes (12): createApi(), get(), createGuard(), counters(), heartbeat(), reconcile(), reconcileOnce(), server() (+4 more)
 
 ### Community 105 - "Spec: the bot hears the call itself (its own speech-to-text)"
-Cohesion: 0.15
-Nodes (12): 1. The service: `rfactory-stt`, 2. In the bot (`bot/run.js`, both deployments): cut speech, send segments, 3. In the call manager (`web/call.js`): transcribe and hear, 4. The listen setting, 5. Packaging and deploy, Alternatives rejected, Design, Measured on p620 (2026-11-21) (+4 more)
+Cohesion: 0.17
+Nodes (11): 1. The service: `rfactory-stt`, 3. In the call manager (`web/call.js`): transcribe and hear, 4. The listen setting, 5. Packaging and deploy, Alternatives rejected, Design, Measured on p620 (2026-11-21), Owner decisions taken with this spec (2026-11-21) (+3 more)
 
 ### Community 106 - "verify lifecycle.sh"
 Cohesion: 0.42
@@ -635,9 +655,9 @@ Nodes (8): anchors, file, sha256, file, sha256, portraits, f01, f09
 Cohesion: 0.25
 Nodes (7): RUNNER_URL, gate.sh script, VERIFY_CA, VERIFY_CERT, VERIFY_KEY, VERIFY_NODE_CLI, VERIFY_PROBE_IMAGE
 
-### Community 111 - "lifecycle.js"
-Cohesion: 0.11
-Nodes (18): nonce(), { buildPolicy }, { createDecoder, tag, encode, LANGUAGE }, login(), shareStart(), shareStop(), sharing(), toGuest() (+10 more)
+### Community 111 - "origin"
+Cohesion: 0.33
+Nodes (9): ACTIONS, createSessions(), approveShare(), check(), get(), grant(), revoke(), origin() (+1 more)
 
 ### Community 114 - "shell-browser.test.js"
 Cohesion: 0.20
@@ -648,7 +668,7 @@ Cohesion: 0.47
 Nodes (9): createShare(), capture(), matches(), start(), stop(), tabGone(), teardown(), installCaptureGuard() (+1 more)
 
 ### Community 116 - "verify main()"
-Cohesion: 0.36
+Cohesion: 0.43
 Nodes (5): connect(), handshake(), main(), [mode, url], out()
 
 ### Community 117 - "boundary.test.js"
@@ -672,16 +692,16 @@ Cohesion: 0.21
 Nodes (14): { Client }, createCfactorySource(), call(), comments(), connect(), freshness(), scopedCards(), within() (+6 more)
 
 ### Community 122 - "createCallManager"
-Cohesion: 0.29
-Nodes (18): createCallManager(), addressed(), answer(), armQuiet(), audio(), drain(), incoming(), killGroup() (+10 more)
+Cohesion: 0.27
+Nodes (19): createCallManager(), addressed(), answer(), armQuiet(), audio(), drain(), incoming(), killGroup() (+11 more)
 
 ### Community 123 - "verify e2e.sh"
 Cohesion: 0.53
 Nodes (4): real_ids(), e2e.sh script, teams_call(), WEB_MAX
 
-### Community 124 - "kubevirt.test.js"
-Cohesion: 0.13
-Nodes (13): octets(), parseCmdline(), assert, { createAgent }, { createCallWorker }, { createControl }, { dial }, { encode, createDecoder } (+5 more)
+### Community 124 - "index.js"
+Cohesion: 0.09
+Nodes (30): octets(), parseCmdline(), startHeartbeat(), createAgent(), run(), { createCallWorker }, { createControl }, { createProfile } (+22 more)
 
 ### Community 125 - "k3d k11.sh"
 Cohesion: 0.50
@@ -691,9 +711,9 @@ Nodes (4): env_of(), RFACTORY_DESKTOP, RFACTORY_RUNNER_URL, k11.sh script
 Cohesion: 0.70
 Nodes (4): FILES, key(), leaf(), mk-tls.sh script
 
-### Community 127 - "Plan: Show the CFactory board in the call"
-Cohesion: 0.33
-Nodes (5): Decisions carried over (approved intent and spec), Gates, Plan: Show the CFactory board in the call, Rollback, Tests
+### Community 127 - "core/test/actions.test.js"
+Cohesion: 0.22
+Nodes (9): assert, card, context, { deriveEffects, describe }, { makeRedactor }, ok(), proposal(), test (+1 more)
 
 ### Community 128 - "verify liveview.sh"
 Cohesion: 0.70
@@ -756,20 +776,24 @@ Cohesion: 0.83
 Nodes (3): ready(), share.sh script, web_stop()
 
 ### Community 160 - "Steps"
-Cohesion: 0.14
-Nodes (12): idle(), setCameraRenderer(), Deviations after merge, Plan: A face for the bot that talks when it speaks, Rollback, Steps, Tests, Alternatives rejected (+4 more)
+Cohesion: 0.22
+Nodes (9): idle(), setCameraRenderer(), Deviations after merge, Deviations (Codex review of the approved plan, 2026-11-17), Plan: A face for the bot that talks when it speaks, Rollback, Steps, Tests (+1 more)
 
 ### Community 161 - "web/call.js"
-Cohesion: 0.10
-Nodes (18): Environment and scope reference, Per-call worker environment variables (set internally), Scope fields (`RFACTORY_SCOPE_FILE`), Web server environment variables, BOT_CMD, { buildStandup, speakStandupHeadline }, { checkFacts }, { createHearing } (+10 more)
+Cohesion: 0.15
+Nodes (12): BOT_CMD, { buildStandup, speakStandupHeadline }, { checkFacts }, { createHearing }, { createShareDesktop }, { createStt }, fs, { resolveListen } (+4 more)
 
 ### Community 162 - "mapCard"
-Cohesion: 0.15
-Nodes (13): mapCard(), 10. Intent constraints carried into slice 1, 1. Data comes from four CFactory read tools, all on the existing read key, 2. Scope: one rule, used everywhere, 3. Failure and freshness, 4. `core/src/standup.js` (new, pure): `buildStandup(cards, freshness)`, 6. Review (`core/src/review.js`, new, pure), 8. `core/src/sources/cfactory.js` (+5 more)
+Cohesion: 0.10
+Nodes (19): mapCard(), Approved decisions (copied from the spec, so this plan stands alone), Plan: Review and standup from the board (#28, slice 1), Roles, Rollback, Tests, 10. Intent constraints carried into slice 1, 1. Data comes from four CFactory read tools, all on the existing read key (+11 more)
 
-### Community 163 - "createActionManager"
-Cohesion: 0.38
-Nodes (13): createActionManager(), approve(), emit(), endCall(), expire(), finish(), list(), live() (+5 more)
+### Community 163 - "Desktop VMs on the k3d factory cluster"
+Cohesion: 0.20
+Nodes (9): 1. Prerequisites, 2. TLS: `mk-tls.sh`, 3. Images: `import-images.sh`, 4. Before the first sync: `prep.sh`, 5. The ArgoCD app, 6. The gate: `gate.sh`, 7. Desktops on: `k11.sh`, 9. Rollback (+1 more)
+
+### Community 164 - "Steps"
+Cohesion: 0.22
+Nodes (8): hashPayload(), revalidate(), Decisions carried over (approved intent and spec), Gates, Plan: an approved, read-only Claude investigation from the call (RFactory side), Rollback, Steps, Tests
 
 ### Community 165 - "standup.test.js"
 Cohesion: 0.21
@@ -780,32 +804,28 @@ Cohesion: 0.15
 Nodes (11): Decisions carried over from the approved spec, Deviations from the spec (approved with this plan), Plan: Phase 0, the Linux call test, Rollback, Tests, Findings, Not done, Phase 0 results: can a guest bot join Google Meet, speak and read captions? (+3 more)
 
 ### Community 167 - "Design"
-Cohesion: 0.17
-Nodes (12): speechLevel(), Decisions carried over (approved intent and spec), AI disclosure, Cost, Design, Licence (owner decision 2: the whole repository is AGPL-3.0), Packaging, Portraits and notices (+4 more)
-
-### Community 168 - "stt.test.js"
-Cohesion: 0.22
-Nodes (6): assert, { createStt }, fs, os, path, test
+Cohesion: 0.15
+Nodes (12): AI disclosure, Alternatives rejected, Cost, Design, Evidence this spec rests on, Licence (owner decision 2: the whole repository is AGPL-3.0), Packaging, Portraits and notices (+4 more)
 
 ### Community 169 - "teams-tap-spike.js"
 Cohesion: 0.29
 Nodes (6): child, [repo, stt], segs, { spawn }, transcribe(), wav()
 
 ### Community 170 - "Design"
-Cohesion: 0.17
-Nodes (11): Alternatives rejected, Answers to the intent's open questions, Design, Feasibility gate (first plan step), Lifecycle and disposal, Live view, Network, Persistent profiles (+3 more)
+Cohesion: 0.15
+Nodes (12): Alternatives rejected, Answers to the intent's open questions, Design, Feasibility gate (first plan step), Lifecycle and disposal, Live view, Network, Persistent profiles (+4 more)
 
-### Community 171 - "stt-languages.test.js"
-Cohesion: 0.38
-Nodes (5): toWhisperLanguage(), WHISPER_LANGUAGES, assert, test, { WHISPER_LANGUAGES, toWhisperLanguage }
+### Community 171 - "effects.js"
+Cohesion: 0.32
+Nodes (7): deriveEffects(), describe(), SERVICE, STAGE, stageFor(), stateOf(), WRITES
 
-### Community 172 - "Design"
-Cohesion: 0.13
-Nodes (14): gateway(), Alternatives rejected, Design, Exposure, Facts this rests on (checked on p620, 2026-11-18), Lifecycle, Live view, Network (replaces the approved "Network" section) (+6 more)
+### Community 172 - "createStt"
+Cohesion: 0.25
+Nodes (6): Environment and scope reference, Per-call worker environment variables (set internally), Scope fields (`RFACTORY_SCOPE_FILE`), Web server environment variables, createStt(), fs
 
-### Community 173 - "createControl"
-Cohesion: 0.43
-Nodes (7): capText(), createControl(), applyHosts(), closePage(), page(), start(), originOf()
+### Community 173 - "Intent: run a Claude terminal from the call, and show it"
+Cohesion: 0.25
+Nodes (7): Affected users and systems, Constraints, Decisions (owner, 2026-11-19), Intent: run a Claude terminal from the call, and show it, Open questions, Problem, Proposed outcome
 
 ### Community 174 - "Design"
 Cohesion: 0.18
@@ -815,21 +835,21 @@ Nodes (10): Alternatives rejected, Design, Order and dependencies, Proposing, ap
 Cohesion: 0.24
 Nodes (7): createShareDesktop(), schedule(), stopPolling(), assert, { createShareDesktop }, setup(), test
 
-### Community 176 - "stun.test.js"
-Cohesion: 0.29
-Nodes (4): assert, dgram, { stunProbe }, test
+### Community 176 - "Intent: run RFactory in the factory cluster like the other Factory services"
+Cohesion: 0.25
+Nodes (7): Affected users and systems, Constraints, Decided, Intent: run RFactory in the factory cluster like the other Factory services, Open questions, Problem, Proposed outcome
 
 ### Community 178 - "Spec: Phase 0, the Linux call test"
-Cohesion: 0.18
-Nodes (10): Alternatives rejected, Context for later phases (not decided here), Decisions on the intent's Phase 0 questions, Design, Goal, Pass / fail, Pieces, Risks (+2 more)
+Cohesion: 0.20
+Nodes (9): Alternatives rejected, Context for later phases (not decided here), Decisions on the intent's Phase 0 questions, Design, Goal, Pass / fail, Risks, Spec: Phase 0, the Linux call test (+1 more)
 
 ### Community 179 - "Intent: A face for the bot that talks when it speaks"
 Cohesion: 0.22
 Nodes (8): Affected users and systems, Constraints, Decisions (owner, 2026-11-17), Intent: A face for the bot that talks when it speaks, Open questions, Problem, Proposed outcome (first slice), Source of the portraits
 
-### Community 180 - "makeTable"
-Cohesion: 0.67
-Nodes (3): crc32(), makeTable(), read_buf()
+### Community 180 - "renderer.js"
+Cohesion: 0.38
+Nodes (5): installAvatar(), draw(), portrait(), triangle(), { source }
 
 ### Community 181 - "Standalone mode S1: end-to-end results (#2 step 10)"
 Cohesion: 0.20
@@ -840,8 +860,8 @@ Cohesion: 0.40
 Nodes (4): Alternatives rejected, Risks, Spec: Phase 3, act on the Factories from the call, Verification
 
 ### Community 183 - "Intent: Meeting agent Phase 3, act on the Factories from the call"
-Cohesion: 0.25
-Nodes (7): Affected users and systems, Constraints, Decisions at approval (owner, 2026-11-17), Intent: Meeting agent Phase 3, act on the Factories from the call, Not in this slice, Open questions, Problem
+Cohesion: 0.22
+Nodes (8): Affected users and systems, Constraints, Decisions at approval (owner, 2026-11-17), Intent: Meeting agent Phase 3, act on the Factories from the call, Not in this slice, Open questions, Problem, Proposed outcome
 
 ### Community 184 - "Intent: Show the Factories in the call"
 Cohesion: 0.25
@@ -855,13 +875,13 @@ Nodes (7): Affected users and systems, Constraints, Decisions at approval (owner
 Cohesion: 0.25
 Nodes (7): Affected users and systems, Constraints, Decisions (owner, 2026-11-23: "approved"), Intent: Review and control the Factories from the standup and the bot, Open questions, Problem, Proposed outcome
 
-### Community 187 - "fill_window"
-Cohesion: 0.43
-Nodes (8): deflate_fast(), deflate_huff(), deflate_rle(), deflate_slow(), deflate_stored(), fill_window(), flush_block_only(), longest_match()
+### Community 187 - "bootstrap-secrets.test.sh"
+Cohesion: 0.48
+Nodes (6): FAKE_LOG, fixture(), PATH, refused(), run(), bootstrap-secrets.test.sh script
 
-### Community 188 - "core/test/actions.test.js"
-Cohesion: 0.06
-Nodes (41): ACTIONS, bounded(), canonical(), CREATE_STATUSES, { createHash }, criteria(), FIELDS, hashPayload() (+33 more)
+### Community 188 - "allowlist.js"
+Cohesion: 0.19
+Nodes (15): ACTIONS, bounded(), canonical(), CREATE_STATUSES, { createHash }, criteria(), FIELDS, INVESTIGATION_FIELDS (+7 more)
 
 ### Community 189 - "Intent: Meeting agent web app for the Factories"
 Cohesion: 0.29
@@ -883,25 +903,25 @@ Nodes (6): Affected users and systems, Constraints, Intent: Meeting agent Phase 
 Cohesion: 0.29
 Nodes (6): Bot dependencies (npm), Core dependencies (npm, from core/package-lock.json), Portraits, Programs outside the repository, Third-party notices, Web page dependencies (vendored)
 
-### Community 194 - "Spec: Phase 1a, a text standup in the web UI"
-Cohesion: 0.40
-Nodes (4): Alternatives rejected, Risks, Spec: Phase 1a, a text standup in the web UI, Verification
+### Community 194 - "Design"
+Cohesion: 0.15
+Nodes (12): Alternatives rejected, CFactory source (`core/src/sources/cfactory.js`), Data, Decisions on the intent's open questions (recommended), Design, Risks, Sign-in, Spec: Phase 1a, a text standup in the web UI (+4 more)
 
 ### Community 195 - "speak"
-Cohesion: 0.14
-Nodes (20): log(), cancel(), join(), Privacy, Deviations (Codex review of the approved plan, 2026-11-17), Decisions carried over from the approved spec and intent, Deviations from the spec (approved with this plan), Plan: Phase 1b, a voice standup in Google Meet (+12 more)
+Cohesion: 0.18
+Nodes (16): heard(), join(), Constraints, Decisions carried over from the approved spec and intent, Deviations from the spec (approved with this plan), Plan: Phase 1b, a voice standup in Google Meet, Rollback, Steps (+8 more)
 
-### Community 196 - "Approved decisions (copied from the spec, so this plan stands alone)"
-Cohesion: 0.33
-Nodes (5): Approved decisions (copied from the spec, so this plan stands alone), Plan: Review and standup from the board (#28, slice 1), Roles, Rollback, Tests
+### Community 196 - "Intent: the bot hears the call itself (its own speech-to-text)"
+Cohesion: 0.29
+Nodes (6): Affected users and systems, Decisions (owner, 2026-11-21: "approved"), Intent: the bot hears the call itself (its own speech-to-text), Open questions, Problem, Proposed outcome
 
 ### Community 197 - "How the bot hears"
-Cohesion: 0.15
-Nodes (11): Captions vs own transcription, How the bot hears, Language, `listen` values and the per-platform `auto` rule, Rollback, When own transcription is not configured, How the bot hears, Licence (+3 more)
+Cohesion: 0.13
+Nodes (13): Captions vs own transcription, How the bot hears, Language, `listen` values and the per-platform `auto` rule, Privacy, Rollback, When own transcription is not configured, Deployment (+5 more)
 
-### Community 198 - "websock.js"
+### Community 198 - "manifest.json"
 Cohesion: 0.40
-Nodes (3): DataChannel, rawChannelProps, ReadyStates
+Nodes (4): source, commit, path, repo
 
 ### Community 199 - "theme.js"
 Cohesion: 0.67
@@ -911,25 +931,33 @@ Nodes (3): applyTheme(), dark, observer
 Cohesion: 0.50
 Nodes (3): Avatar portraits, Changes, Provenance
 
+### Community 207 - "bootstrap-secrets.sh"
+Cohesion: 0.83
+Nodes (3): env_of(), bootstrap-secrets.sh script, write_secret()
+
+### Community 208 - "Plan: the bot hears the call itself (its own speech-to-text)"
+Cohesion: 0.50
+Nodes (3): Plan: the bot hears the call itself (its own speech-to-text), Rollback, Tests
+
 ## Knowledge Gaps
-- **33 isolated node(s):** `@vibeconferencing/calls`, `playwright-core`, `VERIFY_PROBE_IMAGE`, `VERIFY_CERT`, `VERIFY_KEY` (+28 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1462 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **40 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **35 isolated node(s):** `@vibeconferencing/calls`, `playwright-core`, `VERIFY_PROBE_IMAGE`, `VERIFY_CERT`, `VERIFY_KEY` (+30 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1533 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **38 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Websock` connect `Websock` to `core Websock`, `core rfb.js`, `websock.js`, `core .rQwait()`?**
-  _High betweenness centrality (0.123) - this node is a cross-community bridge._
+- **Why does `Websock` connect `Websock` to `core rfb.js`, `util logging.js`, `core .rQwait()`?**
+  _High betweenness centrality (0.106) - this node is a cross-community bridge._
 - **Are the 23 inferred relationships involving `createLifecycle()` (e.g. with `lifecycle.js` and `action()`) actually correct?**
   _`createLifecycle()` has 23 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `@vibeconferencing/calls`, `playwright-core`, `VERIFY_PROBE_IMAGE` to the rest of the system?**
-  _33 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _35 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `verify lib.sh` be split into smaller, more focused modules?**
   _Cohesion score 0.07080200501253132 - nodes in this community are weakly interconnected._
-- **Why does `Steps` connect `toModel` to `items.test.js`, `Profiles`, `Deviations from the spec (for approval with this plan)`, `core Websock`, `rfactory-standup.js`?**
+- **Why does `Steps` connect `Steps` to `gateway.js`, `speak`, `makeRedactor`, `Profiles`, `Websock`, `rfactory-standup.js`?**
   _High betweenness centrality (0.093) - this node is a cross-community bridge._
 - **Should `runner k8s-policy.js` be split into smaller, more focused modules?**
-  _Cohesion score 0.05389610389610389 - nodes in this community are weakly interconnected._
-- **Why does `Deviations from the spec revision (Codex re-check and plan review, for approval with this plan)` connect `runner createLifecycle()` to `guard.js`, `k14 results: agent workspace desktops on k3d with KubeVirt`, `core Websock`, `Profiles`, `proxy.test.js`, `core/test/actions.test.js`?**
-  _High betweenness centrality (0.070) - this node is a cross-community bridge._
+  _Cohesion score 0.0603921568627451 - nodes in this community are weakly interconnected._
+- **Why does `Deviations from the spec revision (Codex re-check and plan review, for approval with this plan)` connect `refused` to `guard.js`, `createLifecycle`, `Profiles`, `createProxy`, `Websock`?**
+  _High betweenness centrality (0.054) - this node is a cross-community bridge._

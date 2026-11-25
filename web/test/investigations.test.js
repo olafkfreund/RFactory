@@ -18,7 +18,7 @@ function setup(options = {}) {
     advance(ms) { this.t += ms; for (const [id, timer] of [...timers]) if (timer.at <= this.t) { timers.delete(id); timer.fn(); } } };
   const calls = [], entries = [], events = [];
   const context = { repository_id: 7, repo: 'owner/notes-api', default_branch: 'main', sha: SHA, test_command: 'npm test' };
-  const readSource = { investigationContext: async () => options.context ? options.context() : context,
+  const readSource = { investigateAvailable: async () => options.available ?? true, investigationContext: async () => options.context ? options.context() : context,
     investigationState: async (...args) => { calls.push(['state', ...args]); return options.state ? options.state(...args) : { state: 'running', pods_gone: false, tests: [] }; },
     investigationLogs: async (...args) => { calls.push(['logs', ...args]); return { entries: [], cursor: 0 }; },
     investigationRecord: async (...args) => { calls.push(['record', ...args]); return options.recoverRecord ? options.recoverRecord(...args) : {}; } };
@@ -28,9 +28,10 @@ function setup(options = {}) {
     stopInvestigation: async (...args) => { calls.push(['stop', ...args]); return options.stop ? options.stop(...args) : {}; } };
   const redactor = makeRedactor([]);
   const record = { append: async (entry) => { entries.push(entry); }, unfinishedInvestigations: () => options.unfinished || [] };
-  const shares = { openFor: async (...args) => { calls.push(['share', ...args]); return { status: 200, share: { id: 'share-1' } }; },
+  const shares = { list: () => ({ running: options.running || null }), openFor: async (...args) => { calls.push(['share', ...args]); return { status: 200, share: { id: 'share-1' } }; },
     stop: async (...args) => { calls.push(['close-share', ...args]); } };
-  const manager = createInvestigationManager({ readSource, writer, shares, record, redactor, clock,
+  const brain = { turn: async (...args) => { calls.push(['brain', ...args]); return options.brain ? options.brain(...args) : { text: 'A summary.' }; } };
+  const manager = createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock,
     scope: { investigations_enabled: true, source: { kind: 'cfactory', repository_id: 7 } },
     roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,member@example.com', RFACTORY_APPROVERS: 'owner@example.com' }), enabled: true });
   manager.subscribe((event) => events.push(event));
@@ -197,4 +198,43 @@ test('recovery frees the slot when no run can exist, and holds it while CFactory
   await f.manager.recover(); await f.manager.startCall(1);
   assert.equal(f.manager.list().running?.state, 'uncertain');
   assert.equal((await f.manager.request('blocked', 'Caller')).status, 409);
+});
+
+test('nothing is proposed while CFactory does not offer investigate', async () => {
+  const f = setup({ available: false }); await f.manager.recover(); await f.manager.startCall(1);
+  assert.deepEqual(await f.manager.request('why', 'Caller'), { status: 403, text: 'Investigations are turned off here.' });
+  assert.equal(f.entries.length, 0);
+});
+
+async function result(state, options = {}) {
+  const f = setup({ ...options, state: () => ({ state: 'completed', pods_gone: true, ...state }) }); const p = await ready(f);
+  assert.equal(f.events.at(-1).investigation.approval_text, p.approval_text); // the page gets the text with the event
+  await approve(f, p); await until(() => f.manager.list().running?.state === 'running');
+  f.clock.advance(5000); await until(() => f.events.some((e) => e.type === 'investigation-result'));
+  return { f, event: f.events.find((e) => e.type === 'investigation-result') };
+}
+
+test('each test run is spoken from run_tests results; prose counts are dropped; the brain input is redacted', async () => {
+  const { f, event } = await result({ report: { findings: `all 50 tests passed ${'f'.repeat(48)}` }, tests: [
+    { command: 'npm test', exit_code: 1, passed: 41, failed: 1, skipped: 0 }, { command: 'npm run e2e', exit_code: 2, parsed: false }] },
+  { brain: () => ({ text: 'All 50 tests passed. The date parser is wrong.' }) });
+  assert.deepEqual(event.counts, ['npm test: 41 passed, 1 failed, 0 skipped.', 'npm run e2e exited with code 2; I could not read the counts.']);
+  assert.equal(event.summary, 'The date parser is wrong.');
+  const [, input, opts] = f.calls.find((c) => c[0] === 'brain');
+  assert.equal(input.investigation_report.findings, 'all 50 tests passed [redacted]');
+  assert.deepEqual(opts, { instruction: 'Summarise these findings in two sentences. Do not state test counts.' });
+});
+
+test('no test runs are said plainly, and a failing brain still leaves the counts', async () => {
+  const none = await result({ tests: [] }, { context: () => ({ repository_id: 7, repo: 'owner/notes-api', sha: SHA, test_command: null }) });
+  assert.deepEqual(none.event.counts, ['No tests were run: none are configured.']);
+  assert.equal(none.event.summary, '');
+  const failed = await result({ tests: [], report: { findings: 'x' } }, { brain: () => { throw new Error('brain-timeout'); } });
+  assert.deepEqual(failed.event.counts, ['No tests were run.']);
+  assert.equal(failed.event.summary, 'I could not summarise the findings.');
+});
+
+test('the proposal says to stop a running board share before the log can be shown', async () => {
+  const f = setup({ running: { view: 'board' } }); await f.manager.recover(); await f.manager.startCall(1);
+  assert.match((await f.manager.request('why', 'Caller', true)).text, /stop the board share first/);
 });
