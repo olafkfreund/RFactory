@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 65
 spec: spec/2026-11-26-65-factory-rename-followups.md
 coders:
