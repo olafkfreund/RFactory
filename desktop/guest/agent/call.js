@@ -75,7 +75,7 @@ const TEAMS_CAPTIONS = `if (/(^|\\.)teams\\.(microsoft|live)\\.com$|(^|\\.)teams
 
 // The guest's call worker (plan 13c): bot/run.js with its stdin/stdout carried as call-in / call-out pieces.
 // The call Chrome gets callLaunchArgs(nonce) and the share (step 11) runs in that same Chrome.
-// deps (tests): run, playwrightHost, join. onExit() fires when the worker has finished.
+// deps (tests): run, playwrightHost, chromium, join, clock. onExit() fires when the worker has finished.
 function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {}, deps = {}, env = process.env }) {
   const stdin = new PassThrough();
   let host = null, share = null, buf = '', skipping = false;
@@ -84,8 +84,14 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
     playwrightHost: async (o) => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
       host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), '--no-sandbox', ...callLaunchArgs(nonce, screen)] }));
-      await host.context.addInitScript(MEET_GUEST);
-      if (env.RFACTORY_LISTEN !== 'audio') await host.context.addInitScript(TEAMS_CAPTIONS); // own transcription replaces the captions
+      try {
+        await host.context.addInitScript(MEET_GUEST);
+        if (env.RFACTORY_LISTEN !== 'audio') await host.context.addInitScript(TEAMS_CAPTIONS); // own transcription replaces the captions
+      } catch (e) { // the bot never received this host, so it cannot close it
+        await host.close().catch(() => {});
+        host = null;
+        throw e;
+      }
       return host;
     },
     join: async (link, o) => {
@@ -95,6 +101,7 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
       share = createShare({ context: host.context, callPage: call._inner.page, callNonce: nonce, clickShare, send });
       return call;
     },
+    ...(deps.clock ? { clock: deps.clock } : {}),
   };
   let out = '';
   const stdout = { write(text) {

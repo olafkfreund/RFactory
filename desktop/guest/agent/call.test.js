@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { test } = require('node:test');
-const { createCallWorker, withProxy, TEAMS_CAPTIONS } = require('./call');
+const { createCallWorker, withProxy, MEET_GUEST, TEAMS_CAPTIONS } = require('./call');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 // waits for a condition rather than a fixed number of turns (the leave path is slower under load)
@@ -127,5 +127,70 @@ test('TEAMS_CAPTIONS is injected unless RFACTORY_LISTEN is audio', async () => {
     } });
     await tick();
     assert.equal(scripts.filter((s) => s === TEAMS_CAPTIONS).length, injected, String(listen));
+  }
+});
+
+test('call worker: a denied join retries on a fresh host with the init scripts, the proxy and the share on it', async () => {
+  for (const listen of ['platform', 'audio']) {
+    const contexts = [], options = [], restored = [], sent = [], timers = new Map();
+    let joins = 0, id = 0, exited = 0;
+    const clock = { now: () => 0, setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearTimeout: (key) => timers.delete(key) };
+    const original = async (dir, o) => {
+      options.push(o);
+      const context = { scripts: [], newPages: 0, route: async () => {}, pages: () => [], exposeBinding: async () => {},
+        addInitScript: async (script) => context.scripts.push(script),
+        newPage: async () => { context.newPages++; throw new Error('no page'); } };
+      contexts.push(context);
+      return context;
+    };
+    const chromium = { launchPersistentContext: original };
+    const proxy = { server: 'http://10.43.0.9:3128', username: 'rf', password: 't' };
+    const call = Object.assign(new EventEmitter(), { leave: async () => {}, chat: { send: async () => {} },
+      _inner: { page: { evaluate: async () => false }, getParticipants: async () => [] } });
+    const worker = createCallWorker({ nonce: 'n1', proxy, send: (m) => sent.push(m), onExit: () => { exited++; },
+      env: { RFACTORY_LISTEN: listen }, deps: { clock, chromium,
+        playwrightHost: async (o) => ({ context: await chromium.launchPersistentContext(o.userDataDir, {}), close: async () => {} }),
+        join: async () => {
+          restored.push(chromium.launchPersistentContext === original);
+          if (++joins === 1) throw Object.assign(new Error('denied'), { name: 'JoinError', code: 'denied' });
+          return call;
+        },
+      } });
+    const output = () => sent.filter((m) => m.type === 'call-out').map((m) => m.chunk).join('');
+    const feed = (line) => worker.in({ chunk: line, end: true });
+    feed('https://meet.google.com/abc-defg-hij');
+    const retry = () => [...timers].find(([, t]) => t.ms === 15000);
+    await until(retry);
+    const [key, timer] = retry();
+    timers.delete(key); timer.fn();
+    await until(() => output().includes('"in-call"'));
+    assert.ok(output().includes('"in-call"'), output());
+
+    assert.equal(contexts.length, 2, listen);
+    for (const context of contexts) {
+      assert.equal(context.scripts.filter((s) => s === MEET_GUEST).length, 1, listen);
+      assert.equal(context.scripts.filter((s) => s === TEAMS_CAPTIONS).length, listen === 'audio' ? 0 : 1, listen);
+    }
+    assert.deepEqual(options.map((o) => o.proxy), [proxy, proxy]);
+    assert.deepEqual(restored, [true, true]);
+    await assert.rejects(worker.share.start({ share_id: 's1', url: 'https://example.com/', hosts: ['https://example.com'] }), /no page/);
+    assert.deepEqual(contexts.map((c) => c.newPages), [0, 1]);
+    feed(JSON.stringify({ type: 'leave' }));
+    await until(() => exited === 1);
+    assert.equal(exited, 1);
+  }
+});
+
+test('call worker: a failing init script closes the launched host and rethrows', async () => {
+  for (const failing of [MEET_GUEST, TEAMS_CAPTIONS]) {
+    let closed = 0, error;
+    createCallWorker({ nonce: 'n', send: () => {}, env: {}, deps: {
+      playwrightHost: async () => ({ context: { addInitScript: async (s) => { if (s === failing) throw new Error('script refused'); } },
+        close: async () => { closed++; throw new Error('close failed'); } }),
+      run: async ({ deps }) => { await deps.playwrightHost({}).catch((e) => { error = e; }); },
+    } });
+    await tick();
+    assert.equal(closed, 1);
+    assert.equal(error?.message, 'script refused'); // not the close error
   }
 });
