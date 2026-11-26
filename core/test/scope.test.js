@@ -222,3 +222,58 @@ test('resolveListen follows the platform and whether transcription is configured
   }
   assert.throws(() => resolveListen({ listen: 'x', platform: 'meet', sttConfigured: true }), /invalid-listen/);
 });
+
+test('lookup fields: defaults untouched, booleans and budget range checked', () => {
+  const f = fixture();
+  try {
+    assert.equal(Object.hasOwn(f.load(), 'lookups_enabled'), false);
+    for (const value of [0.1, 2, 20]) {
+      Object.assign(f.scope, { lookups_enabled: true, lookup_budget_usd: value });
+      assert.deepEqual(f.load(), f.scope);
+    }
+    for (const value of [0.09, 20.5, '2', null]) {
+      f.scope.lookup_budget_usd = value;
+      assert.throws(() => f.load(), /lookup-budget/);
+    }
+    delete f.scope.lookup_budget_usd;
+    f.scope.lookups_enabled = 'true';
+    assert.throws(() => f.load(), /lookups-enabled/);
+  } finally { f.cleanup(); }
+});
+
+test('github_read: 600-mode token is read after the CFactory key, into extras and secrets', () => {
+  const f = fixture();
+  try {
+    const tokenFile = path.join(path.dirname(f.keyFile), 'github-token');
+    const token = 'read-only-token-value';
+    fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+    const good = { owner: 'olaf', repo: 'demo.repo', token_file: tokenFile };
+    f.scope.source.github_read = { ...good, token_file: `${tokenFile}-missing` };
+    for (const off of [{}, { lookups_enabled: false }]) {
+      Object.assign(f.scope, off);
+      const secrets = [], extras = {};
+      assert.deepEqual(f.load(secrets), f.scope); // off: a missing token mount must not stop start-up
+      assert.deepEqual([secrets, extras], [[key], {}]);
+    }
+    f.scope.lookups_enabled = true;
+    f.scope.source.github_read = good;
+    const file = path.join(path.dirname(f.keyFile), 'scope.json');
+    const secrets = [], extras = {};
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    loadScope(file, {}, secrets, extras);
+    assert.deepEqual(secrets, [key, token]);
+    assert.deepEqual(extras, { githubToken: token });
+    for (const bad of [{ ...good, owner: 'a/b' }, { ...good, repo: '' }, { ...good, owner: '..' }, { ...good, repo: '.' }, { ...good, token_file: 'relative' }, null]) {
+      f.scope.source.github_read = bad;
+      assert.throws(() => f.load(), /invalid-scope/);
+    }
+    f.scope.source.github_read = good;
+    fs.chmodSync(tokenFile, 0o400);
+    assert.throws(() => f.load(), /github-token-file-mode/);
+    fs.chmodSync(tokenFile, 0o600);
+    fs.writeFileSync(tokenFile, 'short');
+    assert.throws(() => f.load(), /invalid-github-token/);
+    f.scope.source = { kind: 'github', owner: 'o', repo: 'r', github_read: good };
+    assert.throws(() => f.load(), /invalid-scope/);
+  } finally { f.cleanup(); }
+});

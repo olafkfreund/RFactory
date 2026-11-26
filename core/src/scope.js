@@ -16,7 +16,7 @@ function resolveListen({ listen = 'auto', platform, sttConfigured }) {
   return platform !== 'meet' && sttConfigured ? 'audio' : 'platform';
 }
 
-function loadScope(file, env = process.env, secrets = []) {
+function loadScope(file, env = process.env, secrets = [], extras = {}) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
@@ -38,12 +38,15 @@ function loadScope(file, env = process.env, secrets = []) {
   if (scope.investigations_enabled !== true && env.RFACTORY_INVESTIGATIONS && env.RFACTORY_INVESTIGATIONS !== 'off') throw new Error('investigations-enabled-env');
   // an investigation creates a card and a run with the write key, so "writes off" turns it off too
   if (scope.investigations_enabled === true && !scope.writes_enabled) throw new Error('investigations-need-writes');
+  if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
+  const budget = scope.lookup_budget_usd;
+  if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
        (typeof scope.source.owner !== 'string' || !scope.source.owner ||
         typeof scope.source.repo !== 'string' || !scope.source.repo))) throw new Error('invalid-scope');
-  let key;
+  let key, githubToken;
   if (scope.source?.kind === 'cfactory') {
     const source = scope.source;
     if (typeof source.mcp_url !== 'string' || !URL.canParse(source.mcp_url) ||
@@ -59,12 +62,24 @@ function loadScope(file, env = process.env, secrets = []) {
       const writeFile = fs.statSync(source.write_key_file);
       if (!writeFile.isFile() || (writeFile.mode & 0o777) !== 0o600) throw new Error('write-key-file-mode');
     }
-  } else if (scope.source?.kind !== 'github' || scope.writes_enabled) throw new Error('invalid-scope');
+    // with lookups off the GitHub fields are ignored, so a missing token mount cannot stop start-up
+    if (scope.lookups_enabled && Object.hasOwn(source, 'github_read')) {
+      const read = source.github_read;
+      const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
+      if (!name(read?.owner) || !name(read.repo) || typeof read.token_file !== 'string' ||
+          !path.isAbsolute(read.token_file)) throw new Error('invalid-scope');
+      const tokenFile = fs.statSync(read.token_file);
+      if (!tokenFile.isFile() || (tokenFile.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
+      githubToken = fs.readFileSync(read.token_file, 'utf8').trim();
+      if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
+    }
+  } else if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
   if (scope.brain?.kind === 'claude-cli' &&
       (typeof scope.brain.home !== 'string' || !path.isAbsolute(scope.brain.home) ||
        !/^(?:[a-fA-F0-9]{64})?$/.test(scope.brain.approved_hash) ||
        !DESTINATIONS.has(scope.brain.destination))) throw new Error('invalid-scope');
   if (key) secrets.push(key);
+  if (githubToken) { secrets.push(githubToken); extras.githubToken = githubToken; } // after the key: secrets[0] stays CFactory's
   return scope;
 }
 

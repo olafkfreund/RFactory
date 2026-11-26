@@ -386,3 +386,30 @@ test('investigation panel: limits, approval for approvers only, unconfirmed stat
   assert.ok(!list.all().some((n) => ['img', 'script'].includes(n.tag)));
   assert.deepEqual(labels(), ['Stop']); // only the other, still unresolved row
 });
+
+test('lookup limits and sources: links go to CFactory or the bound repository only', () => {
+  const { doc, byId } = shim();
+  byId['call-log'] = new Node('ul');
+  byId['call-limits'] = new Node('p');
+  const limits = { type: 'limits', budget_usd: 2, spent_usd: 0.25, answer_seconds: 90, lookups_per_question: 8, exhausted: false, github: 'o/r' };
+  handleCall(doc, limits);
+  assert.equal(byId['call-limits'].textContent, 'Lookups: $0.25 of $2.00 · 90 s per answer · 8 lookups per question');
+  handleCall(doc, { type: 'answer', text: 'x', sources: [
+    { kind: 'card', ref: 'FCT-1', title: '<b>t</b>' }, { kind: 'issue', ref: 3, title: 'bug' }, { kind: 'pr', ref: 4, title: '#4' },
+    { kind: 'file', ref: 'src/a b.js', title: 'src/a b.js' }, { kind: 'file', ref: '../../evil/x' }, { kind: 'card', ref: 'javascript:1' },
+  ] });
+  const nodes = byId['call-log'].all();
+  assert.deepEqual(nodes.filter((n) => n.tag === 'a').map((n) => n.attrs.href), [
+    'https://github.com/o/r/issues/3', 'https://github.com/o/r/pull/4',
+    'https://github.com/o/r/blob/HEAD/src/a%20b.js']);
+  assert.ok(!nodes.some((n) => n.tag === 'b'));
+  assert.deepEqual(nodes.filter((n) => n.tag === 'button').map((n) => n.textContent), ['card FCT-1: <b>t</b>']);
+  handleCall(doc, { ...limits, exhausted: true, github: null });
+  assert.equal(byId['call-limits'].textContent, 'lookup budget used');
+});
+
+test('a redacted or comma-holding file source never gets a wrong link', async () => {
+  const { sourceUrl } = require('../public/app.js');
+  assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'cfg/[redacted].env' }), null);
+  assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'a,b.txt' }), 'https://github.com/o/r/blob/HEAD/a%2Cb.txt');
+});

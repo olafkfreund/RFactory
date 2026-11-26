@@ -6,7 +6,8 @@ const { createHearing } = require('../core/src/call/hearing.js');
 const { resolveListen } = require('../core/src/scope.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
-const { checkFacts } = require('@rfactory/core/src/facts.js');
+const { checkFacts, checkFactsDetailed } = require('@rfactory/core/src/facts.js');
+const { FACTORY, GITHUB } = require('@rfactory/core/src/lookups.js');
 const { summarise } = require('@rfactory/core/src/items.js');
 const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
@@ -18,11 +19,30 @@ const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
 const JOIN_CODES = ['lobby-timeout', 'denied', 'auth-required', 'blocked-by-admin', 'bot-check', 'already-running', 'ui-changed', 'timeout', 'unknown'];
 const JOIN_REASONS = ['cant-join', 'no-call-ui', 'removed', 'other'];
+const SORRY = "Sorry, I can't answer that right now.";
+const ANSWER_MS = 90000; // #51: a lookup answer, counted from the question's arrival
+const usd = (n) => Math.round(n * 1e6) / 1e6;
+
+// what the turn delivered, one entry per card, issue, PR or file
+function sourcesOf(reads) {
+  const sources = new Map();
+  for (const { ok, kind, ref, title } of reads) {
+    if (!ok) continue;
+    for (const one of (kind === 'card' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'; a file name may hold a comma
+      const key = `${kind}:${one}`;
+      if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title });
+    }
+  }
+  return [...sources.values()];
+}
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
-  stt = null }) {
+  stt = null, lookups = null, endpoint = null, lookupUrl = null, project = null, scope = null, record = null }) {
+  const lookupsOn = !!(lookups && scope?.lookups_enabled);
+  const budget = scope?.lookup_budget_usd ?? 2;
+  const repository = project?.github ? `${project.github.owner}/${project.github.repo}` : null;
   let sttConfigured = !!stt;
   if (!sttConfigured && sttUrl && sttSecretFile) {
     try { sttConfigured = /^[0-9a-f]{32}$/i.test(fs.readFileSync(sttSecretFile, 'utf8')); } catch { /* unavailable */ }
@@ -35,7 +55,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
-    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster'].includes(event.type)) current.set(event.type, event);
+    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     if (event.type === 'investigation-updated') investigationEvents.set(event.investigation.id, event);
@@ -97,6 +117,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!c) return;
     if (c.stopping) return c.stopping;
     c.closed = true;
+    c.lookupTurn?.controller.abort();
     clock.clearTimeout(c.turn?.timer);
     if (c.listen === 'audio') log(`stt pending=${c.requests.size} dropped=${c.dropped}`);
     c.parts.clear();
@@ -137,8 +158,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     });
   }
 
-  async function say(c, text, generation = c.generation) {
-    if (call !== c || c.generation !== generation || c.stopping) return;
+  async function say(c, text, generation = c.generation, cancelled = () => false) {
+    if (call !== c || c.generation !== generation || c.stopping || cancelled()) return;
     const sentences = toSpeech(text);
     if (!sentences.length) return;
     const synthesise = (sentence) => Promise.resolve().then(() => c.tts.say(sentence))
@@ -149,15 +170,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let next = synthesise(sentences[0]);
     for (let i = 0; i < sentences.length; i++) {
       const { wav, error } = await next;
-      if (call !== c || c.generation !== generation || c.stopping) return;
+      if (call !== c || c.generation !== generation || c.stopping || cancelled()) return;
       if (error) { log(`tts failed: ${error.message}`); if (c.seq === 0) emit({ type: 'greeting', result: 'failed' }); return; }
       next = i + 1 < sentences.length ? synthesise(sentences[i + 1]) : null;
       await speak(c, c.seq++, wav);
     }
   }
 
-  function queueSpeech(c, text, generation = c.generation) {
-    const playing = c.speech.then(() => say(c, text, generation));
+  function queueSpeech(c, text, generation = c.generation, cancelled) {
+    const playing = c.speech.then(() => say(c, text, generation, cancelled));
     c.speech = playing.catch((error) => log(`speech failed: ${error.message}`));
     return playing;
   }
@@ -179,7 +200,86 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     return c.standup;
   }
 
+  function emitLimits(c) {
+    if (call !== c) return;
+    emit({ type: 'limits', budget_usd: budget, spent_usd: c.lookupSpend, answer_seconds: ANSWER_MS / 1000,
+      lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repository });
+  }
+
+  // one line per question turn; never question text, answer text or tool output
+  function recordLookup(question, { outcome, model = null, reads = [], rounds = 0, cost = null }) {
+    Promise.resolve().then(() => record.append({ kind: 'lookup', question_id: question.id, provider: 'anthropic', model,
+      reads: reads.map(({ tool, ref, ok }) => ({ tool, ref, ok })), failed: reads.filter((r) => !r.ok).length, rounds, cost, outcome }))
+      .catch((error) => log(`lookup record failed: ${error.message}`));
+  }
+
+  async function lookupAnswer(c, question, generation) {
+    const stale = () => c.generation !== generation || c.stopping;
+    // it waited in the queue past its deadline: no turn is started
+    if (!stale() && now() >= question.arrivedAt + ANSWER_MS) {
+      recordLookup(question, { outcome: 'timeout' });
+      await queueSpeech(c, SORRY, generation);
+      return;
+    }
+    const controller = new AbortController();
+    const { signal } = controller;
+    const deadline = question.arrivedAt + ANSWER_MS;
+    const ctx = { project, deadline, controller, signal, tools: [...FACTORY, ...(project.github ? GITHUB : [])],
+      rounds: 0, roundLimited: false, commit: null, reads: [] };
+    const token = endpoint.register(ctx);
+    c.lookupTurn = ctx;
+    if (stale()) controller.abort();
+    let expired = false;
+    // a cue still waiting to play when the turn ends or is replaced is dropped
+    const cue = (text) => { if (!signal.aborted) queueSpeech(c, text, generation, () => signal.aborted); };
+    const timers = [
+      clock.setTimeout(() => cue('One moment.'), 3000),
+      clock.setTimeout(() => cue('Still looking.'), 25000),
+      clock.setTimeout(() => { expired = true; controller.abort(); }, Math.max(0, deadline - now())),
+    ];
+    const aborted = new Promise((_, reject) => {
+      const fail = () => reject(new Error('aborted'));
+      if (signal.aborted) fail(); else signal.addEventListener('abort', fail, { once: true });
+    });
+    let snap, text, outcome, cost = null, model = null;
+    try {
+      snap = await Promise.race([aborted, snapshot(c)]);
+      // raced too: a brain that ignores the signal must not hang the queue
+      const result = await Promise.race([aborted, brain.turn(snap, { deadline, question: question.text, signal,
+        lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: usd(budget - c.lookupSpend) } })]);
+      ({ cost = null, model = null } = result);
+      if (signal.aborted) throw new Error('aborted');
+      const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repository?.toLowerCase() ?? null,
+        evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
+      text = checked.text;
+      outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
+    } catch (error) {
+      cost = error.cost ?? cost;
+      outcome = expired || error.message === 'brain-timeout' ? 'timeout' : signal.aborted ? 'aborted'
+        : error.message === 'provider-error' ? 'provider-error' : 'error';
+      text = outcome === 'provider-error' ? "The model isn't available right now." : SORRY;
+      if (outcome !== 'aborted' && !stale()) {
+        log(snap ? `brain failed: ${expired ? 'brain-timeout' : error.message}${error.detail ? ` (${error.detail})` : ''}`
+          : `source failed: ${expired || error?.message === 'source-timeout' ? 'source-timeout' : 'source-error'}`);
+      }
+    }
+    // the outcome is settled above: revoke() aborts the signal itself
+    for (const timer of timers) clock.clearTimeout(timer);
+    endpoint.revoke(token);
+    c.lookupTurn = null;
+    c.lookupSpend = usd(c.lookupSpend + (cost ?? 0.25));
+    recordLookup(question, { outcome, model, reads: ctx.reads, rounds: ctx.rounds, cost });
+    emitLimits(c);
+    if (outcome === 'aborted' || stale()) return;
+    if (snap) emit({ type: 'answer', text, snapshot: snap, sources: sourcesOf(ctx.reads) });
+    await queueSpeech(c, text, generation);
+  }
+
   async function answer(c, question, generation) {
+    if (lookupsOn && question.kind === 'question') {
+      if (c.lookupSpend < budget) return lookupAnswer(c, question, generation);
+      recordLookup(question, { outcome: 'budget-skipped' });
+    }
     const timer = clock.setTimeout(() => { queueSpeech(c, 'One moment.', generation); }, 3000);
     let snap;
     try { snap = await (question.kind === 'standup' ? standupView(c) : snapshot(c)); }
@@ -187,7 +287,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       clock.clearTimeout(timer);
       if (c.generation !== generation || c.stopping) return;
       log(`source failed: ${error?.message === 'source-timeout' ? 'source-timeout' : 'source-error'}`);
-      await queueSpeech(c, "Sorry, I can't answer that right now.", generation);
+      await queueSpeech(c, SORRY, generation);
       return;
     }
     if (c.generation !== generation || c.stopping) { clock.clearTimeout(timer); return; }
@@ -205,7 +305,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       text = checkFacts(redactor.toModel(result.text), snap);
     } catch (error) {
       if (c.generation === generation && !c.stopping) log(`brain failed: ${error.message}`);
-      text = "Sorry, I can't answer that right now.";
+      text = SORRY;
     } finally { clock.clearTimeout(timer); }
     if (c.generation !== generation || c.stopping) return;
     emit({ type: 'answer', text, snapshot: snap });
@@ -272,8 +372,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     question.desktop = !!desktop && !['share', 'investigate'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
     if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question'; // no write path here: 1b behaviour
+    if (lookupsOn) question.arrivedAt = now();
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
     if (question.kind === 'leave') {
+      c.lookupTurn?.controller.abort();
       c.generation++;
       c.queue.length = 0;
       send(c, { type: 'cancel' });
@@ -283,7 +385,11 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       const timer = clock.setTimeout(() => stop('asked'), 5000);
       queueSpeech(c, 'Leaving now.').finally(() => { clock.clearTimeout(timer); stop('asked'); });
     } else if (c.working && c.queue.length >= 2) log('dropped question: queue full');
-    else { c.queue.push(question); drain(c); }
+    else {
+      // a newer question replaces the lookup that is still running; it records 'aborted' and says nothing
+      if (['question', 'standup'].includes(question.kind)) c.lookupTurn?.controller.abort();
+      c.queue.push(question); drain(c);
+    }
   }
 
   function settle(c) {
@@ -411,7 +517,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false };
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, lookupTurn: null, lookupSpend: 0 };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);
@@ -453,6 +559,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',
       ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
     emit({ type: 'state', state: 'joining' });
+    if (lookupsOn) emitLimits(c);
     child.stdin.write(`${link}\n`);
   }
 

@@ -11,6 +11,9 @@ const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
 const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
 const DESKTOP_SYSTEM_PROMPT = path.join(__dirname, 'claude-desktop-system-prompt.txt');
 const SUMMARY_SYSTEM_PROMPT = path.join(__dirname, 'claude-summary-system-prompt.txt');
+const LOOKUP_SYSTEM_PROMPT = path.join(__dirname, 'claude-lookup-system-prompt.txt');
+const LOOKUP_ERRORS = new Set(['aborted', 'brain-timeout', 'budget-exceeded', 'provider-error', 'brain-error']);
+const PROVIDER_ERROR = /api error|rate.?limit|overloaded|authenticat|quota|usage limit|credit/i;
 const ARGV = ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
   '--no-session-persistence', '--output-format', 'json', '--system-prompt-file', SYSTEM_PROMPT];
 
@@ -18,8 +21,15 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
   const { home, destination } = scope.brain;
   const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8' };
 
-  function run(args, { cwd, input = '', timeout }) {
+  function stop(child) {
+    child.kill('SIGTERM');
+    const killTimer = setTimeout(() => child.kill('SIGKILL'), 1000);
+    child.once('close', () => clearTimeout(killTimer));
+  }
+
+  function run(args, { cwd, input = '', timeout, signal }) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new Error('aborted'));
       const child = spawn('claude', args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '', stderr = '', failure, timedOut = false;
       child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -28,37 +38,79 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       child.on('error', (error) => { failure = error; });
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGTERM');
-        const killTimer = setTimeout(() => child.kill('SIGKILL'), 1000);
-        child.once('close', () => clearTimeout(killTimer));
+        stop(child);
       }, timeout);
+      // an abort rejects at once; the child is still stopped behind it
+      const abort = () => { clearTimeout(timer); stop(child); reject(new Error('aborted')); };
+      signal?.addEventListener('abort', abort, { once: true });
       child.once('close', (code) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
         if (timedOut) reject(new Error('brain-timeout'));
-        else if (failure || code !== 0) reject(new Error(`brain-error: ${redactor.logSafe(stderr || failure?.message || '')}`));
-        else resolve({ stdout, stderr });
+        else if (failure || code !== 0) {
+          reject(Object.assign(new Error(`brain-error: ${redactor.logSafe(stderr || failure?.message || '')}`), { stdout }));
+        } else resolve({ stdout, stderr });
       });
       child.stdin.end(input);
     });
   }
 
   // every turn: the CLI and its home must still be the approved destination before any prompt is sent
-  async function checkDestination(deadline) {
+  async function checkDestination(deadline, signal) {
     checkClaudeHome(home);
     const versionTime = Math.min(5000, deadline - clock());
     if (versionTime <= 0) throw new Error('brain-timeout');
     let version;
-    try { version = (await run(['--version'], { timeout: versionTime })).stdout.trim(); }
+    try { version = (await run(['--version'], { timeout: versionTime, signal })).stdout.trim(); }
     catch (error) {
-      if (error.message === 'brain-timeout') throw error;
+      if (error.message === 'brain-timeout' || error.message === 'aborted') throw error;
       throw new Error('destination-changed');
     }
     if (!scope.brain.approved_hash) throw new Error('destination-missing');
     if (claudeHash({ version, home }) !== scope.brain.approved_hash) throw new Error('destination-changed');
   }
 
-  async function turn(snapshot, { deadline = clock() + 55000, question } = {}) {
-    await checkDestination(deadline);
+  // #51: one answer with read-only MCP lookups; the endpoint behind lookup.url enforces the tools and the scope
+  async function lookupTurn(cwd, prompt, { deadline, lookup, signal }) {
+    const config = path.join(cwd, 'mcp.json');
+    fs.writeFileSync(config, JSON.stringify({ mcpServers: { rfactory: {
+      type: 'http', url: lookup.url, headers: { Authorization: `Bearer ${lookup.token}` },
+    } } }), { mode: 0o600 });
+    const timeout = deadline - clock() - 3000;
+    if (timeout <= 0) throw new Error('brain-timeout');
+    const args = [...ARGV.slice(0, -1), LOOKUP_SYSTEM_PROMPT, '--mcp-config', config,
+      '--allowedTools', lookup.tools.map((name) => `mcp__rfactory__${name}`).join(','),
+      '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+      '--max-budget-usd', String(lookup.budgetUsd)];
+    // the CLI exits 1 with its JSON on stdout when it stops on budget or an API failure
+    const { stdout, failed } = await run(args, { cwd, input: prompt, timeout, signal }).catch((error) => {
+      if (error.stdout === undefined) throw error;
+      return { stdout: error.stdout, failed: true };
+    });
+    let response;
+    try { response = JSON.parse(stdout); }
+    catch { throw new Error('brain-error'); }
+    const cost = Number.isFinite(response?.total_cost_usd) ? response.total_cost_usd : null;
+    const reject = (message) => { throw Object.assign(new Error(message), { cost }); };
+    if (response?.subtype === 'error_max_budget_usd') reject('budget-exceeded');
+    if (response?.is_error && (response.api_error_status != null ||
+      PROVIDER_ERROR.test(JSON.stringify([response.result, response.errors])))) reject('provider-error');
+    if (failed || response?.is_error || typeof response?.result !== 'string') reject('brain-error');
+    return { text: redactor.toModel(response.result), cost,
+      model: Object.keys(response.modelUsage || {}).join(',') || null };
+  }
+
+  async function turn(snapshot, options = {}) {
+    try { return await answerTurn(snapshot, options); }
+    catch (error) {
+      if (!options.lookup || LOOKUP_ERRORS.has(error.message)) throw error;
+      // the contract allows five messages; keep the real reason (e.g. destination-changed) for the log
+      throw Object.assign(new Error('brain-error'), { detail: redactor.logSafe(String(error.message)).slice(0, 200) });
+    }
+  }
+
+  async function answerTurn(snapshot, { deadline = clock() + 55000, question, lookup, signal }) {
+    await checkDestination(deadline, lookup && signal);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
     try {
@@ -66,6 +118,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
         ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
       })), ...(question === undefined ? {} : { question: { content: { untrusted: true, text: redactor.toModel(question) } } }) });
+      if (lookup) return await lookupTurn(cwd, prompt, { deadline, lookup, signal });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
       const { stdout, stderr } = await run(question === undefined ? ARGV : [...ARGV.slice(0, -1), QA_SYSTEM_PROMPT],

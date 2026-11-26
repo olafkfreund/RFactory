@@ -491,3 +491,37 @@ test('investigations are composed only when on, and recover before they are retu
     assert.deepEqual([last.id, last.state, last.reason], ['i1', 'stopped', 'restart']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('lookups on with writes and shares off: the record is created; off builds nothing', async () => {
+  const { composeWrites, composeLookups } = require('../server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-lookups-'));
+  const redactor = makeRedactor([]);
+  const scope = { name: 'F', writes_enabled: false, lookups_enabled: true, source: { kind: 'cfactory', repository_id: 2 } };
+  try {
+    const made = await composeWrites({ scope, source, brain: fakeBrain, redactor, roles: rolesFor(ME, ME), dir });
+    assert.equal(made.actions, null);
+    assert.equal(made.shares, null);
+    await made.record.append({ kind: 'lookup', outcome: 'answered' });
+    assert.equal(fs.readdirSync(dir).length, 1);
+    const createSource = () => { throw new Error('lookups off builds no source'); };
+    assert.equal(await composeLookups({ scope: { ...scope, lookups_enabled: false }, redactor, createSource }), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the GitHub binding must be the board repository, or start-up fails', async () => {
+  const { composeLookups } = require('../server.js');
+  const redactor = makeRedactor([]);
+  const scope = { lookups_enabled: true, source: { repository_id: 2, github_read: { owner: 'Olaf', repo: 'demo' } } };
+  const built = [];
+  const board = (project) => (options) => { built.push(options); return { start: async () => {}, repositoryProject: async () => project }; };
+  for (const project of ['olaf/other', undefined]) {
+    await assert.rejects(composeLookups({ scope, createSource: board(project), redactor, token: 'token-value' }), /^Error: github-binding-mismatch$/);
+  }
+  for (const [token, github] of [['token-value', { owner: 'Olaf', repo: 'demo' }], [undefined, null]]) {
+    const made = await composeLookups({ scope, key: 'read-key', createSource: board('olaf/demo'), redactor, token });
+    assert.deepEqual([built.at(-1).bounded, built.at(-1).key, built.at(-1).repositoryId], [true, 'read-key', 2]);
+    assert.deepEqual(made.project, { repositoryId: 2, github });
+    assert.match(made.lookupUrl, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+    await made.endpoint.close();
+  }
+});

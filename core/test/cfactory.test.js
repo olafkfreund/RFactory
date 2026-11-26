@@ -284,6 +284,20 @@ test('an error payload gives {error}; a hung read times out', async () => {
   await assert.rejects(src(hung).investigationLogs('k', 'r', 0), /source-timeout/);
 });
 
+test('lookup reads pass the turn signal and abort a hung CFactory call', async () => {
+  const controller = new AbortController();
+  const client = { calls: [], callTool(req, _schema, options) {
+    this.calls.push([req, options]);
+    if (req.name === 'cfactory_list_git_repositories') return Promise.resolve(reply(repos));
+    return new Promise(() => {});
+  } };
+  const pending = src(client).lookupCard('FCT-1', controller.signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(client.calls.find(([req]) => req.name === 'cfactory_get_card')[1].signal, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /aborted/);
+});
+
 test('investigateAvailable follows the tool list', async () => {
   assert.equal(await src(inv({}, ['cfactory_list_cards', 'cfactory_investigate_card'])).investigateAvailable(), true);
   assert.equal(await src(inv({}, ['cfactory_list_cards'])).investigateAvailable(), false);
@@ -299,4 +313,19 @@ test('investigateAvailable reconnects once when the session is dead (a CFactory 
   assert.equal(await s.investigateAvailable(), true);
   assert.equal(closed, 1);
   assert.equal(created, 2);
+});
+
+test('only the bounded source refuses redirects and 2 MB bodies; the default one is unchanged', async () => {
+  for (const bounded of [false, true]) {
+    let transport;
+    const big = { ...repos, pad: 'x'.repeat(2 * 1024 * 1024) };
+    const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2, timeoutMs: 1000,
+      ...(bounded ? { bounded } : {}),
+      clientFactory: () => ({ connect: async (t) => { transport = t; }, close: async () => {}, callTool: async () => reply(big) }) });
+    if (bounded) await assert.rejects(s.start(), /source-body-too-large/);
+    else await s.start();
+    assert.equal(transport._requestInit.redirect, bounded ? 'error' : undefined);
+    assert.equal(typeof transport._fetch, bounded ? 'function' : 'undefined');
+    assert.deepEqual(transport._requestInit.headers, { Authorization: 'Bearer test-key' });
+  }
 });

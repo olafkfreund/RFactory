@@ -6,6 +6,21 @@ const REF = /^([\w.-]+)\/([\w.-]+)#(\d+)$/;
 const STATE = { done: 'done', in_progress: 'in_progress', blocked: 'blocked', backlog: 'left', ready: 'left' };
 const FAILED = /^(failed?|failure|error(ed)?)$/i;
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+const BODY_LIMIT = 2 * 1024 * 1024;
+
+async function boundedFetch(url, init) {
+  const response = await fetch(url, { ...init, redirect: 'error' });
+  if (!response.body) return response;
+  let size = 0;
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      size += chunk.byteLength;
+      if (size > BODY_LIMIT) throw new Error('source-body-too-large');
+      controller.enqueue(chunk);
+    },
+  }));
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
 
 // Mirrors CFactory's resolution order: repository_id, then issue_ref's owner/repo (default wins a tie), then the default.
 function repositoryOf(card, repos) {
@@ -45,49 +60,58 @@ function mapCard(card) {
   };
 }
 
-function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
+function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000, bounded = false }) {
   let c = client;
   let reconnecting;
-  async function within(promise, deadline) {
+  async function within(promise, deadline, signal) {
     let timer;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('source-timeout');
     const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('source-timeout')), remaining); });
-    try { return await Promise.race([promise, timeout]); }
-    finally { clearTimeout(timer); }
+    let abort;
+    const cancelled = signal && new Promise((_, reject) => {
+      abort = () => reject(new Error('aborted'));
+      if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+    });
+    try { return await Promise.race([promise, timeout, ...(cancelled ? [cancelled] : [])]); }
+    finally { clearTimeout(timer); if (abort) signal.removeEventListener('abort', abort); }
   }
   async function connect() {
     const next = clientFactory();
-    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+    const headers = { Authorization: `Bearer ${key}` };
+    // bounded: the lookup source (#51) refuses redirects and bodies past 2 MB
+    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), bounded
+      ? { fetch: boundedFetch, requestInit: { redirect: 'error', headers } } : { requestInit: { headers } }));
     c = next;
   }
   // one retry after reconnecting: a CFactory restart leaves the old MCP session dead (#18 live test)
-  async function withClient(op, deadline) {
+  async function withClient(op, deadline, signal) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = c;
       try {
-        return await within(op(current), deadline);
+        return await within(op(current), deadline, signal);
       } catch (error) {
-        if (attempt || error.message === 'source-timeout') throw error;
+        if (attempt || error.message === 'source-timeout' || signal?.aborted) throw error;
         if (!reconnecting && c === current) reconnecting = (async () => {
           if (current.close) await current.close().catch(() => {});
           await connect();
         })().finally(() => { reconnecting = undefined; });
-        if (reconnecting) await within(reconnecting, deadline);
+        if (reconnecting) await within(reconnecting, deadline, signal);
       }
     }
   }
-  function call(name, deadline = Date.now() + timeoutMs, args = {}) {
+  function call(name, deadline = Date.now() + timeoutMs, args = {}, signal) {
     return withClient(async (current) => {
-      const r = await current.callTool({ name, arguments: args });
+      const r = await current.callTool({ name, arguments: args }, undefined, signal ? { signal } : undefined);
       const text = (r.content || []).map((x) => x.text || '').join('');
+      if (bounded && Buffer.byteLength(text) > BODY_LIMIT) throw new Error('source-body-too-large');
       if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
       const v = JSON.parse(text);
       return v && typeof v === 'object' ? v : {};
-    }, deadline);
+    }, deadline, signal);
   }
-  const repoList = async (deadline) => {
-    const r = await call('cfactory_list_git_repositories', deadline);
+  const repoList = async (deadline, signal) => {
+    const r = await call('cfactory_list_git_repositories', deadline, {}, signal);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
   // a failed or empty repository read is a source failure, never "every card is conflicting"
@@ -128,6 +152,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       if (!c) await connect();
       if (!(await repoList()).repositories.some((r) => r.id === repositoryId)) throw new Error('scope-unknown-repository');
     },
+    // the owner/repo a card's issue must be in (inScope's rule); the lookup GitHub binding is checked against it
+    async repositoryProject() {
+      const repo = (await repoList()).repositories.find((r) => r.id === repositoryId);
+      return repo?.intake_project ?? repo?.project;
+    },
     async snapshot() {
       const deadline = Date.now() + timeoutMs;
       const { cards, conflicting } = await scopedCards(deadline);
@@ -163,6 +192,28 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       if (card.error || !card.card_key) return { error: str(card.error) || 'unknown card' };
       return { card, inRepository: repositoryOf(card, repos) === repositoryId };
     },
+    async lookupCards(signal) {
+      const deadline = Date.now() + timeoutMs;
+      const [repos, response] = await Promise.all([repoList(deadline, signal), call('cfactory_list_cards', deadline, {}, signal)]);
+      if (!hasRepo(repos) || response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+      return response.cards.filter((card) => inScope(card, repos, repositoryId));
+    },
+    async lookupCard(card_key, signal) {
+      const deadline = Date.now() + timeoutMs;
+      const [repos, card] = await Promise.all([repoList(deadline, signal), call('cfactory_get_card', deadline, { card_key }, signal)]);
+      if (!hasRepo(repos) || card.error || !inScope(card, repos, repositoryId) || card.card_key !== card_key) throw new Error('card-out-of-scope');
+      return card;
+    },
+    async lookupComments(card_key, signal) {
+      const reply = await call('cfactory_card_comments', undefined, { card_key }, signal);
+      if (reply.error) throw new Error('source-error');
+      return reply;
+    },
+    async lookupRun(card_key, signal) {
+      const reply = await call('cfactory_investigation_recover', undefined, { card_key }, signal);
+      if (reply.error) throw new Error('source-error');
+      return reply;
+    },
     // Investigation reads; read key only. Bodies are relayed as CFactory and AIFactory return them; an error payload gives { error }.
     // { repository_id, repo, default_branch, sha, test_command|null }
     investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: repositoryId }),
@@ -172,7 +223,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       return tools.some((tool) => tool.name === 'cfactory_investigate_card');
     },
     // { state, pods_gone, tests, report?: { findings, refs, tests, sha } }
-    investigationState: (card_key, run_id) => call('cfactory_investigation_get', undefined, { card_key, run_id }),
+    investigationState: (card_key, run_id, signal) => call('cfactory_investigation_get', undefined, { card_key, run_id }, signal),
     // { entries: [{ seq, at, line }], cursor }
     investigationLogs: (card_key, run_id, after, limit = 200) => call('cfactory_investigation_logs', undefined, { card_key, run_id, after, limit }),
     investigationRecord: (card_key) => call('cfactory_investigation_recover', undefined, { card_key }),

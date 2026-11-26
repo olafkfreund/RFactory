@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { checkFacts } = require('../src/facts.js');
+const { checkFacts, checkFactsDetailed } = require('../src/facts.js');
 
 const snapshot = { items: [
   { id: 'owner/repo#1', state: 'done' },
@@ -88,4 +88,26 @@ test('card keys go through the every-state-word rule too (1a + #2 merge)', () =>
   assert.equal(checkFacts('FCT-1 is blocked.', snap), 'FCT-1 is blocked.');
   assert.equal(checkFacts('FCT-1 is blocked and FCT-5 is done.', snap), 'FCT-1 is blocked and FCT-5 is done.');
   assert.equal(checkFacts('FCT-1 is blocked and done.', snap), "I couldn't confirm that.");
+});
+
+test('a passed repository replaces the derived one, for Factory-first and empty snapshots', () => {
+  const evidence = [{ id: 'owner/repo#9', state: 'done' }];
+  for (const snap of [{ items: [{ id: 'FCT-1', state: 'blocked' }, ...evidence] }, { items: [] }]) {
+    for (const text of ['owner/repo#9 is done.', 'https://github.com/owner/repo/pull/9 is done.']) {
+      assert.deepEqual(checkFactsDetailed(text, snap, { repo: 'owner/repo', evidence }), { text, cut: false });
+      assert.deepEqual(checkFactsDetailed(text, snap, { repo: null, evidence }), { text: refused, cut: true });
+    }
+  }
+});
+
+test('live evidence replaces its snapshot entry; counts stay the snapshot\'s', () => {
+  const evidence = [{ id: 'owner/repo#3', state: 'done' }, { id: 'FCT-2', state: 'left' }];
+  const check = (text) => checkFactsDetailed(text, snapshot, { repo: 'owner/repo', evidence });
+  assert.deepEqual(check('#3 is done.'), { text: '#3 is done.', cut: false });
+  assert.deepEqual(check('FCT-2 is open.'), { text: 'FCT-2 is open.', cut: false });
+  assert.deepEqual(check('#3 is blocked. #1 is done.'), { text: `${refused} #1 is done.`, cut: true });
+  assert.equal(check('3 done.').cut, false);
+  assert.equal(check('4 done.').cut, true);
+  assert.equal(check('2 blocked.').cut, false);
+  assert.equal(check('1 left.').cut, false);
 });
