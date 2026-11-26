@@ -59,4 +59,13 @@ Revert the PR, then re-import and pin the previous guest images, as in plan #65 
 
 ## Deviations
 
-None yet.
+1. **The guest helper no longer clicks join** (after the step 3 reviews; Opus, Codex and agy all flagged the join click). The helper's own click could beat the library's, and the library then fails the call about 60 s later with "join button not found" (`google-meet-provider.js:2156`). The local runs with the fix showed the library clicks join itself once the name is filled.
+
+   The helper now only does this, Meet links only, polling every 500 ms until `join()` settles or the call is aborted:
+   - it clicks "Continue as guest" (`.first()`);
+   - it fills the name field only when it is empty (`.first()`, so the library is never fought), each step in its own try.
+
+   Dropped: the join click and grace, and the typing fallback. Teams links skip the helper (agy finding). The tests were rewritten to match.
+2. **Local pre-release check** (fixed bot, test Meet):
+   - **Audio:** speech was heard in 4 of 4 valid runs (baseline about 1 in 3).
+   - **Joining:** no run got stuck at the name step. The two retries were Meet's "can't join this video call" page, which is a separate cause and stays on #68.

@@ -420,45 +420,26 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     sendState('error', failureCode(prev.e)); exitCode = 1;
   }
 
+  // Meet guest pre-join (#68): the library knows neither "Continue as guest" nor the "Enter your name" field,
+  // so click the first and fill an empty name; the library still clicks join itself (no race with its 60 s join loop)
   function guestHelper(page, signal) {
-    let timer, stopped = false, enabledAt = null, filledAt = null, typed = false;
-    const stop = () => {
-      stopped = true;
-      if (timer) d.clock.clearTimeout(timer);
-      signal.removeEventListener('abort', stop);
-    };
+    let timer, stopped = false;
+    const stop = () => { stopped = true; if (timer) d.clock.clearTimeout(timer); signal.removeEventListener('abort', stop); };
     signal.addEventListener('abort', stop, { once: true });
     async function poll() {
       if (stopped || signal.aborted) return;
-      try {
-        page ||= host.context.pages()[0];
-        if (page) {
-          const guest = page.getByRole('button', { name: /continue as guest/i });
-          if (await guest.isVisible({ timeout: 1000 }) && await guest.isEnabled({ timeout: 1000 }) && !stopped)
-            await guest.click({ timeout: 1000 });
-          const name = page.locator('input[aria-label*="name" i], input[placeholder*="name" i], input[autocomplete="name"]');
-          if (await name.isVisible({ timeout: 1000 }) && await name.isEnabled({ timeout: 1000 }) && !stopped) {
-            if (await name.inputValue({ timeout: 1000 }) !== BOT_NAME && !stopped) {
-              await name.fill(BOT_NAME, { timeout: 1000 });
-              if (filledAt === null || typed) { filledAt = d.clock.now(); typed = false; }
-            }
-          }
-          const joinButton = page.getByRole('button', { name: /^(join now|ask to join)$/i });
-          const visible = await joinButton.isVisible({ timeout: 1000 });
-          const enabled = visible && await joinButton.isEnabled({ timeout: 1000 });
-          if (!enabled) {
-            enabledAt = null;
-            if (filledAt !== null && !typed && d.clock.now() - filledAt >= 1000 && !stopped) {
-              await name.fill('', { timeout: 1000 });
-              if (!stopped) await name.pressSequentially(BOT_NAME, { timeout: 1000 });
-              typed = true;
-            }
-          } else {
-            enabledAt ??= d.clock.now();
-            if (d.clock.now() - enabledAt >= 6000 && !stopped) await joinButton.click({ timeout: 1000 });
-          }
-        }
-      } catch { /* Meet may replace the pre-join controls between checks. */ }
+      page ||= host.context.pages()[0];
+      if (page) {
+        try {
+          const guest = page.getByRole('button', { name: /continue as guest/i }).first();
+          if (await guest.isVisible() && !stopped) await guest.click({ timeout: 1000 });
+        } catch { /* Meet may replace the control between checks */ }
+        try {
+          const name = page.locator('input[aria-label*="name" i], input[placeholder*="name" i], input[autocomplete="name"]').first();
+          if (await name.isVisible() && await name.isEnabled() && !stopped && await name.inputValue() === '' && !stopped)
+            await name.fill(BOT_NAME, { timeout: 1000 });
+        } catch { /* as above */ }
+      }
       if (!stopped) timer = d.clock.setTimeout(poll, 500);
     }
     poll();
@@ -476,7 +457,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         if (closing) return;
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
         if (closing) return;
-        const stopGuestHelper = guestHelper(host.context.pages()[0], ac.signal);
+        const stopGuestHelper = link.startsWith('https://meet.google.com/') ? guestHelper(host.context.pages()[0], ac.signal) : () => {};
         try {
           if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
           if (closing) return;
