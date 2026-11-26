@@ -420,6 +420,51 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     sendState('error', failureCode(prev.e)); exitCode = 1;
   }
 
+  function guestHelper(page, signal) {
+    let timer, stopped = false, enabledAt = null, filledAt = null, typed = false;
+    const stop = () => {
+      stopped = true;
+      if (timer) d.clock.clearTimeout(timer);
+      signal.removeEventListener('abort', stop);
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    async function poll() {
+      if (stopped || signal.aborted) return;
+      try {
+        page ||= host.context.pages()[0];
+        if (page) {
+          const guest = page.getByRole('button', { name: /continue as guest/i });
+          if (await guest.isVisible({ timeout: 1000 }) && await guest.isEnabled({ timeout: 1000 }) && !stopped)
+            await guest.click({ timeout: 1000 });
+          const name = page.locator('input[aria-label*="name" i], input[placeholder*="name" i], input[autocomplete="name"]');
+          if (await name.isVisible({ timeout: 1000 }) && await name.isEnabled({ timeout: 1000 }) && !stopped) {
+            if (await name.inputValue({ timeout: 1000 }) !== BOT_NAME && !stopped) {
+              await name.fill(BOT_NAME, { timeout: 1000 });
+              if (filledAt === null || typed) { filledAt = d.clock.now(); typed = false; }
+            }
+          }
+          const joinButton = page.getByRole('button', { name: /^(join now|ask to join)$/i });
+          const visible = await joinButton.isVisible({ timeout: 1000 });
+          const enabled = visible && await joinButton.isEnabled({ timeout: 1000 });
+          if (!enabled) {
+            enabledAt = null;
+            if (filledAt !== null && !typed && d.clock.now() - filledAt >= 1000 && !stopped) {
+              await name.fill('', { timeout: 1000 });
+              if (!stopped) await name.pressSequentially(BOT_NAME, { timeout: 1000 });
+              typed = true;
+            }
+          } else {
+            enabledAt ??= d.clock.now();
+            if (d.clock.now() - enabledAt >= 6000 && !stopped) await joinButton.click({ timeout: 1000 });
+          }
+        }
+      } catch { /* Meet may replace the pre-join controls between checks. */ }
+      if (!stopped) timer = d.clock.setTimeout(poll, 500);
+    }
+    poll();
+    return stop;
+  }
+
   async function start(link) {
     const deadline = d.clock.now() + 300000;
     let prev = null;
@@ -431,15 +476,18 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         if (closing) return;
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
         if (closing) return;
-        if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
-        if (closing) return;
-        const remaining = deadline - d.clock.now();
-        if (remaining <= 0 && prev) { abandon(prev); return; }
-        if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
-        call = await join(link, {
-          name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
-          onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
-        });
+        const stopGuestHelper = guestHelper(host.context.pages()[0], ac.signal);
+        try {
+          if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
+          if (closing) return;
+          const remaining = deadline - d.clock.now();
+          if (remaining <= 0 && prev) { abandon(prev); return; }
+          if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
+          call = await join(link, {
+            name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
+            onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
+          });
+        } finally { stopGuestHelper(); }
         if (closing) return;
         break;
       } catch (e) {
