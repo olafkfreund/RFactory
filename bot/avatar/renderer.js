@@ -129,7 +129,7 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
     ctx.fillText('AI', width - 96, 66);
     ctx.fillStyle = '#ebdbb2';
     ctx.font = '32px sans-serif';
-    ctx.fillText('RFactory Bot (AI)', 32, height - 54);
+    ctx.fillText('Factory (AI)', 32, height - 54);
     ctx.font = '16px sans-serif';
     ctx.fillText(sourceLine, 32, height - 25);
   }

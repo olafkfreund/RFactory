@@ -88,7 +88,7 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
       });
       const [idle, open, triangleFailure, levelFailure] = result.frames;
       for (const frame of result.frames) {
-        assert.deepEqual(frame.labels, ['AI', 'RFactory Bot (AI)', 'Source: github.com/olafkfreund/RFactory']);
+        assert.deepEqual(frame.labels, ['AI', 'Factory (AI)', 'Source: github.com/olafkfreund/RFactory']);
       }
       const changed = (a, b) => a.reduce((count, value, i) => count + (value !== b[i]), 0);
       assert.ok(changed(idle.mouth, open.mouth) > 100, 'mouth region should change when speaking');
@@ -167,7 +167,7 @@ test('a still face renders speaking frames without errors',
       assert.equal(result.errors, 0);
       assert.deepEqual(errors, []);
       for (const labels of result.frames) {
-        assert.deepEqual(labels, ['AI', 'RFactory Bot (AI)', 'Source: github.com/olafkfreund/RFactory']);
+        assert.deepEqual(labels, ['AI', 'Factory (AI)', 'Source: github.com/olafkfreund/RFactory']);
       }
     } finally {
       await browser.close();

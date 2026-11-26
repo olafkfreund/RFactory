@@ -36,7 +36,7 @@ const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === wi
     // the name step after it comes too late for the library's own name fill, so fill it here with the library's bot name
     const input = [...document.querySelectorAll('input[type="text"], input:not([type])')].find((e) => e.offsetParent && /name/i.test(e.placeholder + ' ' + (e.getAttribute('aria-label') || '')));
     if (!input || input.value || joined) return;
-    let name = 'RFactory Bot';
+    let name = 'Factory (AI)';
     try { name = (await window.__vibeconfHostAsk('getBotName')) || name; } catch { /* the library's binding is missing: keep the default */ }
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, name);
     input.dispatchEvent(new Event('input', { bubbles: true }));

@@ -58,7 +58,7 @@ The scope field `language` (default `'en'`) takes a BCP-47 language tag (such as
   - Its `NetworkPolicy` allows ingress on port 8080 only from the web server's pods and denies all egress.
 - **In-call join notice**:
   - On joining, the bot posts a notice to the call chat (`bot/run.js`). In `audio` mode, the message states that RFactory transcribes the call on its own servers:
-    `RFactory Bot (AI) is listening and transcribes this call on RFactory's own servers; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory` (with `/tree/<commit>` when `RFACTORY_COMMIT` is set).
+    `Factory (AI) is listening and transcribes this call on RFactory's own servers; say 'Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory` (with `/tree/<commit>` when `RFACTORY_COMMIT` is set).
   - If sending the chat message fails in `audio` mode, the bot retries once after 10 s. If the retry also fails, the bot emits `{ type: 'hearing', state: 'notice-failed' }` and the page displays `Hearing: own transcription (call notice failed)`.
 
 ## Environment and scope reference

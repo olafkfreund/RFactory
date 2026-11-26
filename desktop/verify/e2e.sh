@@ -86,7 +86,7 @@ teams_call() {
   elif [ "$name" = pod ] && [ -n "$new" ]; then fail "e2e-teams-pod-joins" "a desktop VM appeared ($new): $base runs with RFACTORY_DESKTOP, so this is not the pod's own bot"
   else
     pass "e2e-teams-$name-joins"
-    owner_confirm "e2e-teams-$name-answers" "In the Teams meeting say 'RFactory, what is two plus two?'. Do you HEAR the bot answer aloud, and is its name marked as an AI?"
+    owner_confirm "e2e-teams-$name-answers" "In the Teams meeting say 'Factory, what is two plus two?'. Do you HEAR the bot answer aloud, and is its name marked as an AI?"
     WEB_BASE=$base approver DELETE /api/call >/dev/null || true
     owner_confirm "e2e-teams-$name-leaves" "Has the bot left the Teams meeting?"
   fi

@@ -15,7 +15,7 @@ const portraits = require('./avatars/manifest.json').portraits;
 const MAX_IN = 4 * 1024 * 1024;
 const MAX_OUT = 64 * 1024;
 const LIMIT_MS = 60 * 60 * 1000;
-const BOT_NAME = 'RFactory Bot (AI)';
+const BOT_NAME = 'Factory (AI)';
 const TERMINAL = ['left', 'removed', 'error'];
 // Runs in the page: the in-call Leave control is gone AND the page says the call was left or ended. Chat or captions
 // saying "rejoin" cannot pass alone (Codex). Teams' provider reports no removal, so this also watches for one (#16).
@@ -27,7 +27,7 @@ function pageLeft() {
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const audio = env.RFACTORY_LISTEN === 'audio';
-  const chatLine = `RFactory Bot (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'RFactory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
+  const chatLine = `Factory (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
   const d = {
     clock: { setTimeout, clearTimeout, now: Date.now },
     installSttBridge,

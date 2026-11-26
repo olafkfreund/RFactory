@@ -770,10 +770,10 @@ test('desktop mode routes an open request to the desktop proposal and speaks its
   } finally { f.restore(); }
 });
 
-async function shareCall(opts) {
+async function shareCall({ create = createCallManager, ...opts }) {
   const clock = fakeClock();
   const children = [], spoken = [];
-  const manager = createCallManager({ ...opts, source: { snapshot: async () => ({ items: [] }) },
+  const manager = create({ ...opts, source: { snapshot: async () => ({ items: [] }) },
     brain: { turn: async () => { throw new Error('brain must not be asked'); } }, tts: { voice: 'v', say: async (s) => Buffer.from(s) },
     redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'],
     spawn: () => {
@@ -849,6 +849,42 @@ test('with shares off a share utterance is answered "Sharing is turned off here.
     const f = await shareCall({});
     await f.heard('RFactory, show the board');
     assert.ok(f.said().includes('Sharing is turned off here.'));
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
+test("#62: the greeting names Factory, and the bot's own captions never wake it", async () => {
+  const original = process.kill; process.kill = () => {};
+  // the core default is the same list, so only a spy on createHearing proves web/call.js passes it
+  const hearing = require('../../core/src/call/hearing.js'), { createHearing } = hearing;
+  let options;
+  hearing.createHearing = (o) => { options = o; return createHearing(o); };
+  delete require.cache[require.resolve('../call.js')];
+  const fresh = require('../call.js').createCallManager; // binds createHearing at load
+  hearing.createHearing = createHearing;
+  try {
+    const shares = fakeShares({ status: 202, text: 'Requested.' });
+    const f = await shareCall({ create: fresh, shares });
+    assert.equal(options.selfNames, hearing.SELF_NAMES);
+    f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'state', state: 'in-call' })}\n`);
+    for (let n = 0; n < 6; n++) await flush();
+    assert.equal(f.said().join(' '), "Factory here. Say 'Factory' and your question."); // synthesised per sentence
+    for (const speaker of ['You', 'Factory (AI)', 'Factory (AI) (Guest)', 'RFactory Bot (AI)', 'RFactory Bot']) {
+      f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: speaker, speaker, text: 'Factory, show the board', final: true })}\n`);
+      await f.heard('no wake here'); // advances the quiet timer
+    }
+    assert.equal(shares.requests.length, 0);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
+test('#63: "Factory, share your screen" reaches shares, not the desktop', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const shares = fakeShares({ status: 202, text: 'Requested.' });
+    const f = await shareCall({ shares, desktop: { request: async () => { throw new Error('desktop must not be asked'); } } });
+    await f.heard('Factory, share your screen');
+    assert.deepEqual(shares.requests, [['share your screen', 'Eve']]);
     const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
   } finally { process.kill = original; }
 });
@@ -979,7 +1015,7 @@ test('a lookup answer is spoken as at most 3 sentences without markdown; the pag
     await f.heard('q1', 'RFactory, what is the state?'); await settle();
     assert.equal(f.events.find((e) => e.type === 'answer').text, long);
     // synthesis runs one sentence ahead of playback; the cap itself is checked on spoken() below
-    assert.deepEqual(tts.filter((t) => !/^One moment|^RFactory here/.test(t)), ['One is done.', 'Two is open.']);
+    assert.deepEqual(tts.filter((t) => !/^One moment|^Factory here/.test(t)), ['One is done.', 'Two is open.']);
     const { spoken } = require('../call.js');
     assert.equal(spoken(long), 'One is done. Two is open. Three is left.');
     assert.equal(spoken('Only one.'), 'Only one.');
@@ -1084,6 +1120,43 @@ for (const [name, interrupt] of [
     } finally { await f.end(); }
   });
 }
+
+test('#62: both requests of a two-wake caption are answered in order; a later caption still aborts', async () => {
+  let later;
+  const asked = [];
+  const f = lookupCall({ brainTurn: (ctx, options) => {
+    asked.push(options.question);
+    if (!/slow/.test(options.question)) return { text: 'Unknown.', cost: 0 };
+    later = options.signal;
+    return untilAborted(ctx, options);
+  } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', "Factory, what's blocked? Factory, give a standup."); await speakAll(f);
+    assert.deepEqual(f.events.filter((e) => e.type === 'question').map((e) => e.kind), ['question', 'standup']);
+    assert.deepEqual(f.records.map((r) => r.outcome), ['answered']);
+    assert.equal(f.events.filter((e) => e.type === 'answer').length, 2);
+    assert.ok(f.events.find((e) => e.type === 'answer').snapshot, 'the question is answered first');
+    await f.heard('2', 'Factory, what is slow? Factory, what is next?'); await settle();
+    assert.equal(later.aborted, false);
+    await f.heard('3', 'Factory, and now?'); await speakAll(f);
+    assert.equal(later.aborted, true);
+    assert.deepEqual(asked, ["what's blocked", 'what is slow', 'what is next?', 'and now?']);
+  } finally { await f.end(); }
+});
+
+test('#62: four requests in one caption are all queued; a fifth is dropped', async () => {
+  const asked = [];
+  const f = lookupCall({ brainTurn: async (ctx, options) => { asked.push(options.question); return { text: 'Unknown.', cost: 0 }; } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'Factory, one? Factory, two? Factory, three? Factory, four? Factory, five?');
+    await speakAll(f); await speakAll(f);
+    assert.deepEqual(asked, ['one', 'two', 'three', 'four']);
+    assert.deepEqual(f.records.map((r) => r.outcome), Array(4).fill('answered'));
+    assert.equal(f.events.filter((e) => e.type === 'log' && /batch full/.test(e.message)).length, 1);
+  } finally { await f.end(); }
+});
 
 test('each failure: spoken line, outcome, cost and logged detail; sources survive', async () => {
   const sorry = "Sorry, I can't answer that right now.";
@@ -1234,7 +1307,7 @@ test('a project call greets by name, keeps its project event, reads its own view
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
     f.children[0].output({ type: 'state', state: 'in-call' });
     await speakAll(f);
-    assert.match(said(f).join(' '), /RFactory here, for Alpha\./);
+    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Factory' and your question\./);
     await f.heard('q', 'RFactory, what is blocked?');
     await speakAll(f);
     assert.deepEqual(turns, ['Alpha card']);
