@@ -267,3 +267,11 @@ This applies only to a `question` turn when lookups are on. Standups, proposals 
   - ask about another repository, and hear that the bot cannot look there;
   - leave in the middle of a lookup: the turn stops within seconds;
   - check that the page lists the sources and the limits, and that the record holds the lines with no content.
+
+## Amendments (owner, 2026-11-26, after the plan review)
+
+- **Claude authentication:** the brain keeps its subscription OAuth login (intent amendment). Part 4's check "the deployed CLI authenticates with an API key … not a subscription login" is dropped. The other Claude rules stay: the pinned home and approved hash, the destination check before every turn, and no new destination.
+- **Egress:** the RFactory pod has no egress policy today (factory-gitops `apps/rfactory/manifests/manifests.yaml:47-57` is ingress only), so "the existing egress rules apply" was wrong. The owner accepted the plan's recommendation:
+  - slice 1 pins its hosts in code: `api.github.com` and the CFactory MCP URL only, with redirects refused;
+  - an enforced egress limit (an egress proxy or FQDN rules) is its own issue, done next;
+  - the check that the pod's containers share neither `/tmp` nor a UID stays in the plan's deploy gate.

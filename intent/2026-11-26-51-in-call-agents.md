@@ -146,3 +146,7 @@ The owner wants people in a call to use the models as fully as they do at their 
 5. **Credentials:** API keys from the credential broker, under the providers' business terms. No subscription logins.
 6. **Gemini:** after Claude and OpenAI.
 7. **#22:** gets its own intent, as a dependency of outcome 3. Slices 1 and 2 do not wait for it.
+
+## Amendments (owner, 2026-11-26)
+
+- **Decision 5, for the Claude brain:** the owner chose to keep the Claude subscription login ("I want to use the subscription"). The cluster's Claude brain keeps its OAuth login, and lookups spend that subscription's quota. API keys from the broker still apply to providers added later (slice 2).
