@@ -382,7 +382,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       // fixed values only, so the line is safe to log in audio mode too
       const { code, reason, attempt, of, retrying } = msg;
       if (!c.inCall && JOIN_CODES.includes(code) && JOIN_REASONS.includes(reason) && Number.isInteger(attempt) && Number.isInteger(of) &&
-        attempt >= 1 && attempt <= of && of <= 3 && typeof retrying === 'boolean') {
+        attempt >= 1 && attempt <= of && of <= 3 && typeof retrying === 'boolean' && (!retrying || attempt < of)) {
         log(`join failed (attempt ${attempt}/${of}${retrying ? ', retrying' : ''}): ${code}, ${reason}`);
       } else log('dropped malformed join-failure');
     } else if (msg.type === 'log') log(c.listen === 'audio' ? `child log: ${Buffer.byteLength(String(msg.message || ''))} bytes` : msg.message);

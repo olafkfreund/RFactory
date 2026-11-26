@@ -493,11 +493,14 @@ test('retry budget includes the page read, cleanup, wait and next launch', async
   s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
   now.value = 245000; joinDelay(s).fn();
   assert.strictEqual(await s.done, 1);
-  assert.deepStrictEqual(joinFailures(s).map((m) => m.retrying), [true, false]);
+  assert.deepStrictEqual(joinFailures(s).map((m) => [m.attempt, m.retrying]), [[1, true], [1, false]]);
+  assert.strictEqual(s.out.filter((m) => m.type === 'log' && /^join failed/.test(m.message)).length, 1);
+  assert.deepStrictEqual(s.out.filter((m) => m.type !== 'log').slice(-2).map((m) => m.state || m.type), ['join-failure', 'error']);
+  assert.strictEqual(s.out.filter((m) => m.state === 'error')[0].code, 'denied');
   assert.strictEqual(s.calls.hosts.length, 1);
 });
 
-test('a late denial gets a deadline timeout before another join', async () => {
+test('a deadline already gone before the first join reports timeout', async () => {
   const now = { value: 0 };
   const s = setup({ now, joinQueue: [joinError('denied')], mkdtemp: async (p) => {
     now.value = 300000; return p + 'X';
@@ -506,6 +509,19 @@ test('a late denial gets a deadline timeout before another join', async () => {
   assert.strictEqual(await s.done, 1);
   assert.strictEqual(s.calls.joins.length, 0);
   assert.strictEqual(joinFailures(s)[0].code, 'timeout');
+});
+
+test('a retry whose launch uses up the budget repeats the denial report and ends with denied', async () => {
+  const now = { value: 0 };
+  let n = 0;
+  const s = setup({ now, joinQueue: [joinError('denied')],
+    mkdtemp: async (p) => { if (n++) now.value = 300000; return p + n; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  now.value = 15000; joinDelay(s).fn();
+  assert.strictEqual(await s.done, 1);
+  assert.strictEqual(s.calls.joins.length, 1);
+  assert.deepStrictEqual(joinFailures(s).map((m) => [m.attempt, m.code, m.retrying]), [[1, 'denied', true], [1, 'denied', false]]);
+  assert.deepStrictEqual(s.out.find((m) => m.type === 'state' && m.state === 'error').code, 'denied');
 });
 
 test('launch time reduces the next join timeout and a later timeout ends retries', async () => {
@@ -533,7 +549,7 @@ test('page report uses last real page, caps and redacts text; audio never reads 
     assert.strictEqual(reads, audio ? 0 : 1);
     assert.ok(!JSON.stringify(s.out).includes(SECRET));
     assert.strictEqual(s.logs().includes('page:'), !audio);
-    if (!audio) assert.match(s.logs(), /page: "denied \[redacted\] x{352}"/);
+    if (!audio) assert.match(s.logs(), /page: "denied \[redacted\] x{382}"/);
     assert.ok(!audio || !s.timers.some((t) => t.ms === 2000));
   }
 });

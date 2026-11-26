@@ -174,3 +174,15 @@ All pass.
   - `RF_GUEST_DISK_IMAGE`: `docker.io/library/rfactory-guest-disk:k2@sha256:818d2362656fb877d7fdca471316c16f7ceebfb96ac6700836e7782ec0a5ca13`
   - `RF_GUEST_CMDLINE`: `init=/nix/store/dg14p2yl7cm7sh5pl7pmwwm9351p8sqi-nixos-system-desktop-guest-26.11.20260917.e554fab/init console=ttyS0 root=fstab loglevel=4 lsm=landlock,yama,bpf`
 - **Messages:** either side alone is safe. An old server drops `join-failure` as an unknown child message, and an old guest never sends it.
+
+## Deviations
+
+1. **Step 4 review fixes** (Codex, agy and the Opus review; lead):
+   - **Dependency loads:** the `require()` of the calls library is back inside the attempt's `try`. A load failure is reported as `unknown` and ends with `error` instead of an unhandled rejection.
+   - **An abandoned retry:**
+     - When it runs out of time, after the wait or because the next launch used up the budget, the bot now always repeats the last failed attempt's `join-failure` with `retrying: false` and ends with that attempt's code ("abandoned the same way"), instead of reporting a new attempt as `timeout`.
+     - It no longer repeats the `join failed:` log line.
+     - A deadline already gone before the first join still reports `timeout`.
+   - **Caps:** the page text is redacted before it is cut to 400 characters, so a cut token cannot slip past the redactor. The error message in the log line is capped at 1000 characters, so the line stays under `MAX_OUT`.
+   - **Server:** `web/call.js` also drops `retrying: true` on the last attempt (`attempt === of`).
+   - **Not taken:** a worker test of the setup failure through the real `bot/run.js`, and launch order in `calls.order`. The wrapper test and the bot's own cleanup tests cover both halves.

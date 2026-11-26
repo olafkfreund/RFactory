@@ -163,7 +163,7 @@ test('join-failure logs one fixed line from validated values, in both modes, onl
   const malformed = [
     { code: 'ENOENT' }, { code: undefined }, { code: ['denied'] }, { reason: 'secret words' }, { reason: undefined }, { reason: 1 },
     { attempt: 3, of: 2 }, { of: 4 }, { of: 0 }, { attempt: 0 }, { attempt: 1.5 }, { attempt: '1' }, { of: 2.5 }, { of: '3' },
-    { retrying: 'true' }, { retrying: undefined },
+    { retrying: 'true' }, { retrying: undefined }, { attempt: 3, of: 3, retrying: true },
   ];
   for (const listen of ['platform', 'audio']) {
     const f = setup({ stt: { transcribe: async () => ({ text: '' }) } });

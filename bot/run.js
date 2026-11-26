@@ -391,9 +391,14 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       }
     }
     if (closing) return;
-    pageText = String(pageText).replace(/\s+/g, ' ').trim().slice(0, 400);
-    log(`join failed: ${e?.message}${pageText ? ` page: "${pageText}"` : ''}`);
+    // redact before cutting, so a cut token cannot slip past the redactor; both capped to stay under MAX_OUT
+    pageText = logSafe(String(pageText).replace(/\s+/g, ' ').trim()).slice(0, 400);
+    log(`join failed: ${logSafe(String(e?.message)).slice(0, 1000)}${pageText ? ` page: "${pageText}"` : ''}`);
     if (closing) return;
+    sendFailure(e, attempt, retrying);
+  }
+
+  function sendFailure(e, attempt, retrying) {
     const reason = /can't join this video call/i.test(e?.message) ? 'cant-join'
       : /couldn't enter call/i.test(e?.message) ? 'no-call-ui'
         : /removed/i.test(e?.message) ? 'removed' : 'other';
@@ -408,12 +413,19 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (profile) { try { await d.rm(profile); } catch (e) { log(`profile removal failed: ${e.message}`); } }
   }
 
+  // a planned retry the budget can no longer afford: report the last failed attempt again, then end
+  function abandon(prev) {
+    sendFailure(prev.e, prev.attempt, false);
+    sendState('error', failureCode(prev.e)); exitCode = 1;
+  }
+
   async function start(link) {
     const deadline = d.clock.now() + 300000;
-    const join = d.join || require('@vibeconferencing/calls').join;
-    const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
+    let prev = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
+        const join = d.join || require('@vibeconferencing/calls').join;
+        const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
         dir = await d.mkdtemp(path.join(os.tmpdir(), 'rfactory-bot-'));
         if (closing) return;
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
@@ -421,6 +433,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
         if (closing) return;
         const remaining = deadline - d.clock.now();
+        if (remaining <= 0 && prev) { abandon(prev); return; }
         if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
         call = await join(link, {
           name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
@@ -435,6 +448,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         await failureReport(e, attempt, retrying);
         if (closing) return;
         if (!retrying) { sendState('error', failureCode(e)); exitCode = 1; return; }
+        prev = { e, attempt };
         await releaseAttempt();
         if (closing) return;
         sendState('joining');
@@ -444,11 +458,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
           joinWait = d.clock.setTimeout(() => { joinWait = joinWaitResolve = null; resolve(); }, wait);
         });
         if (closing) return;
-        if (deadline - d.clock.now() < 60000) {
-          await failureReport(e, attempt, false);
-          if (closing) return;
-          sendState('error', failureCode(e)); exitCode = 1; return;
-        }
+        if (deadline - d.clock.now() < 60000) { abandon(prev); return; }
       }
     }
     sendState('in-call');
