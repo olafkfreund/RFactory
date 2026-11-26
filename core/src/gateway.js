@@ -123,4 +123,4 @@ function createGateway({ scope, source, redactor, desktop }) {
   return { call, tools, logged };
 }
 
-module.exports = { createGateway };
+module.exports = { createGateway, DESKTOP };

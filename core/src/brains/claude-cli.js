@@ -90,7 +90,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     let response;
     try { response = JSON.parse(stdout); }
     catch { throw new Error('brain-error'); }
-    const cost = response?.total_cost_usd ?? null;
+    const cost = Number.isFinite(response?.total_cost_usd) ? response.total_cost_usd : null;
     const reject = (message) => { throw Object.assign(new Error(message), { cost }); };
     if (response?.subtype === 'error_max_budget_usd') reject('budget-exceeded');
     if (response?.is_error && (response.api_error_status != null ||

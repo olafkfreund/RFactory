@@ -397,3 +397,28 @@ All pass. With `lookups_enabled: false`, the existing call and brain tests pass 
    - **New scope errors:** `lookups-enabled`, `lookup-budget`, `github-token-file-mode` and `invalid-github-token`.
    - **Card sources (lead):** CFactory has no card page, so a card source opens the page's own card review (`loadReviewCard`) instead of a CFactory link. GitHub sources link only to the bound repository. File links point at `blob/HEAD`.
    - **The record (lead):** a refused lookup call logs `ref: ''` (`core/src/lookups.js`), so a raw model argument cannot carry question text into the record. A test covers it.
+4. **Step 7 review fixes** (Codex, agy and Opus reviews; coder, with one lead change):
+   - **Path escape (high).** `validPath`'s `.*` lookaheads stopped at U+2028 and U+2029, so `a /../../…` passed, and `new URL` then normalised it out of the repository.
+     - Paths are now validated per segment. A path is refused if it has an empty, `.` or `..` segment, or contains `\ % ? #` or any character in `\p{C}`, `\p{Zl}` or `\p{Zp}`.
+     - The built URL's pathname must stay under `/repos/<owner>/<repo>/` (and under `/contents/` for `read_file`).
+   - **GitHub reads failed live (critical).** The repository URL had a trailing slash, which gets a 404. It is now fixed, and the test fake now matches the real URL.
+   - **The record:** every call that fails logs `ref: ''`, and a delivered `ref` is redacted.
+   - **The off switch is inert:**
+     - with lookups off, `loadScope` reads neither the GitHub token nor the `lookup_budget_usd` range (the budget part is the lead's change);
+     - the 2 MB and no-redirect bounds apply only to a **second, bounded** CFactory source built by `composeLookups` for lookups, and the existing source is unchanged.
+   - **`issue_comments` and reviews** now come from GitHub's last pages, so they are the newest 30.
+   - **`card_runs`** follows the recovery record (`status`, `detail.run_id`) to `investigationState`, as `web/investigations.js` does. A card with no `run_id` gives `not-run`. If CFactory replies with an `error` for a card never investigated, the result is `lookup-refused` (not verified against a live CFactory).
+   - **Spoken cues** are dropped once their turn is aborted or finished. A question drained after its deadline starts no turn: it records `timeout` and the bot says the sorry line.
+   - **Smaller fixes:**
+     - `find_cards` no longer fetches each card again;
+     - an open PR maps to `in_progress`, an open issue to `left`, and a closed one to `done`;
+     - source titles are capped at 200 characters;
+     - `cap()` keeps the result within 40 KiB, including the `truncated` flag;
+     - only a finite `cost` counts;
+     - `brain.turn` is raced against the turn's signal;
+     - a failed GitHub reply's body is cancelled;
+     - `.` and `..` are refused as owner or repo.
+   - **Tests the reviewers said tested nothing** are rewritten against real shapes: the schemas for all 8 tools, `inScope` through the real CFactory source, redirects, the cap after redaction, timers past 3 s and 25 s, socket destruction, and every desktop tool name.
+   - **Recorded, not fixed:**
+     - the Contents API follows a symlink inside the repository to its target file, which stays inside the bound repository;
+     - after a local abort, a CFactory HTTP request may stay open upstream, because the SDK only sends a cancellation notice.

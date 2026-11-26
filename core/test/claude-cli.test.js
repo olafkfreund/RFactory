@@ -351,6 +351,15 @@ test('lookup failures map to the contract messages', async (t) => {
   await assert.rejects(changed.brain.turn(snapshot, { deadline: 90000, lookup }), { message: 'brain-error' });
 });
 
+test('lookup cost is a finite number or null', async (t) => {
+  for (const total_cost_usd of ['0.2', {}, null, true]) {
+    const s = lookupBrain(t, { stdout: JSON.stringify({ result: 'ok', total_cost_usd }) });
+    assert.equal((await s.brain.turn(snapshot, { deadline: 90000, lookup })).cost, null);
+  }
+  const huge = lookupBrain(t, { stdout: '{"result":"ok","total_cost_usd":1e999}' });
+  assert.equal((await huge.brain.turn(snapshot, { deadline: 90000, lookup })).cost, null);
+});
+
 test('abort rejects at once and kills a child that ignores SIGTERM', async (t) => {
   const s = lookupBrain(t, { hang: true, ignoreTerm: true });
   const controller = new AbortController();

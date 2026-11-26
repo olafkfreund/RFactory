@@ -60,7 +60,7 @@ function mapCard(card) {
   };
 }
 
-function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
+function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000, bounded = false }) {
   let c = client;
   let reconnecting;
   async function within(promise, deadline, signal) {
@@ -78,7 +78,10 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   }
   async function connect() {
     const next = clientFactory();
-    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { fetch: boundedFetch, requestInit: { redirect: 'error', headers: { Authorization: `Bearer ${key}` } } }));
+    const headers = { Authorization: `Bearer ${key}` };
+    // bounded: the lookup source (#51) refuses redirects and bodies past 2 MB
+    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), bounded
+      ? { fetch: boundedFetch, requestInit: { redirect: 'error', headers } } : { requestInit: { headers } }));
     c = next;
   }
   // one retry after reconnecting: a CFactory restart leaves the old MCP session dead (#18 live test)
@@ -101,7 +104,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     return withClient(async (current) => {
       const r = await current.callTool({ name, arguments: args }, undefined, signal ? { signal } : undefined);
       const text = (r.content || []).map((x) => x.text || '').join('');
-      if (Buffer.byteLength(text) > BODY_LIMIT) throw new Error('source-body-too-large');
+      if (bounded && Buffer.byteLength(text) > BODY_LIMIT) throw new Error('source-body-too-large');
       if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
       const v = JSON.parse(text);
       return v && typeof v === 'object' ? v : {};
@@ -220,7 +223,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       return tools.some((tool) => tool.name === 'cfactory_investigate_card');
     },
     // { state, pods_gone, tests, report?: { findings, refs, tests, sha } }
-    investigationState: (card_key, run_id) => call('cfactory_investigation_get', undefined, { card_key, run_id }),
+    investigationState: (card_key, run_id, signal) => call('cfactory_investigation_get', undefined, { card_key, run_id }, signal),
     // { entries: [{ seq, at, line }], cursor }
     investigationLogs: (card_key, run_id, after, limit = 200) => call('cfactory_investigation_logs', undefined, { card_key, run_id, after, limit }),
     investigationRecord: (card_key) => call('cfactory_investigation_recover', undefined, { card_key }),

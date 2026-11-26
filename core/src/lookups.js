@@ -13,7 +13,13 @@ const specs = {
 const FACTORY = Object.keys(specs).slice(0, 4);
 const GITHUB = Object.keys(specs).slice(4);
 const wrap = (text) => ({ untrusted: true, text: String(text ?? '') });
-const refOf = (name, args) => name === 'find_cards' ? '' : args.card_key ?? args.number ?? args.path ?? '';
+const clip = (text) => Array.from(String(text)).slice(0, 200).join('');
+// an investigation run's outcome, from its test results; what cannot be read is not called passed
+function runResult(tests) {
+  if (!Array.isArray(tests) || !tests.length) return 'not-run';
+  if (tests.some((t) => t?.failed > 0 || (Number.isInteger(t?.exit_code) && t.exit_code !== 0))) return 'failed';
+  return tests.every((t) => t?.exit_code === 0 || (t?.parsed !== false && t?.failed === 0)) ? 'passed' : 'not-run';
+}
 
 function validate(name, args) {
   const spec = specs[name];
@@ -54,7 +60,8 @@ function cap(value, limit) {
     return item;
   }
   let result = walk(value);
-  while (Buffer.byteLength(JSON.stringify(result)) > 40 * 1024) {
+  const final = () => (truncated ? { ...result, truncated: true } : result);
+  while (Buffer.byteLength(JSON.stringify(final())) > 40 * 1024) {
     truncated = true;
     const fields = [];
     function collect(item) {
@@ -69,7 +76,7 @@ function cap(value, limit) {
     const [obj, key, value] = fields[0];
     obj[key] = Buffer.from(value).subarray(0, Math.max(0, Buffer.byteLength(value) - 4096)).toString('utf8').replace(/\uFFFD$/, '');
   }
-  return truncated ? { ...result, truncated: true } : result;
+  return final();
 }
 function createLookups({ source, github, redactor }) {
   return {
@@ -77,22 +84,18 @@ function createLookups({ source, github, redactor }) {
       name, description: `Read ${name.replaceAll('_', ' ')} in the bound project`, inputSchema: schema(name),
     })); },
     async call(ctx, name, args) {
-      let ref = refOf(name, args || {});
-      const entry = { tool: name, ref, ok: false };
+      // only a delivered read logs a ref: a model's argument could carry question text into the record
+      const entry = { tool: name, ref: '', ok: false };
+      let ref = args?.card_key ?? args?.number ?? args?.path ?? '';
       try {
-        // a refused call logs no ref: the model's raw argument could carry question text into the record
-        if (!ctx.tools.includes(name) || !validate(name, args) || (GITHUB.includes(name) && (!github || !ctx.project.github))) { entry.ref = ''; throw new Error('lookup-refused'); }
+        if (!ctx.tools.includes(name) || !validate(name, args) || (GITHUB.includes(name) && (!github || !ctx.project.github))) throw new Error('lookup-refused');
         if (ctx.signal?.aborted) throw new Error('aborted');
         let result, kind, title, evidence;
         if (name === 'find_cards') {
-          const cards = await source.lookupCards(ctx.signal);
-          const matches = [];
-          for (const card of cards) {
-            if (args.state && mapCard(card).state !== args.state) continue;
-            if (!`${card.card_key} ${card.title || ''}`.toLowerCase().includes(args.text.toLowerCase())) continue;
-            try { matches.push(await source.lookupCard(card.card_key, ctx.signal)); } catch (error) { if (ctx.signal?.aborted) throw error; }
-            if (matches.length === 20) break;
-          }
+          // lookupCards returns in-scope cards only
+          const text = args.text.toLowerCase();
+          const matches = (await source.lookupCards(ctx.signal)).filter((card) => (!args.state || mapCard(card).state === args.state) &&
+            `${card.card_key} ${card.title || ''}`.toLowerCase().includes(text)).slice(0, 20);
           ref = matches.map((x) => x.card_key).join(',');
           kind = 'card';
           result = matches.map((x) => ({ card_key: x.card_key, title: wrap(x.title), state: mapCard(x).state, updated_at: x.updated_at }));
@@ -112,10 +115,18 @@ function createLookups({ source, github, redactor }) {
               .map((x) => ({ author: wrap(x.author || x.user?.login), at: x.at || x.created_at, text: wrap(x.text || x.body) }));
           }
           if (name === 'card_runs') {
-            const run = await source.lookupRun(args.card_key, ctx.signal);
-            if (run.card_key && run.card_key !== args.card_key) throw new Error('card-out-of-scope');
-            result = { state: run.state, result: run.result === 'passed' || run.result === 'failed' ? run.result : 'not-run',
-              summary: wrap(run.summary || run.report?.findings), at: run.at || run.updated_at };
+            // the shapes web/investigations.js reads: the card's record names the run, the run holds the results
+            const found = await source.lookupRun(args.card_key, ctx.signal);
+            if (found.card_key && found.card_key !== args.card_key) throw new Error('card-out-of-scope');
+            const runId = found.detail?.run_id ?? found.run_id;
+            if (typeof runId !== 'string' || !runId) result = { result: 'not-run' };
+            else {
+              const run = await source.investigationState(args.card_key, runId, ctx.signal);
+              if (!run || run.error || (run.card_key && run.card_key !== args.card_key)) throw new Error('source-error');
+              const findings = run.report?.findings;
+              result = { state: run.state === 'done' ? 'completed' : run.state, result: runResult(run.tests),
+                summary: wrap(typeof findings === 'object' ? JSON.stringify(findings) : findings), at: run.at || run.updated_at };
+            }
           }
         } else {
           const number = args.number;
@@ -123,7 +134,7 @@ function createLookups({ source, github, redactor }) {
             const issue = await github.getIssue(ctx, number);
             kind = issue.head === undefined ? 'issue' : 'pr'; title = issue.title;
             evidence = { id: `${ctx.project.github.owner}/${ctx.project.github.repo}#${number}`, kind: kind === 'pr' ? 'pull_request' : 'issue',
-              title: issue.title, state: issue.state === 'closed' ? 'done' : 'left', source_state: issue.state, rule: 'live', basis: 'observed', assignees: [], updated_at: '', evidence: [] };
+              title: issue.title, state: issue.state === 'closed' ? 'done' : kind === 'pr' ? 'in_progress' : 'left', source_state: issue.state, rule: 'live', basis: 'observed', assignees: [], updated_at: '', evidence: [] };
             result = { ...issue, title: wrap(issue.title), body: wrap(issue.body), labels: issue.labels?.map(wrap),
               ...(issue.head === undefined ? {} : { head: wrap(issue.head), base: wrap(issue.base) }) };
           } else if (name === 'issue_comments') { kind = 'issue'; title = `#${number}`; result = (await github.issueComments(ctx, number)).map((x) => ({ ...x, author: wrap(x.author), text: wrap(x.text) })); }
@@ -131,7 +142,9 @@ function createLookups({ source, github, redactor }) {
           else { kind = 'file'; title = args.path; result = await github.readFile(ctx, args.path); if (result.content !== undefined) result.content = wrap(result.content); }
         }
         const safe = cap(redactor.toModel({ result }), 8 * 1024);
-        Object.assign(entry, { ref, ok: true, ...(kind ? { kind } : {}), ...(title ? { title: redactor.toModel(title) } : {}), ...(evidence ? { evidence: redactor.toModel(evidence) } : {}) });
+        const proof = evidence && redactor.toModel(evidence);
+        Object.assign(entry, { ref: redactor.toModel(ref), ok: true, ...(kind ? { kind } : {}),
+          ...(title ? { title: clip(redactor.toModel(title)) } : {}), ...(proof ? { evidence: { ...proof, title: clip(proof.title) } } : {}) });
         return safe;
       } catch { return { error: 'lookup-refused' }; }
       finally { ctx.reads.push(entry); }

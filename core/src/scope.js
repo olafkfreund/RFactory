@@ -40,7 +40,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (scope.investigations_enabled === true && !scope.writes_enabled) throw new Error('investigations-need-writes');
   if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
   const budget = scope.lookup_budget_usd;
-  if (Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
+  if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
@@ -62,9 +62,10 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       const writeFile = fs.statSync(source.write_key_file);
       if (!writeFile.isFile() || (writeFile.mode & 0o777) !== 0o600) throw new Error('write-key-file-mode');
     }
-    if (Object.hasOwn(source, 'github_read')) {
+    // with lookups off the GitHub fields are ignored, so a missing token mount cannot stop start-up
+    if (scope.lookups_enabled && Object.hasOwn(source, 'github_read')) {
       const read = source.github_read;
-      const name = (v) => typeof v === 'string' && /^[\w.-]+$/.test(v);
+      const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
       if (!name(read?.owner) || !name(read.repo) || typeof read.token_file !== 'string' ||
           !path.isAbsolute(read.token_file)) throw new Error('invalid-scope');
       const tokenFile = fs.statSync(read.token_file);
@@ -72,7 +73,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       githubToken = fs.readFileSync(read.token_file, 'utf8').trim();
       if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
     }
-  } else if (scope.source?.kind !== 'github' || scope.writes_enabled || Object.hasOwn(scope.source, 'github_read')) throw new Error('invalid-scope');
+  } else if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
   if (scope.brain?.kind === 'claude-cli' &&
       (typeof scope.brain.home !== 'string' || !path.isAbsolute(scope.brain.home) ||
        !/^(?:[a-fA-F0-9]{64})?$/.test(scope.brain.approved_hash) ||

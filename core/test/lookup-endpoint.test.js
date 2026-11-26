@@ -5,6 +5,7 @@ const http = require('node:http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { createLookupEndpoint } = require('../src/lookup-endpoint.js');
+const { DESKTOP } = require('../src/gateway.js');
 
 const tools = { tools: (ctx) => ctx.tools.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })),
   call: async (_ctx, name) => ({ result: name }) };
@@ -29,7 +30,8 @@ test('wrong and revoked token are unauthorized; tools list is scoped', async () 
     assert.equal(await status(url, 'wrong'), 401);
     const c = await client(url, token);
     assert.deepEqual((await c.listTools()).tools.map((x) => x.name), ['get_card']);
-    assert.equal((await c.callTool({ name: 'Bash', arguments: {} })).isError, true);
+    assert.ok(DESKTOP.length >= 6);
+    for (const name of ['Bash', ...DESKTOP]) assert.equal((await c.callTool({ name, arguments: {} })).isError, true, name);
     assert.equal((await c.callTool({ name: 'get_issue', arguments: {} })).isError, true);
     endpoint.revoke(token);
     assert.equal(ctx.signal.aborted, true);
@@ -70,4 +72,25 @@ test('revoke aborts an in-flight call and destroys its client socket; close hand
   assert.equal(await status(url, token), 401);
   endpoint.register(context());
   await endpoint.close();
+});
+
+test('revoke destroys the socket of a request in flight, though the client keeps it open', async () => {
+  let entered; const started = new Promise((resolve) => { entered = resolve; });
+  const endpoint = createLookupEndpoint({ lookups: { ...tools, async call() { entered(); return new Promise(() => {}); } } });
+  const url = await endpoint.start(); const token = endpoint.register(context());
+  const agent = new http.Agent({ keepAlive: true });
+  try {
+    let socket;
+    const closed = new Promise((resolve) => {
+      const req = http.request(url, { method: 'POST', agent, headers: { Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' } }, (res) => res.on('error', () => {}).resume());
+      req.on('error', () => {});
+      req.on('socket', (s) => { socket = s; s.on('close', () => resolve('closed')); });
+      req.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_card', arguments: {} } }));
+    });
+    await started;
+    assert.equal(socket.destroyed, false);
+    endpoint.revoke(token);
+    assert.equal(await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve('open'), 1000))]), 'closed');
+  } finally { agent.destroy(); await endpoint.close(); }
 });

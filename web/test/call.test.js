@@ -949,13 +949,13 @@ test('end to end: conflicting agent prose and several run_tests results reach TT
 });
 
 // #51: lookups on. The fake brain pushes into the turn context the endpoint was given.
-function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brainTurn, sourceSnapshot } = {}) {
+function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brainTurn, sourceSnapshot, sourceStandup, ttsSay } = {}) {
   const records = [], turns = [], contexts = new Map(), revoked = [];
   const endpoint = {
     register(ctx) { const token = `token-${contexts.size + 1}`; contexts.set(token, ctx); return token; },
     revoke(token) { revoked.push(token); contexts.get(token).controller.abort(); },
   };
-  const f = setup({ sourceSnapshot, brainTurn: async (snap, options) => {
+  const f = setup({ sourceSnapshot, sourceStandup, ttsSay, brainTurn: async (snap, options) => {
     turns.push(options);
     const ctx = options.lookup && contexts.get(options.lookup.token);
     return brainTurn ? brainTurn(ctx, options) : { text: 'FCT-1 is blocked.', cost: 0.1, model: 'claude-x' };
@@ -1051,7 +1051,7 @@ for (const [name, interrupt] of [
 ]) {
   test(`${name} aborts the running lookup: signal seen, one aborted line, no speech or answer`, async () => {
     let first;
-    const f = lookupCall({ brainTurn: (ctx, options) => (first ? new Promise(() => {}) : (first = options.signal, untilAborted(ctx, options))) });
+    const f = lookupCall({ brainTurn: (ctx, options) => (first ? { text: 'Unknown.', cost: 0 } : (first = options.signal, untilAborted(ctx, options))) });
     try {
       await f.manager.start('link');
       await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
@@ -1059,8 +1059,8 @@ for (const [name, interrupt] of [
       await interrupt(f); await settle();
       assert.equal(first.aborted, true);
       assert.equal(f.records.filter((r) => r.outcome === 'aborted').length, 1);
-      assert.equal(f.records.length, 1);
-      f.clock.tick(2000); await settle();
+      f.clock.tick(3000); await settle();
+      f.clock.tick(25000); await settle();
       assert.ok(!f.said().some((s) => /Sorry|One moment|Still looking/.test(s)));
       assert.ok(!f.events.some((e) => e.type === 'answer' && /Sorry/.test(e.text)));
     } finally { await f.end(); }
@@ -1135,5 +1135,56 @@ test('lookups off: no turn context, limits or record, even when the parts are pa
     assert.equal(f.contexts.size, 0);
     assert.equal(f.records.length, 0);
     assert.ok(!f.events.some((e) => e.type === 'limits' || e.sources));
+  } finally { await f.end(); }
+});
+
+test('a cue queued before the abort does not play after it', async () => {
+  const synthesis = deferred();
+  let first = true;
+  const f = lookupCall({ ttsSay: async (s) => { if (s === 'One moment.') await synthesis.promise; return Buffer.from(s); },
+    brainTurn: (ctx, options) => (first ? (first = false, untilAborted(ctx, options)) : { text: 'Unknown.', cost: 0 }) });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+    f.clock.tick(3000); await settle();
+    assert.deepEqual(f.said(), []);
+    await f.heard('2', 'RFactory, what is next?'); await settle();
+    synthesis.resolve(); await settle();
+    assert.deepEqual(f.said(), ['Unknown.']);
+  } finally { await f.end(); }
+});
+
+test('a question drained after its deadline starts no turn: timeout line and the sorry sentence', async () => {
+  const pending = deferred();
+  const f = lookupCall({ sourceStandup: () => pending.promise });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, stand up.');
+    await f.heard('2', 'RFactory, why is FCT-1 blocked?');
+    f.clock.tick(90000); await settle();
+    await finishSpeech(f); // the standup turn's own "One moment."
+    pending.resolve(f.standup); await settle();
+    await finishSpeech(f, 1); await settle();
+    assert.equal(f.turns.length, 0);
+    assert.equal(f.contexts.size, 0);
+    assert.deepEqual(f.records.map((r) => [r.outcome, r.cost, r.rounds]), [['timeout', null, 0]]);
+    assert.equal(f.said().at(-1), "Sorry, I can't answer that right now.");
+    assert.equal(f.manager.current().find((e) => e.type === 'limits').spent_usd, 0);
+  } finally { await f.end(); }
+});
+
+test('a brain that ignores the signal cannot hang the queue', async () => {
+  let calls = 0;
+  const f = lookupCall({ brainTurn: () => (++calls < 3 ? new Promise(() => {}) : { text: 'Unknown.', cost: 0 }) });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+    await f.heard('2', 'RFactory, what is next?'); await settle();
+    assert.equal(calls, 2);
+    f.clock.tick(90000); await settle();
+    await finishSpeech(f); await settle();
+    await f.heard('3', 'RFactory, and now?'); await settle();
+    assert.equal(calls, 3);
+    assert.deepEqual(f.records.map((r) => r.outcome), ['aborted', 'timeout', 'answered']);
   } finally { await f.end(); }
 });

@@ -248,6 +248,14 @@ test('github_read: 600-mode token is read after the CFactory key, into extras an
     const token = 'read-only-token-value';
     fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
     const good = { owner: 'olaf', repo: 'demo.repo', token_file: tokenFile };
+    f.scope.source.github_read = { ...good, token_file: `${tokenFile}-missing` };
+    for (const off of [{}, { lookups_enabled: false }]) {
+      Object.assign(f.scope, off);
+      const secrets = [], extras = {};
+      assert.deepEqual(f.load(secrets), f.scope); // off: a missing token mount must not stop start-up
+      assert.deepEqual([secrets, extras], [[key], {}]);
+    }
+    f.scope.lookups_enabled = true;
     f.scope.source.github_read = good;
     const file = path.join(path.dirname(f.keyFile), 'scope.json');
     const secrets = [], extras = {};
@@ -255,7 +263,7 @@ test('github_read: 600-mode token is read after the CFactory key, into extras an
     loadScope(file, {}, secrets, extras);
     assert.deepEqual(secrets, [key, token]);
     assert.deepEqual(extras, { githubToken: token });
-    for (const bad of [{ ...good, owner: 'a/b' }, { ...good, repo: '' }, { ...good, token_file: 'relative' }, null]) {
+    for (const bad of [{ ...good, owner: 'a/b' }, { ...good, repo: '' }, { ...good, owner: '..' }, { ...good, repo: '.' }, { ...good, token_file: 'relative' }, null]) {
       f.scope.source.github_read = bad;
       assert.throws(() => f.load(), /invalid-scope/);
     }

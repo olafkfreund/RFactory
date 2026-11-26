@@ -314,3 +314,18 @@ test('investigateAvailable reconnects once when the session is dead (a CFactory 
   assert.equal(closed, 1);
   assert.equal(created, 2);
 });
+
+test('only the bounded source refuses redirects and 2 MB bodies; the default one is unchanged', async () => {
+  for (const bounded of [false, true]) {
+    let transport;
+    const big = { ...repos, pad: 'x'.repeat(2 * 1024 * 1024) };
+    const s = createCfactorySource({ mcpUrl: 'https://example.org/mcp', key: 'test-key', repositoryId: 2, timeoutMs: 1000,
+      ...(bounded ? { bounded } : {}),
+      clientFactory: () => ({ connect: async (t) => { transport = t; }, close: async () => {}, callTool: async () => reply(big) }) });
+    if (bounded) await assert.rejects(s.start(), /source-body-too-large/);
+    else await s.start();
+    assert.equal(transport._requestInit.redirect, bounded ? 'error' : undefined);
+    assert.equal(typeof transport._fetch, bounded ? 'function' : 'undefined');
+    assert.deepEqual(transport._requestInit.headers, { Authorization: 'Bearer test-key' });
+  }
+});

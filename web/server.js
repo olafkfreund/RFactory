@@ -252,8 +252,11 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
 }
 
 // #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
-async function composeLookups({ scope, source, redactor, token }) {
+// The lookups read CFactory through their own bounded source; the app's source is untouched.
+async function composeLookups({ scope, key, redactor, token, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
   if (!scope.lookups_enabled) return null;
+  const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
+  await source.start();
   const { createLookups } = require('@rfactory/core/src/lookups.js');
   const { createLookupEndpoint } = require('@rfactory/core/src/lookup-endpoint.js');
   let github = null, binding = null;
@@ -286,7 +289,7 @@ async function main() {
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
   const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
-  const lookup = await composeLookups({ scope, source, redactor, token: extras.githubToken });
+  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged

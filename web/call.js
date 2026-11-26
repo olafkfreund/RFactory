@@ -158,8 +158,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     });
   }
 
-  async function say(c, text, generation = c.generation) {
-    if (call !== c || c.generation !== generation || c.stopping) return;
+  async function say(c, text, generation = c.generation, cancelled = () => false) {
+    if (call !== c || c.generation !== generation || c.stopping || cancelled()) return;
     const sentences = toSpeech(text);
     if (!sentences.length) return;
     const synthesise = (sentence) => Promise.resolve().then(() => c.tts.say(sentence))
@@ -170,15 +170,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let next = synthesise(sentences[0]);
     for (let i = 0; i < sentences.length; i++) {
       const { wav, error } = await next;
-      if (call !== c || c.generation !== generation || c.stopping) return;
+      if (call !== c || c.generation !== generation || c.stopping || cancelled()) return;
       if (error) { log(`tts failed: ${error.message}`); if (c.seq === 0) emit({ type: 'greeting', result: 'failed' }); return; }
       next = i + 1 < sentences.length ? synthesise(sentences[i + 1]) : null;
       await speak(c, c.seq++, wav);
     }
   }
 
-  function queueSpeech(c, text, generation = c.generation) {
-    const playing = c.speech.then(() => say(c, text, generation));
+  function queueSpeech(c, text, generation = c.generation, cancelled) {
+    const playing = c.speech.then(() => say(c, text, generation, cancelled));
     c.speech = playing.catch((error) => log(`speech failed: ${error.message}`));
     return playing;
   }
@@ -214,6 +214,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   }
 
   async function lookupAnswer(c, question, generation) {
+    const stale = () => c.generation !== generation || c.stopping;
+    // it waited in the queue past its deadline: no turn is started
+    if (!stale() && now() >= question.arrivedAt + ANSWER_MS) {
+      recordLookup(question, { outcome: 'timeout' });
+      await queueSpeech(c, SORRY, generation);
+      return;
+    }
     const controller = new AbortController();
     const { signal } = controller;
     const deadline = question.arrivedAt + ANSWER_MS;
@@ -221,12 +228,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       rounds: 0, roundLimited: false, commit: null, reads: [] };
     const token = endpoint.register(ctx);
     c.lookupTurn = ctx;
-    const stale = () => c.generation !== generation || c.stopping;
     if (stale()) controller.abort();
     let expired = false;
+    // a cue still waiting to play when the turn ends or is replaced is dropped
+    const cue = (text) => { if (!signal.aborted) queueSpeech(c, text, generation, () => signal.aborted); };
     const timers = [
-      clock.setTimeout(() => { queueSpeech(c, 'One moment.', generation); }, 3000),
-      clock.setTimeout(() => { queueSpeech(c, 'Still looking.', generation); }, 25000),
+      clock.setTimeout(() => cue('One moment.'), 3000),
+      clock.setTimeout(() => cue('Still looking.'), 25000),
       clock.setTimeout(() => { expired = true; controller.abort(); }, Math.max(0, deadline - now())),
     ];
     const aborted = new Promise((_, reject) => {
@@ -236,8 +244,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let snap, text, outcome, cost = null, model = null;
     try {
       snap = await Promise.race([aborted, snapshot(c)]);
-      const result = await brain.turn(snap, { deadline, question: question.text, signal,
-        lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: usd(budget - c.lookupSpend) } });
+      // raced too: a brain that ignores the signal must not hang the queue
+      const result = await Promise.race([aborted, brain.turn(snap, { deadline, question: question.text, signal,
+        lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: usd(budget - c.lookupSpend) } })]);
       ({ cost = null, model = null } = result);
       if (signal.aborted) throw new Error('aborted');
       const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repository?.toLowerCase() ?? null,
