@@ -257,3 +257,115 @@ test('investigation summary refuses a changed destination before the prompt spaw
   await assert.rejects(s.brain.summarize({ findings: 'x' }), /destination-changed/);
   assert.equal(s.calls.length, 1);
 });
+
+const lookup = { url: 'http://127.0.0.1:5/mcp', token: 'turn-token', tools: ['find_cards', 'get_card'], budgetUsd: 1.5 };
+
+// a lookup turn whose prompt child exits with `code` and `stdout`, or hangs when `hang`
+function lookupBrain(t, { stdout, code = 0, hang = false, clock = () => 0, ignoreTerm = false } = {}) {
+  const s = setup(t);
+  const seen = {};
+  const spawn = (...args) => {
+    const child = s.spawn(...args);
+    if (args[1][0] !== '-p') return child;
+    child.hang = true;
+    const config = args[1][args[1].indexOf('--mcp-config') + 1];
+    seen.config = config;
+    seen.mode = fs.statSync(config).mode & 0o777;
+    seen.dirMode = fs.statSync(path.dirname(config)).mode & 0o777;
+    seen.json = JSON.parse(fs.readFileSync(config, 'utf8'));
+    if (ignoreTerm) {
+      const kill = child.kill;
+      child.kill = (signal) => (signal === 'SIGKILL' ? kill(signal) : s.calls.at(-1).signals.push(signal));
+    }
+    if (!hang) setImmediate(() => { child.stdout.end(stdout); setImmediate(() => child.emit('close', code)); });
+    seen.started?.();
+    return child;
+  };
+  return { ...s, seen, brain: createClaudeBrain(s.scope, makeRedactor([secret]), { spawn, clock }) };
+}
+
+const success = JSON.stringify({ result: `#3 is done. ${secret}`, total_cost_usd: 0.12, modelUsage: { 'claude-x': {} } });
+
+test('lookup turn: exact arguments, private MCP config, no fact check, cost and model', async (t) => {
+  const s = lookupBrain(t, { stdout: success });
+  assert.deepEqual(await s.brain.turn(snapshot, { deadline: 90000, question: 'state?', lookup }),
+    { text: '#3 is done. [redacted]', cost: 0.12, model: 'claude-x' });
+  assert.deepEqual(s.calls[1].args, ['-p', '--restricted', '--tools', '', '--strict-mcp-config',
+    '--no-session-persistence', '--output-format', 'json', '--system-prompt-file',
+    path.join(__dirname, '../src/brains/claude-lookup-system-prompt.txt'),
+    '--mcp-config', s.seen.config, '--allowedTools', 'mcp__rfactory__find_cards,mcp__rfactory__get_card',
+    '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--max-budget-usd', '1.5']);
+  assert.equal(s.seen.mode, 0o600);
+  assert.equal(s.seen.dirMode, 0o700);
+  assert.deepEqual(s.seen.json, { mcpServers: { rfactory: { type: 'http', url: lookup.url,
+    headers: { Authorization: 'Bearer turn-token' } } } });
+  assert.equal(path.dirname(s.seen.config), s.calls[1].options.cwd);
+  assert.equal(fs.existsSync(s.seen.config), false);
+  assert.ok(fs.existsSync(s.calls[1].args[s.calls[1].args.indexOf('--system-prompt-file') + 1]));
+});
+
+test('lookup turn without cost or model reports null', async (t) => {
+  const s = lookupBrain(t, { stdout: JSON.stringify({ result: 'ok' }) });
+  assert.deepEqual(await s.brain.turn(snapshot, { deadline: 90000, lookup }), { text: 'ok', cost: null, model: null });
+});
+
+test('lookup timeout is the time left minus 3 s, with no 40 s clamp', async (t) => {
+  const s = lookupBrain(t, { hang: true });
+  const original = global.setTimeout;
+  const delays = [];
+  t.mock.method(global, 'setTimeout', (callback, ms) => {
+    delays.push(ms);
+    if (ms === 87000) { setImmediate(callback); return 0; }
+    return original(callback, ms);
+  });
+  await assert.rejects(s.brain.turn(snapshot, { deadline: 90000, lookup }), { message: 'brain-timeout' });
+  assert.ok(delays.includes(87000));
+  const late = lookupBrain(t, { hang: true });
+  await assert.rejects(late.brain.turn(snapshot, { deadline: 3000, lookup }), { message: 'brain-timeout' });
+  assert.equal(late.calls.length, 1);
+});
+
+test('lookup failures map to the contract messages', async (t) => {
+  for (const [message, reply, code] of [
+    ['budget-exceeded', { subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 0.3,
+      errors: ['Reached maximum budget ($0.01)'] }, 1],
+    ['budget-exceeded', { subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 0.3 }, 0],
+    ['provider-error', { is_error: true, api_error_status: 529, result: 'x' }, 1],
+    ['provider-error', { is_error: true, result: 'API Error: boom' }, 0],
+    ['provider-error', { is_error: true, errors: ['rate limit reached'] }, 1],
+    ['brain-error', { is_error: true, api_error_status: null, result: 'max turns' }, 1],
+    ['brain-error', { result: 'rate limit is a fine answer' }, 1],
+    ['brain-error', { result: 7 }, 0],
+    ['brain-error', null, 0],
+    ['brain-error', `not json ${secret}`, 1],
+  ]) {
+    const s = lookupBrain(t, { stdout: typeof reply === 'string' ? reply : JSON.stringify(reply), code });
+    await assert.rejects(s.brain.turn(snapshot, { deadline: 90000, lookup }), (error) => {
+      assert.equal(error.message, message, JSON.stringify(reply));
+      if (message === 'budget-exceeded') assert.equal(error.cost, 0.3);
+      return true;
+    });
+  }
+  const changed = lookupBrain(t, { stdout: success });
+  changed.scope.brain.approved_hash = claudeHash({ version: 'different', home: changed.home });
+  await assert.rejects(changed.brain.turn(snapshot, { deadline: 90000, lookup }), { message: 'brain-error' });
+});
+
+test('abort rejects at once and kills a child that ignores SIGTERM', async (t) => {
+  const s = lookupBrain(t, { hang: true, ignoreTerm: true });
+  const controller = new AbortController();
+  s.seen.started = () => setImmediate(() => controller.abort());
+  let closed = false;
+  const pending = s.brain.turn(snapshot, { deadline: 90000, lookup, signal: controller.signal });
+  await assert.rejects(pending, { message: 'aborted' });
+  const call = s.calls[1];
+  call.child.once('close', () => { closed = true; });
+  assert.equal(closed, false);
+  assert.deepEqual(call.signals, ['SIGTERM']);
+  assert.equal(fs.existsSync(call.options.cwd), false);
+  await new Promise((resolve) => call.child.once('close', resolve));
+  assert.deepEqual(call.signals, ['SIGTERM', 'SIGKILL']);
+  await assert.rejects(s.brain.turn(snapshot, { deadline: 90000, lookup, signal: controller.signal }),
+    { message: 'aborted' });
+  assert.equal(s.calls.length, 2);
+});

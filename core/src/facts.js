@@ -16,12 +16,19 @@ const CLAIM = {
 
 function checkFacts(text, snapshot) {
   const items = snapshot.items || [];
-  const counts = summarise(items);
-  const byNumber = new Map(items.map((item) => [Number(item.id.slice(item.id.lastIndexOf('#') + 1)), item]));
-  const byKey = new Map(items.map((item) => [item.id, item]));
   const repo = items[0]?.id.slice(0, items[0].id.lastIndexOf('#')).toLowerCase();
+  return checkFactsDetailed(text, snapshot, { repo }).text;
+}
 
-  return text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
+// evidence: items read live during the turn; they replace snapshot entries, but counts stay the snapshot's
+function checkFactsDetailed(text, snapshot, { repo, evidence = [] }) {
+  const items = snapshot.items || [];
+  const counts = summarise(items);
+  const byKey = new Map([...items, ...evidence].map((item) => [item.id, item]));
+  const byNumber = new Map([...byKey.values()].map((item) => [Number(item.id.slice(item.id.lastIndexOf('#') + 1)), item]));
+  let cut = false;
+
+  const checked = text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
     if (index % 2) return sentence;
     const references = [...sentence.matchAll(REFERENCE)].map((match) => ({
       number: Number(match[3] || match[6] || match[7] || match[8]),
@@ -53,8 +60,10 @@ function checkFacts(text, snapshot) {
       // every state word outside a count must belong to some named item ("#3 is blocked and done")
       !countClaims.some((c) => state.start >= c.index && state.start < c.index + c[0].length) &&
       !references.some((ref) => (ref.key ? byKey.get(ref.key) : byNumber.get(ref.number))?.state === state.state)));
+    if (invalid) cut = true;
     return invalid ? "I couldn't confirm that." : sentence;
   }).join('');
+  return { text: checked, cut };
 }
 
-module.exports = { checkFacts };
+module.exports = { checkFacts, checkFactsDetailed };
