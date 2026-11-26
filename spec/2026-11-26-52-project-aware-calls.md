@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 52
 intent: intent/2026-11-26-52-project-aware-calls.md
 ---
