@@ -379,6 +379,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (c.working || !c.queue.length || c.stopping) return;
     c.working = true;
     const question = c.queue.shift();
+    c.runningBatch = question.batch;
     const generation = c.generation;
     const closed = c.binding && !c.binding.writable && ['share', 'investigate', 'action'].includes(question.kind);
     (closed ? queueSpeech(c, CLOSED, generation) : question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => logFor(c, `answer failed: ${error.message}`)).finally(() => {
@@ -395,6 +396,12 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     // no write path here (or none for this call's project, #52): 1b behaviour
     if (question.kind === 'action' && (!actions || (c.binding && !c.binding.writable)) && !question.desktop) question.kind = 'question';
     if (lookupsOn) question.arrivedAt = now();
+    // #62: one caption block can hold several requests; its scan calls back synchronously, and those form a batch
+    if (c.batch?.id !== item.id) {
+      const batch = c.batch = { id: item.id, queued: 0 };
+      queueMicrotask(() => { if (c.batch === batch) c.batch = null; });
+    }
+    question.batch = c.batch;
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
     if (question.kind === 'leave') {
       c.lookupTurn?.controller.abort();
@@ -406,10 +413,12 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       c.speech = Promise.resolve();
       const timer = clock.setTimeout(() => stopCall(c, 'asked'), 5000);
       queueSpeech(c, 'Leaving now.').finally(() => { clock.clearTimeout(timer); stopCall(c, 'asked'); });
-    } else if (c.working && c.queue.length >= 2) log('dropped question: queue full');
+    } else if (question.batch.queued >= 4) log('dropped question: batch full');
+    else if (!question.batch.queued && c.working && c.queue.length >= 2) log('dropped question: queue full');
     else {
-      // a newer question replaces the lookup that is still running; it records 'aborted' and says nothing
-      if (['question', 'standup'].includes(question.kind)) c.lookupTurn?.controller.abort();
+      // a newer question replaces the lookup that is still running (it records 'aborted' and says nothing), unless both came in one batch
+      if (['question', 'standup'].includes(question.kind) && c.runningBatch !== question.batch) c.lookupTurn?.controller.abort();
+      question.batch.queued++;
       c.queue.push(question); drain(c);
     }
   }
@@ -545,7 +554,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, lookupTurn: null, lookupSpend: 0 };
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
     call = c;
     child.on('error', (error) => { logFor(c, `child failed: ${error.message}`); stopCall(c, 'child error'); });
     child.on('close', () => {

@@ -146,3 +146,18 @@ All pass.
 3. **Steps 1 and 2, the lead's changes:**
    - **One label list:** `core/src/call/hearing.js` exports `SELF_NAMES`, its frozen default, and `web/call.js` imports it instead of keeping a copy.
    - **Two texts outside step 2's file list:** `docs/hearing.md` (the chat message) and `desktop/verify/e2e.sh` (the owner prompt) now say "Factory".
+4. **Step 3 review fixes** (Opus, Codex and agy; Codex and the coder, with the lead):
+   - **The no-replay rule is replaced.** The plan's word-boundary rule across all answers in a block dropped later requests that extend earlier ones ("show the board", then "show the board for Beta"). It also answered twice when a word was completed after a pause ("FCT 16" becoming "FCT 163?"), and when only punctuation changed.
+     - **The new rule uses slots:** each block keeps `slots[i]`, the normalised answered request for its *i*-th wake (lowercased, whitespace collapsed, trailing `[\s.!?,;:]` removed).
+     - **Within a slot,** a request that extends the answered one, or is extended by it, character by character, is the same request.
+     - **A new slot** always dispatches.
+     - **Checked:** the lead simulated 16 review cases with no mismatch, and they are now tests.
+   - **Teams caption edits (known limitation):** Teams can give an edited caption a new id, which replays its request. A rule skipping the same speaker's same request across blocks for 60 s was tried and **removed**, because it also stopped a person asking the same question again, which an existing test covers. Repeats get answered; a Teams punctuation-edit replay stays possible.
+   - **The wake expression:** leading whitespace, a quote or a parenthesis is allowed at the start. A name followed by an apostrophe ("Factory's") doesn't wake.
+   - **Own speech:** an excluded caption also drops its block's pending text and timer, keeping its slots. A resubmitted, unchanged settled turn dispatches at once.
+   - **`SHARE`:** `[\s\S]*` in the board-or-screen check (newlines); "pull up" and "bring … up" count; a leading "please," is allowed.
+   - **Several wakes in one caption** (`web/call.js`, coder):
+     - **The batch:** items from one block in the same synchronous turn form a batch, of at most 4 (`dropped question: batch full` beyond that).
+     - **Within a batch:** a later item doesn't abort the batch's running lookup, and is queued past the limit of 2. A later caption still aborts the running lookup.
+     - **Limits:** a batch arriving at an already full queue is dropped, as today. The 90 s deadline counts from arrival, so a third or fourth lookup in a batch can time out.
+   - **The `selfNames` wiring test** spies on `createHearing`.

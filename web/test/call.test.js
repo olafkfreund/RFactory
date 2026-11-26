@@ -770,10 +770,10 @@ test('desktop mode routes an open request to the desktop proposal and speaks its
   } finally { f.restore(); }
 });
 
-async function shareCall(opts) {
+async function shareCall({ create = createCallManager, ...opts }) {
   const clock = fakeClock();
   const children = [], spoken = [];
-  const manager = createCallManager({ ...opts, source: { snapshot: async () => ({ items: [] }) },
+  const manager = create({ ...opts, source: { snapshot: async () => ({ items: [] }) },
     brain: { turn: async () => { throw new Error('brain must not be asked'); } }, tts: { voice: 'v', say: async (s) => Buffer.from(s) },
     redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'],
     spawn: () => {
@@ -855,9 +855,17 @@ test('with shares off a share utterance is answered "Sharing is turned off here.
 
 test("#62: the greeting names Factory, and the bot's own captions never wake it", async () => {
   const original = process.kill; process.kill = () => {};
+  // the core default is the same list, so only a spy on createHearing proves web/call.js passes it
+  const hearing = require('../../core/src/call/hearing.js'), { createHearing } = hearing;
+  let options;
+  hearing.createHearing = (o) => { options = o; return createHearing(o); };
+  delete require.cache[require.resolve('../call.js')];
+  const fresh = require('../call.js').createCallManager; // binds createHearing at load
+  hearing.createHearing = createHearing;
   try {
     const shares = fakeShares({ status: 202, text: 'Requested.' });
-    const f = await shareCall({ shares });
+    const f = await shareCall({ create: fresh, shares });
+    assert.equal(options.selfNames, hearing.SELF_NAMES);
     f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'state', state: 'in-call' })}\n`);
     for (let n = 0; n < 6; n++) await flush();
     assert.equal(f.said().join(' '), "Factory here. Say 'Factory' and your question."); // synthesised per sentence
@@ -1112,6 +1120,43 @@ for (const [name, interrupt] of [
     } finally { await f.end(); }
   });
 }
+
+test('#62: both requests of a two-wake caption are answered in order; a later caption still aborts', async () => {
+  let later;
+  const asked = [];
+  const f = lookupCall({ brainTurn: (ctx, options) => {
+    asked.push(options.question);
+    if (!/slow/.test(options.question)) return { text: 'Unknown.', cost: 0 };
+    later = options.signal;
+    return untilAborted(ctx, options);
+  } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', "Factory, what's blocked? Factory, give a standup."); await speakAll(f);
+    assert.deepEqual(f.events.filter((e) => e.type === 'question').map((e) => e.kind), ['question', 'standup']);
+    assert.deepEqual(f.records.map((r) => r.outcome), ['answered']);
+    assert.equal(f.events.filter((e) => e.type === 'answer').length, 2);
+    assert.ok(f.events.find((e) => e.type === 'answer').snapshot, 'the question is answered first');
+    await f.heard('2', 'Factory, what is slow? Factory, what is next?'); await settle();
+    assert.equal(later.aborted, false);
+    await f.heard('3', 'Factory, and now?'); await speakAll(f);
+    assert.equal(later.aborted, true);
+    assert.deepEqual(asked, ["what's blocked", 'what is slow', 'what is next?', 'and now?']);
+  } finally { await f.end(); }
+});
+
+test('#62: four requests in one caption are all queued; a fifth is dropped', async () => {
+  const asked = [];
+  const f = lookupCall({ brainTurn: async (ctx, options) => { asked.push(options.question); return { text: 'Unknown.', cost: 0 }; } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'Factory, one? Factory, two? Factory, three? Factory, four? Factory, five?');
+    await speakAll(f); await speakAll(f);
+    assert.deepEqual(asked, ['one', 'two', 'three', 'four']);
+    assert.deepEqual(f.records.map((r) => r.outcome), Array(4).fill('answered'));
+    assert.equal(f.events.filter((e) => e.type === 'log' && /batch full/.test(e.message)).length, 1);
+  } finally { await f.end(); }
+});
 
 test('each failure: spoken line, outcome, cost and logged detail; sources survive', async () => {
   const sorry = "Sorry, I can't answer that right now.";

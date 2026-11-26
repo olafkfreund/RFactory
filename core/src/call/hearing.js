@@ -1,13 +1,13 @@
 'use strict';
 
-const WAKE = /(?:^|[.!?]\s+)(?:(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+))?(?<name>factor(?:y|ies)|r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b/gi;
+const WAKE = /(?:^[\s"'“‘(]*|[.!?]\s+)(?:(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+))?(?<name>factor(?:y|ies)|r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b(?![\'’])/gi;
 // a leave command must START the utterance and end it or a clause ("leave; give a standup" leaves,
 // "why did the build stop?" and "should we leave FCT-1 blocked?" are questions)
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
 // a change request must START with a change verb (optionally "please" / "can you"); "run the standup" stays a standup
 const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
 // a share request starts with a display verb and names the board or screen
-const SHARE = /^(?=.*\b(?:board|screen)\b)[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|bring up|put(?:\s+(?:the|your)\s+(?:board|screen))?\s+up)\b/i;
+const SHARE = /^(?=[\s\S]*\b(?:board|screen)\b)[\s,.:;-]*(?:please[,\s]+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|bring(?:\s+up|\s+[\s\S]*?\s+up)|pull\s+up|put(?:\s+(?:the|your)\s+(?:board|screen))?\s+up)\b/i;
 // an investigation request starts with investigate / find out / look into / "open a terminal ... and ..."
 const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
@@ -24,7 +24,12 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
       let label = speaker.trim().toLowerCase();
       while (true) {
         if (ownNames.includes(label)) {
-          clock.clearTimeout(blocks.get(id)?.timer);
+          const block = blocks.get(id);
+          clock.clearTimeout(block?.timer);
+          if (block) {
+            block.text = '';
+            block.timer = null;
+          }
           return;
         }
         const stripped = label.replace(/\s*\([^)]*\)$/, '');
@@ -32,8 +37,8 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
         label = stripped;
       }
     }
-    const block = blocks.get(id) || { text: '', answered: [], timer: null };
-    if (text === block.text) return;
+    const block = blocks.get(id) || { text: '', slots: [], timer: null };
+    if (text === block.text && !settled) return;
 
     block.text = text;
     block.speaker = speaker;
@@ -44,24 +49,21 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
         block.timer = null;
         const wake = new RegExp(WAKE.source, WAKE.flags);
         let match = wake.exec(block.text);
+        let i = 0;
         while (match) {
           const next = wake.exec(block.text);
           const addressed = block.text.slice(match.index + match[0].length, next?.index ?? block.text.length)
             .replace(/^[\s,.:;!?-]+/, '').trim();
-          const related = block.answered.some((answer) => {
-            const a = answer.toLowerCase();
-            const b = addressed.toLowerCase();
-            const shorter = a.length <= b.length ? a : b;
-            const longer = a.length <= b.length ? b : a;
-            return longer.startsWith(shorter) && (longer.length === shorter.length || /[\s.,;:!?]/.test(longer[shorter.length]));
-          });
-          if (addressed && !related) {
-            block.answered.push(addressed);
+          const n = addressed.toLowerCase().replace(/\s+/g, ' ').replace(/[\s.!?,;:]+$/, '');
+          // a slot answers once: later text that extends it (word completion, punctuation, growth) is the same request
+          if (addressed && !(block.slots[i] && (n.startsWith(block.slots[i]) || block.slots[i].startsWith(n)))) {
+            block.slots[i] = n;
             onAddressed({
               kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
               text: addressed, speaker: block.speaker, id,
             });
           }
+          i++;
           match = next;
         }
       };
