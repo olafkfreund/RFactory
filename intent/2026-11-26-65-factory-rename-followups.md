@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 65
 author: olafkfreund
 parent: intent/2026-11-26-62-bot-name-factory.md
@@ -71,6 +71,8 @@ The #62 live check (2026-11-26, results on #62) left three gaps.
 - **Classification stays as it is:** the rules for share, leave, action, investigate and standup don't change.
 
 ## Open questions
+
+**Owner decision (2026-11-26):** use the recommendations: 1(a) and remove every alias form at once.
 
 1. **When does the name need a separator after it?** Here, a separator means `,` `.` `!` `?` `:` `;`, the Unicode ellipsis or a dash.
    - **(a) Recommended:** at every opening position (block or turn start, and after a sentence end), the name needs a separator right after it, unless "hey", "hi" or "hello" comes before it.
