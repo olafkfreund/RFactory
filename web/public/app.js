@@ -562,6 +562,7 @@ function sourceUrl(repo, { kind, ref }) {
   const value = String(ref);
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return null;
   if (kind === 'file') {
+    if (value.includes('[redacted')) return null; // a redacted path names no real file
     const parts = value.split('/');
     return parts.some((p) => p === '.' || p === '..') ? null : `https://github.com/${repo}/blob/HEAD/${parts.map(encodeURIComponent).join('/')}`;
   }
@@ -672,6 +673,6 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined') {
   module.exports = {
     render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares, loadInvestigations,
-    renderReview, loadReview, renderReviewCard, loadReviewCard,
+    renderReview, loadReview, renderReviewCard, loadReviewCard, sourceUrl,
   };
 }

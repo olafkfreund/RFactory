@@ -422,3 +422,11 @@ All pass. With `lookups_enabled: false`, the existing call and brain tests pass 
    - **Recorded, not fixed:**
      - the Contents API follows a symlink inside the repository to its target file, which stays inside the bound repository;
      - after a local abort, a CFactory HTTP request may stay open upstream, because the SDK only sends a cancellation notice.
+5. **Codex re-check of the fixes (2cc340a):**
+   - It confirmed the path escape is closed, with no new scope escape, no record leak and no change with lookups off.
+   - **Fixed (lead):**
+     - a file source is one value, so a comma in a file name is not split (only `find_cards` card lists are split);
+     - a redacted file path gets no link.
+   - **Recorded, not fixed:**
+     - **The raw snapshot in the `answer` event:** the `answer` event carries the snapshot over SSE, as it did before #51 (`emit({type: 'answer', text, snapshot})`). This is existing behaviour, not a change from this slice. It is noted in the PR as a follow-up.
+     - **A cancelled cue still holds the speech queue** until its speech synthesis resolves (sub-second for "One moment."). A cue already handed to the bot finishes playing.

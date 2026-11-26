@@ -407,3 +407,9 @@ test('lookup limits and sources: links go to CFactory or the bound repository on
   handleCall(doc, { ...limits, exhausted: true, github: null });
   assert.equal(byId['call-limits'].textContent, 'lookup budget used');
 });
+
+test('a redacted or comma-holding file source never gets a wrong link', async () => {
+  const { sourceUrl } = require('../public/app.js');
+  assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'cfg/[redacted].env' }), null);
+  assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'a,b.txt' }), 'https://github.com/o/r/blob/HEAD/a%2Cb.txt');
+});

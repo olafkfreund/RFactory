@@ -28,7 +28,7 @@ function sourcesOf(reads) {
   const sources = new Map();
   for (const { ok, kind, ref, title } of reads) {
     if (!ok) continue;
-    for (const one of String(ref).split(',').filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'
+    for (const one of (kind === 'card' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'; a file name may hold a comma
       const key = `${kind}:${one}`;
       if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title });
     }
