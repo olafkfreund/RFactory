@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 52
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
