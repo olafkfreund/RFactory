@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 62
 intent: intent/2026-11-26-62-bot-name-factory.md
 ---
