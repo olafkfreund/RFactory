@@ -496,7 +496,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Factory' and your question.`); }
+      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });

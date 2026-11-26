@@ -211,7 +211,7 @@ test('audio overrides scope, excludes captions, and settles reverse completions 
     await f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' });
     assert.equal(f.spawnOptions[0].env.RFACTORY_LISTEN, 'audio');
     assert.equal(f.spawnOptions[0].env.RFACTORY_LANGUAGE, 'en-GB');
-    f.children[0].output({ type: 'heard', id: 'caption', speaker: 'Wrong', text: 'RFactory, wrong?' });
+    f.children[0].output({ type: 'heard', id: 'caption', speaker: 'Wrong', text: 'Factory, wrong?' });
     f.children[0].output({ type: 'roster', count: 1, name: 'Alice' });
     f.children[0].output(audio(0));
     f.clock.tick(800);
@@ -221,7 +221,7 @@ test('audio overrides scope, excludes captions, and settles reverse completions 
     second.resolve({ text: 'what changed?' }); await flush();
     f.clock.tick(1200);
     assert.equal(f.events.filter((e) => e.type === 'question').length, 0);
-    first.resolve({ text: 'RFactory,' }); await flush();
+    first.resolve({ text: 'Factory,' }); await flush();
     assert.deepEqual(f.events.filter((e) => e.type === 'question').map((e) => [e.text, e.speaker]), [['what changed?', 'Participant']]);
     assert.equal(f.manager.current().find((e) => e.type === 'roster').name, 'Alice');
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
@@ -229,7 +229,7 @@ test('audio overrides scope, excludes captions, and settles reverse completions 
 });
 
 test('speech keeps a wake-word turn open until its later question arrives', async () => {
-  const f = setup({ stt: { transcribe: async (pcm) => ({ text: pcm[0] ? 'what changed?' : 'RFactory,' }) } });
+  const f = setup({ stt: { transcribe: async (pcm) => ({ text: pcm[0] ? 'what changed?' : 'Factory,' }) } });
   try {
     await f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' });
     f.clock.tick(1000); f.children[0].output(audio(0));
@@ -246,14 +246,14 @@ test('speech keeps a wake-word turn open until its later question arrives', asyn
 
 test('a later utterance is a separate turn and waits behind earlier STT', async () => {
   const first = deferred();
-  const f = setup({ stt: { transcribe: (pcm) => pcm[0] ? Promise.resolve({ text: 'RFactory, second?' }) : first.promise } });
+  const f = setup({ stt: { transcribe: (pcm) => pcm[0] ? Promise.resolve({ text: 'Factory, second?' }) : first.promise } });
   try {
     await f.manager.start('https://teams.live.com/meet/123', { listen: 'audio' });
     f.clock.tick(1000); f.children[0].output(audio(0)); await flush();
     f.clock.tick(1000); f.clock.tick(3000); f.children[0].output(audio(1, 1)); await flush();
     f.clock.tick(1000); await flush();
     assert.equal(f.events.filter((e) => e.type === 'question').length, 0);
-    first.resolve({ text: 'RFactory, first?' }); await flush();
+    first.resolve({ text: 'Factory, first?' }); await flush();
     assert.deepEqual(f.events.filter((e) => e.type === 'question').map((e) => e.text), ['first?', 'second?']);
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
@@ -277,7 +277,7 @@ test('audio pieces are bounded, duplicate pieces rejected, overflow counted and 
     assert.ok(f.manager.current().find((e) => e.type === 'hearing').dropped >= 3);
     const stopping = f.manager.stop();
     assert.ok(signals.every((signal) => signal.aborted));
-    pending.resolve({ text: 'RFactory, should be ignored?' }); await flush();
+    pending.resolve({ text: 'Factory, should be ignored?' }); await flush();
     f.clock.tick(5000);
     assert.equal(f.events.filter((e) => e.type === 'question').length, 0);
     f.children[0].close(); await stopping;
@@ -403,7 +403,7 @@ test('late brain result and playback after stop are dropped', async () => {
   const f = setup({ brainTurn: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('a', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('a', 'Factory, why is FCT-1 blocked?');
     const stopping = f.manager.stop('test');
     f.children[0].close(); await stopping;
     pending.resolve({ text: 'FCT-1 is blocked.' }); await flush();
@@ -416,7 +416,7 @@ test('stop during playback cancels the pending result and sends no later sentenc
   const f = setup({ brainTurn: async () => ({ text: 'First. Second.' }) });
   try {
     await f.manager.start('link');
-    await f.heard('a', 'RFactory, stand up.'); await flush();
+    await f.heard('a', 'Factory, stand up.'); await flush();
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     const stopping = f.manager.stop('test');
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' });
@@ -432,7 +432,7 @@ test('queue holds two waiting questions and drops the third', async () => {
   const f = setup({ brainTurn: () => { turns++; return pending.promise; } });
   try {
     await f.manager.start('link');
-    for (let i = 1; i <= 4; i++) await f.heard(String(i), `RFactory, question ${i}?`);
+    for (let i = 1; i <= 4; i++) await f.heard(String(i), `Factory, question ${i}?`);
     assert.equal(turns, 1);
     assert.ok(f.events.some((e) => e.type === 'log' && /queue full/.test(e.message)));
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
@@ -443,10 +443,10 @@ test('leave bypasses two waiting questions, cancels speech and leaves after spea
   const f = setup();
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
-    await f.heard('2', 'RFactory, question two?');
-    await f.heard('3', 'RFactory, question three?');
-    await f.heard('4', 'RFactory, leave.');
+    await f.heard('1', 'Factory, stand up.');
+    await f.heard('2', 'Factory, question two?');
+    await f.heard('3', 'Factory, question three?');
+    await f.heard('4', 'Factory, leave.');
     await flush();
     assert.ok(f.messages().some((m) => m.type === 'cancel'));
     const leave = f.messages().find((m) => m.type === 'speak' && Buffer.from(m.wav, 'base64').toString() === 'Leaving now.');
@@ -462,7 +462,7 @@ test('leave stops within five seconds when the child never acknowledges speech',
   const f = setup();
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, leave.');
+    await f.heard('1', 'Factory, leave.');
     await flush();
     assert.ok(f.messages().some((m) => m.type === 'speak'));
     f.clock.tick(4999); await flush();
@@ -494,7 +494,7 @@ test('one moment after three seconds, facts check before speech, snapshot on ans
   const f = setup({ brainTurn: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, why is FCT-1 blocked?');
     f.clock.tick(2999); await flush();
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 0);
     f.clock.tick(1); await flush();
@@ -517,7 +517,7 @@ test('sentence two synthesises while sentence one plays', async () => {
   const f = setup({ brainTurn: async () => ({ text: 'First. Second.' }), ttsSay: async (s) => { said.push(s); return Buffer.from(s); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await flush();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await flush();
     assert.deepEqual(said, ['First.', 'Second.']);
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' }); await flush();
@@ -531,9 +531,9 @@ test('snapshot is reused for sixty seconds within a call', async () => {
   const f = setup({ sourceSnapshot: async () => { fetches++; return { items: f.snapshot.items, fetched_at: 'today' }; } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await flush();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await flush();
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' }); await flush();
-    await f.heard('2', 'RFactory, why is FCT-1 blocked?'); await flush();
+    await f.heard('2', 'Factory, why is FCT-1 blocked?'); await flush();
     assert.equal(fetches, 1);
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
@@ -544,7 +544,7 @@ test('standup speaks a local headline and emits only text and counts', async () 
   const f = setup({ brainTurn: async () => { turns++; throw new Error('brain-called'); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.'); await flush();
+    await f.heard('1', 'Factory, stand up.'); await flush();
     const answer = f.events.find((e) => e.type === 'answer');
     assert.deepEqual(Object.keys(answer).sort(), ['counts', 'text', 'type']);
     assert.deepEqual(answer.counts, { done: 0, now: 0, missing: 0, next: 1, issues: 0, unknown: 0, backlog: 0 });
@@ -566,28 +566,28 @@ test('standup cache is separate and a warm question snapshot keeps its read time
   });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, why is FCT-1 blocked?');
     let spoken = await finishSpeech(f);
     const original = structuredClone(inputs[0]);
     f.clock.tick(100);
-    await f.heard('2', 'RFactory, stand up.');
+    await f.heard('2', 'Factory, stand up.');
     spoken = await finishSpeech(f, spoken);
-    await f.heard('3', 'RFactory, stand up.');
+    await f.heard('3', 'Factory, stand up.');
     spoken = await finishSpeech(f, spoken);
     assert.equal(standups, 1);
     f.clock.tick(100);
-    await f.heard('4', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('4', 'Factory, why is FCT-1 blocked?');
     spoken = await finishSpeech(f, spoken);
     assert.equal(reads, 1);
     assert.deepEqual(inputs[0], original);
     assert.deepEqual(inputs[1], original);
     f.clock.tick(59800); // the original snapshot expires at 60 s, even though the standup was newer
-    await f.heard('5', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('5', 'Factory, why is FCT-1 blocked?');
     spoken = await finishSpeech(f, spoken);
     assert.equal(reads, 2);
     assert.equal(inputs[2].fetched_at, 'read-2');
     f.clock.tick(100); // the standup fetched at 100 ms has now expired
-    await f.heard('6', 'RFactory, stand up.');
+    await f.heard('6', 'Factory, stand up.');
     await finishSpeech(f, spoken);
     assert.equal(standups, 2);
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
@@ -599,7 +599,7 @@ test('a slow standup read still says One moment after three seconds', async () =
   const f = setup({ sourceStandup: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
+    await f.heard('1', 'Factory, stand up.');
     f.clock.tick(2999); await flush();
     assert.equal(f.messages().filter((m) => m.type === 'speak').length, 0);
     f.clock.tick(1); await flush();
@@ -615,7 +615,7 @@ test('failed standup reads log only a code and speak the existing fallback', asy
   const f = setup({ sourceStandup: async () => { throw new Error('private-marker'); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.'); await flush();
+    await f.heard('1', 'Factory, stand up.'); await flush();
     assert.ok(f.events.some((e) => e.type === 'log' && e.message === 'source failed: source-error'));
     assert.doesNotMatch(JSON.stringify(f.events), /private-marker/);
     assert.equal(f.events.filter((e) => e.type === 'answer').length, 0);
@@ -630,7 +630,7 @@ test('a standup result arriving after stop emits no answer', async () => {
   const f = setup({ sourceStandup: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
+    await f.heard('1', 'Factory, stand up.');
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
     pending.resolve(f.standup); await flush();
     assert.equal(f.events.filter((e) => e.type === 'answer').length, 0);
@@ -642,7 +642,7 @@ test('slow source triggers one moment at three seconds and brain failure speaks 
   const f = setup({ sourceSnapshot: () => pending.promise, brainTurn: async () => { throw new Error('brain-timeout'); } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, why is FCT-1 blocked?');
     f.clock.tick(3000); await flush();
     const moment = f.messages().find((m) => m.type === 'speak');
     assert.equal(Buffer.from(moment.wav, 'base64').toString(), 'One moment.');
@@ -661,7 +661,7 @@ test('caption credentials are redacted for brain, events and logs; malformed and
   const f = setup({ brainTurn: async (_snap, opts) => { question = opts.question; return { text: 'Unknown.' }; } });
   try {
     await f.manager.start('link');
-    await f.heard('1', `RFactory, what is ${token}?`, `Name ${token}`); await flush();
+    await f.heard('1', `Factory, what is ${token}?`, `Name ${token}`); await flush();
     assert.ok(question.includes('[redacted]'));
     assert.ok(!JSON.stringify(f.events).includes(token));
     f.children[0].stdout.emit('data', `{bad ${token}\n`);
@@ -698,7 +698,7 @@ test('action utterances go to actions.request and the server sentence is spoken;
       } });
     await manager.start('link');
     assert.deepEqual(actions.started, [1]);
-    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'RFactory, create a card called Login', final: true })}\n`);
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'Factory, create a card called Login', final: true })}\n`);
     clock.tick(1500); await flush(); await flush();
     assert.deepEqual(actions.requests, [['create a card called Login', 'Eve']]);
     const wav = spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s)).find((m) => m.type === 'speak');
@@ -735,7 +735,7 @@ test('build status question with writes on falls back to the spoken question ans
       spawn: () => { const c = new EventEmitter(); c.pid = 7; c.stdin = new EventEmitter(); c.stdin.write = (line) => { spoken.push(line); return true; };
         c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {}; c.stderr = new EventEmitter(); children.push(c); return c; } });
     await manager.start('link');
-    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'RFactory, build status of FCT-3?' })}\n`);
+    children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'Factory, build status of FCT-3?' })}\n`);
     clock.tick(1500); await flush(); await flush();
     assert.ok(spoken.some((line) => line.startsWith('{') && JSON.parse(line).type === 'speak' &&
       Buffer.from(JSON.parse(line).wav, 'base64').toString() === 'F C T 3 is building.'));
@@ -747,7 +747,7 @@ test('without an actions manager an action utterance is an ordinary question', a
   const f = setup();
   try {
     await f.manager.start('link');
-    await f.heard(1, 'RFactory, create a card called Login');
+    await f.heard(1, 'Factory, create a card called Login');
     assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
   } finally { f.restore(); }
@@ -759,7 +759,7 @@ test('desktop mode routes an open request to the desktop proposal and speaks its
     brainTurn: async () => { throw new Error('question brain must not run'); } });
   try {
     await f.manager.start('link');
-    await f.heard(1, 'RFactory, open the preview page');
+    await f.heard(1, 'Factory, open the preview page');
     await flush();
     assert.equal(requests[0][0], 'open the preview page');
     assert.equal(requests[0][1], 'd1');
@@ -808,7 +808,7 @@ test('share utterance goes to shares.request; the refusal is spoken and replayed
     const shares = fakeShares({ status: 409, text: `I can't share the board right now: ${reason}.` });
     const f = await shareCall({ shares });
     assert.deepEqual(shares.started, [[1, { desktop: null }]]);
-    await f.heard('RFactory, show the board');
+    await f.heard('Factory, show the board');
     assert.equal(shares.requests.length, 1);
     assert.ok(f.said().includes(`I can't share the board right now: ${reason}.`));
     assert.deepEqual(f.manager.current().filter((e) => e.type === 'share-unavailable'), [{ type: 'share-unavailable', share: { reason } }]);
@@ -822,7 +822,7 @@ test('share events are spoken only in the call that asked and are forwarded with
   try {
     const shares = fakeShares({ status: 202, text: "I'd like to share the CFactory board. Approve it on the RFactory page.", share: { id: 's1' } });
     const f = await shareCall({ shares });
-    await f.heard('RFactory, show the board');
+    await f.heard('Factory, show the board');
     assert.ok(f.said().some((s) => /share the CFactory board/.test(s)));
     const fire = (event) => { for (const fn of shares.subs) fn(event); };
     fire({ type: 'share-updated', share: { id: 'other', state: 'running' } }); // not this call's share
@@ -847,7 +847,7 @@ test('with shares off a share utterance is answered "Sharing is turned off here.
   const original = process.kill; process.kill = () => {};
   try {
     const f = await shareCall({});
-    await f.heard('RFactory, show the board');
+    await f.heard('Factory, show the board');
     assert.ok(f.said().includes('Sharing is turned off here.'));
     const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
   } finally { process.kill = original; }
@@ -868,7 +868,7 @@ test("#62: the greeting names Factory, and the bot's own captions never wake it"
     assert.equal(options.selfNames, hearing.SELF_NAMES);
     f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'state', state: 'in-call' })}\n`);
     for (let n = 0; n < 6; n++) await flush();
-    assert.equal(f.said().join(' '), "Factory here. Say 'Factory' and your question."); // synthesised per sentence
+    assert.equal(f.said().join(' '), "Factory here. Say 'Hey Factory' and your question."); // synthesised per sentence
     for (const speaker of ['You', 'Factory (AI)', 'Factory (AI) (Guest)', 'RFactory Bot (AI)', 'RFactory Bot']) {
       f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: speaker, speaker, text: 'Factory, show the board', final: true })}\n`);
       await f.heard('no wake here'); // advances the quiet timer
@@ -903,7 +903,7 @@ test('investigate utterances reach investigations, not the desktop; sentences ar
   try {
     const investigations = fakeInvestigations({ status: 202, text: 'Approve the investigation on the RFactory page.', investigation: { id: 'i1' } });
     const f = await shareCall({ investigations, desktop: { request: async () => { throw new Error('desktop must not be asked'); } } });
-    await f.heard('RFactory, open a terminal on notes-api and run the tests');
+    await f.heard('Factory, open a terminal on notes-api and run the tests');
     assert.deepEqual(investigations.requests, [['open a terminal on notes-api and run the tests', 'Eve', false]]);
     assert.deepEqual(investigations.started, [[1]]);
     const update = (id, state, reason) => investigations.fire({ type: 'investigation-updated', investigation: { id, state, reason } });
@@ -930,7 +930,7 @@ test('the summary is redacted again immediately before speech', async () => {
   try {
     const investigations = fakeInvestigations({ status: 202, text: 'Approve it.', investigation: { id: 'i1' } });
     const f = await shareCall({ investigations });
-    await f.heard('RFactory, find out why the tests fail');
+    await f.heard('Factory, find out why the tests fail');
     investigations.fire({ type: 'investigation-result', investigation: { id: 'i1' },
       counts: ['npm test: 41 passed, 1 failed, 0 skipped.'], summary: `The key is ${'f'.repeat(48)} in the config.` });
     for (let n = 0; n < 12; n++) await flush();
@@ -945,7 +945,7 @@ test('with investigations off an investigate utterance is answered "Investigatio
   const original = process.kill; process.kill = () => {};
   try {
     const f = await shareCall({});
-    await f.heard('RFactory, find out why the tests fail');
+    await f.heard('Factory, find out why the tests fail');
     assert.ok(f.said().includes('Investigations are turned off here.'));
     const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
   } finally { process.kill = original; }
@@ -969,7 +969,7 @@ test('end to end: conflicting agent prose and several run_tests results reach TT
       brain: { summarize: async () => ({ text: `All 50 tests passed. The key is ${'f'.repeat(48)} in the config.` }) } });
     await investigations.recover();
     const f = await shareCall({ investigations });
-    await f.heard('RFactory, find out why the tests fail');
+    await f.heard('Factory, find out why the tests fail');
     const [pending] = investigations.list().pending;
     await investigations.approve(pending.id, 'owner@example.com', pending.hash);
     for (let n = 0; n < 6; n++) await flush();
@@ -1012,7 +1012,7 @@ test('a lookup answer is spoken as at most 3 sentences without markdown; the pag
     ttsSay: async (t) => { tts.push(t); return Buffer.from(t); } });
   try {
     await f.manager.start('link');
-    await f.heard('q1', 'RFactory, what is the state?'); await settle();
+    await f.heard('q1', 'Factory, what is the state?'); await settle();
     assert.equal(f.events.find((e) => e.type === 'answer').text, long);
     // synthesis runs one sentence ahead of playback; the cap itself is checked on spoken() below
     assert.deepEqual(tts.filter((t) => !/^One moment|^Factory here/.test(t)), ['One is done.', 'Two is open.']);
@@ -1033,7 +1033,7 @@ test('lookup turn: context, brain options, live evidence, delivered sources, one
   } });
   try {
     await f.manager.start('link');
-    await f.heard('q1', 'RFactory, secretword about FCT-1?'); await settle();
+    await f.heard('q1', 'Factory, secretword about FCT-1?'); await settle();
     const [turn] = f.turns;
     assert.equal(turn.deadline, 1500 + 90000);
     assert.equal(turn.question, 'secretword about FCT-1?');
@@ -1057,7 +1057,7 @@ test('without a GitHub binding only the Factory tools are offered', async () => 
   const f = lookupCall({ github: null });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
     assert.deepEqual(f.turns[0].lookup.tools, ['find_cards', 'get_card', 'card_comments', 'card_runs']);
     assert.equal(f.manager.current().find((e) => e.type === 'limits').github, null);
   } finally { await f.end(); }
@@ -1068,7 +1068,7 @@ test('the deadline counts from arrival, including a slow snapshot; Still looking
   const f = lookupCall({ sourceSnapshot: () => pending.promise, brainTurn: untilAborted });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, why is FCT-1 blocked?');
     f.clock.tick(25000); await settle();
     let index = 0;
     for (let n = 0; n < 2; n++) { await settle(); const m = f.messages().filter((x) => x.type === 'speak')[index++];
@@ -1090,7 +1090,7 @@ test('the deadline ends a turn whose snapshot never arrives', async () => {
   const f = lookupCall({ sourceSnapshot: () => new Promise(() => {}) });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, why is FCT-1 blocked?');
     f.clock.tick(90000); await settle();
     assert.equal(f.records[0].outcome, 'timeout');
     assert.equal(f.turns.length, 0);
@@ -1098,9 +1098,9 @@ test('the deadline ends a turn whose snapshot never arrives', async () => {
 });
 
 for (const [name, interrupt] of [
-  ['a new question', (f) => f.heard('2', 'RFactory, what is next?')],
-  ['a standup', (f) => f.heard('2', 'RFactory, stand up.')],
-  ['a leave', (f) => f.heard('2', 'RFactory, leave.')],
+  ['a new question', (f) => f.heard('2', 'Factory, what is next?')],
+  ['a standup', (f) => f.heard('2', 'Factory, stand up.')],
+  ['a leave', (f) => f.heard('2', 'Factory, leave.')],
   ['Stop', (f) => { f.manager.stop(); }],
 ]) {
   test(`${name} aborts the running lookup: signal seen, one aborted line, no speech or answer`, async () => {
@@ -1108,7 +1108,7 @@ for (const [name, interrupt] of [
     const f = lookupCall({ brainTurn: (ctx, options) => (first ? { text: 'Unknown.', cost: 0 } : (first = options.signal, untilAborted(ctx, options))) });
     try {
       await f.manager.start('link');
-      await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+      await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
       assert.equal(first.aborted, false);
       await interrupt(f); await settle();
       assert.equal(first.aborted, true);
@@ -1172,7 +1172,7 @@ test('each failure: spoken line, outcome, cost and logged detail; sources surviv
     } });
     try {
       await f.manager.start('link');
-      await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+      await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
       assert.equal(f.records.length, 1);
       assert.deepEqual([f.records[0].outcome, f.records[0].cost], [outcome, extra.cost ?? null], message);
       assert.deepEqual(f.said(), [spoken]);
@@ -1190,7 +1190,7 @@ test('a cut claim or a refused round makes the answer partial', async () => {
     const f = lookupCall({ brainTurn });
     try {
       await f.manager.start('link');
-      await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+      await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
       assert.equal(f.records[0].outcome, 'answered-partial');
     } finally { await f.end(); }
   }
@@ -1203,7 +1203,7 @@ test('budget: unreported cost counts $0.25, the turn gets the rest, then snapsho
     const limits = { type: 'limits', budget_usd: 0.4, spent_usd: 0, answer_seconds: 90, lookups_per_question: 8, exhausted: false, github: 'Olaf/Demo' };
     assert.deepEqual(f.manager.current().find((e) => e.type === 'limits'), limits);
     for (let n = 0; n < 3; n++) {
-      await f.heard(String(n), `RFactory, question number ${n}?`); await settle();
+      await f.heard(String(n), `Factory, question number ${n}?`); await settle();
       await finishSpeech(f, n);
     }
     assert.deepEqual(f.turns.map((t) => t.lookup?.budgetUsd), [0.4, 0.15, undefined]);
@@ -1221,7 +1221,7 @@ test('lookups off: no turn context, limits or record, even when the parts are pa
   const f = lookupCall({ scope: { lookups_enabled: false } });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
     assert.deepEqual(Object.keys(f.turns[0]), ['deadline', 'question']);
     assert.equal(f.contexts.size, 0);
     assert.equal(f.records.length, 0);
@@ -1236,10 +1236,10 @@ test('a cue queued before the abort does not play after it', async () => {
     brainTurn: (ctx, options) => (first ? (first = false, untilAborted(ctx, options)) : { text: 'Unknown.', cost: 0 }) });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
     f.clock.tick(3000); await settle();
     assert.deepEqual(f.said(), []);
-    await f.heard('2', 'RFactory, what is next?'); await settle();
+    await f.heard('2', 'Factory, what is next?'); await settle();
     synthesis.resolve(); await settle();
     assert.deepEqual(f.said(), ['Unknown.']);
   } finally { await f.end(); }
@@ -1250,8 +1250,8 @@ test('a question drained after its deadline starts no turn: timeout line and the
   const f = lookupCall({ sourceStandup: () => pending.promise });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, stand up.');
-    await f.heard('2', 'RFactory, why is FCT-1 blocked?');
+    await f.heard('1', 'Factory, stand up.');
+    await f.heard('2', 'Factory, why is FCT-1 blocked?');
     f.clock.tick(90000); await settle();
     await finishSpeech(f); // the standup turn's own "One moment."
     pending.resolve(f.standup); await settle();
@@ -1269,12 +1269,12 @@ test('a brain that ignores the signal cannot hang the queue', async () => {
   const f = lookupCall({ brainTurn: () => (++calls < 3 ? new Promise(() => {}) : { text: 'Unknown.', cost: 0 }) });
   try {
     await f.manager.start('link');
-    await f.heard('1', 'RFactory, why is FCT-1 blocked?'); await settle();
-    await f.heard('2', 'RFactory, what is next?'); await settle();
+    await f.heard('1', 'Factory, why is FCT-1 blocked?'); await settle();
+    await f.heard('2', 'Factory, what is next?'); await settle();
     assert.equal(calls, 2);
     f.clock.tick(90000); await settle();
     await finishSpeech(f); await settle();
-    await f.heard('3', 'RFactory, and now?'); await settle();
+    await f.heard('3', 'Factory, and now?'); await settle();
     assert.equal(calls, 3);
     assert.deepEqual(f.records.map((r) => r.outcome), ['aborted', 'timeout', 'answered']);
   } finally { await f.end(); }
@@ -1307,8 +1307,8 @@ test('a project call greets by name, keeps its project event, reads its own view
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
     f.children[0].output({ type: 'state', state: 'in-call' });
     await speakAll(f);
-    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Factory' and your question\./);
-    await f.heard('q', 'RFactory, what is blocked?');
+    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Hey Factory' and your question\./);
+    await f.heard('q', 'Factory, what is blocked?');
     await speakAll(f);
     assert.deepEqual(turns, ['Alpha card']);
     await endCall(f);
@@ -1362,7 +1362,7 @@ test('writes: a project without the default repository answers an action as a qu
   const f = setup({ brainTurn: async (snapshot, options) => { turns.push(options.question); return { text: 'Unknown.' }; }, extra: { actions } });
   try {
     await f.manager.start('link', { binding: bindingFor('Alpha', [3], false), view: viewFor('card') });
-    await f.heard('a', 'RFactory, build status of FCT-1?');
+    await f.heard('a', 'Factory, build status of FCT-1?');
     await speakAll(f);
     assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
     assert.equal(turns.length, 1);
@@ -1379,7 +1379,7 @@ test('writes: a project without the default repository refuses investigations, s
     try {
       await f.manager.start('link', { binding: bindingFor('Alpha', [writable ? 2 : 3], writable), view: viewFor('card') });
       for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure'], ['d', 'open the settings page']]) {
-        await f.heard(id, `RFactory, ${text}`);
+        await f.heard(id, `Factory, ${text}`);
         await speakAll(f);
       }
       const managers = [actions, shares, investigations];
@@ -1400,7 +1400,7 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
   try {
     for (const [n, binding] of [bindingFor('Alpha', [1, 2], true), bindingFor('Beta', [3], false)].entries()) {
       await f.manager.start('link', { binding, view: viewFor('card') });
-      await f.heard(`q${n}`, 'RFactory, what is blocked?');
+      await f.heard(`q${n}`, 'Factory, what is blocked?');
       await speakAll(f);
       assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.writable ? 'Olaf/Demo' : null);
       await endCall(f);
@@ -1423,7 +1423,7 @@ test('an earlier call\'s farewell, Leave timer and STT cannot stop or log into t
     await flush();
     await endCall(f);
     await f.manager.start('link', { listen: 'platform' }); // this one asks to leave, then ends first
-    await f.heard('bye', 'RFactory, leave');
+    await f.heard('bye', 'Factory, leave');
     await endCall(f);
     await f.manager.start('link', { listen: 'platform' });
     const from = f.events.length;
@@ -1478,7 +1478,7 @@ test('a project standup is read from the call\'s own view', async () => {
   const f = setup({ sourceStandup: async () => { throw new Error('default-source-read'); } });
   try {
     await f.manager.start('link', { binding: bindingFor('Alpha', [1], false), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
-    await f.heard('s', 'RFactory, standup');
+    await f.heard('s', 'Factory, standup');
     await speakAll(f);
     assert.deepEqual(read, ['view']);
     assert.ok(f.events.some((e) => e.type === 'answer' && e.counts));

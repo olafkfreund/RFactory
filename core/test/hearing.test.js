@@ -35,23 +35,28 @@ function setup(quietMs) {
 }
 
 test('every wake form works at opening positions with optional greetings', () => {
-  const forms = ['factory', 'rfactory', 'r factory', 'r-factory', 'our factory', 'are factory',
-    'art factory', 'or factory', 'ah factory'];
+  const forms = ['factory', 'factories'];
   for (const form of forms) {
-    for (const wake of [form, form.replace(/factory$/, 'factories')]) {
-      for (const name of [wake, wake.toUpperCase()]) {
-        for (const prefix of ['', 'Done. ', 'Done! ', 'Done? ', 'Hey ', 'Hi, ', 'OK, ', 'Okay ', 'Hello ']) {
-          const { clock, addressed, heard } = setup();
-          heard('a', `${prefix}${name}, what changed?`);
-          clock.tick(1500);
-          assert.deepEqual(addressed, [{ kind: 'question', text: 'what changed?', speaker: 'Owner', id: 'a' }], `${prefix}${name}`);
-        }
+    for (const name of [form, form.toUpperCase()]) {
+      for (const prefix of ['', 'Done. ', 'Done! ', 'Done? ', 'Hey ', 'Hi, ', 'OK, ', 'Okay ', 'Hello ']) {
+        const { clock, addressed, heard } = setup();
+        heard('a', `${prefix}${name}, what changed?`);
+        clock.tick(1500);
+        assert.deepEqual(addressed, [{ kind: 'question', text: 'what changed?', speaker: 'Owner', id: 'a' }], `${prefix}${name}`);
       }
+    }
+  }
+  for (const name of forms) {
+    for (const prefix of ['Hey ', 'Hi, ', 'Hello ', 'OK ', 'Okay ', '']) {
+      const { clock, addressed, heard } = setup();
+      heard('a', `${prefix}${name} what changed?`);
+      clock.tick(1500);
+      assert.deepEqual(addressed.map(({ text }) => text), /^(Hey|Hi|Hello)/.test(prefix) ? ['what changed?'] : [], `${prefix}${name}`);
     }
   }
 });
 
-test('Phase 0 captions wake, ordinary talk and speaker names do not', () => {
+test('mid-sentence mentions and alias forms do not wake', () => {
   const { clock, addressed, heard } = setup();
   heard('one', 'Yes, I can. This is our Factory. Test stand up.');
   heard('two', 'Are factory stand up 1, 2, 3.');
@@ -61,20 +66,106 @@ test('Phase 0 captions wake, ordinary talk and speaker names do not', () => {
   for (const [id, text] of ['HeyFactory, status?', 'hifactory, status?', 'OKRFactory, status?',
     'check the factory floor', 'CFactory shows three cards'].entries()) heard(`negative-${id}`, text);
   clock.tick(1500);
-  assert.deepEqual(addressed.map(({ kind, text, id }) => ({ kind, text, id })), [
-    { kind: 'standup', text: 'stand up 1, 2, 3.', id: 'two' },
-    { kind: 'standup', text: 'stand up one, two, three.', id: 'three' },
-  ]);
+  assert.deepEqual(addressed, []);
+});
+
+test('plain mentions, possessives, hyphenated names and old aliases do not wake', () => {
+  for (const text of [
+    'Factory pipeline is red.', 'We fixed it. Factory pipeline is red.',
+    'Okay factory builds failed.', "OK, Factory what's blocked?",
+    'factory-floor is closed.', "Factory's build is red.",
+    "Hey Factory's build is red.", 'Hey Factory-floor is closed.',
+    'RFactory, status?', 'R Factory, status?', 'Our Factory, status?',
+    'R factories stand up one, two, three.',
+    // a greeting said as its own sentence does not excuse a missing separator
+    'Hi. Factory pipeline is red.', 'Hey! Factory pipeline is red.', 'Hello. Factory builds are slow.',
+    // curly apostrophe, plural possessive, non-breaking hyphen, a hyphen on the next word
+    'Factory’s build is red.', "Factories' builds are red.", 'Hey Factory\u2011floor needs a standup.',
+    'Factory -1 is the exit code.',
+  ]) {
+    const { clock, addressed, heard } = setup();
+    heard('a', text);
+    clock.tick(1500);
+    assert.deepEqual(addressed, [], text);
+  }
+});
+
+test('separators wake and leading punctuation is removed before routing', () => {
+  for (const [text, kind, request] of [
+    ['Factory. Share your screen.', 'share', 'Share your screen.'],
+    ["Factory - what's blocked?", 'question', "what's blocked?"],
+    ["Factory … what's blocked?", 'question', "what's blocked?"],
+    ["Factory — what's blocked?", 'question', "what's blocked?"],
+    ["Factory—what's blocked?", 'question', "what's blocked?"],
+    ['Factory - share your screen', 'share', 'share your screen'],
+    ['Factory … leave', 'leave', 'leave'],
+    ['We fixed it… Factory, status?', 'question', 'status?'],
+    ['Factory , status?', 'question', 'status?'],
+    ["Okay, Factory, what's blocked?", 'question', "what's blocked?"],
+    ["OK, Factory, what's blocked?", 'question', "what's blocked?"],
+    ['Factory: status?', 'question', 'status?'],
+    ['Factory; status?', 'question', 'status?'],
+    ['Factory! Status?', 'question', 'Status?'],
+    ['Factory – status?', 'question', 'status?'],
+    ['Factory–status?', 'question', 'status?'],
+    ['Factory... status?', 'question', 'status?'],
+    ['Hi. Factory, status?', 'question', 'status?'],
+    ['Hey, Factory status?', 'question', 'status?'],
+  ]) {
+    const { clock, addressed, heard } = setup();
+    heard('a', text);
+    clock.tick(1500);
+    assert.deepEqual(addressed.map(({ kind: actualKind, text: actualText }) => [actualKind, actualText]), [[kind, request]], text);
+  }
+});
+
+test('rejected boundaries still delimit requests and retain their slot numbers', () => {
+  for (const [text, expected] of [
+    ["Factory? Factory, what's blocked?", [{ kind: 'question', text: "what's blocked?" }]],
+    ["Factory, what's blocked? Factory give a standup.", [{ kind: 'question', text: "what's blocked" }]],
+    ['Factory, show the results? Factory board pipeline is red.', [{ kind: 'question', text: 'show the results' }]],
+    // possessive and hyphenated names are boundaries too, so they never change the request before them
+    ['Factory, show the results. Factory-floor screen is red.', [{ kind: 'question', text: 'show the results' }]],
+    ["Factory, status? Factory’s build is red.", [{ kind: 'question', text: 'status' }]],
+  ]) {
+    const { clock, addressed, heard } = setup();
+    heard('a', text);
+    clock.tick(1500);
+    assert.deepEqual(addressed.map(({ kind, text: request }) => ({ kind, text: request })), expected, text);
+  }
+});
+
+test('separator edits neither replay earlier slots nor block newly accepted slots', () => {
+  const first = setup();
+  for (const [text, expected] of [
+    ['Factory, first? Factory, second?', ['first', 'second?']],
+    ['Factory first? Factory, second?', ['first', 'second?']],
+    ['Factory, first? Factory, second?', ['first', 'second?']],
+  ]) {
+    first.heard('a', text);
+    first.clock.tick(1500);
+    assert.deepEqual(first.addressed.map(({ text: request }) => request), expected);
+  }
+
+  const second = setup();
+  for (const [text, expected] of [
+    ['Factory, first? Factory second?', ['first']],
+    ['Factory, first? Factory, second?', ['first', 'second?']],
+  ]) {
+    second.heard('a', text);
+    second.clock.tick(1500);
+    assert.deepEqual(second.addressed.map(({ text: request }) => request), expected);
+  }
 });
 
 test('growth resets the timer and 1.5 seconds of quiet completes once', () => {
   const { clock, addressed, heard } = setup();
-  heard('a', 'RFactory, what');
+  heard('a', 'Factory, what');
   clock.tick(1499);
-  heard('a', 'RFactory, what changed?');
+  heard('a', 'Factory, what changed?');
   clock.tick(1499);
   assert.equal(addressed.length, 0);
-  heard('a', 'RFactory, what changed?');
+  heard('a', 'Factory, what changed?');
   clock.tick(1);
   assert.deepEqual(addressed, [{ kind: 'question', text: 'what changed?', speaker: 'Owner', id: 'a' }]);
   clock.tick(1500);
@@ -83,9 +174,9 @@ test('growth resets the timer and 1.5 seconds of quiet completes once', () => {
 
 test('a settled audio turn dispatches immediately while captions keep their quiet timer', () => {
   const { clock, addressed, heard } = setup();
-  heard('caption', 'RFactory, later?');
+  heard('caption', 'Factory, later?');
   const audio = createHearing({ clock, onAddressed: (item) => addressed.push(item) });
-  audio.heard({ id: 'audio', speaker: 'Alice', text: 'RFactory, now?', settled: true });
+  audio.heard({ id: 'audio', speaker: 'Alice', text: 'Factory, now?', settled: true });
   assert.deepEqual(addressed.map((item) => item.text), ['now?']);
   clock.tick(1500);
   assert.deepEqual(addressed.map((item) => item.text), ['now?', 'later?']);
@@ -104,21 +195,21 @@ test('a settled resubmission of unchanged text dispatches without waiting', () =
 
 test('answered requests prevent replay on growth but permit a new wake', () => {
   const { clock, addressed, heard } = setup();
-  heard('a', 'RFactory, first?');
+  heard('a', 'Factory, first?');
   clock.tick(1500);
-  heard('a', 'RFactory, first? More discussion.');
+  heard('a', 'Factory, first? More discussion.');
   clock.tick(1500);
   assert.equal(addressed.length, 1);
-  heard('a', 'RFactory, first? More discussion. RFactory, second?');
+  heard('a', 'Factory, first? More discussion. Factory, second?');
   clock.tick(1500);
   assert.deepEqual(addressed.map((item) => item.text), ['first?', 'second?']);
 });
 
 test('two caption blocks with the same speaker have independent answers and timers', () => {
   const { clock, addressed, heard } = setup();
-  heard('one', 'RFactory, first?');
+  heard('one', 'Factory, first?');
   clock.tick(500);
-  heard('two', 'RFactory, second?');
+  heard('two', 'Factory, second?');
   clock.tick(1000);
   assert.deepEqual(addressed.map((item) => item.id), ['one']);
   clock.tick(500);
@@ -143,6 +234,8 @@ test('a shortened block does not erase an answered slot', () => {
   heard('a', 'Factory,');
   clock.tick(1500);
   heard('a', 'Factory, revised?');
+  clock.tick(1500);
+  heard('a', 'Factory, first?');
   clock.tick(1500);
   assert.deepEqual(addressed.map((item) => item.text), ['first?', 'revised?']);
 });
@@ -274,13 +367,13 @@ test('settled turns wake only at opening positions', () => {
 test('leave commands take precedence over standup and question; standup forms route', () => {
   for (const command of ['leave', 'leave the call', 'go away', 'goodbye', 'stop', 'you can go']) {
     const { clock, addressed, heard } = setup();
-    heard('a', `RFactory, ${command}; give a standup.`);
+    heard('a', `Factory, ${command}; give a standup.`);
     clock.tick(1500);
     assert.equal(addressed[0].kind, 'leave', command);
   }
   for (const form of ['standup', 'stand up', 'stand-up']) {
     const { clock, addressed, heard } = setup(100);
-    heard('a', `RFactory, give a ${form}.`);
+    heard('a', `Factory, give a ${form}.`);
     clock.tick(100);
     assert.equal(addressed[0].kind, 'standup', form);
   }
@@ -297,12 +390,12 @@ test('leave only when the utterance starts with a leave command', () => {
     now += 2000; for (const [at, f] of timers.splice(0)) if (at <= now) f();
     return out;
   };
-  assert.deepEqual(kinds('RFactory, leave.'), ['leave']);
-  assert.deepEqual(kinds('RFactory, please leave the call now'), ['leave']);
-  assert.deepEqual(kinds('Our Factory, goodbye!'), ['leave']);
-  assert.deepEqual(kinds('RFactory, why did the build stop?'), ['question']);
-  assert.deepEqual(kinds('RFactory, should we leave FCT-1 blocked?'), ['question']);
-  assert.deepEqual(kinds('RFactory, stop talking about FCT-2 and give the standup'), ['standup']);
+  assert.deepEqual(kinds('Factory, leave.'), ['leave']);
+  assert.deepEqual(kinds('Factory, please leave the call now'), ['leave']);
+  assert.deepEqual(kinds('Factory, goodbye!'), ['leave']);
+  assert.deepEqual(kinds('Factory, why did the build stop?'), ['question']);
+  assert.deepEqual(kinds('Factory, should we leave FCT-1 blocked?'), ['question']);
+  assert.deepEqual(kinds('Factory, stop talking about FCT-2 and give the standup'), ['standup']);
 });
 
 test('routing order: leave, action, standup, question', () => {
@@ -318,7 +411,7 @@ test('routing order: leave, action, standup, question', () => {
   };
   for (const [text, kind] of Object.entries(kinds)) {
     const { clock, addressed, heard } = setup();
-    heard('a', `RFactory, ${text}`);
+    heard('a', `Factory, ${text}`);
     clock.tick(1500);
     assert.equal(addressed[0].kind, kind, text);
   }
@@ -349,7 +442,7 @@ test('share: natural board and screen requests route after leave and before acti
   };
   for (const [text, kind] of Object.entries(kinds)) {
     const { clock, addressed, heard } = setup();
-    heard('a', `RFactory, ${text}`);
+    heard('a', `Factory, ${text}`);
     clock.tick(1500);
     assert.equal(addressed[0].kind, kind, text);
   }
@@ -367,7 +460,7 @@ test('investigate: investigate/find out/look into/open a terminal ... and, after
   };
   for (const [text, kind] of Object.entries(kinds)) {
     const { clock, addressed, heard } = setup();
-    heard('a', `RFactory, ${text}`);
+    heard('a', `Factory, ${text}`);
     clock.tick(1500);
     assert.equal(addressed[0].kind, kind, text);
   }

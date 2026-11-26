@@ -46,7 +46,7 @@ test('log view renders 200 hostile lines as text with its banner and stale mark'
   const { page } = await open(t, { repo: 'notes-api', sha: 'a'.repeat(40), at: '2026-11-19T09:05:00', lines }, { view: 'log', stale: true });
   assert.equal((await page.locator('.rf-log').textContent()).split('\n').length, 200);
   assert.equal(await page.locator('.rf-log').textContent(), lines.join('\n'));
-  assert.match(await page.locator('.rf-banner').innerText(), /Investigation · read-only · notes-api @ aaaaaaa · as of 09:05 · stale/);
+  assert.match(await page.locator('.rf-banner').innerText(), /^Factory \(AI\) · Investigation · read-only · notes-api @ aaaaaaa · as of 09:05 · stale/);
   assert.equal(await page.locator('img, a, form, input').count(), 0);
   assert.equal(await page.evaluate(() => window.pwn), undefined);
 });
@@ -60,7 +60,7 @@ test('renders a fixture board', browser, async (t) => {
 
 test('banner shows as-of time and read-only; stale is marked', browser, async (t) => {
   const fresh = await open(t);
-  assert.match(await fresh.page.locator('.rf-banner').innerText(), /^RFactory \(AI\) · CFactory board · read-only · as of 09:05$/);
+  assert.match(await fresh.page.locator('.rf-banner').innerText(), /^Factory \(AI\) · CFactory board · read-only · as of 09:05$/);
   const stale = await open(t, board(), { stale: true });
   const banner = stale.page.locator('.rf-banner');
   assert.match(await banner.innerText(), /as of 09:05 · stale$/);

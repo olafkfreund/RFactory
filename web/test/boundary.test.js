@@ -113,8 +113,8 @@ test('Factory review data stays out of standup, call, brain record and shared bo
     for (let i = 0; i < 50 && events.filter((event) => event.type === 'answer').length === count; i++) await flush();
     assert.equal(events.filter((event) => event.type === 'answer').length, count + 1);
   };
-  await heard('1', 'RFactory, stand up.');
-  await heard('2', 'RFactory, why is FCT-1 blocked?');
+  await heard('1', 'Factory, stand up.');
+  await heard('2', 'Factory, why is FCT-1 blocked?');
   const questionAnswer = events.filter((event) => event.type === 'answer').at(-1).text;
   const questionSpeech = toSpeech(questionAnswer)[0];
   for (let i = 0; i < 50 && !spoken.includes(questionSpeech); i++) await flush();
