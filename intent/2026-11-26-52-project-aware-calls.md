@@ -102,3 +102,11 @@ A call is always about the one project the deployment was configured with, whate
 3. **A project with several repositories.** Recommended: the call covers the whole project, so the standup and lookups span its repositories, and each write names its one repository. Alternatively, the call covers one chosen repository.
 4. **`repo:<id>` entries.** Recommended: only in RFactory's picker for now, if allowlisted. The portal hand-off stays for AIFactory projects, as CFactory does today.
 5. **A repository added to an allowed project later:** is it allowed automatically? Recommended: yes, because the allowlist names projects and CFactory owns the grouping. The page shows the frozen repository list when the call starts.
+
+## Decisions (owner, 2026-11-26: "approved", with the recommendations)
+
+1. **Projects come from CFactory.** CFactory gets a server-side list and resolve that returns stable ids, names, current slugs and repository ids, from the portal's own derivation.
+2. **The allowlist** lives in RFactory's scope, as stable project ids, each with optional per-project settings. There is no per-project user membership yet: every allowed user may use every allowed project.
+3. **A call covers the whole project.** Each write names one repository.
+4. **`repo:<id>` entries** appear only in RFactory's picker, when allowlisted. The portal hand-off stays for AIFactory projects.
+5. **A repository added to an allowed project later** is allowed automatically. The page shows the frozen repository list when the call starts.
