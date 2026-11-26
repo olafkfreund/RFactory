@@ -13,7 +13,7 @@ function setup(over = {}) {
   const stdin = new PassThrough();
   const out = [];
   const stdout = { write: (s) => { out.push(...s.split('\n').filter(Boolean).map((l) => JSON.parse(l))); } };
-  const calls = { leave: 0, close: 0, rm: [], chat: [], camera: [], order: over.order || [], joinOpts: null, hostOpts: null };
+  const calls = { leave: 0, close: 0, rm: [], chat: [], camera: [], order: over.order || [], joinOpts: null, hostOpts: null, hosts: [], joins: [] };
   const timers = [];
   const speaks = [];
   const call = Object.assign(new EventEmitter(), {
@@ -31,17 +31,26 @@ function setup(over = {}) {
     _inner: { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page,
       mediaPage: {}, getParticipants: async () => over.participants || [] },
   });
-  const host = { close: async () => { calls.close++; } };
   const deps = {
     clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; }, now: () => over.now?.value ?? 0 },
-    mkdtemp: async (p) => p + 'X',
-    rm: async (p) => { calls.rm.push(p); },
+    mkdtemp: over.mkdtemp || (async (p) => p + 'X' + (calls.hosts.length || '')),
+    rm: async (p) => { calls.rm.push(p); calls.order.push('rm'); await over.rm?.(p); },
     ...(over.readFile ? { readFile: over.readFile } : {}),
-    playwrightHost: async (o) => { calls.hostOpts = o; return host; },
+    playwrightHost: async (o) => {
+      calls.hostOpts = o;
+      const host = { context: { pages: () => over.pages || [] }, close: async () => {
+        calls.close++; calls.order.push('close'); await over.close?.();
+      } };
+      calls.hosts.push({ host, opts: o });
+      return host;
+    },
     join: over.join || (async (link, o) => {
       calls.joinOpts = { link, ...o };
+      calls.joins.push(calls.joinOpts);
       o.onState('joining'); o.onState('lobby');
-      return call;
+      const result = over.joinQueue?.shift();
+      if (result instanceof Error) throw result;
+      return result || call;
     }),
     ...(over.installSttBridge ? { installSttBridge: over.installSttBridge } : {}),
     ...(over.SpeechGate ? { SpeechGate: over.SpeechGate } : {}),
@@ -401,12 +410,199 @@ test('leave during the lobby aborts the join', async () => {
   assert.strictEqual(s.calls.rm.length, 1);
 });
 
-test('a failed join reports error with its code and exits 1', async () => {
+test('a non-JoinError code is unknown and exits 1', async () => {
   const s = setup({ join: async () => { throw Object.assign(new Error('no'), { code: 'denied' }); } });
   s.stdin.write('https://meet.google.com/abc-defg-hij\n');
   assert.strictEqual(await s.done, 1);
-  assert.deepStrictEqual(s.out.find((m) => m.type === 'state' && m.state === 'error'), { type: 'state', state: 'error', code: 'denied' });
+  assert.deepStrictEqual(s.out.find((m) => m.type === 'state' && m.state === 'error'), { type: 'state', state: 'error', code: 'unknown' });
   assert.strictEqual(s.calls.close, 1);
+});
+
+const joinError = (code, message = 'refused') => Object.assign(new Error(message), { name: 'JoinError', code });
+const joinFailures = (s) => s.out.filter((m) => m.type === 'join-failure');
+const joinDelay = (s) => s.timers.filter((t) => [15000, 45000].includes(t.ms) && !t.cleared).at(-1);
+
+test('failure report precedes error and maps codes and reasons', async () => {
+  for (const [error, code, reason] of [
+    [Object.assign(new Error('missing'), { code: 'ENOENT' }), 'unknown', 'other'],
+    [joinError('auth-required', "can't join this video call"), 'auth-required', 'cant-join'],
+    [joinError('bot-check', "couldn't enter call"), 'bot-check', 'no-call-ui'],
+    [joinError('removed', 'removed by host'), 'unknown', 'removed'],
+  ]) {
+    const s = setup({ joinQueue: [error] });
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n');
+    assert.strictEqual(await s.done, 1);
+    const i = s.out.findIndex((m) => m.type === 'join-failure');
+    assert.match(s.out[i - 1].message, /join failed:/);
+    assert.deepStrictEqual(s.out[i], { type: 'join-failure', code, reason, attempt: 1, of: 3, retrying: false });
+    assert.deepStrictEqual(s.out[i + 1], { type: 'state', state: 'error', code });
+  }
+});
+
+test('denied retries after 15 and 45 seconds with fresh profiles, hosts and audio bridges', async () => {
+  for (const audio of [false, true]) {
+    const order = [], now = { value: 0 };
+    let bridges = 0;
+    const s = setup({ now, order, env: audio ? { RFACTORY_LISTEN: 'audio' } : {},
+      joinQueue: [joinError('denied'), joinError('denied'), joinError('denied')],
+      close: async () => { throw new Error('close failed'); },
+      installSttBridge: async () => { bridges++; return { bind() {}, async start() {} }; } });
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+    assert.deepStrictEqual(joinFailures(s).map((m) => m.retrying), [true]);
+    assert.deepStrictEqual(order.slice(-2), ['close', 'rm']);
+    assert.strictEqual(joinDelay(s).ms, 15000);
+    now.value = 15000; joinDelay(s).fn(); await tick();
+    assert.deepStrictEqual(joinFailures(s).map((m) => m.retrying), [true, true]);
+    assert.strictEqual(joinDelay(s).ms, 45000);
+    now.value = 60000; joinDelay(s).fn();
+    assert.strictEqual(await s.done, 1);
+    assert.deepStrictEqual(joinFailures(s).map((m) => m.attempt), [1, 2, 3]);
+    assert.deepStrictEqual(s.calls.joins.map((j) => j.timeoutMs), [300000, 285000, 240000]);
+    assert.strictEqual(new Set(s.calls.hosts.map((h) => h.opts.userDataDir)).size, 3);
+    assert.strictEqual(s.calls.close, 3);
+    assert.strictEqual(s.calls.rm.length, 3);
+    assert.strictEqual(bridges, audio ? 3 : 0);
+    assert.ok(s.logs().includes('host close failed'));
+  }
+});
+
+test('second attempt can join after lobby and returns to in-call without error', async () => {
+  const s = setup({ joinQueue: [joinError('denied')] });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  assert.deepStrictEqual(s.states().slice(0, 3), ['joining', 'lobby', 'joining']);
+  joinDelay(s).fn(); await tick();
+  assert.ok(s.states().includes('in-call'));
+  assert.ok(!s.states().includes('error'));
+  assert.strictEqual(s.calls.close, 1);
+  s.stdin.end(); await s.done;
+});
+
+test('retry budget includes the page read, cleanup, wait and next launch', async () => {
+  for (const left of [60000, 59999]) {
+    const now = { value: 0 };
+    const s = setup({ now, joinQueue: [joinError('denied')],
+      join: async (link, o) => { now.value = 300000 - 2000 - 15000 - left; throw joinError('denied'); } });
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+    assert.strictEqual(joinFailures(s)[0].retrying, left === 60000);
+    if (left === 60000) { s.msg({ type: 'leave' }); assert.strictEqual(await s.done, 0); }
+    else assert.strictEqual(await s.done, 1);
+  }
+  const now = { value: 0 };
+  const s = setup({ now, joinQueue: [joinError('denied')],
+    rm: async () => { now.value = 230000; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  now.value = 245000; joinDelay(s).fn();
+  assert.strictEqual(await s.done, 1);
+  assert.deepStrictEqual(joinFailures(s).map((m) => [m.attempt, m.retrying]), [[1, true], [1, false]]);
+  assert.strictEqual(s.out.filter((m) => m.type === 'log' && /^join failed/.test(m.message)).length, 1);
+  assert.deepStrictEqual(s.out.filter((m) => m.type !== 'log').slice(-2).map((m) => m.state || m.type), ['join-failure', 'error']);
+  assert.strictEqual(s.out.filter((m) => m.state === 'error')[0].code, 'denied');
+  assert.strictEqual(s.calls.hosts.length, 1);
+});
+
+test('a deadline already gone before the first join reports timeout', async () => {
+  const now = { value: 0 };
+  const s = setup({ now, joinQueue: [joinError('denied')], mkdtemp: async (p) => {
+    now.value = 300000; return p + 'X';
+  } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n');
+  assert.strictEqual(await s.done, 1);
+  assert.strictEqual(s.calls.joins.length, 0);
+  assert.strictEqual(joinFailures(s)[0].code, 'timeout');
+});
+
+test('a retry whose launch uses up the budget repeats the denial report and ends with denied', async () => {
+  const now = { value: 0 };
+  let n = 0;
+  const s = setup({ now, joinQueue: [joinError('denied')],
+    mkdtemp: async (p) => { if (n++) now.value = 300000; return p + n; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  now.value = 15000; joinDelay(s).fn();
+  assert.strictEqual(await s.done, 1);
+  assert.strictEqual(s.calls.joins.length, 1);
+  assert.deepStrictEqual(joinFailures(s).map((m) => [m.attempt, m.code, m.retrying]), [[1, 'denied', true], [1, 'denied', false]]);
+  assert.deepStrictEqual(s.out.find((m) => m.type === 'state' && m.state === 'error').code, 'denied');
+});
+
+test('launch time reduces the next join timeout and a later timeout ends retries', async () => {
+  const now = { value: 0 };
+  const s = setup({ now, joinQueue: [joinError('denied'), joinError('timeout')],
+    mkdtemp: async (p) => { if (now.value) now.value += 5000; return p + now.value; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  now.value = 15000; joinDelay(s).fn();
+  assert.strictEqual(await s.done, 1);
+  assert.deepStrictEqual(s.calls.joins.map((j) => j.timeoutMs), [300000, 280000]);
+  assert.deepStrictEqual(joinFailures(s).map((m) => m.code), ['denied', 'timeout']);
+  assert.deepStrictEqual(joinFailures(s).map((m) => m.retrying), [true, false]);
+});
+
+test('page report uses last real page, caps and redacts text; audio never reads it', async () => {
+  for (const audio of [false, true]) {
+    let reads = 0;
+    const pages = [
+      { url: () => 'https://first', evaluate: async () => { throw new Error('wrong page'); } },
+      { url: () => 'about:blank' },
+      { url: () => 'https://last', evaluate: async () => { reads++; return `  denied \n ${SECRET} ${'x'.repeat(500)} `; } },
+    ];
+    const s = setup({ pages, env: audio ? { RFACTORY_LISTEN: 'audio' } : {}, joinQueue: [joinError('auth-required')] });
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await s.done;
+    assert.strictEqual(reads, audio ? 0 : 1);
+    assert.ok(!JSON.stringify(s.out).includes(SECRET));
+    assert.strictEqual(s.logs().includes('page:'), !audio);
+    if (!audio) assert.match(s.logs(), /page: "denied \[redacted\] x{382}"/);
+    assert.ok(!audio || !s.timers.some((t) => t.ms === 2000));
+  }
+});
+
+test('page read failure and two second limit yield an empty page report', async () => {
+  for (const evaluate of [async () => { throw new Error('page failed'); }, () => new Promise(() => {})]) {
+    const s = setup({ pages: [{ url: () => 'https://last', evaluate }], joinQueue: [joinError('auth-required')] });
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+    s.timers.find((t) => t.ms === 2000)?.fn();
+    assert.strictEqual(await s.done, 1);
+    assert.ok(!s.logs().includes('page:'));
+    assert.ok(s.timers.filter((t) => t.ms === 2000).every((t) => t.cleared));
+  }
+});
+
+test('Stop during join, page read, cleanup and retry wait leaves no retry or error', async () => {
+  for (const stage of ['join', 'page', 'cleanup', 'wait']) {
+    let release;
+    const pending = new Promise((r) => { release = r; });
+    const over = { joinQueue: [joinError('denied')] };
+    if (stage === 'join') over.join = async (link, o) => {
+      o.onState('lobby');
+      await new Promise((_, reject) => o.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+    };
+    if (stage === 'page') over.pages = [{ url: () => 'https://last', evaluate: () => pending }];
+    if (stage === 'cleanup') over.close = () => pending;
+    const s = setup(over);
+    s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+    if (stage === 'wait') assert.ok(joinDelay(s));
+    s.msg({ type: 'leave' }); await tick();
+    if (stage === 'cleanup') release();
+    assert.strictEqual(await s.done, 0, stage);
+    assert.strictEqual(s.calls.hosts.length, 1, stage);
+    assert.strictEqual(s.calls.close, 1, stage);
+    assert.strictEqual(s.calls.rm.length, 1, stage);
+    assert.ok(!s.states().includes('error'), stage);
+    assert.ok(!s.out.some((m) => m.type === 'join-failure' && m.retrying === false), stage);
+    assert.ok(s.timers.filter((t) => [15000, 45000].includes(t.ms)).every((t) => t.cleared), stage);
+    if (stage === 'page') assert.strictEqual(joinFailures(s).length, 0);
+  }
+});
+
+test('a join resolving after Stop is retained for leave and never enters in-call', async () => {
+  let release;
+  const pending = new Promise((r) => { release = r; });
+  const s = setup({ join: async () => { await pending; return s.call; } });
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  s.msg({ type: 'leave' }); await tick();
+  release();
+  assert.strictEqual(await s.done, 0);
+  assert.strictEqual(s.calls.leave, 1);
+  assert.strictEqual(s.calls.close, 1);
+  assert.ok(!s.states().includes('in-call'));
 });
 
 test('empty stdin exits cleanly', async () => {

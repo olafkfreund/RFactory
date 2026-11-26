@@ -51,10 +51,10 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
 
   const ac = new AbortController();
   const handles = new Set();
-  let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null;
+  let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
   let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
-  let retryResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
+  let retryResolve = null, joinWaitResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
   const finished = new Promise((r) => { finish = r; });
 
@@ -309,6 +309,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       if (timer) d.clock.clearTimeout(timer);
       if (pollTimer) d.clock.clearTimeout(pollTimer);
       if (retryTimer) { d.clock.clearTimeout(retryTimer); retryTimer = null; retryResolve(); retryResolve = null; }
+      if (joinWait) { d.clock.clearTimeout(joinWait); joinWait = null; joinWaitResolve(); joinWaitResolve = null; }
       if (starting) await starting;
       if (bridge && call?._inner?.mediaPage) await bridge.stop(call._inner.mediaPage, { timeoutMs: 1000 });
       await idleAvatar();
@@ -368,21 +369,98 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     } catch (e) { log(`mic read failed: ${e.message}`); }
   }
 
+  const joinCodes = new Set(['lobby-timeout', 'denied', 'auth-required', 'blocked-by-admin', 'bot-check', 'already-running', 'ui-changed', 'timeout']);
+  const failureCode = (e) => e?.name === 'JoinError' && joinCodes.has(e.code) ? e.code : 'unknown';
+
+  async function failureReport(e, attempt, retrying) {
+    let pageText = '';
+    if (!audio && !ac.signal.aborted) {
+      let timeout;
+      let onAbort;
+      try {
+        const page = host?.context.pages().filter((p) => p.url() !== 'about:blank').at(-1);
+        if (page) pageText = await Promise.race([
+          page.evaluate(() => document.body?.innerText || ''),
+          new Promise((resolve) => { timeout = d.clock.setTimeout(() => resolve(''), 2000); }),
+          new Promise((resolve) => { onAbort = () => resolve(''); ac.signal.addEventListener('abort', onAbort, { once: true }); }),
+        ]);
+      } catch { pageText = ''; }
+      finally {
+        if (timeout) d.clock.clearTimeout(timeout);
+        if (onAbort) ac.signal.removeEventListener('abort', onAbort);
+      }
+    }
+    if (closing) return;
+    // redact before cutting, so a cut token cannot slip past the redactor; both capped to stay under MAX_OUT
+    pageText = logSafe(String(pageText).replace(/\s+/g, ' ').trim()).slice(0, 400);
+    log(`join failed: ${logSafe(String(e?.message)).slice(0, 1000)}${pageText ? ` page: "${pageText}"` : ''}`);
+    if (closing) return;
+    sendFailure(e, attempt, retrying);
+  }
+
+  function sendFailure(e, attempt, retrying) {
+    const reason = /can't join this video call/i.test(e?.message) ? 'cant-join'
+      : /couldn't enter call/i.test(e?.message) ? 'no-call-ui'
+        : /removed/i.test(e?.message) ? 'removed' : 'other';
+    send({ type: 'join-failure', code: failureCode(e), reason, attempt, of: 3, retrying });
+  }
+
+  async function releaseAttempt() {
+    bridge = null;
+    const h = host; host = null;
+    const profile = dir; dir = null;
+    if (h) { try { await h.close(); } catch (e) { log(`host close failed: ${e.message}`); } }
+    if (profile) { try { await d.rm(profile); } catch (e) { log(`profile removal failed: ${e.message}`); } }
+  }
+
+  // a planned retry the budget can no longer afford: report the last failed attempt again, then end
+  function abandon(prev) {
+    sendFailure(prev.e, prev.attempt, false);
+    if (closing) return;
+    sendState('error', failureCode(prev.e)); exitCode = 1;
+  }
+
   async function start(link) {
-    try {
-      dir = await d.mkdtemp(path.join(os.tmpdir(), 'rfactory-bot-'));
-      const join = d.join || require('@vibeconferencing/calls').join;
-      const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
-      host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
-      if (audio && !closing) bridge = await d.installSttBridge(host, { onAudio, log });
-      if (closing) return;
-      call = await join(link, {
-        name: BOT_NAME, host, timeoutMs: 300000, signal: ac.signal,
-        onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
-      });
-    } catch (e) {
-      if (!stopping) { sendState('error', e && e.code); log(`join failed: ${e && e.message}`); exitCode = 1; }
-      return;
+    const deadline = d.clock.now() + 300000;
+    let prev = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const join = d.join || require('@vibeconferencing/calls').join;
+        const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
+        dir = await d.mkdtemp(path.join(os.tmpdir(), 'rfactory-bot-'));
+        if (closing) return;
+        host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
+        if (closing) return;
+        if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
+        if (closing) return;
+        const remaining = deadline - d.clock.now();
+        if (remaining <= 0 && prev) { abandon(prev); return; }
+        if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
+        call = await join(link, {
+          name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
+          onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
+        });
+        if (closing) return;
+        break;
+      } catch (e) {
+        if (closing) return;
+        const wait = attempt === 1 ? 15000 : 45000;
+        const retrying = failureCode(e) === 'denied' && attempt < 3 && deadline - d.clock.now() - 2000 - wait >= 60000;
+        await failureReport(e, attempt, retrying);
+        if (closing) return;
+        if (!retrying) { sendState('error', failureCode(e)); exitCode = 1; return; }
+        prev = { e, attempt };
+        await releaseAttempt();
+        if (closing) return;
+        sendState('joining');
+        if (closing) return;
+        await new Promise((resolve) => {
+          joinWaitResolve = resolve;
+          joinWait = d.clock.setTimeout(() => { joinWait = joinWaitResolve = null; resolve(); }, wait);
+        });
+        if (closing) return;
+        if (deadline - d.clock.now() < 60000) { abandon(prev); return; }
+      }
     }
     sendState('in-call');
     if (!audio) call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
