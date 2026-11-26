@@ -226,11 +226,11 @@ function refuseKeyEnv(env) {
   if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
-// The record exists when writes, shares or investigations are on; only writes build a writer and its managers
+// The record exists when writes, shares, investigations or lookups are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
 async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
   let actions = null, shares = null, investigations = null;
-  if (!scope.writes_enabled && !scope.shares_enabled) return { actions, shares, investigations };
+  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
@@ -248,7 +248,25 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
       await investigations.recover();
     }
   }
-  return { actions, shares, investigations };
+  return { actions, shares, investigations, record };
+}
+
+// #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
+async function composeLookups({ scope, source, redactor, token }) {
+  if (!scope.lookups_enabled) return null;
+  const { createLookups } = require('@rfactory/core/src/lookups.js');
+  const { createLookupEndpoint } = require('@rfactory/core/src/lookup-endpoint.js');
+  let github = null, binding = null;
+  if (token) {
+    const { owner, repo } = scope.source.github_read;
+    if (String(await source.repositoryProject()).toLowerCase() !== `${owner}/${repo}`.toLowerCase()) throw new Error('github-binding-mismatch');
+    binding = { owner, repo };
+    github = require('@rfactory/core/src/sources/github-read.js').createGithubRead({ token });
+  }
+  const lookups = createLookups({ source, github, redactor });
+  const endpoint = createLookupEndpoint({ lookups });
+  const lookupUrl = await endpoint.start();
+  return { lookups, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
 
 async function main() {
@@ -259,14 +277,17 @@ async function main() {
   const { createCfactorySource } = require('@rfactory/core/src/sources/cfactory.js');
   const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
   const secrets = [];
-  const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets);
+  const extras = {};
+  const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
   if (scope.source.kind !== 'cfactory' || scope.brain.kind !== 'claude-cli') throw new Error('unsupported-scope');
   const redactor = makeRedactor(secrets);
   const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id, redactor });
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  const { actions, shares, investigations } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
+  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
+  const lookup = await composeLookups({ scope, source, redactor, token: extras.githubToken });
+  console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
     const { createRunnerClient } = require('../desktop/runner/client.js');
@@ -293,6 +314,7 @@ async function main() {
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, desktop,
+      ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   createApp({ source, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
@@ -308,4 +330,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, makeLogin, createApp, refuseKeyEnv, main, recordBrain };

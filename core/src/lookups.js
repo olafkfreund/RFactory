@@ -80,7 +80,8 @@ function createLookups({ source, github, redactor }) {
       let ref = refOf(name, args || {});
       const entry = { tool: name, ref, ok: false };
       try {
-        if (!ctx.tools.includes(name) || !validate(name, args) || (GITHUB.includes(name) && (!github || !ctx.project.github))) throw new Error('lookup-refused');
+        // a refused call logs no ref: the model's raw argument could carry question text into the record
+        if (!ctx.tools.includes(name) || !validate(name, args) || (GITHUB.includes(name) && (!github || !ctx.project.github))) { entry.ref = ''; throw new Error('lookup-refused'); }
         if (ctx.signal?.aborted) throw new Error('aborted');
         let result, kind, title, evidence;
         if (name === 'find_cards') {

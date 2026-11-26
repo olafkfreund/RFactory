@@ -554,12 +554,58 @@ async function loadInvestigations(doc) {
   } catch { /* panel stays hidden */ }
 }
 
+// #51: lookup sources. GitHub links go to the bound repository (from the limits event) and nowhere else;
+// a card opens the page's own card review (CFactory has no card page).
+const lookupRepos = new WeakMap();
+
+function sourceUrl(repo, { kind, ref }) {
+  const value = String(ref);
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return null;
+  if (kind === 'file') {
+    const parts = value.split('/');
+    return parts.some((p) => p === '.' || p === '..') ? null : `https://github.com/${repo}/blob/HEAD/${parts.map(encodeURIComponent).join('/')}`;
+  }
+  if (!/^\d+$/.test(value) || !['issue', 'pr'].includes(kind)) return null;
+  return `https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${value}`;
+}
+
+function renderSource(doc, source) {
+  const row = el(doc, 'div', undefined, 'who');
+  const name = source.kind === 'issue' || source.kind === 'pr' ? `${source.kind} #${source.ref}` : `${source.kind} ${source.ref}`;
+  const label = source.title && source.title !== source.ref && source.title !== `#${source.ref}` ? `${name}: ${source.title}` : name;
+  if (source.kind === 'card' && /^[A-Z][A-Z0-9]+-\d+$/.test(String(source.ref))) {
+    const btn = el(doc, 'button', label, 'card-key');
+    btn.setAttribute('type', 'button');
+    btn.addEventListener('click', () => loadReviewCard(doc, String(source.ref)));
+    row.appendChild(btn);
+    return row;
+  }
+  const url = sourceUrl(lookupRepos.get(doc), source);
+  if (!url) { row.textContent = label; return row; }
+  const a = el(doc, 'a', label);
+  a.setAttribute('href', url);
+  a.setAttribute('target', '_blank');
+  a.setAttribute('rel', 'noopener noreferrer');
+  row.appendChild(a);
+  return row;
+}
+
+function renderLimits(doc, event) {
+  lookupRepos.set(doc, event.github);
+  const line = doc.getElementById('call-limits');
+  if (!line) return;
+  line.textContent = event.exhausted ? 'lookup budget used'
+    : `Lookups: $${Number(event.spent_usd).toFixed(2)} of $${Number(event.budget_usd).toFixed(2)} · ${event.answer_seconds} s per answer · ${event.lookups_per_question} lookups per question`;
+  line.hidden = false;
+}
+
 // One call event at a time; every string lands via textContent.
 function handleCall(doc, event, now = Date.now()) {
   const set = (id, text) => { doc.getElementById(id).textContent = text; };
   if (event.type === 'action-pending' || event.type === 'action-updated') return handleAction(doc, event, now);
   if (typeof event.type === 'string' && event.type.startsWith('share-')) return handleShare(doc, event);
   if (event.type === 'investigation-updated') return handleInvestigation(doc, event);
+  if (event.type === 'limits') return renderLimits(doc, event);
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
@@ -583,6 +629,7 @@ function handleCall(doc, event, now = Date.now()) {
     } else if (event.type === 'answer') {
       li.appendChild(el(doc, 'div', 'RFactory answered:', 'who'));
       li.appendChild(el(doc, 'div', event.text, 'answer'));
+      for (const source of event.sources || []) li.appendChild(renderSource(doc, source));
       const s = event.snapshot;
       if (s) render(doc, { items: s.items, unknown: s.unknown, fetched_at: s.fetched_at, newest_update: s.newest_update,
         summary: event.text, destination: 'the call' }, now);

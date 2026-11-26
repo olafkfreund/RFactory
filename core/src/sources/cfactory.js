@@ -149,6 +149,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       if (!c) await connect();
       if (!(await repoList()).repositories.some((r) => r.id === repositoryId)) throw new Error('scope-unknown-repository');
     },
+    // the owner/repo a card's issue must be in (inScope's rule); the lookup GitHub binding is checked against it
+    async repositoryProject() {
+      const repo = (await repoList()).repositories.find((r) => r.id === repositoryId);
+      return repo?.intake_project ?? repo?.project;
+    },
     async snapshot() {
       const deadline = Date.now() + timeoutMs;
       const { cards, conflicting } = await scopedCards(deadline);

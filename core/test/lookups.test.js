@@ -110,3 +110,10 @@ test('aborting the turn cancels a pending GitHub fetch', async () => {
   c.controller.abort();
   await assert.rejects(pending, /aborted/);
 });
+
+test('a refused call logs no ref, so a raw argument never reaches the record', async () => {
+  const c = ctx();
+  await lookup().call(c, 'get_card', { card_key: 'what is the payroll password' });
+  await lookup().call(c, 'read_file', { path: 'x' });
+  assert.deepEqual(c.reads.map((r) => [r.tool, r.ref, r.ok]), [['get_card', '', false], ['read_file', '', false]]);
+});

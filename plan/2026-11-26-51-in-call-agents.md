@@ -384,3 +384,16 @@ All pass. With `lookups_enabled: false`, the existing call and brain tests pass 
    - **A failed lookup turn** carries `error.cost` (a number or `null`) when the CLI printed JSON. Step 6 reads it before falling back to $0.25.
    - **Errors outside the contract** (`destination-changed`, `destination-missing`, `destination-override`, anything else) become `brain-error`, with the original reason, redacted and capped at 200 characters, on `error.detail`. Step 6 logs `brain failed: brain-error (<detail>)`, so a destination problem stays visible in the log, although the record says `error`.
    - **`model`** is the `modelUsage` keys joined by commas, or `null` when there are none.
+3. **Step 6 (coder), with the lead's changes:**
+   - **Files outside step 6's list:**
+     - `core/src/sources/cfactory.js` gains `repositoryProject()`, for the binding check at start-up;
+     - `web/public/index.html` gets one `call-limits` line;
+     - `web/test/app.test.js` tests the sources and the limits line.
+   - **`composeLookups()`** (new, exported from `web/server.js`) holds the binding check, so it can be tested. The check compares against the board entry's `intake_project ?? project`, ignoring case, as `inScope` does.
+   - **Cost:** every turn that starts a lookup adds `cost ?? 0.25`, including one aborted before the model runs.
+   - **`budget-skipped`:** written when the turn starts, with no model, reads or cost.
+   - **A newer question** aborts a running lookup only once it is accepted into the queue (not when the queue is full).
+   - **The `limits` event** carries `github`, and is replayed through the existing `current` map.
+   - **New scope errors:** `lookups-enabled`, `lookup-budget`, `github-token-file-mode` and `invalid-github-token`.
+   - **Card sources (lead):** CFactory has no card page, so a card source opens the page's own card review (`loadReviewCard`) instead of a CFactory link. GitHub sources link only to the bound repository. File links point at `blob/HEAD`.
+   - **The record (lead):** a refused lookup call logs `ref: ''` (`core/src/lookups.js`), so a raw model argument cannot carry question text into the record. A test covers it.
