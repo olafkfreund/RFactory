@@ -40,6 +40,7 @@ const EMPTY_LISTS = {
   investigations: { pending: [], running: null, active: [], history: [] },
 };
 const refusal = (status, code) => Object.assign(new Error(code), { refusal: status });
+const CLOSED = "Changes aren't available for this project yet.";
 
 // #52: a project's repositories, joined by id; CFactory's two lists are sorted independently, so never zip them
 function repositoriesOf(project, repos) {
@@ -114,6 +115,16 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
   const describe = (project, repos) => ({ id: project.id, name: project.name, slug: project.slug, repositories: repositoriesOf(project, repos) });
 
+  // #52: approve, reject and stop come from a project that may change things. The running call's frozen binding
+  // answers for its own project, so a Stop does not depend on CFactory; any other is resolved afresh.
+  function decide(res, query, act) {
+    if (!allowed) return act();
+    const id = query.get('project');
+    const running = call?.project?.id === id ? call.projectCall : null;
+    return Promise.resolve(running || bind(id)).then(({ writable }) => (writable ? act()
+      : json(res, 403, { error: 'project-read-only', text: CLOSED }))).catch(readFailed(res));
+  }
+
   async function listProjects() {
     const [projects, repos] = await Promise.all([source.listProjects(), source.listRepositories()]);
     // one project that cannot be joined must not take the picker away from the others
@@ -173,7 +184,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}) });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -200,11 +211,11 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       let origin;
       try { origin = new URL(req.headers.origin).host; } catch { origin = null; }
       if (!origin || origin !== req.headers.host) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
-      readJson(req).then((body) => {
+      readJson(req).then((body) => decide(res, query, () => {
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
-      });
+      }));
       return;
     }
     // shares (#12) and investigations (#18) have the same routes and checks
@@ -217,12 +228,15 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      readJson(req).then((body) => {
-        // an investigation Stop carries the id it was shown for; shares ignore it
-        if (stop) return manager.stop(email, body?.id).then(reply, () => json(res, 500, { error: 'internal' }));
+      readJson(req).then((body) => decide(res, query, () => {
+        // Stop carries the id it was shown for; a share needs it only with projects, so no id there matches nothing
+        if (stop) {
+          return manager.stop(email, decision[1] === 'shares' ? (allowed ? String(body?.id ?? '') : undefined) : body?.id)
+            .then(reply, () => json(res, 500, { error: 'internal' }));
+        }
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return manager[verb](id, email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
-      });
+      }));
       return;
     }
     const prof = profiles && /^\/api\/profiles(?:\/([0-9a-f-]{36})(\/attach)?)?$/.exec(url);
@@ -358,9 +372,11 @@ async function composeLookups({ scope, key, redactor, token, createSource = requ
   }
   const lookups = createLookups({ source, github, redactor });
   // #52: one endpoint serves every turn; a project call's context carries its own lookups, over its repositories only
-  const own = (ctx) => ctx.lookups || lookups;
+  const none = { tools: () => [], call: async () => ({ error: 'lookup-refused' }) };
+  const own = (ctx) => ctx.lookups || (ctx.project?.bound ? none : lookups); // a project turn never falls back to the default repository
   const endpoint = createLookupEndpoint({ lookups: { tools: (ctx) => own(ctx).tools(ctx), call: (ctx, name, args) => own(ctx).call(ctx, name, args) } });
-  const lookupsFor = (ids) => createLookups({ source: source.forRepositories(ids), github, redactor });
+  const lookupsFor = (ids) => createLookups({ source: source.forRepositories(ids),
+    github: ids.includes(scope.source.repository_id) ? github : null, redactor });
   const lookupUrl = await endpoint.start();
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
@@ -391,11 +407,13 @@ async function main() {
       cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
   }
   let desktop = null;
+  let call = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
       isAllowed: async () => true, // no per-scope action allowlist exists yet: the approver's handover hosts and the runner's network allowlist bound what can run
-      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, snapshot: async () => { const raw = await source.snapshot();
+      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, projectCall: () => call?.projectCall ?? null,
+      snapshot: async (view = source) => { const raw = await view.snapshot();
         return { items: raw.items, counts: summarise(raw.items), unknown: raw.items.filter((i) => i.state === 'unknown'), fetched_at: raw.fetched_at, newest_update: raw.newest_update }; },
       // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, hosts: ctx.hosts } }),
@@ -403,7 +421,6 @@ async function main() {
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
-  let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
     const { createTts } = require('./tts.js');
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });

@@ -285,3 +285,20 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
    - **Step 4's two adjustments are in:** a call without write access answers a misclassified question as a question, and the picker leaves out a project that can't be joined.
    - **`listRepositories()`** (lead) treats an error payload, or a missing or invalid list, as `project-resolve-failed` instead of an empty list, which would otherwise empty the picker quietly.
    - **Not yet tried in a real browser:** the page is tested against the fake DOM. The live check covers it.
+6. **Step 6 review fixes** (Codex, agy and Opus; implemented by the coder):
+   - **The desktop routes** (handover, proposals, both approve routes and dispatch) are refused while a call for a project without write access is running. The desktop snapshot uses the call's view, and a proposal is dropped if the call changes while it is being made. With no call running, the desktop routes behave as before and read the default repository.
+   - **Callbacks from an earlier call:** every delayed stop goes through `stopCall(c, …)`, and every call-bound log through `logFor(c, …)`, so an earlier call can't stop or write into the next one. A late failure from a call that has ended is not logged.
+   - **GitHub facts from the wrong repository:**
+     - in a project call, `get_card` gives issue and PR numbers only when the card's `issue_ref` or `pr_ref` starts with the bound `owner/repo`;
+     - the GitHub tool descriptions name that repository;
+     - `lookupsFor` passes the GitHub client only when the default repository is in the project;
+     - a project turn without its own lookups is refused.
+   - **Approve, reject and stop** need `?project=` for a project with write access. A share Stop names its entry id, and with projects it ends only that entry. During a call, the call's own frozen binding is used, so Stop works even when CFactory is unavailable. With no call running, a CFactory outage gives `502`.
+   - **The slot:** the VM's `close` waits for create and destroy to finish. A start that fails after the child is acquired kills it, waits for it, and frees the slot.
+   - **`listProjects`** rejects a reply that carries `error` together with `projects`, and rejects duplicate ids. The allowlist accepts only a lowercase UUID or `repo:<n>`.
+   - **Without projects:**
+     - events carry no `generation`;
+     - `/api/config` gains `projects: true | false`, and the page chooses its mode from that;
+     - the visible changes are that GitHub tool descriptions name the repository, and that the page loads its panels after `/api/config`.
+   - **The page:** the slug is decoded and encoded once, and a malformed slug shows "unavailable".
+   - **Tests added:** freshness precedence, and a standup turn reading the call's view.

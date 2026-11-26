@@ -46,7 +46,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     const onlyKey = (o, key) => !!o && Object.keys(o).join() === key;
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
-        !allow.every((p) => onlyKey(p, 'id') && typeof p.id === 'string' && /^(repo:\d+|[0-9a-f-]{36})$/.test(p.id)) ||
+        !allow.every((p) => onlyKey(p, 'id') && typeof p.id === 'string' && /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
         new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
   }
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');

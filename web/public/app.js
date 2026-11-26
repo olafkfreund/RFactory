@@ -390,7 +390,7 @@ function handleAction(doc, event, now) {
 async function decide(doc, a, verb) {
   const status = doc.getElementById('actions-status');
   try {
-    const r = await fetch(`/api/actions/${encodeURIComponent(a.id)}/${verb}`, { method: 'POST',
+    const r = await fetch(scoped(doc, `/api/actions/${encodeURIComponent(a.id)}/${verb}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify({ hash: a.hash }) });
     const body = await r.json();
     status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
@@ -440,7 +440,7 @@ function renderShare(doc) {
       const what = s.view === 'log' ? 'investigation log' : 'CFactory board';
       li.appendChild(el(doc, 'span', s.state === 'running' ? `Sharing: ${what}` : `${s.state}: ${what}`, 'action-text'));
       const row = el(doc, 'div', undefined, 'share-buttons');
-      row.appendChild(button('Stop', () => decideShare(doc, 'stop')));
+      row.appendChild(button('Stop', () => decideShare(doc, 'stop', undefined, s.id)));
       li.appendChild(row);
     }
     ul.appendChild(li);
@@ -459,11 +459,12 @@ function handleShare(doc, event) {
   renderShare(doc);
 }
 
-async function decideShare(doc, tail, hash) {
+async function decideShare(doc, tail, hash, id) {
   const status = doc.getElementById('share-status');
   try {
-    const r = await fetch(`/api/shares/${tail}`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : {}) });
+    const named = projectIds.has(doc) && id ? { id } : {}; // with projects, Stop names the share it was shown for
+    const r = await fetch(scoped(doc, `/api/shares/${tail}`), { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : named) });
     const body = await r.json();
     status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
   } catch { status.textContent = 'Failed: network'; }
@@ -538,7 +539,7 @@ function handleInvestigation(doc, event) {
 async function decideInvestigation(doc, tail, payload) {
   const status = doc.getElementById('investigation-status');
   try {
-    const r = await fetch(`/api/investigations/${tail}`, { method: 'POST',
+    const r = await fetch(scoped(doc, `/api/investigations/${tail}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(payload) });
     const body = await r.json();
     status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
@@ -723,12 +724,12 @@ function loadPanels(doc) {
   return run(doc);
 }
 
-// /p/<slug> names the page's project; the picker lists the others. 404 on /api/projects: no projects here, the page of before.
-async function openPage(doc, location) {
+// /p/<slug> names the page's project; the picker lists the others. Without projects (/api/config), the page of before.
+async function openPage(doc, location, config) {
+  if ((await config)?.projects !== true) { wireCall(doc); return loadPanels(doc); }
   let list = [];
   try {
     const r = await fetch('/api/projects');
-    if (r.status === 404) { wireCall(doc); return loadPanels(doc); }
     if (r.ok) list = await r.json();
   } catch { /* the picker stays empty; a link can still resolve */ }
   const get = (id) => doc.getElementById(id);
@@ -736,7 +737,7 @@ async function openPage(doc, location) {
   let project = null;
   if (slug) {
     try {
-      const r = await fetch(`/api/projects/resolve?slug=${slug}`); // the path segment is already URL-encoded
+      const r = await fetch(`/api/projects/resolve?slug=${encodeURIComponent(decodeURIComponent(slug))}`);
       if (r.ok) project = await r.json();
     } catch { /* reported below */ }
   }
@@ -763,12 +764,14 @@ async function openPage(doc, location) {
 
 if (typeof document !== 'undefined') {
   renderFooter(document);
-  fetch('/api/config').then((res) => res.json()).then(({ commit, listen, sttConfigured }) => {
-    renderFooter(document, commit);
-    document.getElementById('call-listen').value = listen || 'auto';
-    if (!sttConfigured) document.getElementById('call-hearing').textContent = 'Hearing: captions (own transcription not configured)';
-  }).catch(() => {});
-  openPage(document, window.location);
+  const config = fetch('/api/config').then((res) => res.json()).catch(() => null);
+  config.then((value) => {
+    if (!value) return;
+    renderFooter(document, value.commit);
+    document.getElementById('call-listen').value = value.listen || 'auto';
+    if (!value.sttConfigured) document.getElementById('call-hearing').textContent = 'Hearing: captions (own transcription not configured)';
+  });
+  openPage(document, window.location, config);
 }
 if (typeof module !== 'undefined') {
   module.exports = {

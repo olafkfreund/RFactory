@@ -1339,3 +1339,76 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
     assert.deepEqual(records.map((r) => [r.project_id, r.repository_ids]), [['alpha', [1, 2]], ['beta', [3]]]);
   } finally { f.restore(); }
 });
+
+test('an earlier call\'s farewell, Leave timer and STT cannot stop or log into the next call', async () => {
+  const farewell = deferred(), heard = deferred();
+  const f = setup({ ttsSay: async (s) => { if (s === 'Leaving now.') await farewell.promise; return Buffer.from(s); },
+    stt: { transcribe: () => heard.promise } });
+  try {
+    await f.manager.start('https://teams.live.com/meet/1', { listen: 'audio' });
+    f.children[0].output(audio(0));
+    await flush();
+    await endCall(f);
+    await f.manager.start('link', { listen: 'platform' }); // this one asks to leave, then ends first
+    await f.heard('bye', 'RFactory, leave');
+    await endCall(f);
+    await f.manager.start('link', { listen: 'platform' });
+    const from = f.events.length;
+    farewell.resolve();
+    heard.resolve({ text: 'late words' });
+    await flush(); f.clock.tick(6000); await flush();
+    assert.equal(f.manager.running, true);
+    assert.deepEqual(f.events.slice(from).filter((e) => e.type === 'log' || e.type === 'state'), []);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('a call that cannot be set up after its child exists is torn down and frees the slot', async () => {
+  const actions = { subscribe() {}, startCall() { if (!actions.ok) throw new Error('setup-failed'); }, endCall() {} };
+  const f = setup({ extra: { actions } });
+  try {
+    const killed = [];
+    process.kill = (pid, signal) => { killed.push(signal); }; // restore() puts the real one back
+    let settled = false;
+    const failing = f.manager.start('link').finally(() => { settled = true; });
+    const rejected = assert.rejects(failing, /setup-failed/);
+    await flush();
+    assert.deepEqual([settled, f.manager.running, killed], [false, true, ['SIGKILL']]); // held until the child has gone
+    f.children[0].close();
+    await rejected;
+    assert.equal(f.manager.running, false);
+    assert.equal(f.events.at(-1).state, 'stopped');
+    actions.ok = true;
+    await f.manager.start('link');
+    assert.equal(f.manager.running, true);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('without a project the managers\' events reach the page without the generation tag', async () => {
+  const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+  const f = setup({ extra: { actions, shares, investigations } });
+  try {
+    await f.manager.start('link');
+    actions.fire({ type: 'action-updated', action: { id: 'a' }, generation: 1 });
+    shares.fire({ type: 'share-updated', share: { id: 's', state: 'running' }, generation: 1 });
+    investigations.fire({ type: 'investigation-updated', investigation: { id: 'i', state: 'running' }, generation: 1 });
+    assert.deepEqual(f.events.slice(-3).map((e) => Object.keys(e).sort()), [['action', 'type'], ['share', 'type'], ['investigation', 'type']]);
+    assert.doesNotMatch(JSON.stringify(f.manager.current()), /generation/);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('a project standup is read from the call\'s own view', async () => {
+  const read = [];
+  const view = viewFor('Own card');
+  const f = setup({ sourceStandup: async () => { throw new Error('default-source-read'); } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1], false), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
+    await f.heard('s', 'RFactory, standup');
+    await speakAll(f);
+    assert.deepEqual(read, ['view']);
+    assert.ok(f.events.some((e) => e.type === 'answer' && e.counts));
+    await endCall(f);
+  } finally { f.restore(); }
+});

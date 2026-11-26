@@ -140,3 +140,24 @@ test('vm spawn: RFACTORY_LISTEN and RFACTORY_LANGUAGE reach runner.create; none 
   assert.equal(seen[0].language, 'de');
   assert.ok(!('listen' in seen[1]) && !('language' in seen[1]));
 });
+
+test('vm spawn: close waits for the VM to be destroyed, also one still being created', async () => {
+  for (const early of [false, true]) {
+    const f = fake();
+    let made, destroyed;
+    if (early) f.runner.create = () => new Promise((r) => { made = r; });
+    f.runner.destroy = (id) => new Promise((r) => { f.destroyed.push(id); destroyed = r; });
+    const child = createVmSpawn({ runner: f.runner, scope: 's' })();
+    child.stdin.write(`${LINK}\n`);
+    await tick();
+    let closes = 0;
+    child.on('close', () => closes++);
+    child.kill();
+    await tick();
+    if (early) { assert.deepEqual([closes, f.destroyed], [0, []]); made({ status: 200, body: { desktop_id: 'late1' } }); await tick(); }
+    assert.deepEqual([closes, f.destroyed], [0, [early ? 'late1' : 'ab12']]);
+    destroyed();
+    await tick();
+    assert.equal(closes, 1);
+  }
+});

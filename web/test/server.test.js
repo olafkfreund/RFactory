@@ -51,7 +51,7 @@ test('static files carry CSP, nosniff and no-store', async (t) => {
 
 test('page config returns the source commit', async (t) => {
   const get = await start(t, { source, brain: fakeBrain, commit: 'abc123' });
-  assert.deepEqual(await (await get('/api/config')).json(), { commit: 'abc123' });
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: 'abc123', projects: false });
 });
 
 test('standup returns legacy and new fields without calling the brain', async (t) => {
@@ -754,4 +754,65 @@ test('project lookups: the endpoint serves each turn its own repositories', asyn
   };
   assert.deepEqual(await found(made.lookupsFor([1, 3])), ['FCT-1', 'FCT-3']);
   assert.deepEqual(await found(undefined), ['FCT-2']);
+});
+
+test('project approvals: approve, reject and stop need the project that may change things', async (t) => {
+  const done = [];
+  const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
+  const manager = { list: () => ({}), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const roles = rolesFor(ME, ME);
+  const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
+  const base = await a.get('/api/config');
+  assert.equal((await base.json()).projects, true);
+  const origin = new URL(base.url).origin;
+  const send = async (path, body) => {
+    const r = await new Promise((resolve, reject) => {
+      const req = require('node:http').request(`${origin}${path}`, { method: 'POST',
+        headers: { 'x-forwarded-email': ME, 'x-rfactory-action': '1', origin } }, (res) => {
+        let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => resolve([res.statusCode, JSON.parse(text)]));
+      });
+      req.on('error', reject); req.end(JSON.stringify(body));
+    });
+    return r;
+  };
+  const routes = ['actions/x/approve', 'actions/x/reject', 'shares/x/approve', 'shares/x/reject', 'shares/stop',
+    'investigations/x/approve', 'investigations/x/reject', 'investigations/stop'];
+  for (const route of routes) {
+    assert.deepEqual(await send(`/api/${route}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }], route);
+    assert.deepEqual(await send(`/api/${route}?project=${HIDDEN}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }]);
+    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }),
+      [403, { error: 'project-read-only', text: "Changes aren't available for this project yet." }]);
+  }
+  assert.deepEqual(done, []);
+  for (const route of routes) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
+  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x']]);
+  await a.begin(ALPHA);
+  a.w.fail = 'listProjects';
+  assert.equal((await send(`/api/shares/stop?project=${ALPHA}`, { id: 'x' }))[0], 200); // the running call answers for itself
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'x' }))[0], 502);
+  await a.stop();
+});
+
+test('project lookups: GitHub only with the default repository, and a project turn never falls back to it', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const views = [];
+  const createSource = () => ({ start: async () => {}, repositoryProject: async () => 'o/r2', forRepositories: (ids) => { views.push(ids); return {}; },
+    lookupCards: async () => { throw new Error('default-repository-read'); } });
+  const made = await composeLookups({ scope: { lookups_enabled: true, source: { repository_id: 2, mcp_url: 'x', github_read: { owner: 'o', repo: 'r2' } } },
+    key: 'k', redactor: makeRedactor([]), token: 'token-value', createSource });
+  t.after(() => made.endpoint.close());
+  const ctx = (extra) => ({ project: { ...made.project, ...extra }, tools: ['find_cards', 'get_issue'] });
+  assert.deepEqual(made.lookupsFor([1, 2]).tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
+  assert.match(made.lookupsFor([2]).tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
+  assert.deepEqual(made.lookupsFor([3]).tools(ctx()).map((x) => x.name), ['find_cards']);
+  const sdk = (name) => require(require.resolve(`@modelcontextprotocol/sdk/${name}`, { paths: [path.dirname(require.resolve('@rfactory/core/src/scope.js'))] }));
+  const { Client } = sdk('client/index.js');
+  const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
+  const controller = new AbortController();
+  const token = made.endpoint.register({ ...ctx({ bound: true }), controller, signal: controller.signal, rounds: 0, reads: [] }); // no lookups of its own
+  const client = new Client({ name: 'test', version: '0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(made.lookupUrl), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  assert.deepEqual((await client.listTools()).tools, []);
+  assert.equal((await client.callTool({ name: 'find_cards', arguments: { text: 'x' } })).isError, true);
+  await client.close();
 });

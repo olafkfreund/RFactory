@@ -289,7 +289,7 @@ test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
     }
     const bad = [null, [], 'x', {}, { allow: {} }, { allow: [] }, { allow: many(51) }, { allow: [{ id }], extra: 1 },
       ...[null, id, {}, { id: 5 }, { id: [id] }, { id: '' }, { id: 'repo:' }, { id: 'repo:x' }, { id: 'aifactory-demo' },
-        { id: id.toUpperCase() }, { id: id.slice(1) }, { id: `${id}0` }, { id: ' repo:1' }, { id, github_read: [] }]
+        { id: id.toUpperCase() }, { id: id.slice(1) }, { id: `${id}0` }, { id: '-'.repeat(36) }, { id: '0'.repeat(36) }, { id: ' repo:1' }, { id, github_read: [] }]
         .map((entry) => ({ allow: [entry] })),
       { allow: [{ id }, { id }] }];
     for (const projects of bad) {

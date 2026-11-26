@@ -81,7 +81,8 @@ function cap(value, limit) {
 function createLookups({ source, github, redactor }) {
   return {
     tools(ctx) { return ctx.tools.filter((name) => specs[name] && (FACTORY.includes(name) || (github && ctx.project.github))).map((name) => ({
-      name, description: `Read ${name.replaceAll('_', ' ')} in the bound project`, inputSchema: schema(name),
+      name, description: `Read ${name.replaceAll('_', ' ')} in ${GITHUB.includes(name)
+        ? `the GitHub repository ${ctx.project.github.owner}/${ctx.project.github.repo}` : 'the bound project'}`, inputSchema: schema(name),
     })); },
     async call(ctx, name, args) {
       // only a delivered read logs a ref: a model's argument could carry question text into the record
@@ -102,11 +103,16 @@ function createLookups({ source, github, redactor }) {
         } else if (FACTORY.includes(name)) {
           const card = await source.lookupCard(args.card_key, ctx.signal);
           kind = 'card'; title = card.title; evidence = mapCard(card);
-          if (name === 'get_card') result = { card_key: card.card_key, title: wrap(card.title), state: evidence.state,
-            plan: wrap(card.plan || card.description), acceptance: wrap(card.acceptance || card.acceptance_criteria),
-            issue: card.issue_ref ? { number: Number(card.issue_ref.match(/#(\d+)$/)?.[1]), state: card.issue_state } : null,
-            pr: card.pr_ref ? { number: Number(card.pr_ref.match(/#(\d+)$/)?.[1]), state: card.pr_state } : null,
-            updated_at: card.updated_at };
+          if (name === 'get_card') {
+            // a project call may span repositories: a number is given only when the GitHub tools would read the repository it is in
+            const bound = ctx.project.github && `${ctx.project.github.owner}/${ctx.project.github.repo}#`.toLowerCase();
+            const numbered = (key, ref, state) => (ctx.project.bound && ref && !(bound && String(ref).toLowerCase().startsWith(bound))
+              ? {} : { [key]: ref ? { number: Number(ref.match(/#(\d+)$/)?.[1]), state } : null });
+            result = { card_key: card.card_key, title: wrap(card.title), state: evidence.state,
+              plan: wrap(card.plan || card.description), acceptance: wrap(card.acceptance || card.acceptance_criteria),
+              ...numbered('issue', card.issue_ref, card.issue_state), ...numbered('pr', card.pr_ref, card.pr_state),
+              updated_at: card.updated_at };
+          }
           if (name === 'card_comments') {
             const reply = await source.lookupComments(args.card_key, ctx.signal);
             if ((reply.card_key && reply.card_key !== args.card_key) || (card.issue_ref && reply.issue_ref !== card.issue_ref)) throw new Error('card-comments-mismatch');

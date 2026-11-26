@@ -395,7 +395,7 @@ test('a one-repository view keeps board and keyed read signatures', async () => 
 
 test('project reads are uncached and fail closed on errors or malformed replies', async () => {
   const project = { id: 'p', name: 'Project', slug: 'project', repository_ids: [1, 2], repo_paths: ['a', 'b'], created_at: null };
-  const values = { cfactory_list_projects: [[project], [project, project]],
+  const values = { cfactory_list_projects: [[project], [project, { ...project, id: 'q' }]],
     cfactory_resolve_project: [{ project }, { project }] };
   const client = { calls: [], async callTool(req) {
     this.calls.push(req);
@@ -403,11 +403,14 @@ test('project reads are uncached and fail closed on errors or malformed replies'
   } };
   const source = src(client);
   assert.deepEqual(await source.listProjects(), [project]);
-  assert.deepEqual(await source.listProjects(), [project, project]);
+  assert.deepEqual(await source.listProjects(), [project, { ...project, id: 'q' }]);
   assert.deepEqual(await source.resolveProject('project'), { project });
   assert.deepEqual(await source.resolveProject('project'), { project });
   assert.deepEqual(client.calls.map((c) => c.name), ['cfactory_list_projects', 'cfactory_list_projects', 'cfactory_resolve_project', 'cfactory_resolve_project']);
   assert.deepEqual(client.calls[2].arguments, { ref: 'project' });
+  for (const bad of [{ error: 'boom', projects: [project] }, { projects: [project, project] }]) {
+    await assert.rejects(src(boardClient({ cfactory_list_projects: bad })).listProjects(), /project-resolve-failed/);
+  }
   for (const bad of [{ error: 'boom' }, {}, { project: {} }, new Error('down')]) {
     const broken = src(boardClient({ cfactory_resolve_project: bad, cfactory_list_projects: bad }));
     await assert.rejects(broken.resolveProject('x'), /project-resolve-failed/);
@@ -427,5 +430,16 @@ test('listRepositories returns the tenant list, uncached, and fails closed', asy
   await assert.rejects(src(boardClient({ cfactory_list_git_repositories: new Error('down') })).listRepositories(), /^Error: project-resolve-failed$/);
   for (const bad of [{ error: 'forbidden' }, {}, { repositories: 'x' }]) {
     await assert.rejects(src(boardClient({ cfactory_list_git_repositories: bad })).listRepositories(), /project-resolve-failed/, JSON.stringify(bad));
+  }
+});
+
+test('set freshness is the worst state: unavailable beats stale and current', async () => {
+  const both = { repositories: [{ id: 1, project: 'example/one' }, { id: 2, project: 'example/two' }], default_repository_id: 2 };
+  const stale = { repository_id: 1, stale: true, last_polled_at: '2026-11-20T00:00:00Z' };
+  const current = { repository_id: 1, stale: false, last_polled_at: '2026-11-20T00:00:00Z' };
+  for (const [first, second] of [[stale, null], [current, null], [stale, { repository_id: 2, stale: false, last_polled_at: null }]]) {
+    const client = boardClient({ cfactory_list_git_repositories: both, cfactory_list_cards: { cards: [] },
+      cfactory_card_sync_state: { repositories: [first, second].filter(Boolean) } });
+    assert.equal((await src(client).forRepositories([1, 2]).standupData()).freshness.state, 'unavailable');
   }
 });

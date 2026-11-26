@@ -293,3 +293,15 @@ test('a private key stays hidden after its BEGIN leaves the log buffer, until it
   assert.deepEqual(await poll(), ok(200));
   await f.manager.stop('owner@example.com');
 });
+
+test('a Stop naming an entry ends only that entry and refuses any other id', async () => {
+  const f = setup();
+  await f.manager.recover();
+  await f.manager.startCall(1, { desktop: f.desktop });
+  const p = (await f.manager.request('share the board', 'Caller')).share;
+  assert.equal((await f.manager.stop('member@example.com', 'other')).status, 409);
+  assert.equal((await f.manager.stop('member@example.com', '')).status, 409);
+  assert.equal(f.manager.list().pending.length, 1);
+  assert.equal((await f.manager.stop('member@example.com', p.id)).status, 200);
+  assert.equal(f.manager.list().pending.length, 0);
+});

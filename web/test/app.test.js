@@ -419,7 +419,7 @@ const ALPHA = { id: 'id-a', name: 'Alpha', slug: 'alpha', repositories: [{ id: 1
 const BETA = { id: 'id-b', name: 'Beta <b>', slug: 'beta', repositories: [{ id: 3, path: 'o/b' }] };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-async function projectPage(t, path, { routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
+async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
   const { doc, byId } = shim();
   for (const id of ['run', 'status', 'stale', 'summary-card', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
@@ -438,7 +438,7 @@ async function projectPage(t, path, { routes = {}, status = { running: false, st
   global.EventSource = class { constructor(url) { this.url = url; page.streams.push(this); } close() { this.closed = true; }
     send(event) { this.onmessage({ data: JSON.stringify(event) }); } };
   global.setInterval = (fn, ms) => { if (ms === 5000) page.timers.push(fn); };
-  await openPage(doc, { pathname: path, assign: (url) => page.assigned.push(url) });
+  await openPage(doc, { pathname: path, assign: (url) => page.assigned.push(url) }, Promise.resolve(config));
   await settle();
   page.urls = () => page.requests.map((r) => r[1]);
   page.click = async (id) => { await byId[id].listeners.click(); await settle(); };
@@ -513,11 +513,31 @@ test('the front page only offers the picker, which opens the project\'s own page
 });
 
 test('without a projects block the page asks and streams as before', async (t) => {
-  const p = await projectPage(t, '/', { routes: { '/api/projects': [404, { error: 'not-found' }] } });
+  for (const config of [{ projects: false }, null]) { // null: /api/config did not answer
+    const other = await projectPage(t, '/', { config });
+    assert.ok(!other.urls().some((url) => url.startsWith('/api/projects')));
+  }
+  const p = await projectPage(t, '/', { config: { projects: false } });
   for (const url of ['/api/standup', '/api/review', '/api/actions', '/api/shares', '/api/investigations']) assert.ok(p.urls().includes(url), url);
   assert.ok(!p.urls().some((url) => url.includes('project=') || url === '/api/call/status'));
   assert.deepEqual(p.streams.map((s) => s.url), ['/api/call/events']);
   assert.notEqual(p.byId['call-projects'].hidden, false);
   await p.click('call-leave');
   assert.deepEqual(p.requests.at(-1), ['DELETE', '/api/call']);
+});
+
+test('decisions carry the project, a share Stop its id, and a link slug is encoded', async (t) => {
+  const p = await projectPage(t, '/p/alpha');
+  const click = async (list, label) => { await p.byId[list].all().find((n) => n.tag === 'button' && n.textContent === label).listeners.click(); await settle(); };
+  for (const id of ['actions-status', 'share-status', 'investigation-status']) p.byId[id] = new Node('p');
+  handleCall(p.doc, { type: 'share-updated', share: { id: 's1', state: 'running' } });
+  await click('share-list', 'Stop');
+  assert.deepEqual(p.requests.at(-1), ['POST', '/api/shares/stop?project=id-a', { id: 's1' }]);
+  handleCall(p.doc, { type: 'investigation-updated', investigation: { id: 'i1', state: 'running' } });
+  await click('investigation-list', 'Stop');
+  assert.deepEqual(p.requests.at(-1), ['POST', '/api/investigations/stop?project=id-a', { id: 'i1' }]);
+  const odd = await projectPage(t, '/p/a&slug=b');
+  assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
+  const broken = await projectPage(t, '/p/%E0%A4%A');
+  assert.equal(broken.byId['project-info'].textContent, "This project isn't available in Meet");
 });

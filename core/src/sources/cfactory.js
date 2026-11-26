@@ -262,7 +262,8 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       try {
         const reply = await call('cfactory_list_projects');
         const projects = Array.isArray(reply) ? reply : reply?.projects; // a bare list or { projects }
-        if (!Array.isArray(projects) || !projects.every(validProject)) throw new Error('malformed');
+        if (reply?.error || !Array.isArray(projects) || !projects.every(validProject) ||
+            new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error('malformed');
         return projects;
       } catch { throw new Error('project-resolve-failed'); }
     },
