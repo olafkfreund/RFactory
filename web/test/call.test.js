@@ -1284,20 +1284,35 @@ test('a project call drops a manager event from another call: not delivered, rep
   } finally { f.restore(); }
 });
 
-test('writes: a project without the default repository refuses and starts nothing; with it they work', async () => {
+test('writes: a project without the default repository answers an action as a question', async () => {
+  const actions = fakeManager(), turns = [];
+  const f = setup({ brainTurn: async (snapshot, options) => { turns.push(options.question); return { text: 'Unknown.' }; }, extra: { actions } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [3], false), view: viewFor('card') });
+    await f.heard('a', 'RFactory, build status of FCT-1?');
+    await speakAll(f);
+    assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
+    assert.equal(turns.length, 1);
+    assert.equal(actions.requests.length, 0);
+    assert.doesNotMatch(said(f).join(' '), /Changes aren't available/);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('writes: a project without the default repository refuses investigations, shares and desktop requests; with it they work', async () => {
   for (const writable of [false, true]) {
-    const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
-    const f = setup({ extra: { actions, shares, investigations } });
+    const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager(), desktop = fakeManager();
+    const f = setup({ desktop, extra: { actions, shares, investigations } });
     try {
       await f.manager.start('link', { binding: bindingFor('Alpha', [writable ? 2 : 3], writable), view: viewFor('card') });
-      for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure']]) {
+      for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure'], ['d', 'open the settings page']]) {
         await f.heard(id, `RFactory, ${text}`);
         await speakAll(f);
       }
       const managers = [actions, shares, investigations];
-      assert.deepEqual(managers.map((m) => m.requests.length), writable ? [1, 1, 1] : [0, 0, 0]);
+      assert.deepEqual([...managers, desktop].map((m) => m.requests.length), writable ? [1, 1, 1, 1] : [0, 0, 0, 0]);
       assert.deepEqual(managers.map((m) => m.started.length), writable ? [1, 1, 1] : [0, 0, 0]);
-      assert.equal(said(f).filter((s) => s === "Changes aren't available for this project yet.").length, writable ? 0 : 3);
+      assert.equal(said(f).filter((s) => s === "Changes aren't available for this project yet.").length, writable ? 0 : 3); // share, investigation, desktop; the card request became a question
       await endCall(f);
     } finally { f.restore(); }
   }

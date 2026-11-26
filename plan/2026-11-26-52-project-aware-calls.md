@@ -278,3 +278,10 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
    - **Lead's changes, made in step 5:**
      - in a call without write access, a non-desktop request the classifier labels an action is answered as a question, as happens today when actions are off, instead of being refused;
      - `/api/projects` leaves out a project whose repositories can't be joined, and logs it, instead of failing the whole picker with `502`.
+5. **Step 5 (coder), with the lead's change:**
+   - **One project per page load:** choosing in the picker opens `/p/<slug>`. The front page (`/`) loads nothing project-bound until a project is chosen, and shows the busy line while a call is running.
+   - **Status polling:** the page checks `/api/call/status` every 5 s, and after Join and Leave. It opens the event stream only while its own project's call is running, and closes it on `ended`, `busy` or `idle`. Leave sends the generation.
+   - **Errors:** any `project-…` code shows "This project isn't available in Meet". A start while another start is resolving shows `Failed: busy`.
+   - **Step 4's two adjustments are in:** a call without write access answers a misclassified question as a question, and the picker leaves out a project that can't be joined.
+   - **`listRepositories()`** (lead) treats an error payload, or a missing or invalid list, as `project-resolve-failed` instead of an empty list, which would otherwise empty the picker quietly.
+   - **Not yet tried in a real browser:** the page is tested against the fake DOM. The live check covers it.

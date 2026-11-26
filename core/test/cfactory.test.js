@@ -425,4 +425,7 @@ test('listRepositories returns the tenant list, uncached, and fails closed', asy
   await source.listRepositories();
   assert.equal(client.calls.length, 2);
   await assert.rejects(src(boardClient({ cfactory_list_git_repositories: new Error('down') })).listRepositories(), /^Error: project-resolve-failed$/);
+  for (const bad of [{ error: 'forbidden' }, {}, { repositories: 'x' }]) {
+    await assert.rejects(src(boardClient({ cfactory_list_git_repositories: bad })).listRepositories(), /project-resolve-failed/, JSON.stringify(bad));
+  }
 });

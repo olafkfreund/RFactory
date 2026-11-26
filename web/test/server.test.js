@@ -679,7 +679,21 @@ test('project routes: page, picker and slug resolution', async (t) => {
   }
   assert.deepEqual(await a.reply('/api/projects/resolve?slug=hidden'), [403, { error: 'project-not-allowed' }]);
   a.w.repos = [];
-  for (const url of ['/api/projects', '/api/projects/resolve?slug=alpha']) assert.deepEqual(await a.reply(url), [502, { error: 'project-resolve-failed' }]);
+  assert.deepEqual(await a.reply('/api/projects/resolve?slug=alpha'), [502, { error: 'project-resolve-failed' }]);
+});
+
+test('project picker leaves out and logs a project that cannot be joined; a CFactory error is a 502', async (t) => {
+  const logged = [];
+  t.mock.method(console, 'error', (line) => logged.push(line));
+  const a = await projectApp(t);
+  a.w.repos = a.w.repos.filter((r) => r.id !== 2);
+  const [status, body] = await a.reply('/api/projects');
+  assert.deepEqual([status, body.map((p) => p.name)], [200, ['Beta']]);
+  assert.deepEqual(logged, [`rfactory-web: project skipped: ${ALPHA} repository-missing`]);
+  for (const name of ['listProjects', 'listRepositories']) {
+    a.w.fail = name;
+    assert.deepEqual(await a.reply('/api/projects'), [502, { error: 'project-resolve-failed' }]);
+  }
 });
 
 test('project reads: standup, review and approval lists are the requested project\'s', async (t) => {

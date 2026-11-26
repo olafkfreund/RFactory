@@ -66,6 +66,14 @@
 
   <section id="call" class="panel">
     <h2 class="panel-title">Call <span id="call-state" class="status-pill"><span class="dot"></span><span id="call-state-text">idle</span></span></h2>
+    <div id="call-projects" hidden>
+      <div class="call-form">
+        <label for="call-project">Project</label>
+        <select id="call-project"></select>
+      </div>
+      <p id="project-info" class="fine" role="status" aria-live="polite"></p>
+      <p id="call-busy" class="status-line" role="status" aria-live="polite"></p>
+    </div>
     <div class="call-form">
       <input id="call-link" class="call-input" type="text" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" aria-label="Meet link">
       <label for="call-listen">Listen</label>

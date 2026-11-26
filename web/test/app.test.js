@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   render, handleCall, renderFooter, loadShares, loadInvestigations,
-  renderReview, loadReview, renderReviewCard, loadReviewCard,
+  renderReview, loadReview, renderReviewCard, loadReviewCard, openPage,
 } = require('../public/app.js');
 
 class Node {
@@ -412,4 +412,112 @@ test('a redacted or comma-holding file source never gets a wrong link', async ()
   const { sourceUrl } = require('../public/app.js');
   assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'cfg/[redacted].env' }), null);
   assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'a,b.txt' }), 'https://github.com/o/r/blob/HEAD/a%2Cb.txt');
+});
+
+// #52: the project page. A fake server answers by URL; streams and timers are captured.
+const ALPHA = { id: 'id-a', name: 'Alpha', slug: 'alpha', repositories: [{ id: 1, path: 'o/a' }, { id: 2, path: 'o/z' }] };
+const BETA = { id: 'id-b', name: 'Beta <b>', slug: 'beta', repositories: [{ id: 3, path: 'o/b' }] };
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+async function projectPage(t, path, { routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
+  const { doc, byId } = shim();
+  for (const id of ['run', 'status', 'stale', 'summary-card', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
+    'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
+    'share', 'share-list', 'investigation', 'investigation-list']) byId[id] = new Node('x');
+  byId['call-leave'].disabled = true;
+  const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], status };
+  const answers = { '/api/projects': [200, [ALPHA, BETA]], '/api/projects/resolve?slug=alpha': [200, ALPHA], ...routes };
+  const real = { fetch: global.fetch, EventSource: global.EventSource, setInterval: global.setInterval };
+  t.after(() => Object.assign(global, real));
+  global.fetch = async (url, options = {}) => {
+    page.requests.push([options.method || 'GET', url, ...(options.body ? [JSON.parse(options.body)] : [])]);
+    const [code, body] = answers[url] || (url === '/api/call/status' ? [200, page.status]
+      : url === '/api/call' ? answers.call || [202, { ok: true }] : [403, { error: 'project-not-allowed' }]);
+    return { ok: code < 300, status: code, json: async () => body };
+  };
+  global.EventSource = class { constructor(url) { this.url = url; page.streams.push(this); } close() { this.closed = true; }
+    send(event) { this.onmessage({ data: JSON.stringify(event) }); } };
+  global.setInterval = (fn, ms) => { if (ms === 5000) page.timers.push(fn); };
+  await openPage(doc, { pathname: path, assign: (url) => page.assigned.push(url) });
+  await settle();
+  page.urls = () => page.requests.map((r) => r[1]);
+  page.click = async (id) => { await byId[id].listeners.click(); await settle(); };
+  page.poll = async () => { await page.timers[0](); await settle(); };
+  return page;
+}
+
+test('a project page shows its repositories, scopes every read and starts with the stable id', async (t) => {
+  const p = await projectPage(t, '/p/alpha');
+  assert.equal(p.byId['project-info'].textContent, 'Alpha: o/a, o/z');
+  assert.equal(p.byId['call-projects'].hidden, false);
+  assert.equal(p.byId['call-project'].value, 'alpha');
+  assert.deepEqual(p.byId['call-project'].children.map((o) => [o.value, o.textContent]), [['', 'Choose a project'], ['alpha', 'Alpha'], ['beta', 'Beta <b>']]);
+  for (const url of ['standup', 'review', 'actions', 'shares', 'investigations']) assert.ok(p.urls().includes(`/api/${url}?project=id-a`), url);
+  await loadReviewCard(p.doc, 'AF-1');
+  assert.equal(p.urls().at(-1), '/api/review/AF-1?project=id-a');
+  assert.equal(p.streams.length, 0); // no call: no stream
+  p.byId['call-link'].value = ' https://meet.google.com/abc-defg-hij ';
+  p.byId['call-listen'].value = 'auto';
+  p.status = { running: true, generation: 4, project: { id: 'id-a', name: 'Alpha' } };
+  await p.click('call-join');
+  assert.deepEqual(p.requests.find((r) => r[0] === 'POST' && r[1] === '/api/call')[2], { link: 'https://meet.google.com/abc-defg-hij', listen: 'auto', project_id: 'id-a' });
+  assert.deepEqual(p.streams.map((s) => s.url), ['/api/call/events?project=id-a']);
+  p.streams[0].send({ type: 'state', state: 'in-call' });
+  assert.equal(p.byId['call-leave'].disabled, false);
+  await p.poll();
+  assert.equal(p.streams.length, 1); // one stream per call
+  await p.click('call-leave');
+  assert.deepEqual(p.requests.find((r) => r[0] === 'DELETE')[2], { generation: 4 });
+  p.status = { running: false, generation: 4, project: null };
+  p.streams[0].send({ type: 'state', state: 'stopped' });
+  p.streams[0].send({ type: 'ended' });
+  await settle();
+  assert.equal(p.streams[0].closed, true);
+  assert.deepEqual([p.byId['call-join'].disabled, p.byId['call-leave'].disabled], [false, true]);
+});
+
+test('another project\'s call shows busy and opens no stream, until it is over', async (t) => {
+  const p = await projectPage(t, '/p/alpha', { status: { running: true, generation: 2, project: { id: 'id-b', name: 'Beta <b>' } } });
+  assert.equal(p.byId['call-busy'].textContent, 'Meet is busy with a call for Beta <b>');
+  assert.equal(p.byId['call-join'].disabled, true);
+  assert.equal(p.streams.length, 0);
+  p.status = { running: false, generation: 2, project: null };
+  await p.poll();
+  assert.deepEqual([p.byId['call-busy'].textContent, p.byId['call-join'].disabled], ['', false]);
+  p.status = { running: true, generation: 3, project: { id: 'id-a', name: 'Alpha' } };
+  await p.poll();
+  assert.equal(p.streams.length, 1);
+});
+
+test('unknown, ambiguous and not-allowed links, and a refused start, show the project as unavailable', async (t) => {
+  for (const answer of [[404, { error: 'project-unknown' }], [403, { error: 'project-not-allowed' }], [502, { error: 'project-resolve-failed' }]]) {
+    const p = await projectPage(t, '/p/nope', { routes: { '/api/projects/resolve?slug=nope': answer } });
+    assert.equal(p.byId['project-info'].textContent, "This project isn't available in Meet");
+    assert.equal(p.byId['call-join'].disabled, true);
+    assert.equal(p.byId.run.disabled, true);
+    assert.deepEqual(p.urls(), ['/api/projects', '/api/projects/resolve?slug=nope', '/api/call/status']);
+  }
+  const p = await projectPage(t, '/p/alpha', { routes: { call: [404, { error: 'project-unknown' }] } });
+  p.byId['call-link'].value = 'x';
+  await p.click('call-join');
+  assert.equal(p.byId['call-error'].textContent, "This project isn't available in Meet");
+});
+
+test('the front page only offers the picker, which opens the project\'s own page', async (t) => {
+  const p = await projectPage(t, '/');
+  assert.equal(p.byId.age.textContent, 'Choose a project');
+  assert.deepEqual(p.urls(), ['/api/projects', '/api/call/status']);
+  p.byId['call-project'].value = 'beta';
+  p.byId['call-project'].listeners.change();
+  assert.deepEqual(p.assigned, ['/p/beta']);
+});
+
+test('without a projects block the page asks and streams as before', async (t) => {
+  const p = await projectPage(t, '/', { routes: { '/api/projects': [404, { error: 'not-found' }] } });
+  for (const url of ['/api/standup', '/api/review', '/api/actions', '/api/shares', '/api/investigations']) assert.ok(p.urls().includes(url), url);
+  assert.ok(!p.urls().some((url) => url.includes('project=') || url === '/api/call/status'));
+  assert.deepEqual(p.streams.map((s) => s.url), ['/api/call/events']);
+  assert.notEqual(p.byId['call-projects'].hidden, false);
+  await p.click('call-leave');
+  assert.deepEqual(p.requests.at(-1), ['DELETE', '/api/call']);
 });

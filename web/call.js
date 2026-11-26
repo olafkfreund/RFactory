@@ -388,7 +388,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
     question.desktop = !!desktop && !['share', 'investigate'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
-    if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question'; // no write path here: 1b behaviour
+    // no write path here (or none for this call's project, #52): 1b behaviour
+    if (question.kind === 'action' && (!actions || (c.binding && !c.binding.writable)) && !question.desktop) question.kind = 'question';
     if (lookupsOn) question.arrivedAt = now();
     emit({ type: 'question', id: question.id, speaker: question.speaker, text: question.text, kind: question.kind });
     if (question.kind === 'leave') {

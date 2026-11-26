@@ -251,9 +251,12 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     ...source,
     forRepositories(ids, { name } = {}) { return view([...ids]); },
     // the tenant's full repository list, which a project's ids are joined against
+    // an error payload or a missing list is a failure, never "no repositories" (which would empty the picker quietly)
     async listRepositories() {
-      try { return (await repoList()).repositories; }
-      catch { throw new Error('project-resolve-failed'); }
+      let reply;
+      try { reply = await call('cfactory_list_git_repositories'); } catch { throw new Error('project-resolve-failed'); }
+      if (!reply || reply.error || !Array.isArray(reply.repositories)) throw new Error('project-resolve-failed');
+      return reply.repositories;
     },
     async listProjects() {
       try {

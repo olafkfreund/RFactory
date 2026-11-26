@@ -116,7 +116,11 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
 
   async function listProjects() {
     const [projects, repos] = await Promise.all([source.listProjects(), source.listRepositories()]);
-    return projects.filter((p) => allowed.has(p.id)).map((p) => describe(p, repos));
+    // one project that cannot be joined must not take the picker away from the others
+    return projects.filter((p) => allowed.has(p.id)).flatMap((p) => {
+      try { return [describe(p, repos)]; }
+      catch { console.error(`rfactory-web: project skipped: ${p.id} repository-missing`); return []; }
+    });
   }
 
   // a link names a project by its canonical slug only: an id, alias or ambiguous name is unknown

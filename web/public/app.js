@@ -154,13 +154,18 @@ function render(doc, data, now = Date.now()) {
   if (card) card.hidden = false;
 }
 
+// #52: one project per page load (the picker navigates), so nothing on the page ever has to be reset
+const projectIds = new WeakMap();
+const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
+const UNAVAILABLE = "This project isn't available in Meet";
+
 async function run(doc) {
   const status = doc.getElementById('status');
   const button = doc.getElementById('run');
   status.textContent = 'Running the standup… this can take up to a minute.';
   button.disabled = true;
   try {
-    const response = await fetch('/api/standup', { method: 'POST' });
+    const response = await fetch(scoped(doc, '/api/standup'), { method: 'POST' });
     const data = await response.json();
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
@@ -224,7 +229,7 @@ async function loadReview(doc, now = Date.now()) {
   const panel = doc.getElementById('review');
   const status = doc.getElementById('review-status');
   try {
-    const r = await fetch('/api/review');
+    const r = await fetch(scoped(doc, '/api/review'));
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       if (panel) panel.hidden = false;
@@ -309,7 +314,7 @@ async function loadReviewCard(doc, card_key) {
   const seq = (reviewSeq.get(doc) || 0) + 1;
   reviewSeq.set(doc, seq);
   try {
-    const r = await fetch(`/api/review/${encodeURIComponent(card_key)}`);
+    const r = await fetch(scoped(doc, `/api/review/${encodeURIComponent(card_key)}`));
     const data = await r.json().catch(() => ({}));
     if (reviewSeq.get(doc) !== seq) return;
     if (r.status === 404) {
@@ -394,7 +399,7 @@ async function decide(doc, a, verb) {
 
 async function loadActions(doc) {
   try {
-    const r = await fetch('/api/actions');
+    const r = await fetch(scoped(doc, '/api/actions'));
     if (!r.ok) return; // 404 when changes are off: the panels stay hidden
     const data = await r.json();
     const store = storeOf(doc);
@@ -466,7 +471,7 @@ async function decideShare(doc, tail, hash) {
 
 async function loadShares(doc) {
   try {
-    const r = await fetch('/api/shares');
+    const r = await fetch(scoped(doc, '/api/shares'));
     if (!r.ok) return; // 404 when shares are off: the panel stays hidden
     const data = await r.json();
     const store = shareStoreOf(doc);
@@ -542,7 +547,7 @@ async function decideInvestigation(doc, tail, payload) {
 
 async function loadInvestigations(doc) {
   try {
-    const r = await fetch('/api/investigations');
+    const r = await fetch(scoped(doc, '/api/investigations'));
     if (!r.ok) return; // 404 when investigations are off: the panel stays hidden
     const data = await r.json();
     const store = investigationStoreOf(doc);
@@ -656,6 +661,106 @@ function wireCall(doc) {
   es.onmessage = (m) => { try { handleCall(doc, JSON.parse(m.data)); } catch { /* drop a malformed event */ } };
 }
 
+// #52: the call on a project's page. /api/call/status says whose call runs; the event stream is opened for this project's only.
+function wireProjectCall(doc, project) {
+  const get = (id) => doc.getElementById(id);
+  const error = get('call-error');
+  let stream = null;
+  let generation; // the call this page saw: Leave names it, so it cannot end a later one
+  const close = () => { stream?.close(); stream = null; };
+  async function refresh() {
+    let status;
+    try {
+      const r = await fetch('/api/call/status');
+      if (!r.ok) return; // calls are off
+      status = await r.json();
+    } catch { return; }
+    const mine = !!project && status.running && status.project?.id === project.id;
+    const busy = status.running && !mine;
+    get('call-busy').textContent = busy ? `Meet is busy with a call for ${status.project?.name || 'another project'}` : '';
+    if (mine) {
+      generation = status.generation;
+      if (!stream) open();
+    } else if (busy || !stream) { // an open stream is closed by the server's own 'ended'
+      close();
+      get('call-join').disabled = busy || !project;
+      get('call-leave').disabled = true;
+    }
+  }
+  function open() {
+    stream = new EventSource(`/api/call/events?project=${encodeURIComponent(project.id)}`);
+    stream.onmessage = (m) => {
+      try {
+        const event = JSON.parse(m.data);
+        if (['ended', 'busy', 'idle'].includes(event.type)) { close(); refresh(); } // or the browser would reconnect for ever
+        else handleCall(doc, event);
+      } catch { /* drop a malformed event */ }
+    };
+  }
+  async function send(method, body) {
+    error.textContent = '';
+    try {
+      const r = await fetch('/api/call', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) {
+        const code = String((await r.json()).error);
+        error.textContent = code.startsWith('project-') ? UNAVAILABLE : `Failed: ${code}`;
+      }
+    } catch { error.textContent = 'Failed: network'; }
+    await refresh();
+  }
+  get('call-join').addEventListener('click', () => project && send('POST',
+    { link: get('call-link').value.trim(), listen: get('call-listen').value, project_id: project.id }));
+  get('call-leave').addEventListener('click', () => send('DELETE', { generation }));
+  setInterval(refresh, 5000);
+  return refresh();
+}
+
+function loadPanels(doc) {
+  loadShares(doc);
+  loadInvestigations(doc);
+  loadActions(doc).then(() => setInterval(() => renderActions(doc), 30000));
+  doc.getElementById('run').addEventListener('click', () => run(doc));
+  return run(doc);
+}
+
+// /p/<slug> names the page's project; the picker lists the others. 404 on /api/projects: no projects here, the page of before.
+async function openPage(doc, location) {
+  let list = [];
+  try {
+    const r = await fetch('/api/projects');
+    if (r.status === 404) { wireCall(doc); return loadPanels(doc); }
+    if (r.ok) list = await r.json();
+  } catch { /* the picker stays empty; a link can still resolve */ }
+  const get = (id) => doc.getElementById(id);
+  const slug = /^\/p\/([^/]+)$/.exec(location.pathname)?.[1];
+  let project = null;
+  if (slug) {
+    try {
+      const r = await fetch(`/api/projects/resolve?slug=${slug}`); // the path segment is already URL-encoded
+      if (r.ok) project = await r.json();
+    } catch { /* reported below */ }
+  }
+  const picker = get('call-project');
+  const option = (value, text) => { const o = el(doc, 'option', text); o.value = value; picker.appendChild(o); };
+  option('', 'Choose a project');
+  for (const p of list) option(p.slug, p.name);
+  if (project && !list.some((p) => p.slug === project.slug)) option(project.slug, project.name);
+  picker.value = project ? project.slug : '';
+  picker.addEventListener('change', () => { if (picker.value) location.assign(`/p/${encodeURIComponent(picker.value)}`); });
+  get('call-projects').hidden = false;
+  get('call-join').disabled = !project;
+  if (slug && !project) get('project-info').textContent = UNAVAILABLE;
+  if (!project) {
+    get('age').textContent = slug ? UNAVAILABLE : 'Choose a project';
+    get('run').disabled = true;
+    return wireProjectCall(doc, null);
+  }
+  projectIds.set(doc, project.id);
+  get('project-info').textContent = `${project.name}: ${project.repositories.map((repo) => repo.path).join(', ')}`;
+  wireProjectCall(doc, project);
+  return loadPanels(doc);
+}
+
 if (typeof document !== 'undefined') {
   renderFooter(document);
   fetch('/api/config').then((res) => res.json()).then(({ commit, listen, sttConfigured }) => {
@@ -663,16 +768,11 @@ if (typeof document !== 'undefined') {
     document.getElementById('call-listen').value = listen || 'auto';
     if (!sttConfigured) document.getElementById('call-hearing').textContent = 'Hearing: captions (own transcription not configured)';
   }).catch(() => {});
-  wireCall(document);
-  loadShares(document);
-  loadInvestigations(document);
-  loadActions(document).then(() => setInterval(() => renderActions(document), 30000));
-  document.getElementById('run').addEventListener('click', () => run(document));
-  run(document);
+  openPage(document, window.location);
 }
 if (typeof module !== 'undefined') {
   module.exports = {
     render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares, loadInvestigations,
-    renderReview, loadReview, renderReviewCard, loadReviewCard, sourceUrl,
+    renderReview, loadReview, renderReviewCard, loadReviewCard, sourceUrl, openPage,
   };
 }
