@@ -11,62 +11,110 @@ intent: intent/2026-11-26-62-bot-name-factory.md
 ### 1. The name, everywhere a person sees or hears it
 
 - **`bot/run.js:18`:** `BOT_NAME = 'Factory (AI)'`.
-- **The chat message (`bot/run.js:30`)** becomes:
+- **The chat message (`bot/run.js:30`):**
 
   `Factory (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory…`
 
-  The disclosure and the source link are unchanged.
-- **The avatar text (`bot/avatar/renderer.js:132`):** `'Factory (AI)'`. The source line `Source: github.com/olafkfreund/RFactory` is unchanged.
+  The disclosure and the source link, commit-specific when `RFACTORY_COMMIT` is set, are unchanged.
+- **The avatar text (`bot/avatar/renderer.js:132`):** `'Factory (AI)'`. The line `Source: github.com/olafkfreund/RFactory` is unchanged.
 - **The spoken greeting (`web/call.js:490`):** `Factory here${binding ? `, for ${name}` : ''}. Say 'Factory' and your question.`
-- **The guest fallback name (`desktop/guest/agent/call.js:39`):** `'Factory (AI)'`, used only when the library's `getBotName` binding is missing.
+- **The guest fallback name (`desktop/guest/agent/call.js:39`):** `'Factory (AI)'`.
 
 ### 2. The wake rule (`core/src/call/hearing.js`)
 
-- **The name forms:**
-  - **New:** `factory` and `factories`.
-  - **Old, kept for the transition:** `r factory`, `rfactory` and `r-factory`, plus the accepted mishearings `our`, `are`, `art`, `or` and `ah factory`, each with `-ies`.
-  - All are case-insensitive, with word boundaries.
-- **Where a form opens what someone says:** its match must start at an **opening position** in the block's **whole** text (`block.text`), not only in the part after `block.offset`:
-  - **Opening positions:** index 0; just after a sentence end (`[.!?]` followed by whitespace); or just after an opening position plus a greeting `(?:hey|hi|hello|ok|okay)` and optional punctuation (`,`, `!` or `.`) and whitespace.
-  - **One expression:** `(?:^|[.!?]\s+)(?:(?:hey|hi|hello|ok|okay)[\s,!.]*\s*)?` followed by a name form and `\b`. It is matched against `block.text` with the `g` flag. The first match whose name begins at or after `block.offset` is taken.
-  - **The rest stays as today:** something must follow the name (`addressed` not empty); dispatch happens after the quiet period, or at once when settled; the classification is unchanged.
-- **Own speech is never a wake.** `heard()` ignores a block whose `speaker` is `'You'` or the bot's own name (`'Factory (AI)'`, passed into `createHearing` as `selfNames`).
-  - **Why:** the greeting starts with "Factory here", and under the new rule a captioned greeting would otherwise wake the bot.
-  - **Own-transcription turns** already cut the bot's own speech by echo (`bot/run.js:168`). Their speaker is `Participant`, so nothing changes for them.
+**The name forms:**
+- the new `factory` and `factories`;
+- today's alias expression, unchanged: `r[ -]*factor(?:y|ies)` and `(?:our|are|art|or|ah)[ -]+factor(?:y|ies)`.
 
-### 3. Tests (`core/test/hearing.test.js` and others)
+All are case-insensitive, with a word boundary after.
 
-- **The wake forms:** every form, new and old, wakes at index 0, after `. ` and after `Hey `, `OK, `, `Hello `. The old "Hello RFactory" cases stay, since "hello" is a greeting.
-- **Mid-sentence mentions don't wake:** "the factory floor", "check the factory floor", "CFactory shows three cards", "This is our Factory. Test stand up." Under the new rule, the last of these is no longer a standup: "our Factory" is mid-sentence. That test changes.
-- **A sentence end before the name:** "We fixed the pipeline. Factory, what's blocked?" is a question.
-- **A caption that grows after an answer:** "Factory, check the" is answered, then the block grows to "Factory, check the factory floor". There is no second dispatch.
-- **A revision that resets the offset** doesn't wake from mid-sentence.
-- **Self-exclusion:** a block from `'You'` or `'Factory (AI)'` starting "Factory here…" doesn't wake.
-- **Settled own-transcription turns:** "Factory, what's blocked?" wakes; "we fixed it factory what's blocked" doesn't (the accepted trade-off).
-- **Name assertions:**
-  - `bot/test/run.test.js:75` and `:78` (the join name and the chat text);
-  - `bot/test/avatar-renderer.test.js:91` and `:170` (the labels);
-  - any `web/test` assertion of the greeting.
+**An opening wake** is a name form that starts at an opening position in the block's **whole** text:
+- index 0;
+- after a sentence end (`[.!?]` and whitespace);
+- after either of those plus a greeting followed by **at least one separator**: `(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+)`. So "HeyFactory" and "hifactory" don't count.
+
+In full:
+```js
+/(?:^|[.!?]\s+)(?:(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+))?(?<name>factor(?:y|ies)|r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b/gi
+```
+- **No stale match state:** a **new** `RegExp` is built for each scan (or `lastIndex` is reset), so no `g` state is shared between `heard()` and dispatch.
+- **Where the name starts:** `match.index + match[0].length - match.groups.name.length`.
+
+**One request per wake.** On dispatch, every opening wake in the block's text is listed in order.
+- **The request:** wake *i*'s request is the text from the end of its match to the start of wake *i+1*'s match, or to the end of the text. Leading `[\s,.:;!?-]` is trimmed.
+- **Several wakes:** each is dispatched on its own, in order, and classified by its own request. So "Factory, what's blocked? Factory, give a standup." gives a question, then a standup.
+
+**No replays: a per-wake memory replaces `block.offset`.**
+- **What is remembered:** each block keeps `answered: Map<nameStart, request>`.
+- **When a wake is dispatched:** only when its request is non-empty, **and** either its `nameStart` isn't in `answered`, or neither the answered request nor the current one is a prefix of the other (a genuine revision).
+- **Then** `answered.set(nameStart, request)`.
+- **What this gives:**
+  - **growth** ("first?" becoming "first? More discussion.") is an extension, so no new answer;
+  - a **partial second wake** ("…first. Fac" becoming "…first. Factory, x") keeps the first wake's request a prefix match, while the second wake has a new `nameStart`;
+  - a block **shortened and then restored** to the same text replays nothing;
+  - an **edit to an earlier wake's text** (case, punctuation) that leaves its request a prefix match replays nothing;
+  - a **genuinely revised request** ("first?" becoming "revised?") is answered again, as today (`core/test/hearing.test.js:111`).
+- **Dispatch timing is unchanged:** after `quietMs` of quiet, or at once when `settled`. Every new text re-arms the timer.
+
+**Own speech is never a wake:**
+- **The rule:** `createHearing({ …, selfNames })` takes the bot's own labels, and `heard()` ignores a block whose `speaker` matches one.
+- **How a label is compared:** `speaker` must be a string. It is trimmed, compared without case, and stripped of trailing parenthetical suffixes such as "(Guest)", "(Unverified)" or "(External)" before comparing.
+- **The labels:**
+  - **Default:** `['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']`. The old labels stay, so a guest that is still on the old image, or after a rollback, can't wake itself on "Factory here…".
+  - **Wiring:** `web/call.js` passes the default.
+- **Own-transcription turns** (speaker `Participant`) rely, as today, on the echo cut, which drops the bot's own playback plus an 800 ms tail (`bot/run.js:167-173`).
+
+### 3. Tests
+
+- **`core/test/hearing.test.js`:**
+  - **Wake forms:**
+    - every form, new and old, in both cases, wakes at index 0, after `. `, `! ` and `? `, and after `Hey `, `Hi, `, `OK, `, `Okay `, `Hello `;
+    - "HeyFactory", "hifactory" and "OKRFactory" don't;
+    - today's "Hello RFactory" cases still pass, since "hello" is a greeting.
+  - **Mid-sentence mentions don't wake:**
+    - "the factory floor", "check the factory floor", "CFactory shows three cards";
+    - "This is our Factory. Test stand up." changes: "our Factory" is mid-sentence, so it is no longer a standup;
+    - the speaker-label fixture at `:55` becomes `'Factory (AI)'`.
+  - **Multiple wakes and growth:**
+    - "Factory, what's blocked? Factory, give a standup." before the timer fires gives a question, then a standup;
+    - a partial second wake ("Factory, first. Fac", then "Factory, first. Factory, second?") gives "first.", then "second?";
+    - today's growth test (`:88`) still passes: growth gives no answer, a new wake does.
+  - **Revisions:**
+    - shortened and exactly restored replays nothing;
+    - an edit before a consumed wake (case change) replays nothing;
+    - today's genuine-revision test (`:111`) still passes.
+  - **Self-exclusion:** "Factory here…" from `'You'`, `'Factory (AI)'`, `'Factory (AI) (Guest)'` and `'RFactory Bot (AI)'` doesn't wake. A non-string speaker isn't excluded.
+  - **Settled own-transcription turns:**
+    - "Factory, what's blocked?", "Hey Factory, …" and "We fixed it. Factory, what's blocked?" wake;
+    - "we fixed it factory what's blocked" doesn't (the accepted trade-off).
+- **The name in other tests:**
+  - `bot/test/run.test.js:75` and `:78` (the join name and the chat text; the disclosure and source-link tests at `:180` stay);
+  - `bot/test/avatar-renderer.test.js:91` and `:170`;
+  - any `web/test` greeting assertion;
+  - a `web/test` check that `createHearing` gets the default `selfNames`.
 
 ## Alternatives rejected
 
 - **Wake anywhere:** "Factory" is everyday speech in these meetings.
-- **"Project Manager":** the owner chose Factory, and it's also an everyday phrase.
-- **Dropping the old name at once:** people who know "RFactory" would get no answer. The alias stays, under the same opening rule.
-- **Requiring a comma after the name:** captions and transcription often leave commas out, so real questions would be missed.
+- **Keeping `block.offset` as the only memory:** two wakes in one block, a partial second wake, and revisions either swallow or replay requests (review findings). A memory per wake handles all three.
+- **Requiring a comma after the name:** captions and transcription often leave commas out.
+- **Dropping the old name at once:** people who know "RFactory" would get no answer.
 
 ## Risks
 
-- **A sentence starting with "Factory" as a noun** wakes the bot. This is accepted in the intent. The bot answers it like any question.
-- **Captions without punctuation** ("we fixed it factory what's blocked") are missed. People who say the name first aren't affected.
-- **Self-exclusion depends on the speaker label Meet gives the bot's own captions.** Both "You" and the bot's name are excluded. The live check confirms the greeting doesn't wake the bot.
-- **Deploy:** the guest image carries `bot/`. Until it is redeployed, VM calls keep the old join name and chat message, while the greeting (web) and wake rule (web) already use the new ones. The plan ships both in one release window, like #49.
+- **A sentence starting with "Factory" as a noun** wakes the bot. Accepted in the intent.
+- **Captions without punctuation** before the name are missed. Accepted.
+- **Self-exclusion depends on the speaker label Meet or Teams gives the bot's own captions.**
+  - **What is covered:** "You", and both the new and old names, with guest suffixes.
+  - **What the live check records:** the label it observes.
+  - **What remains possible:** acoustic echo in own-transcription mode leaking past the 800 ms tail. The live check covers it.
+- **Deploy:** the guest image carries `bot/`, so the web image and the guest image ship **in one release window**, as in #49. The self-exclusion's old labels cover a guest still on the old image, and a rollback. Deploying needs the owner's OK. The "RFactory" alias is removed in a later PR.
 
 ## Verification
 
 - **Suites:** `cd core && npm test`, `cd web && NODE_PATH=$PWD/../bot/node_modules npm test`, `cd bot && npm test`, `cd desktop && npm test`.
-- **Live, in the test Meet with an observer, after both images are deployed:**
-  - the bot joins as "Factory (AI)", the chat message says "say 'Factory'", and the greeting is "Factory here…" with no self-wake;
+- **Live, in the test Meet with an observer, after both images are deployed, in both listening modes:**
+  - the bot joins as "Factory (AI)", the chat message says "say 'Factory'", and the greeting is "Factory here…" with no self-wake (record the speaker label Meet gives the bot's own captions);
   - "Factory, what is the status of FCT-163?" is answered;
   - "The factory pipeline is red." gets no answer;
   - "Hey Factory, what's blocked?" is answered;
