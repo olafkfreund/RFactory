@@ -369,3 +369,13 @@ All pass. With `lookups_enabled: false`, the existing call and brain tests pass 
 - **Full rollback:** a factory-gitops PR that re-pins web `sha-72f350a@sha256:4049bff01cb7d138738b197cfeffdde33e1182c975ad70fe04b150500109b48c`, and removes `source.github_read`, the lookup fields and the token staging, all in one PR. The old image's `loadScope` ignores unknown fields, but removing them keeps the scope truthful.
 - **After either:** Argo CD is Synced and Healthy, the digest matches, and `GET /api/investigations` returns 200.
 - **The Claude login is untouched by this plan**, so there is nothing to roll back there.
+
+## Deviations
+
+1. **Step 1 spike results** (2026-11-26, `@anthropic-ai/claude-code@2.1.326` via `npx`, local subscription login, a bearer-protected stateless SDK 1.32.2 Streamable HTTP server):
+   - **Tools:** with `--restricted --tools '' --strict-mcp-config --mcp-config <0600 file> --allowedTools mcp__rfactory__ok_tool --permission-mode dontAsk`, the `system/init` event lists only `mcp__rfactory__ok_tool` and `mcp__rfactory__other_tool`, and **no built-in tool**. `ok_tool` was called with the right bearer. `other_tool` was denied at call time (`permission_denials`) and never reached the server. So an MCP tool the server lists is still *offered*. Step 3's rule that `tools/list` returns only `ctx.tools` is therefore required, not optional.
+   - **Wrong bearer:** the server is marked `failed`, no tool is offered, and the CLI answers and exits 0 within 12 s.
+   - **Permissions:** `--permission-prompts none` alone and `--permission-mode dontAsk` alone each deny at once, with no hang. Step 4 passes **both**.
+   - **Budget:** `--max-budget-usd` works under the subscription. It gives exit 1 with JSON `{subtype: 'error_max_budget_usd', is_error: true, errors: ['Reached maximum budget ($…)']}`, and overshoots by one model step ($0.0226 on a $0.01 cap). Step 4 maps `subtype === 'error_max_budget_usd'` to `budget-exceeded`, whatever the exit code, and reads `total_cost_usd` from that JSON too.
+   - **Output:** a success gives `total_cost_usd`, and the model comes from the `modelUsage` keys (`claude-opus-5-5`).
+   - **Provider failure:** an unreachable API (`ANTHROPIC_BASE_URL` pointed at a closed port) makes the CLI retry until it is killed (150 s), so in production it ends as the turn's deadline (`brain-timeout`). A real API, auth or quota error could not be produced safely. Step 4 classifies `provider-error` when the JSON has `is_error: true` and either an `api_error_status` field, or a `result` or `errors` text matching `/api error|rate.?limit|overloaded|authenticat|quota|usage limit|credit/i`. Everything else stays `brain-error`.
