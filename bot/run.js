@@ -416,6 +416,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   // a planned retry the budget can no longer afford: report the last failed attempt again, then end
   function abandon(prev) {
     sendFailure(prev.e, prev.attempt, false);
+    if (closing) return;
     sendState('error', failureCode(prev.e)); exitCode = 1;
   }
 
