@@ -969,6 +969,24 @@ function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brai
 const untilAborted = (ctx, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
 const settle = async () => { await flush(); await flush(); await flush(); };
 
+test('a lookup answer is spoken as at most 3 sentences without markdown; the page keeps it whole', async () => {
+  const long = 'One is `done`. Two is **open**.\n\nThree is left. Four is blocked. Five is new.';
+  const tts = [];
+  const f = lookupCall({ brainTurn: async () => ({ text: long, cost: 0.1, model: 'm' }),
+    ttsSay: async (t) => { tts.push(t); return Buffer.from(t); } });
+  try {
+    await f.manager.start('link');
+    await f.heard('q1', 'RFactory, what is the state?'); await settle();
+    assert.equal(f.events.find((e) => e.type === 'answer').text, long);
+    // synthesis runs one sentence ahead of playback; the cap itself is checked on spoken() below
+    assert.deepEqual(tts.filter((t) => !/^One moment|^RFactory here/.test(t)), ['One is done.', 'Two is open.']);
+    const { spoken } = require('../call.js');
+    assert.equal(spoken(long), 'One is done. Two is open. Three is left.');
+    assert.equal(spoken('Only one.'), 'Only one.');
+    assert.equal(spoken('A. B? C! D.'), 'A. B? C!');
+  } finally { await f.end(); }
+});
+
 test('lookup turn: context, brain options, live evidence, delivered sources, one content-free record line', async () => {
   const f = lookupCall({ brainTurn: async (ctx) => {
     ctx.rounds = 3;

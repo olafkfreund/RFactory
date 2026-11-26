@@ -430,3 +430,7 @@ All pass. With `lookups_enabled: false`, the existing call and brain tests pass 
    - **Recorded, not fixed:**
      - **The raw snapshot in the `answer` event:** the `answer` event carries the snapshot over SSE, as it did before #51 (`emit({type: 'answer', text, snapshot})`). This is existing behaviour, not a change from this slice. It is noted in the PR as a follow-up.
      - **A cancelled cue still holds the speech queue** until its speech synthesis resolves (sub-second for "One moment."). A cue already handed to the bot finishes playing.
+6. **After the live check (step 11): spoken answers too long.**
+   - **What happened:** two live answers ran to 5 or more sentences, despite the prompt's "at most 3 spoken sentences".
+   - **The fix:** the limit moved into code. `spoken(text)` in `web/call.js` removes markdown characters (`` ` * _ # > ``), collapses whitespace and keeps the first 3 sentences. It is used only for a lookup answer's speech. The `answer` event, and so the page, still carry the full text.
+   - **The test:** `a lookup answer is spoken as at most 3 sentences without markdown; the page keeps it whole`.
