@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 67
 intent: intent/2026-11-26-67-meet-audio-and-join.md
 ---
