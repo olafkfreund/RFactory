@@ -27,7 +27,7 @@ function pageLeft() {
 
 async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const audio = env.RFACTORY_LISTEN === 'audio';
-  const chatLine = `Factory (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
+  const chatLine = `Factory (AI) is listening${audio ? " and transcribes this call on RFactory's own servers" : ''}; say 'Hey Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory${env.RFACTORY_COMMIT ? `/tree/${env.RFACTORY_COMMIT}` : ''}`;
   const d = {
     clock: { setTimeout, clearTimeout, now: Date.now },
     installSttBridge,

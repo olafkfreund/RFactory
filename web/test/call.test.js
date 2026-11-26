@@ -868,7 +868,7 @@ test("#62: the greeting names Factory, and the bot's own captions never wake it"
     assert.equal(options.selfNames, hearing.SELF_NAMES);
     f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'state', state: 'in-call' })}\n`);
     for (let n = 0; n < 6; n++) await flush();
-    assert.equal(f.said().join(' '), "Factory here. Say 'Factory' and your question."); // synthesised per sentence
+    assert.equal(f.said().join(' '), "Factory here. Say 'Hey Factory' and your question."); // synthesised per sentence
     for (const speaker of ['You', 'Factory (AI)', 'Factory (AI) (Guest)', 'RFactory Bot (AI)', 'RFactory Bot']) {
       f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: speaker, speaker, text: 'Factory, show the board', final: true })}\n`);
       await f.heard('no wake here'); // advances the quiet timer
@@ -1307,7 +1307,7 @@ test('a project call greets by name, keeps its project event, reads its own view
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
     f.children[0].output({ type: 'state', state: 'in-call' });
     await speakAll(f);
-    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Factory' and your question\./);
+    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Hey Factory' and your question\./);
     await f.heard('q', 'Factory, what is blocked?');
     await speakAll(f);
     assert.deepEqual(turns, ['Alpha card']);

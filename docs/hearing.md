@@ -58,8 +58,17 @@ The scope field `language` (default `'en'`) takes a BCP-47 language tag (such as
   - Its `NetworkPolicy` allows ingress on port 8080 only from the web server's pods and denies all egress.
 - **In-call join notice**:
   - On joining, the bot posts a notice to the call chat (`bot/run.js`). In `audio` mode, the message states that RFactory transcribes the call on its own servers:
-    `Factory (AI) is listening and transcribes this call on RFactory's own servers; say 'Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory` (with `/tree/<commit>` when `RFACTORY_COMMIT` is set).
+    `Factory (AI) is listening and transcribes this call on RFactory's own servers; say 'Hey Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory` (with `/tree/<commit>` when `RFACTORY_COMMIT` is set).
   - If sending the chat message fails in `audio` mode, the bot retries once after 10 s. If the retry also fails, the bot emits `{ type: 'hearing', state: 'notice-failed' }` and the page displays `Hearing: own transcription (call notice failed)`.
+
+## Waking the bot
+
+The bot answers only a request that opens with its name. The name is "Factory" or "Factories" (any case); there is no "RFactory" alias.
+
+- The name must start the text or follow a sentence end (`.`, `!`, `?`, `…`), optionally after an opening quote or bracket.
+- A separator must follow the name (`,` `.` `!` `?` `:` `;` `…`, a dash, or a spaced hyphen), unless a greeting (`hey`, `hi`, `hello`) comes first: "Hey Factory what is blocked" wakes, "Factory pipeline is red" does not.
+- `ok` and `okay` do not excuse a missing separator: "Okay factory builds failed" does not wake.
+- A mention that is rejected still ends the request before it, so the earlier request never absorbs it.
 
 ## Environment and scope reference
 
