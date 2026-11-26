@@ -7,7 +7,7 @@ const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|s
 // a change request must START with a change verb (optionally "please" / "can you"); "run the standup" stays a standup
 const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
 // a share request starts with a display verb and names the board or screen
-const SHARE = /^(?=[\s\S]*\b(?:board|screen)\b)[\s,.:;-]*(?:please[,\s]+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|bring(?:\s+up|\s+[\s\S]*?\s+up)|pull\s+up|put(?:\s+(?:the|your)\s+(?:board|screen))?\s+up)\b/i;
+const SHARE = /^(?=[\s\S]*\b(?:board|screen)\b)[\s,.:;-]*(?:please[,\s]+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|bring(?:\s+up|\s+(?:the|your)\s+(?:board|screen)\s+up)|pull\s+up|put(?:\s+(?:the|your)\s+(?:board|screen))?\s+up)\b/i;
 // an investigation request starts with investigate / find out / look into / "open a terminal ... and ..."
 const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
@@ -54,10 +54,13 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
           const next = wake.exec(block.text);
           const addressed = block.text.slice(match.index + match[0].length, next?.index ?? block.text.length)
             .replace(/^[\s,.:;!?-]+/, '').trim();
-          const n = addressed.toLowerCase().replace(/\s+/g, ' ').replace(/[\s.!?,;:]+$/, '');
+          // punctuation-insensitive ("FCT-163" = "FCT 163"), so an edit to punctuation alone is the same request
+          const n = addressed.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
           // a slot answers once: later text that extends it (word completion, punctuation, growth) is the same request
-          if (addressed && !(block.slots[i] && (n.startsWith(block.slots[i]) || block.slots[i].startsWith(n)))) {
-            block.slots[i] = n;
+          // a slot keeps every request it answered, so restoring earlier wording replays nothing
+          const history = block.slots[i] || (block.slots[i] = []);
+          if (addressed && n && !history.some((seen) => n.startsWith(seen) || seen.startsWith(n))) {
+            history.push(n);
             onAddressed({
               kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
               text: addressed, speaker: block.speaker, id,

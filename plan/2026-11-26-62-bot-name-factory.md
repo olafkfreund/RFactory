@@ -161,3 +161,10 @@ All pass.
      - **Within a batch:** a later item doesn't abort the batch's running lookup, and is queued past the limit of 2. A later caption still aborts the running lookup.
      - **Limits:** a batch arriving at an already full queue is dropped, as today. The 90 s deadline counts from arrival, so a third or fourth lookup in a batch can time out.
    - **The `selfNames` wiring test** spies on `createHearing`.
+5. **Codex re-check of the fixes (a32b5b3), with the lead's changes:**
+   - **History per slot:** each slot keeps every request it answered, so restoring earlier wording ("what is blocked?", then "who owns Beta?", then "what is blocked?") doesn't answer it again.
+   - **Normalisation** ignores all punctuation, not only trailing punctuation, so "FCT-163" and "FCT 163" are the same request.
+   - **`SHARE`:** "bring … up" is narrowed to "bring the/your board/screen up", so "bring me up to speed on the board" stays a question.
+   - **Accepted as they are:**
+     - "Factory, leave." in the same caption as questions still leaves at once and clears the queue. That is the existing priority of leave.
+     - A wake that appears *before* already-answered wakes in a revised caption shifts the slots, which can replay or suppress one request. It is rare, because captions grow at the end.

@@ -372,3 +372,16 @@ test('investigate: investigate/find out/look into/open a terminal ... and, after
     assert.equal(addressed[0].kind, kind, text);
   }
 });
+
+test('re-check fixes: restored wording, internal punctuation, and a narrow "bring … up"', () => {
+  const { clock, addressed, heard } = setup();
+  for (const text of ['Factory, what is blocked?', 'Factory, who owns Beta?', 'Factory, what is blocked?']) { heard('a', text); clock.tick(1500); }
+  assert.deepEqual(addressed.map(({ text }) => text), ['what is blocked?', 'who owns Beta?']);
+  heard('b', 'Factory, status of FCT-163?'); clock.tick(1500);
+  heard('b', 'Factory, status of FCT 163?'); clock.tick(1500);
+  assert.deepEqual(addressed.slice(2).map(({ text }) => text), ['status of FCT-163?']);
+  for (const [text, kind] of [['bring me up to speed on the board', 'question'], ['bring the board up', 'share'], ['bring up the board', 'share']]) {
+    const s = setup(); s.heard('c', `Factory, ${text}`); s.clock.tick(1500);
+    assert.equal(s.addressed[0].kind, kind, text);
+  }
+});
