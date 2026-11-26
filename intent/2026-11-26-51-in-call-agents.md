@@ -3,98 +3,136 @@ status: draft
 issue: 51
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
-related: intent/2026-11-19-18-claude-terminals.md, intent/2026-11-17-10-phase-3-actions-and-share.md, intent/2026-11-17-2-standalone-mode.md
+related: intent/2026-11-19-18-claude-terminals.md, intent/2026-11-17-10-phase-3-actions-and-share.md, intent/2026-11-17-2-standalone-mode.md, issues #22, #27, #28
 ---
 
-# Intent: in-call agents, the model with its full tools, provider chosen per call
+# Intent: in-call agents, the model with live tools, provider chosen per call
 
 ## Problem
 
 The meeting bot uses only a small part of what the models can do.
 
-- **Answers come from a snapshot, with no tools.**
-  - **How it works:** a question in the call goes to the Claude CLI with every tool switched off (`core/src/brains/claude-cli.js`: `--restricted --tools ''`). The bot answers from a status snapshot taken before the call.
-  - **What it can't do:** look anything up live. That includes:
+- **Answers use no live tools.**
+  - **How it works:** in the cluster, a question goes to the Claude CLI with its built-in tools switched off (`core/src/brains/claude-cli.js:14`: `--restricted --tools ''`). The bot answers from a status snapshot it fetches for the call.
+  - **What it can't do:** follow up on anything the snapshot doesn't hold. That includes:
     - an issue's comments;
-    - a file in a repository;
+    - a file in the call's repository;
     - a pull request's diff;
-    - a Factory plan, card or test run;
-    - a web page or a library's docs.
-  - Anything outside the snapshot gets "I don't know" or a proposal to investigate.
-- **Deeper work is one fixed shape.** #18 runs Claude, read-only, in a desktop terminal on one repository. The page approves it, and it ends with a spoken result. It cannot change anything. Its route to changes (#22, elevated calls) is still only an idea.
+    - a Factory plan, card or test run.
+
+    Such a question gets "I don't know", or a proposal to investigate.
+- **Deeper work is one fixed, read-only shape.**
+  - **How it runs:** #18 starts a read-only AIFactory run through CFactory, after an approver approves it on the page. Its live log is shared into the call, and it ends with a spoken result. The desktop VM holds no Claude login and no source token (#18, decision 1).
+  - **What's missing:** it cannot change anything. Changes wait for #22 (elevated calls), which has no intent yet.
 - **One provider, fixed by the deployment.**
   - The cluster accepts only `brain.kind: claude-cli` (`web/server.js:263`).
-  - An OpenAI-compatible brain exists (`core/src/brains/openai-compat.js`), but it is not wired into the call.
-  - There is no Codex, no Gemini, and no way to choose per call. A team that pays for OpenAI or Google, or that wants a second model's view, cannot use them in the meeting.
+  - An OpenAI-compatible brain exists (`core/src/brains/openai-compat.js`). It runs a tool loop over RFactory's own gateway tools, but it is not wired into the cluster call.
+  - There is no Codex or Gemini option, and no choice per call. A team that pays for OpenAI or Google, or wants a second model's view, cannot use them in the meeting.
 - **The cost:** in a meeting, "what's left on #28?", "what does the Factory plan for X say?" or "fix the typo in the README and open a PR" still means someone leaves the conversation to do it.
 
 ## Proposed outcome
 
-In a call, people use the model the way they use it at their desk. Three things change.
+The owner wants people in a call to use the models as fully as they do at their desk. That is three outcomes, delivered in slices (open question 1).
 
-1. **Ask anything, answered with live lookups.**
-   - The bot answers with the provider's own agent and its read-only tools, scoped to the call's projects:
-     - repositories;
-     - issues and pull requests;
-     - Factory plans, cards and test runs;
-     - the web and documentation.
-   - The answer is spoken, with sources shown on the RFactory page.
-   - Read-only lookups need no approval, as status answers today.
-2. **Choose the model.**
-   - The person starting the call picks the provider and the model: Anthropic (Claude Code), OpenAI (Codex) or Google (Gemini). The page shows which one is answering.
-   - People can say "ask Codex" or "get a second opinion from Gemini" to send one question to another configured provider.
-   - Only providers an admin has configured and approved are offered.
-3. **Make changes, under the existing rules.**
-   - "RFactory, fix X and open a PR" starts the chosen provider's coding agent (Claude Code, Codex or Gemini CLI) in a desktop terminal. As with #18, it is shared in the call.
-   - It needs an approver's approval on the page first, with the gate #22 describes.
-   - It works on a branch. Its results are a diff, test results and a pull request, never a merge or a deploy.
-   - It reports progress and the result in speech.
+1. **Ask, answered from live lookups.**
+   - **What it does:** the bot answers with a tool loop over RFactory's own read-only tools, served by the gateway and limited to the call's project:
+     - issues and their comments;
+     - pull requests and their diffs;
+     - files in the project's repository;
+     - Factory plans, cards and test runs.
+   - **What people see:** the spoken answer, with its sources listed on the RFactory page.
+   - **Approval:** these reads need none, as status answers today.
+   - **Web and documentation lookups are not in this outcome** (open question 3).
+2. **Choose the provider.**
+   - **The choice:** the person starting the call picks the provider and model from those an admin approved for the project: Anthropic (Claude), OpenAI (GPT or Codex models) or Google (Gemini).
+   - **Visibility:**
+     - The bot says in the call which provider is answering.
+     - The page shows it.
+     - Any change of provider is announced.
+   - **"Ask Codex" / "ask Gemini":** a participant can send one question to another approved provider. Whether a spoken request is enough is open question 4.
+3. **Make changes, behind #22.**
+   - **How a change starts:** "RFactory, fix X and open a PR" proposes a write run. It needs both #22 gates:
+     - **A grant for this call:** a portal-verified pairing, bound to the meeting, the bot session and a time window, with the scope `read`, `tests` or `branch-write`. It can be revoked, and it ends with the call.
+     - **An approval for each run:** given on the page, and bound to the repository, the request and the scope.
+   - **Where it runs:** where #18 runs, in AIFactory's sandboxed run kind, using the coding agent of the chosen provider (Claude Code, Codex CLI or Gemini CLI). Its live log is shared into the call.
+   - **What it produces:** a branch, a diff, test results (reported as passed, failed or not run, never guessed) and a pull request. It never merges and never deploys.
 
 ## Affected users and systems
 
-- **People:** meeting participants (who ask), approvers (who approve changes) and admins (who configure providers and keys).
+- **People:** meeting participants (who ask), approvers (who approve), and admins (who approve providers and projects and set limits).
+- **The gateway and its tools** (`core/src/gateway.js`):
+  - new read-only tools, limited to the project (possibly through #27's MCP server);
+  - the gateway enforces scope on every call, whatever the model asks for.
 - **Brains** (`core/src/brains/`):
-  - new Codex and Gemini adapters next to Claude;
-  - read-only tool profiles for each;
-  - the per-call choice.
-- **The call** (`web/call.js`): routing, "ask Codex" requests, and provider names in events and on the page.
-- **Desktop terminals** (`desktop/`, #18): the Codex and Gemini CLIs in the guest image, plus a write profile.
-- **Elevated calls (#22):** the approval and grant this needs before any write.
-- **The cluster** (`deploy/`, factory-gitops): provider secrets and egress rules for each provider's API.
-- **Overlap:**
-  - #2's brain choice (this intent covers it for the cluster);
-  - #28's "control by talking" (this intent is its engine);
-  - #27's MCP server, which could carry the tools.
+  - the tool loop for the cluster call;
+  - adapters for OpenAI and Google that keep the destination rules.
+- **The call** (`web/call.js`): routing; provider names in speech, events and on the page; per-call limits.
+- **AIFactory and CFactory:** write runs with the chosen provider's agent (#22, AIFactory#2156, CFactory#561).
+- **The cluster** (`deploy/`, factory-gitops): provider keys through the broker, and egress for each approved provider API.
+- **Related issues:**
+  - #2's brain choice (this intent covers it in the cluster);
+  - #28's "control by talking" (this is its engine);
+  - #22's gate (outcome 3 depends on it).
 
 ## Constraints
 
-- **The existing safety rules stay:**
-  - nothing changes without a signed-in approver's approval on the page, never by voice;
-  - writes go to a branch and a PR only, never to `main` and never a deploy;
-  - credentials only through the broker, never in prompts or logs;
-  - transcribed speech and tool output are data, not instructions;
-  - everything goes through the redactor;
-  - every request, approval and action is recorded.
-- **Read-only by default:**
-  - the answering agent gets no tool that writes, runs a shell on a host, or reaches a host outside its allowlist;
-  - write tools exist only inside an approved, sandboxed desktop session.
-- **Each provider is approved separately:** each API destination is pinned and approved by an admin, as the brain destinations are today (`destination.js`). Changing provider in a call picks from that list. It never adds a new destination.
-- **Subscription or API key:** each provider runs with credentials the admin set up. A provider's quota or failure is reported, and the call falls back to the default provider.
-- **Latency:** a spoken answer starts within today's bounds (about 55 s at most), or the bot says it is still working.
-- **Deploy:** the usual route, with the owner's OK. The desktop guest image grows by the extra CLIs.
+- **The model is never the boundary.**
+  - **Scope:** the gateway enforces the operation and the project scope on every tool call, whatever the model asks for.
+  - **Untrusted content:** transcribed speech, issue text, diffs and tool results are untrusted data. Hostile text in an issue comment must not be able to:
+    - widen a lookup's scope;
+    - reach a host outside the allowlist;
+    - start a write.
+  - **No shell or writes in the answering loop:** it gets no shell, no file write and no network egress beyond its provider API and the gateway.
+  - **One write path:** a change happens only in an approved AIFactory run.
+- **#18 and #22 stay as they are:**
+  - nothing changes without a signed-in approver on the page, never by voice;
+  - writes go to a branch and a pull request, never to `main` and never a deploy;
+  - the desktop VM gets no provider login and no source token;
+  - an unscheduled call cannot be elevated.
+- **Data sent to a provider:**
+  - Each provider is approved separately: an admin approves its destination for each project, and the existing rules apply:
+    - destination pinning and an approved hash (`destination.js`);
+    - no redirects;
+    - no proxy or base-URL override from the environment.
+  - Keys reach the brain only through the credential broker, never from the server's environment (`refuseKeyEnv` stays).
+  - Call data (speech, code, plans) goes only to the providers approved for that project.
+  - There is no automatic switch to another provider. When a provider fails or runs out of quota, the bot says so and that turn stops.
+- **Limits:**
+  - **Per question:** a cap on tool rounds, and a spoken "still working" within today's bound (about 55 s), with a hard maximum.
+  - **Per call:** a token or cost budget.
+  - **Per write run:** #18's time and cost limits, and at most one run per call. Every limit is shown on the page.
+- **Visible and stoppable (#18):** Stop, the call ending, a crash or a lost controller ends a run within seconds. An independent maximum lifetime ends it even when every controller is gone. A cleanup failure is reported, never assumed.
+- **Record (#10):** each entry is kept 90 days, with no raw tool output and no terminal contents. It records:
+  - requests;
+  - the provider and model used;
+  - the sources each answer used;
+  - approvals, with the approver and the scope;
+  - rejections, expiries and failures;
+  - uncertain outcomes.
+- **Deploy:** the usual route, with the owner's OK.
 
 ## Open questions
 
-1. **Scope of the first slice.**
-   - **Recommended:** live read-only lookups plus the provider choice first (outcomes 1 and 2).
-   - **Then:** changes (outcome 3) as a second slice, once #22's gate is settled.
-   - **Or:** all three at once.
-2. **Tools: native or shared?**
-   - **Native:** each provider's own CLI tools.
-   - **Shared:** one RFactory tool set, which could reuse #27's MCP server, served to all three. It behaves the same across providers and is easier to restrict, but has fewer tools.
-3. **Who chooses the provider?**
-   - Only the person starting the call, or anyone in the call for one question ("ask Codex")?
-   - Should "second opinion" ask two providers and speak both answers?
-4. **Credentials:** subscription logins (Claude Max, ChatGPT, Google AI) inside the desktop VMs, or API keys from the broker? This decides cost, quota and how each CLI authenticates.
-5. **Gemini:** is it a must-have at first, or are Claude and Codex enough to start?
-6. **#22 and #2:** fold them into this, or keep them as the gate (#22) and the standalone mode (#2) that this depends on?
+1. **First slice.** Each slice is useful on its own, and slice 3 waits for #22. The options:
+   - **A (recommended):** live read-only lookups on the current Claude brain (outcome 1). Then provider choice (outcome 2). Then changes (outcome 3).
+   - **B:** provider choice first, on today's snapshot answers, wiring OpenAI through the existing compatible brain. Then lookups, then changes.
+   - **C:** lookups and provider choice together.
+2. **Tools.** Two options:
+   - **Shared (recommended for answers):** one RFactory read-only tool set behind the gateway, offered to every provider. It enforces scope the same way for all of them.
+   - **Each provider's own CLI tools:** these are richer, but harder to restrict to the same rules three times.
+
+   Write runs use the provider's own coding agent either way, inside the AIFactory sandbox.
+3. **Web and documentation lookups:**
+   - Leave them out of slice 1?
+   - Or add them later, limited to admin-approved domains and kept apart from turns that read private project data, so a page cannot carry private text out?
+4. **Who switches provider:**
+   - Only the person starting the call, or anyone in the call ("ask Codex")?
+   - Does a "second opinion" ask two providers and speak both answers?
+   - Does sending call data to a second provider need an approver's yes on the page?
+5. **Credentials:**
+   - **API keys from the broker:** the provider's business or zero-retention terms apply.
+   - **Subscription logins** (Claude Max, ChatGPT, Google AI): their consumer data terms apply.
+
+   This decides cost, quota and how each run authenticates inside AIFactory.
+6. **Gemini:** needed in the first provider slice, or are Claude and OpenAI enough to start?
+7. **#22:** write its intent now, as a dependency of outcome 3, or fold it into this one?
