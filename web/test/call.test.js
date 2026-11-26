@@ -853,6 +853,34 @@ test('with shares off a share utterance is answered "Sharing is turned off here.
   } finally { process.kill = original; }
 });
 
+test("#62: the greeting names Factory, and the bot's own captions never wake it", async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const shares = fakeShares({ status: 202, text: 'Requested.' });
+    const f = await shareCall({ shares });
+    f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'state', state: 'in-call' })}\n`);
+    for (let n = 0; n < 6; n++) await flush();
+    assert.equal(f.said().join(' '), "Factory here. Say 'Factory' and your question."); // synthesised per sentence
+    for (const speaker of ['You', 'Factory (AI)', 'Factory (AI) (Guest)', 'RFactory Bot (AI)', 'RFactory Bot']) {
+      f.children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: speaker, speaker, text: 'Factory, show the board', final: true })}\n`);
+      await f.heard('no wake here'); // advances the quiet timer
+    }
+    assert.equal(shares.requests.length, 0);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
+test('#63: "Factory, share your screen" reaches shares, not the desktop', async () => {
+  const original = process.kill; process.kill = () => {};
+  try {
+    const shares = fakeShares({ status: 202, text: 'Requested.' });
+    const f = await shareCall({ shares, desktop: { request: async () => { throw new Error('desktop must not be asked'); } } });
+    await f.heard('Factory, share your screen');
+    assert.deepEqual(shares.requests, [['share your screen', 'Eve']]);
+    const stopping = f.manager.stop(); f.children[0].emit('close', 0); await stopping;
+  } finally { process.kill = original; }
+});
+
 function fakeInvestigations(result) {
   const s = { requests: [], started: [], ended: 0, subs: new Set(),
     request: async (...args) => { s.requests.push(args); return result; },
@@ -979,7 +1007,7 @@ test('a lookup answer is spoken as at most 3 sentences without markdown; the pag
     await f.heard('q1', 'RFactory, what is the state?'); await settle();
     assert.equal(f.events.find((e) => e.type === 'answer').text, long);
     // synthesis runs one sentence ahead of playback; the cap itself is checked on spoken() below
-    assert.deepEqual(tts.filter((t) => !/^One moment|^RFactory here/.test(t)), ['One is done.', 'Two is open.']);
+    assert.deepEqual(tts.filter((t) => !/^One moment|^Factory here/.test(t)), ['One is done.', 'Two is open.']);
     const { spoken } = require('../call.js');
     assert.equal(spoken(long), 'One is done. Two is open. Three is left.');
     assert.equal(spoken('Only one.'), 'Only one.');
@@ -1234,7 +1262,7 @@ test('a project call greets by name, keeps its project event, reads its own view
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
     f.children[0].output({ type: 'state', state: 'in-call' });
     await speakAll(f);
-    assert.match(said(f).join(' '), /RFactory here, for Alpha\./);
+    assert.match(said(f).join(' '), /Factory here, for Alpha\. Say 'Factory' and your question\./);
     await f.heard('q', 'RFactory, what is blocked?');
     await speakAll(f);
     assert.deepEqual(turns, ['Alpha card']);

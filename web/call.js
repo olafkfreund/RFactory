@@ -2,7 +2,7 @@
 
 const { spawn: nodeSpawn } = require('node:child_process');
 const fs = require('node:fs');
-const { createHearing } = require('../core/src/call/hearing.js');
+const { createHearing, SELF_NAMES } = require('../core/src/call/hearing.js');
 const { resolveListen } = require('../core/src/scope.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
@@ -487,7 +487,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `RFactory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'RFactory' and your question.`); }
+      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Factory' and your question.`); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
@@ -556,7 +556,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     child.stdin.on('error', (error) => logFor(c, `child stdin failed: ${error.message}`));
     child.stderr.on('data', (data) => logFor(c, selected === 'audio' ? `child stderr: ${data.length} bytes` : data.toString()));
     try {
-      c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
+      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item) });
       c.limitTimer = clock.setTimeout(() => stopCall(c, '60-minute limit'), 60 * 60 * 1000);
       let buffer = '', skipping = false;
       child.stdout.setEncoding('utf8');

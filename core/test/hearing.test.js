@@ -33,15 +33,19 @@ function setup(quietMs) {
   return { clock, addressed, heard: (id, text, speaker = 'Owner') => hearing.heard({ id, text, speaker }) };
 }
 
-test('every wake form and its factories plural matches at word boundaries', () => {
-  const forms = ['rfactory', 'r factory', 'r-factory', 'our factory', 'are factory',
+test('every wake form works at opening positions with optional greetings', () => {
+  const forms = ['factory', 'rfactory', 'r factory', 'r-factory', 'our factory', 'are factory',
     'art factory', 'or factory', 'ah factory'];
   for (const form of forms) {
     for (const wake of [form, form.replace(/factory$/, 'factories')]) {
-      const { clock, addressed, heard } = setup();
-      heard('a', `Hello ${wake.toUpperCase()}, what changed?`);
-      clock.tick(1500);
-      assert.deepEqual(addressed, [{ kind: 'question', text: 'what changed?', speaker: 'Owner', id: 'a' }], wake);
+      for (const name of [wake, wake.toUpperCase()]) {
+        for (const prefix of ['', 'Done. ', 'Done! ', 'Done? ', 'Hey ', 'Hi, ', 'OK, ', 'Okay ', 'Hello ']) {
+          const { clock, addressed, heard } = setup();
+          heard('a', `${prefix}${name}, what changed?`);
+          clock.tick(1500);
+          assert.deepEqual(addressed, [{ kind: 'question', text: 'what changed?', speaker: 'Owner', id: 'a' }], `${prefix}${name}`);
+        }
+      }
     }
   }
 });
@@ -52,10 +56,11 @@ test('Phase 0 captions wake, ordinary talk and speaker names do not', () => {
   heard('two', 'Are factory stand up 1, 2, 3.');
   heard('three', 'R factories stand up one, two, three.');
   heard('four', 'the factory floor');
-  heard('five', 'How is the project?', 'RFactory Bot (AI)');
+  heard('five', 'How is the project?', 'Factory (AI)');
+  for (const [id, text] of ['HeyFactory, status?', 'hifactory, status?', 'OKRFactory, status?',
+    'check the factory floor', 'CFactory shows three cards'].entries()) heard(`negative-${id}`, text);
   clock.tick(1500);
   assert.deepEqual(addressed.map(({ kind, text, id }) => ({ kind, text, id })), [
-    { kind: 'standup', text: 'Test stand up.', id: 'one' },
     { kind: 'standup', text: 'stand up 1, 2, 3.', id: 'two' },
     { kind: 'standup', text: 'stand up one, two, three.', id: 'three' },
   ]);
@@ -85,7 +90,7 @@ test('a settled audio turn dispatches immediately while captions keep their quie
   assert.deepEqual(addressed.map((item) => item.text), ['now?', 'later?']);
 });
 
-test('the answered offset prevents an answer on later growth but permits a new wake', () => {
+test('answered requests prevent replay on growth but permit a new wake', () => {
   const { clock, addressed, heard } = setup();
   heard('a', 'RFactory, first?');
   clock.tick(1500);
@@ -97,7 +102,7 @@ test('the answered offset prevents an answer on later growth but permits a new w
   assert.deepEqual(addressed.map((item) => item.text), ['first?', 'second?']);
 });
 
-test('two caption blocks with the same speaker have independent offsets and timers', () => {
+test('two caption blocks with the same speaker have independent answers and timers', () => {
   const { clock, addressed, heard } = setup();
   heard('one', 'RFactory, first?');
   clock.tick(500);
@@ -108,11 +113,14 @@ test('two caption blocks with the same speaker have independent offsets and time
   assert.deepEqual(addressed.map((item) => item.id), ['one', 'two']);
 });
 
-test('a shortened block clamps its offset and a revised block can be addressed again', () => {
+test('a shortened block and a revised block can be addressed again without replay', () => {
   const { clock, addressed, heard } = setup();
   heard('a', 'RFactory, first?');
   clock.tick(1500);
   heard('a', 'RFactory,');
+  clock.tick(1500);
+  assert.equal(addressed.length, 1);
+  heard('a', 'RFactory, first?');
   clock.tick(1500);
   assert.equal(addressed.length, 1);
   heard('a', 'RFactory, revised?');
@@ -121,6 +129,68 @@ test('a shortened block clamps its offset and a revised block can be addressed a
   heard('a', 'RFactory, another revision?');
   clock.tick(1500);
   assert.deepEqual(addressed.map((item) => item.text), ['first?', 'revised?', 'another revision?']);
+  heard('a', 'RFactory, first?');
+  clock.tick(1500);
+  assert.equal(addressed.length, 3);
+});
+
+test('several wakes dispatch their own requests in order', () => {
+  const { clock, addressed, heard } = setup();
+  heard('a', "Factory, what's blocked? Factory, give a standup.");
+  clock.tick(1500);
+  assert.deepEqual(addressed.map(({ kind, text }) => ({ kind, text })), [
+    { kind: 'question', text: "what's blocked" },
+    { kind: 'standup', text: 'give a standup.' },
+  ]);
+});
+
+test('a partial second wake does not replay its earlier request', () => {
+  const { clock, addressed, heard } = setup();
+  heard('a', 'Factory, first. Fac');
+  clock.tick(1500);
+  heard('a', 'Factory, first. Factory, second?');
+  clock.tick(1500);
+  assert.deepEqual(addressed.map(({ text }) => text), ['first. Fac', 'second?']);
+});
+
+test('moving a name and unrelated word prefixes do not confuse answered requests', () => {
+  const { clock, addressed, heard } = setup();
+  heard('a', 'Hey Factory, first?');
+  clock.tick(1500);
+  heard('a', 'Hey, Factory, first?');
+  clock.tick(1500);
+  assert.deepEqual(addressed.map(({ text }) => text), ['first?']);
+  heard('b', 'Factory, a');
+  clock.tick(1500);
+  heard('b', 'Factory, another question');
+  clock.tick(1500);
+  assert.deepEqual(addressed.map(({ text }) => text), ['first?', 'a', 'another question']);
+});
+
+test('own speech is excluded by exact labels and trailing parenthesized suffixes', () => {
+  const { clock, addressed, heard } = setup();
+  for (const [i, speaker] of ['You', 'Factory (AI)', 'Factory (AI) (Guest)',
+    'RFactory Bot (AI)', 'RFactory Bot (Unverified)'].entries()) {
+    heard(`self-${i}`, "Factory, what's blocked?", speaker);
+  }
+  heard('person', "Factory, what's blocked?", 'Factory');
+  heard('number', "Factory, what's next?", 42);
+  clock.tick(1500);
+  assert.deepEqual(addressed.map(({ id }) => id), ['person', 'number']);
+});
+
+test('settled turns wake only at opening positions', () => {
+  for (const [text, expected] of [
+    ["Factory, what's blocked?", true],
+    ["Hey Factory, what's blocked?", true],
+    ["We fixed it. Factory, what's blocked?", true],
+    ["we fixed it factory what's blocked", false],
+  ]) {
+    const addressed = [];
+    createHearing({ onAddressed: (item) => addressed.push(item) })
+      .heard({ id: 'audio', speaker: 'Participant', text, settled: true });
+    assert.equal(addressed.length, Number(expected), text);
+  }
 });
 
 test('leave commands take precedence over standup and question; standup forms route', () => {
@@ -176,15 +246,24 @@ test('routing order: leave, action, standup, question', () => {
   }
 });
 
-test('share: show/display/put up the board is a share request, checked after leave and before action', () => {
+test('share: natural board and screen requests route after leave and before action', () => {
   const kinds = {
     'show the board': 'share',
     'can you put up the board': 'share',
     'please display the board': 'share',
+    'share your screen': 'share',
+    'share the screen': 'share',
+    'can you share the screen': 'share',
+    'please share your screen': 'share',
+    'show us the board': 'share',
+    'bring up the board': 'share',
+    'put the board up': 'share',
+    'put up the board': 'share',
     "show me what's blocked": 'question',
     'move FCT-9 to done': 'action',
     'run the standup': 'standup',
     'leave the call': 'leave',
+    'put FCT-9 in review': 'action',
   };
   for (const [text, kind] of Object.entries(kinds)) {
     const { clock, addressed, heard } = setup();

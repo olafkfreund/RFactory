@@ -1,47 +1,69 @@
 'use strict';
 
-const WAKE = /\b(?:r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b/i;
+const WAKE = /(?:^|[.!?]\s+)(?:(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+))?(?<name>factor(?:y|ies)|r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b/gi;
 // a leave command must START the utterance and end it or a clause ("leave; give a standup" leaves,
 // "why did the build stop?" and "should we leave FCT-1 blocked?" are questions)
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
 // a change request must START with a change verb (optionally "please" / "can you"); "run the standup" stays a standup
 const ACTION = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:create|make|add|update|change|rename|move|put|re-?prioriti[sz]e|prioriti[sz]e|run|start|build|plan|test|resume)\b(?!\s+(?:the\s+|a\s+|my\s+)?stand[ -]?up\b)/i;
-// a share request starts with show/display/share/put up and names "board" ("show me what's blocked" stays a question)
-const SHARE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|put up)\b(?=.*\bboard\b)/i;
+// a share request starts with a display verb and names the board or screen
+const SHARE = /^(?=.*\b(?:board|screen)\b)[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|bring up|put(?:\s+(?:the|your)\s+(?:board|screen))?\s+up)\b/i;
 // an investigation request starts with investigate / find out / look into / "open a terminal ... and ..."
 const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
 
-function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
+// the bot's own caption labels (new and old names): its own speech never wakes it (#62)
+const SELF_NAMES = Object.freeze(['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']);
+
+function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES }) {
   const blocks = new Map();
+  const ownNames = selfNames.map((name) => name.trim().toLowerCase());
 
   function heard({ id, speaker, text, settled = false }) {
-    const block = blocks.get(id) || { text: '', offset: 0, timer: null };
+    if (typeof speaker === 'string') {
+      let label = speaker.trim().toLowerCase();
+      while (true) {
+        if (ownNames.includes(label)) {
+          clock.clearTimeout(blocks.get(id)?.timer);
+          return;
+        }
+        const stripped = label.replace(/\s*\([^)]*\)$/, '');
+        if (stripped === label) break;
+        label = stripped;
+      }
+    }
+    const block = blocks.get(id) || { text: '', answered: [], timer: null };
     if (text === block.text) return;
 
-    let common = 0;
-    while (common < block.text.length && common < text.length && block.text[common] === text[common]) common++;
-    if (common < block.offset) block.offset = block.text.startsWith(text) ? text.length : 0;
-    else if (block.answeredText?.startsWith(block.text) && block.text !== block.answeredText &&
-      !text.startsWith(block.answeredText)) block.offset = 0;
     block.text = text;
     block.speaker = speaker;
     clock.clearTimeout(block.timer);
 
-    if (WAKE.test(text.slice(block.offset))) {
+    if (new RegExp(WAKE.source, WAKE.flags).test(text)) {
       const dispatch = () => {
         block.timer = null;
-        const match = WAKE.exec(block.text.slice(block.offset));
-        if (!match) return;
-        const addressed = block.text.slice(block.offset + match.index + match[0].length)
-          .replace(/^[\s,.:;!?-]+/, '').trim();
-        if (!addressed) return;
-        block.offset = block.text.length;
-        block.answeredText = block.text;
-        onAddressed({
-          kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
-          text: addressed, speaker: block.speaker, id,
-        });
+        const wake = new RegExp(WAKE.source, WAKE.flags);
+        let match = wake.exec(block.text);
+        while (match) {
+          const next = wake.exec(block.text);
+          const addressed = block.text.slice(match.index + match[0].length, next?.index ?? block.text.length)
+            .replace(/^[\s,.:;!?-]+/, '').trim();
+          const related = block.answered.some((answer) => {
+            const a = answer.toLowerCase();
+            const b = addressed.toLowerCase();
+            const shorter = a.length <= b.length ? a : b;
+            const longer = a.length <= b.length ? b : a;
+            return longer.startsWith(shorter) && (longer.length === shorter.length || /[\s.,;:!?]/.test(longer[shorter.length]));
+          });
+          if (addressed && !related) {
+            block.answered.push(addressed);
+            onAddressed({
+              kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
+              text: addressed, speaker: block.speaker, id,
+            });
+          }
+          match = next;
+        }
       };
       if (settled) dispatch();
       else block.timer = clock.setTimeout(dispatch, quietMs);
@@ -52,4 +74,4 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed }) {
   return { heard };
 }
 
-module.exports = { createHearing };
+module.exports = { createHearing, SELF_NAMES };

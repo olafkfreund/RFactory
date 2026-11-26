@@ -143,3 +143,6 @@ All pass.
    - **The rollback:** it pins whatever the rollback import prints, and notes the old web's own self-wake limitation.
 
 1. **The spec amendment's share expression** missed "put the board up", because the board-or-screen check only looked at the text after the verb. The plan moves that check to the start of the expression (`^(?=.*\b(?:board|screen)\b)`) and allows "put the/your board/screen up". It was tested against 17 phrasings with no mismatch.
+3. **Steps 1 and 2, the lead's changes:**
+   - **One label list:** `core/src/call/hearing.js` exports `SELF_NAMES`, its frozen default, and `web/call.js` imports it instead of keeping a copy.
+   - **Two texts outside step 2's file list:** `docs/hearing.md` (the chat message) and `desktop/verify/e2e.sh` (the owner prompt) now say "Factory".
