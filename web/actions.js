@@ -20,8 +20,8 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
   let budget = { used: 0 };
   let recovered = false;
 
-  function emit(type, action) {
-    const event = safe({ type, action });
+  function emit(type, action, generation) {
+    const event = { ...safe({ type, action }), generation };
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt a write. */ } }
   }
 
@@ -32,7 +32,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const item = safe({ ...entry.payload, hash: entry.hash, state, ...extra });
     await record.append(item);
     history.push(item);
-    emit('action-updated', item);
+    emit('action-updated', item, entry.generation);
     return item;
   }
 
@@ -84,7 +84,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     if (callGeneration !== generation) { await expire(entry); return reply(409, 'The call has ended.'); }
     entry.timer = (clock.setTimeout || setTimeout)(() => { expire(entry).catch(() => {}); }, Math.max(0, Date.parse(payload.expires_at) - now()));
     entry.timer.unref?.();
-    emit('action-pending', { ...payload, hash, state: 'pending', description: describe(payload, effects) });
+    emit('action-pending', { ...payload, hash, state: 'pending', description: describe(payload, effects) }, callGeneration);
     return reply(202, safe(describe(payload, effects)), safe({ ...payload, hash }));
   }
 
@@ -135,7 +135,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
         await finish(entry, state, { approved_by: base.approved_by });
         const result = reply(state === 'uncertain' ? 200 : 409, state === 'expired' ? 'This action has expired.'
           : state === 'uncertain' ? "I'm not sure that went through; check the board." : "I can't do that.");
-        emit('action-result', { generation: entry.generation, text: result.text });
+        emit('action-result', { generation: entry.generation, text: result.text }, entry.generation);
         return result;
       }
       let result;
@@ -153,7 +153,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
             : `${target} changed and work started.`
             : state === 'done, start failed' ? `${target} changed, but work did not start.`
               : state === 'done' ? `${target} changed.` : `${target} failed. ${item.detail}`;
-      emit('action-result', { generation: entry.generation, text: safe(sentence) });
+      emit('action-result', { generation: entry.generation, text: safe(sentence) }, entry.generation);
       return reply(200, safe(sentence), item);
     } catch {
       // After dispatch or an unconfirmed record write, do not retry the action.

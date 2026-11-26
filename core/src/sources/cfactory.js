@@ -250,6 +250,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   return {
     ...source,
     forRepositories(ids, { name } = {}) { return view([...ids]); },
+    // the tenant's full repository list, which a project's ids are joined against
+    async listRepositories() {
+      try { return (await repoList()).repositories; }
+      catch { throw new Error('project-resolve-failed'); }
+    },
     async listProjects() {
       try {
         const reply = await call('cfactory_list_projects');

@@ -1206,3 +1206,121 @@ test('a brain that ignores the signal cannot hang the queue', async () => {
     assert.deepEqual(f.records.map((r) => r.outcome), ['aborted', 'timeout', 'answered']);
   } finally { await f.end(); }
 });
+
+// #52: a call bound to one project
+const bindingFor = (name, ids, writable) => ({ projectId: name.toLowerCase(), name, writable,
+  repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
+const viewFor = (title) => ({ snapshot: async () => ({ items: [{ id: 'FCT-1', state: 'blocked', title }], fetched_at: 'today', newest_update: 'today' }),
+  standupData: async () => ({ cards: [{ card_key: 'FCT-1', title, status: 'ready' }], conflicting: 0,
+    freshness: { state: 'current', last_polled_at: 'today' }, fetched_at: 'today' }) });
+const endCall = async (f) => { const stopping = f.manager.stop(); f.children.at(-1).close(); await stopping; };
+const said = (f) => f.messages().filter((m) => m.type === 'speak').map((m) => Buffer.from(m.wav, 'base64').toString());
+async function speakAll(f) {
+  const done = new Set();
+  for (let n = 0; n < 12; n++) {
+    await flush();
+    for (const m of f.messages()) if (m.type === 'speak' && !done.has(m.seq)) { done.add(m.seq); f.children.at(-1).output({ type: 'spoke', seq: m.seq, result: 'done' }); }
+  }
+}
+
+test('a project call greets by name, keeps its project event, reads its own view and ends with ended', async () => {
+  const turns = [];
+  const f = setup({ sourceSnapshot: async () => { throw new Error('default-source-read'); },
+    brainTurn: async (snapshot) => { turns.push(snapshot.items[0].title); return { text: 'Unknown.' }; } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1, 2], true), view: viewFor('Alpha card') });
+    assert.deepEqual([f.manager.generation, f.manager.project], [1, { id: 'alpha', name: 'Alpha' }]);
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'project'),
+      { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await speakAll(f);
+    assert.match(said(f).join(' '), /RFactory here, for Alpha\./);
+    await f.heard('q', 'RFactory, what is blocked?');
+    await speakAll(f);
+    assert.deepEqual(turns, ['Alpha card']);
+    await endCall(f);
+    assert.deepEqual(f.events.slice(-2), [{ type: 'state', state: 'stopped' }, { type: 'ended' }]);
+    assert.equal(f.manager.project, null);
+    await f.manager.start('link', { binding: bindingFor('Beta', [3], false), view: viewFor('Beta card') });
+    assert.equal(f.manager.current().find((e) => e.type === 'project').name, 'Beta');
+    assert.doesNotMatch(JSON.stringify(f.manager.current()), /Alpha/);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+function fakeManager() {
+  const m = { listeners: [], started: [], requests: [],
+    subscribe(fn) { m.listeners.push(fn); }, startCall(...args) { m.started.push(args); }, endCall() {},
+    request: async (...args) => { m.requests.push(args); return { status: 200, text: 'Requested.' }; },
+    fire: (event) => m.listeners.forEach((fn) => fn(event)) };
+  return m;
+}
+
+test('a project call drops a manager event from another call: not delivered, replayed or spoken', async () => {
+  const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+  const f = setup({ extra: { actions, shares, investigations } });
+  try {
+    const options = { binding: bindingFor('Alpha', [2], true), view: viewFor('card') };
+    await f.manager.start('link', options);
+    await endCall(f);
+    await f.manager.start('link', options);
+    const from = f.events.length;
+    for (const generation of [1, undefined]) {
+      actions.fire({ type: 'action-updated', action: { id: 'old' }, generation });
+      actions.fire({ type: 'action-result', action: { generation, text: 'Old result.' }, generation });
+      shares.fire({ type: 'share-updated', share: { id: 'old', state: 'running' }, generation });
+      investigations.fire({ type: 'investigation-updated', investigation: { id: 'old', state: 'running' }, generation });
+    }
+    await speakAll(f);
+    assert.deepEqual(f.events.slice(from), []);
+    assert.doesNotMatch(JSON.stringify(f.manager.current()), /old/);
+    assert.deepEqual(said(f), []);
+    actions.fire({ type: 'action-updated', action: { id: 'new' }, generation: 2 });
+    assert.equal(f.events.at(-1).action.id, 'new');
+    await endCall(f);
+    const after = f.events.length; // no call: nothing is current
+    investigations.fire({ type: 'investigation-updated', investigation: { id: 'late' }, generation: 2 });
+    assert.equal(f.events.length, after);
+  } finally { f.restore(); }
+});
+
+test('writes: a project without the default repository refuses and starts nothing; with it they work', async () => {
+  for (const writable of [false, true]) {
+    const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+    const f = setup({ extra: { actions, shares, investigations } });
+    try {
+      await f.manager.start('link', { binding: bindingFor('Alpha', [writable ? 2 : 3], writable), view: viewFor('card') });
+      for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure']]) {
+        await f.heard(id, `RFactory, ${text}`);
+        await speakAll(f);
+      }
+      const managers = [actions, shares, investigations];
+      assert.deepEqual(managers.map((m) => m.requests.length), writable ? [1, 1, 1] : [0, 0, 0]);
+      assert.deepEqual(managers.map((m) => m.started.length), writable ? [1, 1, 1] : [0, 0, 0]);
+      assert.equal(said(f).filter((s) => s === "Changes aren't available for this project yet.").length, writable ? 0 : 3);
+      await endCall(f);
+    } finally { f.restore(); }
+  }
+});
+
+test('a project lookup uses that call\'s repositories, GitHub only with the default one, and records the set', async () => {
+  const made = [], contexts = [], records = [];
+  const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
+  const f = setup({ brainTurn: async () => ({ text: 'Unknown.', cost: 0 }), extra: { lookups: {}, endpoint, lookupUrl: 'url',
+    lookupsFor: (ids) => { const own = { ids }; made.push(own); return own; }, project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
+    scope: { lookups_enabled: true }, record: { append: async (line) => { records.push(line); } } } });
+  try {
+    for (const [n, binding] of [bindingFor('Alpha', [1, 2], true), bindingFor('Beta', [3], false)].entries()) {
+      await f.manager.start('link', { binding, view: viewFor('card') });
+      await f.heard(`q${n}`, 'RFactory, what is blocked?');
+      await speakAll(f);
+      assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.writable ? 'Olaf/Demo' : null);
+      await endCall(f);
+    }
+    assert.deepEqual(made.map((m) => m.ids), [[1, 2], [3]]);
+    assert.deepEqual(contexts.map((c) => c.lookups), made);
+    assert.deepEqual(contexts.map((c) => c.tools.includes('read_file')), [true, false]);
+    assert.deepEqual(contexts.map((c) => c.project.github), [{ owner: 'Olaf', repo: 'Demo' }, null]);
+    assert.deepEqual(records.map((r) => [r.project_id, r.repository_ids]), [['alpha', [1, 2]], ['beta', [3]]]);
+  } finally { f.restore(); }
+});

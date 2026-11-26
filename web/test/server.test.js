@@ -525,3 +525,219 @@ test('the GitHub binding must be the board repository, or start-up fails', async
     await made.endpoint.close();
   }
 });
+
+// #52: projects. CFactory's repository_ids and repo_paths are sorted on their own, so zipping them would mismatch here.
+const ALPHA = '11111111-1111-1111-1111-111111111111';
+const BETA = '22222222-2222-2222-2222-222222222222';
+const HIDDEN = '33333333-3333-3333-3333-333333333333';
+const project = (id, name, repository_ids, repo_paths) => ({ id, name, slug: name.toLowerCase(), repository_ids, repo_paths, created_at: null });
+function projectWorld() {
+  const w = { calls: [], gate: null, fail: null, children: [],
+    projects: [project(ALPHA, 'Alpha', [1, 2], ['o/a', 'o/z']), project(BETA, 'Beta', [3], ['o/b']), project(HIDDEN, 'Hidden', [4], ['o/h'])],
+    repos: [{ id: 1, project: 'o/z' }, { id: 2, project: 'o/mirror', intake_project: 'o/a' }, { id: 3, project: 'o/b' }, { id: 4, project: 'o/h' }] };
+  const cfactory = async (name, value) => {
+    w.calls.push(name);
+    await w.gate;
+    if (w.fail === name) throw new Error('project-resolve-failed');
+    return value();
+  };
+  w.source = {
+    listProjects: () => cfactory('listProjects', () => w.projects),
+    listRepositories: () => cfactory('listRepositories', () => w.repos),
+    resolveProject: (ref) => cfactory('resolveProject', () => {
+      const found = w.projects.find((p) => [p.slug, p.id].includes(ref.toLowerCase()));
+      return found ? { project: found } : { error: 'unknown' };
+    }),
+    forRepositories: (ids, { name }) => ({
+      snapshot: async () => ({ items: [], fetched_at: 'F', newest_update: null }),
+      standupData: async () => ({ ...boardData, cards: [{ card_key: `CARD-${ids.join('')}`, title: name, status: 'done', stage_runs: { code: { status: 'failed' } } }] }),
+      reviewData: async (key) => (key === `CARD-${ids.join('')}`
+        ? { found: true, card: { card_key: key, title: name, status: 'done' }, discussion: { available: false }, freshness: boardData.freshness } : { found: false }),
+    }),
+    standupData: async () => { throw new Error('default-source-read'); },
+  };
+  return w;
+}
+const scope52 = { projects: { allow: [{ id: ALPHA }, { id: BETA }] }, source: { repository_id: 2 } };
+const LINK = 'https://meet.google.com/abc-defg-hij';
+const posting = (body) => ({ method: 'POST', body: JSON.stringify(body) });
+const until = async (done) => { while (!done()) await new Promise((r) => setTimeout(r, 5)); };
+
+async function projectApp(t, opts = {}) {
+  const { createCallManager } = require('../call.js');
+  const { EventEmitter } = require('node:events');
+  const w = projectWorld();
+  const spawn = () => {
+    if (w.spawnFails) throw new Error('spawn-failed');
+    const c = new EventEmitter();
+    c.stdin = new EventEmitter(); c.stdin.write = () => true;
+    c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {};
+    c.stderr = new EventEmitter(); c.kill = () => {};
+    w.children.push(c);
+    return c;
+  };
+  w.call = createCallManager({ spawn, source: w.source, brain: fakeBrain, tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), botCmd: ['bot'] });
+  const get = await start(t, { source: w.source, scope: scope52, call: w.call, ...opts });
+  const reply = async (url, init) => { const r = await get(url, init); return [r.status, await r.json()]; };
+  const begin = (id = ALPHA) => reply('/api/call', posting({ link: LINK, project_id: id }));
+  const hang = (generation) => reply('/api/call', { method: 'DELETE', body: JSON.stringify({ generation }) });
+  const stop = async () => { const stopping = w.call.stop(); w.children.at(-1).emit('close', 0); await stopping; };
+  return { w, get, reply, begin, hang, stop };
+}
+
+test('project start: allowlist before CFactory, exact id only, failures free the slot', async (t) => {
+  const a = await projectApp(t);
+  for (const id of [undefined, HIDDEN, 'alpha', ALPHA.slice(1), ['x']]) {
+    assert.deepEqual(await a.begin(id === undefined ? null : id), [403, { error: 'project-not-allowed' }]);
+  }
+  assert.deepEqual(a.w.calls, []);
+  const { projects, repos } = a.w;
+  for (const [break_, mend, status, error] of [
+    [() => { a.w.projects = []; }, () => { a.w.projects = projects; }, 404, 'project-unknown'],
+    [() => { a.w.fail = 'listProjects'; }, () => { a.w.fail = null; }, 502, 'project-resolve-failed'],
+    [() => { a.w.fail = 'listRepositories'; }, () => { a.w.fail = null; }, 502, 'project-resolve-failed'],
+    [() => { a.w.repos = repos.slice(1); }, () => { a.w.repos = repos; }, 502, 'project-resolve-failed'],
+    [() => { a.w.spawnFails = true; }, () => { a.w.spawnFails = false; }, 500, 'call-error'],
+  ]) {
+    break_();
+    assert.deepEqual(await a.begin(), [status, { error }]);
+    assert.deepEqual((await a.reply('/api/call/status'))[1], { running: false, starting: false, generation: a.w.call.generation, project: null });
+    mend();
+    assert.equal((await a.begin())[0], 202);
+    await a.stop();
+  }
+});
+
+test('project start: one slot while resolving and during teardown; Stop names its call', async (t) => {
+  const a = await projectApp(t);
+  let open;
+  a.w.gate = new Promise((resolve) => { open = resolve; });
+  const first = a.begin();
+  await until(() => a.w.calls.length);
+  assert.deepEqual(await a.begin(BETA), [409, { error: 'busy' }]);
+  assert.deepEqual((await a.reply('/api/call/status'))[1], { running: false, starting: true, generation: 0, project: null });
+  assert.deepEqual(await a.hang(0), [409, { error: 'starting' }]);
+  open();
+  assert.equal((await first)[0], 202);
+  assert.equal(a.w.children.length, 1);
+  assert.deepEqual((await a.reply('/api/call/status'))[1], { running: true, starting: false, generation: 1, project: { id: ALPHA, name: 'Alpha' } });
+  for (const stale of [0, 2, '1', undefined]) assert.deepEqual(await a.hang(stale), [409, { error: 'stale-generation' }]);
+  assert.equal(a.w.call.running, true);
+  const stopping = a.hang(1);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(await a.begin(BETA), [409, { error: 'busy' }]); // the child has not exited yet
+  a.w.children[0].emit('close', 0);
+  assert.equal((await stopping)[0], 200);
+  assert.equal((await a.begin(BETA))[0], 202);
+  await a.stop();
+});
+
+test('project binding is joined by id and frozen: a new repository appears in the next call only', async (t) => {
+  const a = await projectApp(t);
+  await a.begin();
+  const bound = () => a.w.call.current().find((e) => e.type === 'project').repositories;
+  assert.deepEqual(bound(), [{ id: 1, path: 'o/z' }, { id: 2, path: 'o/a' }]);
+  a.w.projects = [project(ALPHA, 'Alpha', [1, 2, 4], ['o/a', 'o/h', 'o/z']), ...a.w.projects.slice(1)];
+  assert.equal(bound().length, 2);
+  await a.stop();
+  await a.begin();
+  assert.deepEqual(bound().map((r) => r.id), [1, 2, 4]);
+  await a.stop();
+});
+
+test('project events: only the running project\'s stream; it ends with its call and sees nothing of the next', async (t) => {
+  const a = await projectApp(t);
+  const stream = (id) => a.get(`/api/call/events?project=${id}`).then((r) => r.text()); // resolves only when the server closes
+  const events = (text) => text.split('\n').filter((l) => l.startsWith('data: ')).map((l) => JSON.parse(l.slice(6)));
+  assert.deepEqual(events(await stream(ALPHA)), [{ type: 'idle' }]);
+  await a.begin(ALPHA);
+  assert.deepEqual(events(await stream(BETA)), [{ type: 'busy', project: { id: ALPHA, name: 'Alpha' } }]);
+  assert.deepEqual(events(await (await a.get('/api/call/events')).text()).map((e) => e.type), ['busy']);
+  const response = await a.get(`/api/call/events?project=${ALPHA}`);
+  const whole = response.text();
+  await a.stop();
+  await a.begin(BETA);
+  const seen = events(await whole);
+  assert.deepEqual(seen.slice(-2), [{ type: 'state', state: 'stopped' }, { type: 'ended' }]);
+  assert.equal(seen.find((e) => e.type === 'project').name, 'Alpha');
+  assert.doesNotMatch(JSON.stringify(seen), /Beta/);
+  const next = await a.get(`/api/call/events?project=${BETA}`);
+  const nextText = next.text();
+  await a.stop();
+  assert.doesNotMatch(await nextText, /Alpha/);
+});
+
+test('project routes: page, picker and slug resolution', async (t) => {
+  const a = await projectApp(t);
+  assert.match(await (await a.get('/p/alpha')).text(), /<script src="\/app\.js">/);
+  assert.equal((await a.get('/p/alpha', {}, null)).status, 401);
+  const alpha = { id: ALPHA, name: 'Alpha', slug: 'alpha', repositories: [{ id: 1, path: 'o/z' }, { id: 2, path: 'o/a' }] };
+  assert.deepEqual(await a.reply('/api/projects'), [200, [alpha, { id: BETA, name: 'Beta', slug: 'beta', repositories: [{ id: 3, path: 'o/b' }] }]]);
+  assert.deepEqual(await a.reply('/api/projects/resolve?slug=ALPHA'), [200, alpha]);
+  for (const query of ['', '?slug=', '?slug=nope', `?slug=${ALPHA}`]) { // an id resolves in CFactory, but is not a canonical slug
+    assert.deepEqual(await a.reply(`/api/projects/resolve${query}`), [404, { error: 'project-unknown' }]);
+  }
+  assert.deepEqual(await a.reply('/api/projects/resolve?slug=hidden'), [403, { error: 'project-not-allowed' }]);
+  a.w.repos = [];
+  for (const url of ['/api/projects', '/api/projects/resolve?slug=alpha']) assert.deepEqual(await a.reply(url), [502, { error: 'project-resolve-failed' }]);
+});
+
+test('project reads: standup, review and approval lists are the requested project\'s', async (t) => {
+  const held = { pending: [{ id: 'p' }], history: [{ id: 'h' }], running: { id: 'r' }, active: [{ id: 'r' }] };
+  const manager = { list: () => held };
+  const a = await projectApp(t, { actions: manager, shares: manager, investigations: manager });
+  assert.deepEqual((await a.reply(`/api/standup?project=${BETA}`, { method: 'POST' }))[1].items.map((i) => i.id), ['CARD-3']);
+  assert.deepEqual((await a.reply(`/api/review?project=${ALPHA}`))[1].failed.map((c) => c.card_key), ['CARD-12']);
+  assert.equal((await a.reply(`/api/review/CARD-12?project=${ALPHA}`))[0], 200);
+  assert.equal((await a.reply(`/api/review/CARD-3?project=${ALPHA}`))[0], 404);
+  for (const kind of ['actions', 'shares', 'investigations']) {
+    assert.deepEqual(await a.reply(`/api/${kind}?project=${ALPHA}`), [200, { ...held, can_approve: false }]);
+    const [status, body] = await a.reply(`/api/${kind}?project=${BETA}`);
+    assert.equal(status, 200);
+    assert.doesNotMatch(JSON.stringify(body), /"id"/);
+    assert.deepEqual([body.pending, body.history ?? []], [[], []]);
+  }
+  a.w.calls.length = 0;
+  for (const url of ['/api/review', '/api/review/CARD-12', '/api/actions', `/api/shares?project=${HIDDEN}`, '/api/investigations?project=alpha']) {
+    assert.deepEqual(await a.reply(url), [403, { error: 'project-not-allowed' }]);
+  }
+  assert.deepEqual(await a.reply('/api/standup', { method: 'POST' }), [403, { error: 'project-not-allowed' }]);
+  assert.deepEqual(a.w.calls, []);
+  a.w.fail = 'listProjects';
+  assert.deepEqual(await a.reply(`/api/actions?project=${ALPHA}`), [502, { error: 'project-resolve-failed' }]);
+  assert.deepEqual(await a.reply(`/api/standup?project=${ALPHA}`, { method: 'POST' }), [502, { error: 'project-resolve-failed' }]);
+});
+
+test('without a projects block the project routes are absent', async (t) => {
+  const get = await start(t, { source, brain: fakeBrain, call: fakeCall(), scope: { source: { repository_id: 2 } } });
+  for (const url of ['/p/alpha', '/api/projects', '/api/projects/resolve?slug=alpha', '/api/call/status']) assert.equal((await get(url)).status, 404, url);
+});
+
+test('project lookups: the endpoint serves each turn its own repositories', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const { createCfactorySource } = require('@rfactory/core/src/sources/cfactory.js');
+  const sdk = (name) => require(require.resolve(`@modelcontextprotocol/sdk/${name}`, { paths: [path.dirname(require.resolve('@rfactory/core/src/scope.js'))] }));
+  const { Client } = sdk('client/index.js');
+  const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
+  const cards = [1, 2, 3].map((id) => ({ card_key: `FCT-${id}`, title: `card ${id}`, repository_id: id }));
+  const mcp = { callTool: async ({ name, arguments: args }) => {
+    const value = name === 'cfactory_list_git_repositories' ? { repositories: [1, 2, 3].map((id) => ({ id, project: `o/r${id}` })), default_repository_id: 2 }
+      : name === 'cfactory_get_card' ? cards.find((c) => c.card_key === args.card_key) : { cards };
+    return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+  } };
+  const made = await composeLookups({ scope: { lookups_enabled: true, source: { repository_id: 2, mcp_url: 'http://127.0.0.1:1/mcp' } },
+    key: 'k', redactor: makeRedactor([]), createSource: (options) => createCfactorySource({ ...options, client: mcp }) });
+  t.after(() => made.endpoint.close());
+  const found = async (lookups) => {
+    const controller = new AbortController();
+    const token = made.endpoint.register({ project: made.project, lookups, tools: ['find_cards'], controller, signal: controller.signal,
+      deadline: Date.now() + 10000, rounds: 0, reads: [] });
+    const client = new Client({ name: 'test', version: '0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(made.lookupUrl), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+    const result = await client.callTool({ name: 'find_cards', arguments: { text: 'card' } });
+    await client.close();
+    return JSON.parse(result.content[0].text).result.map((c) => c.card_key);
+  };
+  assert.deepEqual(await found(made.lookupsFor([1, 3])), ['FCT-1', 'FCT-3']);
+  assert.deepEqual(await found(undefined), ['FCT-2']);
+});

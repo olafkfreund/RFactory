@@ -267,3 +267,14 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
    - **`resolveProject`** passes CFactory's `{error: 'unknown' | 'ambiguous'}` through as an answer, so the route can return 404. Only a real failure or a malformed reply throws `project-resolve-failed`.
    - **`listProjects`** accepts a bare list or `{projects: [...]}`, until step 1's MCP reply shape is final.
    - **Still to do:** the view's `investigationContext` uses the view's first repository and ignores an argument. Slice A runs investigations only on the legacy default source, so the explicit-repository form moves to slice B.
+4. **Step 4 (coder): choices the plan didn't spell out.**
+   - **A missing `?project=`:** with a `projects` block, the standup, review and approval-list routes answer `403 project-not-allowed`, so step 5's page must always send it.
+   - **No board route:** the server has none. The board is reached only through shares, which stay on the default source.
+   - **Calls without write access** don't call the managers' `startCall`, and desktop requests get the "not available" message.
+   - **Manager events** with no generation, or from a call that has ended, are dropped in a project call. The lists still show the entries.
+   - **Response shapes:** `/api/projects` returns a bare array. A stale or missing `DELETE` generation gets `409 {error: 'stale-generation'}`.
+   - **New:** `source.listRepositories()`.
+   - **The desktop page's snapshot** (`main()`) still reads the default repository. Desktop actions are only available in calls with write access, so it stays as is in slice A. Checked in step 6.
+   - **Lead's changes, made in step 5:**
+     - in a call without write access, a non-desktop request the classifier labels an action is answered as a question, as happens today when actions are off, instead of being refused;
+     - `/api/projects` leaves out a project whose repositories can't be joined, and logs it, instead of failing the whole picker with `502`.

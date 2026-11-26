@@ -25,7 +25,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   let recovered = false;
 
   function emit(type, entry, extra = {}) {
-    const event = safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state, ...extra } });
+    const event = { ...safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state, ...extra } }), generation: entry.generation };
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt sharing. */ } }
   }
 

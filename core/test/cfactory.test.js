@@ -417,3 +417,12 @@ test('project reads are uncached and fail closed on errors or malformed replies'
   for (const error of ['unknown', 'ambiguous']) assert.deepEqual(await src(boardClient({ cfactory_resolve_project: { error } })).resolveProject('x'), { error });
   assert.deepEqual(await src(boardClient({ cfactory_list_projects: { projects: [project] } })).listProjects(), [project]);
 });
+
+test('listRepositories returns the tenant list, uncached, and fails closed', async () => {
+  const client = boardClient({ cfactory_list_git_repositories: repos });
+  const source = src(client);
+  assert.deepEqual(await source.listRepositories(), repos.repositories);
+  await source.listRepositories();
+  assert.equal(client.calls.length, 2);
+  await assert.rejects(src(boardClient({ cfactory_list_git_repositories: new Error('down') })).listRepositories(), /^Error: project-resolve-failed$/);
+});
