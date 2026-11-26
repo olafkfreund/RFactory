@@ -65,8 +65,9 @@ The scope field `language` (default `'en'`) takes a BCP-47 language tag (such as
 
 The bot answers only a request that opens with its name. The name is "Factory" or "Factories" (any case); there is no "RFactory" alias.
 
-- The name must start the text or follow a sentence end (`.`, `!`, `?`, `…`), optionally after an opening quote or bracket.
-- A separator must follow the name (`,` `.` `!` `?` `:` `;` `…`, a dash, or a spaced hyphen), unless a greeting (`hey`, `hi`, `hello`) comes first: "Hey Factory what is blocked" wakes, "Factory pipeline is red" does not.
+- The name must start the text (optionally after an opening quote or `(`) or follow a sentence end (`.`, `!`, `?`, `…`) and a space.
+- A separator must follow the name (`,` `.` `!` `?` `:` `;` `…`, a dash, or a spaced hyphen), unless a greeting (`hey`, `hi`, `hello`) followed by a comma or a space comes first: "Hey Factory what is blocked" wakes, "Factory pipeline is red" and "Hi. Factory pipeline is red" do not.
+- A possessive or hyphenated name ("Factory's", "factory-floor") never wakes.
 - `ok` and `okay` do not excuse a missing separator: "Okay factory builds failed" does not wake.
 - A mention that is rejected still ends the request before it, so the earlier request never absorbs it.
 

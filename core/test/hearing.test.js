@@ -77,6 +77,11 @@ test('plain mentions, possessives, hyphenated names and old aliases do not wake'
     "Hey Factory's build is red.", 'Hey Factory-floor is closed.',
     'RFactory, status?', 'R Factory, status?', 'Our Factory, status?',
     'R factories stand up one, two, three.',
+    // a greeting said as its own sentence does not excuse a missing separator
+    'Hi. Factory pipeline is red.', 'Hey! Factory pipeline is red.', 'Hello. Factory builds are slow.',
+    // curly apostrophe, plural possessive, non-breaking hyphen, a hyphen on the next word
+    'Factory’s build is red.', "Factories' builds are red.", 'Hey Factory\u2011floor needs a standup.',
+    'Factory -1 is the exit code.',
   ]) {
     const { clock, addressed, heard } = setup();
     heard('a', text);
@@ -98,6 +103,14 @@ test('separators wake and leading punctuation is removed before routing', () => 
     ['Factory , status?', 'question', 'status?'],
     ["Okay, Factory, what's blocked?", 'question', "what's blocked?"],
     ["OK, Factory, what's blocked?", 'question', "what's blocked?"],
+    ['Factory: status?', 'question', 'status?'],
+    ['Factory; status?', 'question', 'status?'],
+    ['Factory! Status?', 'question', 'Status?'],
+    ['Factory – status?', 'question', 'status?'],
+    ['Factory–status?', 'question', 'status?'],
+    ['Factory... status?', 'question', 'status?'],
+    ['Hi. Factory, status?', 'question', 'status?'],
+    ['Hey, Factory status?', 'question', 'status?'],
   ]) {
     const { clock, addressed, heard } = setup();
     heard('a', text);
@@ -111,6 +124,9 @@ test('rejected boundaries still delimit requests and retain their slot numbers',
     ["Factory? Factory, what's blocked?", [{ kind: 'question', text: "what's blocked?" }]],
     ["Factory, what's blocked? Factory give a standup.", [{ kind: 'question', text: "what's blocked" }]],
     ['Factory, show the results? Factory board pipeline is red.', [{ kind: 'question', text: 'show the results' }]],
+    // possessive and hyphenated names are boundaries too, so they never change the request before them
+    ['Factory, show the results. Factory-floor screen is red.', [{ kind: 'question', text: 'show the results' }]],
+    ["Factory, status? Factory’s build is red.", [{ kind: 'question', text: 'status' }]],
   ]) {
     const { clock, addressed, heard } = setup();
     heard('a', text);
@@ -218,6 +234,8 @@ test('a shortened block does not erase an answered slot', () => {
   heard('a', 'Factory,');
   clock.tick(1500);
   heard('a', 'Factory, revised?');
+  clock.tick(1500);
+  heard('a', 'Factory, first?');
   clock.tick(1500);
   assert.deepEqual(addressed.map((item) => item.text), ['first?', 'revised?']);
 });

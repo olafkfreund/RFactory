@@ -140,4 +140,14 @@ All pass, and the board tests ran rather than skipped.
 
 ## Deviations
 
-None yet.
+1. **The step 4 reviews (Opus, Codex and agy)** found three gaps in the approved rule. All are fixed in `core/src/call/hearing.js`, with tests:
+   - **A greeting said as its own sentence** excused the separator: "Hi. Factory pipeline is red." woke the bot (Opus).
+     - **The fix:** a greeting excuses the separator only when a comma or space follows it, `(?<greet>hey|hi|hello)(?:,\s*|\s+)`.
+     - **Unchanged:** "Hey! …", "Hi. …" and "Hello. …" are still accepted as prefixes, but they need a separator, like "ok".
+     - **Accepted:** "Hello, Factory builds are slow." still wakes the bot, because a greeting plus a comma reads as a direct address.
+   - **Possessive and hyphenated names** ("Factory's", "factory-floor") weren't boundaries, so their text joined the previous request and could change its kind (Codex: "Factory, show the results. Factory-floor screen is red." became a share).
+     - **The fix:** `WAKE` ends at `factor(?:y|ies)\b`. A new `COMPOUND = /^(?:['’]|[-\u2010\u2011]\w)/` rejects the boundary instead of hiding it, and `accepted = !COMPOUND.test(rest) && (greet || SEP.test(rest))`.
+   - **A non-breaking hyphen** (U+2011) got past the hyphen guard (Codex). It is now in `COMPOUND`.
+   - **Docs and tests:**
+     - `docs/hearing.md` now states that quotes are accepted only at the start of the text, and that possessive and hyphenated names never wake;
+     - added tests for the `:` `;` `!` `–` and `...` separators, and the shortened-block test now restores the first text and expects no replay.

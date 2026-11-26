@@ -1,7 +1,9 @@
 'use strict';
 
-const WAKE = /(?:^[\s"'“‘(]*|[.!?…]\s+)(?:(?<greet>hey|hi|hello)(?:[,!.]+\s*|\s+)|(?:ok|okay)(?:[,!.]+\s*|\s+))?factor(?:y|ies)\b(?!['’]|-\w)/gi;
+const WAKE = /(?:^[\s"'“‘(]*|[.!?…]\s+)(?:(?<greet>hey|hi|hello)(?:,\s*|\s+)|(?:hey|hi|hello|ok|okay)(?:[,!.]+\s*|\s+))?factor(?:y|ies)\b/gi;
 const SEP = /^\s*(?:[,.!?:;…–—]|-+(?:\s|$))/;
+// a possessive or hyphenated name ("Factory's", "factory-floor") ends the request before it but never wakes
+const COMPOUND = /^(?:['’]|[-\u2010\u2011]\w)/;
 // a leave command must START the utterance and end it or a clause ("leave; give a standup" leaves,
 // "why did the build stop?" and "should we leave FCT-1 blocked?" are questions)
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
@@ -53,7 +55,8 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
         let i = 0;
         while (match) {
           const next = wake.exec(block.text);
-          const accepted = match.groups.greet || SEP.test(block.text.slice(match.index + match[0].length));
+          const rest = block.text.slice(match.index + match[0].length);
+          const accepted = !COMPOUND.test(rest) && (match.groups.greet || SEP.test(rest));
           const addressed = block.text.slice(match.index + match[0].length, next?.index ?? block.text.length)
             .replace(/^[\s,.:;!?…–—-]+/, '').trim();
           // punctuation-insensitive ("FCT-163" = "FCT 163"), so an edit to punctuation alone is the same request
