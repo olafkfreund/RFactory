@@ -302,3 +302,10 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
      - the visible changes are that GitHub tool descriptions name the repository, and that the page loads its panels after `/api/config`.
    - **The page:** the slug is decoded and encoded once, and a malformed slug shows "unavailable".
    - **Tests added:** freshness precedence, and a standup turn reading the call's view.
+7. **Step 6 review fixes, CFactory PR A** (Codex and the lead):
+   - **Ordering:** for paths with `_`, `-` or non-ASCII characters, Python's `str.casefold` ordering differs from the portal's ICU `localeCompare`. **The server's rule is the canonical one**, because PR B moves the portal onto the server list. The fixture marks those cases `server_canonical`, and the temporary TypeScript parity test skips them. None of today's repository paths are affected.
+   - **Timestamps** are truncated to milliseconds and parsed as JS `Date` parses them: a date-only string is UTC, and a datetime without an offset is local time. The test compares against the process's own local time, so other tests' timezone state can't break it.
+   - **Lookups:** an empty reference, or a null slug, matches nothing.
+   - **MCP tests** check the real payloads, a key without `read` being refused, and a real store with two tenants.
+   - **Lint:** the tests are ruff-clean.
+   - **Suites:** the full backend suite gives 1463 passed. The only failures are the two `test_ratchet_foreign_errors` tests, which call the machine's own `mypy`, and it can't import pydantic here. The frontend typecheck, build and parity test pass.
