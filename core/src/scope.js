@@ -41,6 +41,14 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
   const budget = scope.lookup_budget_usd;
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
+  if (Object.hasOwn(scope, 'projects')) {
+    if (scope.source?.kind !== 'cfactory') throw new Error('invalid-projects'); // projects come from CFactory
+    const onlyKey = (o, key) => !!o && Object.keys(o).join() === key;
+    const allow = scope.projects?.allow;
+    if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
+        !allow.every((p) => onlyKey(p, 'id') && typeof p.id === 'string' && /^(repo:\d+|[0-9a-f-]{36})$/.test(p.id)) ||
+        new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
+  }
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&

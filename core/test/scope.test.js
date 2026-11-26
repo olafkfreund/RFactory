@@ -277,3 +277,27 @@ test('github_read: 600-mode token is read after the CFactory key, into extras an
     assert.throws(() => f.load(), /invalid-scope/);
   } finally { f.cleanup(); }
 });
+
+test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
+  const f = fixture();
+  try {
+    const id = '5d78d4b9-35f9-4445-92c1-78f3ff60a494';
+    const many = (n) => Array.from({ length: n }, (_, i) => ({ id: `repo:${i}` }));
+    for (const allow of [[{ id }], [{ id }, { id: 'repo:21' }], many(50)]) {
+      f.scope.projects = { allow };
+      assert.deepEqual(f.load(), f.scope);
+    }
+    const bad = [null, [], 'x', {}, { allow: {} }, { allow: [] }, { allow: many(51) }, { allow: [{ id }], extra: 1 },
+      ...[null, id, {}, { id: 5 }, { id: [id] }, { id: '' }, { id: 'repo:' }, { id: 'repo:x' }, { id: 'aifactory-demo' },
+        { id: id.toUpperCase() }, { id: id.slice(1) }, { id: `${id}0` }, { id: ' repo:1' }, { id, github_read: [] }]
+        .map((entry) => ({ allow: [entry] })),
+      { allow: [{ id }, { id }] }];
+    for (const projects of bad) {
+      f.scope.projects = projects;
+      assert.throws(() => f.load(), /invalid-projects/, JSON.stringify(projects));
+    }
+    f.scope.projects = { allow: [{ id }] };
+    f.scope.source = { kind: 'github', owner: 'o', repo: 'r' };
+    assert.throws(() => f.load(), /invalid-projects/); // projects need a CFactory source
+  } finally { f.cleanup(); }
+});

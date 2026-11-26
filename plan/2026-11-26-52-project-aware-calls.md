@@ -258,3 +258,8 @@ All pass. With no `projects` block, the existing RFactory tests pass unchanged.
 4. **PR A:** it only adds read-only routes and tools, so it can stay. Otherwise, revert it on `dev` and promote.
 
 After each: Argo CD Synced and Healthy, the digest matches, and the smoke check passes.
+
+## Deviations
+
+1. **Step 1: CFactory test paths.** CFactory's backend tests live at the repository root, so the test is `tests/test_projects.py` and the fixture is `tests/data/projects.json`, not `apps/backend/tests/...`. The worktree links `apps/backend/.venv` and `apps/frontend-web/node_modules` from the main CFactory checkout. Both are gitignored.
+2. **Step 2: a `projects` block needs a CFactory source** (lead). `projects` with `source.kind !== 'cfactory'` is refused with `invalid-projects`, because projects come from CFactory. "No other keys" applies to both `projects` and each entry, so slice A refuses an entry that carries `github_read`.
