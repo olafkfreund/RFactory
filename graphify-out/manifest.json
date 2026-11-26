@@ -24,9 +24,9 @@
     "semantic_hash": "f5f186830e194ba4e9b820760e8f3f27"
   },
   "bot/run.js": {
-    "mtime": 1795512490.3130877,
-    "seen": 1795611824.6118746,
-    "ast_hash": "08293d9a5bcd2ab2069bd92586cfc3cf",
+    "mtime": 1795662143.1347692,
+    "seen": 1795662186.0994768,
+    "ast_hash": "20038c05396213a1b0968df262f78fb0",
     "semantic_hash": ""
   },
   "bot/test/avatar-renderer.test.js": {
@@ -48,9 +48,9 @@
     "semantic_hash": "030f7482daa62ad48c086dfaf6810dcc"
   },
   "bot/test/run.test.js": {
-    "mtime": 1795512490.3150063,
-    "seen": 1795611824.61189,
-    "ast_hash": "1ff960cb27ac061c5596915b6bd59c5c",
+    "mtime": 1795662045.5028958,
+    "seen": 1795662186.0994916,
+    "ast_hash": "732682b2045a181441e82a195dfeb91e",
     "semantic_hash": ""
   },
   "core/bench/ollama-standup.js": {
@@ -144,8 +144,8 @@
     "semantic_hash": "f88df979b864528309c4b3b2949d8a6e"
   },
   "core/src/redact.js": {
-    "mtime": 1795618480.9283366,
-    "seen": 1795618550.212715,
+    "mtime": 1795620429.3335795,
+    "seen": 1795662186.099537,
     "ast_hash": "551a9d8b5d843e581e7388e25246b410",
     "semantic_hash": ""
   },
@@ -294,8 +294,8 @@
     "semantic_hash": "d61efa4fa37775eea9d2ca89128dfbdd"
   },
   "core/test/redact.test.js": {
-    "mtime": 1795618516.847848,
-    "seen": 1795618550.2127943,
+    "mtime": 1795620429.3335795,
+    "seen": 1795662186.0996099,
     "ast_hash": "69e50022f4a26faa16a7cd49e7893d07",
     "semantic_hash": ""
   },
@@ -396,15 +396,15 @@
     "semantic_hash": "d78330974c7cd6eb314bec363fdfeedd"
   },
   "desktop/guest/agent/call.js": {
-    "mtime": 1795512490.3150878,
-    "seen": 1795611824.612082,
-    "ast_hash": "3c9c394a6dab15ed2c05f16ec5fac60f",
+    "mtime": 1795661560.7006445,
+    "seen": 1795662186.0996711,
+    "ast_hash": "ef9335bad62d9e9b79e4b2f9b1bdc7b9",
     "semantic_hash": ""
   },
   "desktop/guest/agent/call.test.js": {
-    "mtime": 1795512490.3150878,
-    "seen": 1795611824.6120844,
-    "ast_hash": "25d6d15817f86545ffe99b11378f2dff",
+    "mtime": 1795661560.7008276,
+    "seen": 1795662186.0996737,
+    "ast_hash": "029665b03ef66c068b7537267217175d",
     "semantic_hash": ""
   },
   "desktop/guest/agent/cmdline.js": {
@@ -798,9 +798,9 @@
     "semantic_hash": "43cfb4e3b98177fa04ad3f4265dd6574"
   },
   "web/call.js": {
-    "mtime": 1795595619.1564448,
-    "seen": 1795611824.6122565,
-    "ast_hash": "5ceec2cb67041093f2d0f86958481290",
+    "mtime": 1795662006.0340548,
+    "seen": 1795662186.0998492,
+    "ast_hash": "e39938543a33a686b67d2850c093c3e1",
     "semantic_hash": ""
   },
   "web/desktop-routes.js": {
@@ -882,9 +882,9 @@
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
-    "mtime": 1795595619.1576297,
-    "seen": 1795611824.6123025,
-    "ast_hash": "b3869c0ba06a7db24ebfb050da002816",
+    "mtime": 1795662029.2032347,
+    "seen": 1795662186.0998945,
+    "ast_hash": "d0e9faee38b9b468fe8167e7fdd79f54",
     "semantic_hash": ""
   },
   "web/test/containerfile.test.js": {
@@ -1518,9 +1518,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-19-18-claude-terminals.md": {
-    "mtime": 1795608321.6744256,
-    "seen": 1795611824.6124809,
-    "ast_hash": "cff2e66b72d980ffac5be11725ae8c08",
+    "mtime": 1795630083.9344482,
+    "seen": 1795662186.1000824,
+    "ast_hash": "e05dad4fc233d91ed039669af0811b5d",
     "semantic_hash": ""
   },
   "plan/2026-11-24-33-rfactory-in-cluster.md": {
@@ -1554,15 +1554,33 @@
     "semantic_hash": ""
   },
   "plan/2026-11-25-39-wrapped-credential-redaction.md": {
-    "mtime": 1795618542.1357455,
-    "seen": 1795618550.2132845,
-    "ast_hash": "f37b1e4ad259449b2f781ca398d694f8",
+    "mtime": 1795630083.9345546,
+    "seen": 1795662186.1000926,
+    "ast_hash": "5c62fcd5c783e3a7bc548610f487e7d7",
     "semantic_hash": ""
   },
   "spec/2026-11-25-39-wrapped-credential-redaction.md": {
     "mtime": 1795616408.3782713,
     "seen": 1795618250.8291018,
     "ast_hash": "518d46e0ca3a05b866aef52451fdd7a9",
+    "semantic_hash": ""
+  },
+  "intent/2026-11-25-49-meet-guest-bot.md": {
+    "mtime": 1795632958.8712082,
+    "seen": 1795662186.1000535,
+    "ast_hash": "c516ef8b9aa81b1ff33011610c774587",
+    "semantic_hash": ""
+  },
+  "plan/2026-11-25-49-meet-guest-bot.md": {
+    "mtime": 1795662084.4593973,
+    "seen": 1795662186.1000948,
+    "ast_hash": "077dae7f8ec8e6f3bf427bda3e8623c4",
+    "semantic_hash": ""
+  },
+  "spec/2026-11-25-49-meet-guest-bot.md": {
+    "mtime": 1795635362.8626978,
+    "seen": 1795662186.1001341,
+    "ast_hash": "bc2646de060c399995d2ea0c3b9eedcb",
     "semantic_hash": ""
   }
 }
