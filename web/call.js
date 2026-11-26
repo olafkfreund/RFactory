@@ -16,6 +16,8 @@ const portraits = require('../bot/avatars/manifest.json').portraits;
 const MAX_IN = 64 * 1024;
 const MAX_OUT = 4 * 1024 * 1024;
 const BOT_CMD = ['xvfb-run', '-a', 'node', 'bot/run.js'];
+const JOIN_CODES = ['lobby-timeout', 'denied', 'auth-required', 'blocked-by-admin', 'bot-check', 'already-running', 'ui-changed', 'timeout', 'unknown'];
+const JOIN_REASONS = ['cant-join', 'no-call-ui', 'removed', 'other'];
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, runner = null,
@@ -357,7 +359,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') queueSpeech(c, "RFactory here. Say 'RFactory' and your question.");
+      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, "RFactory here. Say 'RFactory' and your question."); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
@@ -376,6 +378,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       const resolve = c.waiters.get(msg.seq);
       if (resolve) { c.waiters.delete(msg.seq); resolve(msg.result); }
       if (msg.seq === 0) emit({ type: 'greeting', result: ['done', 'cancelled', 'failed'].includes(msg.result) ? msg.result : 'failed' });
+    } else if (msg.type === 'join-failure') {
+      // fixed values only, so the line is safe to log in audio mode too
+      const { code, reason, attempt, of, retrying } = msg;
+      if (!c.inCall && JOIN_CODES.includes(code) && JOIN_REASONS.includes(reason) && Number.isInteger(attempt) && Number.isInteger(of) &&
+        attempt >= 1 && attempt <= of && of <= 3 && typeof retrying === 'boolean') {
+        log(`join failed (attempt ${attempt}/${of}${retrying ? ', retrying' : ''}): ${code}, ${reason}`);
+      } else log('dropped malformed join-failure');
     } else if (msg.type === 'log') log(c.listen === 'audio' ? `child log: ${Buffer.byteLength(String(msg.message || ''))} bytes` : msg.message);
     else log('dropped unknown child message');
   }
@@ -402,7 +411,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 } };
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false };
     call = c;
     c.hearing = createHearing({ quietMs, clock, onAddressed: (item) => addressed(c, item) });
     c.limitTimer = clock.setTimeout(() => stop('60-minute limit'), 60 * 60 * 1000);

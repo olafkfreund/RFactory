@@ -158,6 +158,51 @@ test('current replays the latest call indicators and clears them after stop', as
   } finally { f.restore(); }
 });
 
+test('join-failure logs one fixed line from validated values, in both modes, only before in-call', async () => {
+  const valid = { type: 'join-failure', code: 'denied', reason: 'cant-join', attempt: 1, of: 3, retrying: true };
+  const malformed = [
+    { code: 'ENOENT' }, { code: undefined }, { code: ['denied'] }, { reason: 'secret words' }, { reason: undefined }, { reason: 1 },
+    { attempt: 3, of: 2 }, { of: 4 }, { of: 0 }, { attempt: 0 }, { attempt: 1.5 }, { attempt: '1' }, { of: 2.5 }, { of: '3' },
+    { retrying: 'true' }, { retrying: undefined },
+  ];
+  for (const listen of ['platform', 'audio']) {
+    const f = setup({ stt: { transcribe: async () => ({ text: '' }) } });
+    const logs = () => f.events.filter((e) => e.type === 'log').map((e) => e.message);
+    try {
+      await f.manager.start('https://teams.live.com/meet/123', { listen });
+      const [child] = f.children;
+      child.output(valid);
+      child.output({ ...valid, attempt: 3, retrying: false, detail: 'secret words' });
+      child.output({ ...valid, code: 'unknown', reason: 'other' });
+      assert.deepEqual(logs(), ['join failed (attempt 1/3, retrying): denied, cant-join',
+        'join failed (attempt 3/3): denied, cant-join', 'join failed (attempt 1/3, retrying): unknown, other']);
+      for (const extra of malformed) {
+        const before = logs().length;
+        child.output({ ...valid, ...extra });
+        assert.deepEqual(logs().slice(before), ['dropped malformed join-failure'], JSON.stringify(extra));
+      }
+      child.output({ type: 'state', state: 'in-call' });
+      const before = logs().length;
+      child.output(valid);
+      assert.deepEqual(logs().slice(before), ['dropped malformed join-failure']);
+      const stopping = f.manager.stop(); child.close(); await stopping;
+    } finally { f.restore(); }
+  }
+});
+
+test('join-failure in the same chunk as state error is logged before the call stops', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('https://meet.google.com/abc-defg-hij');
+    const lines = [{ type: 'join-failure', code: 'denied', reason: 'removed', attempt: 3, of: 3, retrying: false },
+      { type: 'state', state: 'error', code: 'denied' }];
+    f.children[0].stdout.emit('data', lines.map((line) => `${JSON.stringify(line)}\n`).join(''));
+    const logs = f.events.filter((e) => e.type === 'log').map((e) => e.message);
+    assert.deepEqual(logs, ['join failed (attempt 3/3): denied, removed', 'stopping: error']);
+    f.children[0].close(); await f.manager.stop();
+  } finally { f.restore(); }
+});
+
 test('audio overrides scope, excludes captions, and settles reverse completions in capture order', async () => {
   const first = deferred(), second = deferred();
   const languages = [];
