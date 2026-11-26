@@ -23,6 +23,12 @@ const SORRY = "Sorry, I can't answer that right now.";
 const ANSWER_MS = 90000; // #51: a lookup answer, counted from the question's arrival
 const usd = (n) => Math.round(n * 1e6) / 1e6;
 
+// #51: a spoken lookup answer is at most 3 sentences, without markdown; the page keeps the full text
+function spoken(text) {
+  const plain = String(text).replace(/[`*_#>]+/g, '').replace(/\s+/g, ' ').trim();
+  return plain.split(/(?<=[.!?])\s+/).slice(0, 3).join(' ');
+}
+
 // what the turn delivered, one entry per card, issue, PR or file
 function sourcesOf(reads) {
   const sources = new Map();
@@ -272,7 +278,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     emitLimits(c);
     if (outcome === 'aborted' || stale()) return;
     if (snap) emit({ type: 'answer', text, snapshot: snap, sources: sourcesOf(ctx.reads) });
-    await queueSpeech(c, text, generation);
+    await queueSpeech(c, spoken(text), generation);
   }
 
   async function answer(c, question, generation) {
@@ -567,4 +573,4 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 
-module.exports = { createCallManager };
+module.exports = { createCallManager, spoken };
