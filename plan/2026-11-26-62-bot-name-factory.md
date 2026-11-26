@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 62
 spec: spec/2026-11-26-62-bot-name-factory.md
 coders:
