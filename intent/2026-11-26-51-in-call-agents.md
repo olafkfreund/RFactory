@@ -136,3 +136,13 @@ The owner wants people in a call to use the models as fully as they do at their 
    This decides cost, quota and how each run authenticates inside AIFactory.
 6. **Gemini:** needed in the first provider slice, or are Claude and OpenAI enough to start?
 7. **#22:** write its intent now, as a dependency of outcome 3, or fold it into this one?
+
+## Decisions (owner, 2026-11-26: "approve with your recommendations")
+
+1. **Order:** option A. Live read-only lookups on the current Claude brain come first, then provider choice, then changes. Each slice has its own spec and plan.
+2. **Tools:** one shared, read-only RFactory tool set behind the gateway is offered to every provider for answers. Write runs use the provider's own coding agent inside the AIFactory sandbox.
+3. **Web and documentation:** not in slice 1. If added later, only admin-approved domains, kept apart from turns that read private project data.
+4. **Who switches provider:** the person starting the call picks it. Anyone may say "ask <provider>", but only for providers already approved for the call's project. A second opinion speaks both answers, short. No extra approval on the page, because the project's approval already covers that provider.
+5. **Credentials:** API keys from the credential broker, under the providers' business terms. No subscription logins.
+6. **Gemini:** after Claude and OpenAI.
+7. **#22:** gets its own intent, as a dependency of outcome 3. Slices 1 and 2 do not wait for it.
