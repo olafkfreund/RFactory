@@ -284,6 +284,20 @@ test('an error payload gives {error}; a hung read times out', async () => {
   await assert.rejects(src(hung).investigationLogs('k', 'r', 0), /source-timeout/);
 });
 
+test('lookup reads pass the turn signal and abort a hung CFactory call', async () => {
+  const controller = new AbortController();
+  const client = { calls: [], callTool(req, _schema, options) {
+    this.calls.push([req, options]);
+    if (req.name === 'cfactory_list_git_repositories') return Promise.resolve(reply(repos));
+    return new Promise(() => {});
+  } };
+  const pending = src(client).lookupCard('FCT-1', controller.signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(client.calls.find(([req]) => req.name === 'cfactory_get_card')[1].signal, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /aborted/);
+});
+
 test('investigateAvailable follows the tool list', async () => {
   assert.equal(await src(inv({}, ['cfactory_list_cards', 'cfactory_investigate_card'])).investigateAvailable(), true);
   assert.equal(await src(inv({}, ['cfactory_list_cards'])).investigateAvailable(), false);

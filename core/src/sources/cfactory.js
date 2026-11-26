@@ -6,6 +6,21 @@ const REF = /^([\w.-]+)\/([\w.-]+)#(\d+)$/;
 const STATE = { done: 'done', in_progress: 'in_progress', blocked: 'blocked', backlog: 'left', ready: 'left' };
 const FAILED = /^(failed?|failure|error(ed)?)$/i;
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+const BODY_LIMIT = 2 * 1024 * 1024;
+
+async function boundedFetch(url, init) {
+  const response = await fetch(url, { ...init, redirect: 'error' });
+  if (!response.body) return response;
+  let size = 0;
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      size += chunk.byteLength;
+      if (size > BODY_LIMIT) throw new Error('source-body-too-large');
+      controller.enqueue(chunk);
+    },
+  }));
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
 
 // Mirrors CFactory's resolution order: repository_id, then issue_ref's owner/repo (default wins a tie), then the default.
 function repositoryOf(card, repos) {
@@ -48,46 +63,52 @@ function mapCard(card) {
 function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, clientFactory = () => new Client({ name: 'rfactory-core', version: '0' }), timeoutMs = 10000 }) {
   let c = client;
   let reconnecting;
-  async function within(promise, deadline) {
+  async function within(promise, deadline, signal) {
     let timer;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('source-timeout');
     const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('source-timeout')), remaining); });
-    try { return await Promise.race([promise, timeout]); }
-    finally { clearTimeout(timer); }
+    let abort;
+    const cancelled = signal && new Promise((_, reject) => {
+      abort = () => reject(new Error('aborted'));
+      if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+    });
+    try { return await Promise.race([promise, timeout, ...(cancelled ? [cancelled] : [])]); }
+    finally { clearTimeout(timer); if (abort) signal.removeEventListener('abort', abort); }
   }
   async function connect() {
     const next = clientFactory();
-    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+    await next.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { fetch: boundedFetch, requestInit: { redirect: 'error', headers: { Authorization: `Bearer ${key}` } } }));
     c = next;
   }
   // one retry after reconnecting: a CFactory restart leaves the old MCP session dead (#18 live test)
-  async function withClient(op, deadline) {
+  async function withClient(op, deadline, signal) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = c;
       try {
-        return await within(op(current), deadline);
+        return await within(op(current), deadline, signal);
       } catch (error) {
-        if (attempt || error.message === 'source-timeout') throw error;
+        if (attempt || error.message === 'source-timeout' || signal?.aborted) throw error;
         if (!reconnecting && c === current) reconnecting = (async () => {
           if (current.close) await current.close().catch(() => {});
           await connect();
         })().finally(() => { reconnecting = undefined; });
-        if (reconnecting) await within(reconnecting, deadline);
+        if (reconnecting) await within(reconnecting, deadline, signal);
       }
     }
   }
-  function call(name, deadline = Date.now() + timeoutMs, args = {}) {
+  function call(name, deadline = Date.now() + timeoutMs, args = {}, signal) {
     return withClient(async (current) => {
-      const r = await current.callTool({ name, arguments: args });
+      const r = await current.callTool({ name, arguments: args }, undefined, signal ? { signal } : undefined);
       const text = (r.content || []).map((x) => x.text || '').join('');
+      if (Buffer.byteLength(text) > BODY_LIMIT) throw new Error('source-body-too-large');
       if (r.isError) throw new Error(`${name}: ${text.slice(0, 200)}`);
       const v = JSON.parse(text);
       return v && typeof v === 'object' ? v : {};
-    }, deadline);
+    }, deadline, signal);
   }
-  const repoList = async (deadline) => {
-    const r = await call('cfactory_list_git_repositories', deadline);
+  const repoList = async (deadline, signal) => {
+    const r = await call('cfactory_list_git_repositories', deadline, {}, signal);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
   // a failed or empty repository read is a source failure, never "every card is conflicting"
@@ -162,6 +183,28 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       const [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]);
       if (card.error || !card.card_key) return { error: str(card.error) || 'unknown card' };
       return { card, inRepository: repositoryOf(card, repos) === repositoryId };
+    },
+    async lookupCards(signal) {
+      const deadline = Date.now() + timeoutMs;
+      const [repos, response] = await Promise.all([repoList(deadline, signal), call('cfactory_list_cards', deadline, {}, signal)]);
+      if (!hasRepo(repos) || response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+      return response.cards.filter((card) => inScope(card, repos, repositoryId));
+    },
+    async lookupCard(card_key, signal) {
+      const deadline = Date.now() + timeoutMs;
+      const [repos, card] = await Promise.all([repoList(deadline, signal), call('cfactory_get_card', deadline, { card_key }, signal)]);
+      if (!hasRepo(repos) || card.error || !inScope(card, repos, repositoryId) || card.card_key !== card_key) throw new Error('card-out-of-scope');
+      return card;
+    },
+    async lookupComments(card_key, signal) {
+      const reply = await call('cfactory_card_comments', undefined, { card_key }, signal);
+      if (reply.error) throw new Error('source-error');
+      return reply;
+    },
+    async lookupRun(card_key, signal) {
+      const reply = await call('cfactory_investigation_recover', undefined, { card_key }, signal);
+      if (reply.error) throw new Error('source-error');
+      return reply;
     },
     // Investigation reads; read key only. Bodies are relayed as CFactory and AIFactory return them; an error payload gives { error }.
     // { repository_id, repo, default_branch, sha, test_command|null }
