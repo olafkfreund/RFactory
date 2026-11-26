@@ -263,3 +263,7 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
 
 1. **Step 1: CFactory test paths.** CFactory's backend tests live at the repository root, so the test is `tests/test_projects.py` and the fixture is `tests/data/projects.json`, not `apps/backend/tests/...`. The worktree links `apps/backend/.venv` and `apps/frontend-web/node_modules` from the main CFactory checkout. Both are gitignored.
 2. **Step 2: a `projects` block needs a CFactory source** (lead). `projects` with `source.kind !== 'cfactory'` is refused with `invalid-projects`, because projects come from CFactory. "No other keys" applies to both `projects` and each entry, so slice A refuses an entry that carries `github_read`.
+3. **Step 3 (Codex), with the lead's changes:**
+   - **`resolveProject`** passes CFactory's `{error: 'unknown' | 'ambiguous'}` through as an answer, so the route can return 404. Only a real failure or a malformed reply throws `project-resolve-failed`.
+   - **`listProjects`** accepts a bare list or `{projects: [...]}`, until step 1's MCP reply shape is final.
+   - **Still to do:** the view's `investigationContext` uses the view's first repository and ignores an argument. Slice A runs investigations only on the legacy default source, so the explicit-repository form moves to slice B.

@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createCfactorySource, mapCard, inScope } = require('../src/sources/cfactory.js');
+const { makeRedactor } = require('../src/redact.js');
 const cards = require('./fixtures/cfactory-cards.json');
 const repos = require('./fixtures/cfactory-repos.json');
 
@@ -328,4 +329,91 @@ test('only the bounded source refuses redirects and 2 MB bodies; the default one
     assert.equal(typeof transport._fetch, bounded ? 'function' : 'undefined');
     assert.deepEqual(transport._requestInit.headers, { Authorization: 'Bearer test-key' });
   }
+});
+
+test('repository views select, reject, and withhold cards across two repositories', async () => {
+  const both = { repositories: [
+    { id: 1, project: 'example/demo', intake_project: 'example/intake' },
+    { id: 2, project: 'example/demo', is_default: true },
+    { id: 3, project: 'example/third' },
+  ], default_repository_id: 2 };
+  const selected = { card_key: 'one', repository_id: 1, issue_ref: 'example/intake#1' };
+  const other = { card_key: 'two', repository_id: 2, issue_ref: 'example/demo#2' };
+  const conflict = { card_key: 'conflict', repository_id: 1, issue_ref: 'example/other#3' };
+  const foreign = { card_key: 'foreign', repository_id: 3 };
+  const deleted = { ...other, card_key: 'deleted', deleted_at: 'now' };
+  const legacy = { card_key: 'legacy', issue_ref: 'example/demo#4' };
+  const all = [selected, other, conflict, foreign, deleted, legacy];
+  const client = boardClient({ cfactory_list_git_repositories: both, cfactory_list_cards: { cards: all },
+    cfactory_get_card: conflict, cfactory_card_sync_state: { repositories: [
+      { repository_id: 1, stale: true, last_polled_at: '2026-11-20T00:00:00Z' },
+      { repository_id: 2, stale: false, last_polled_at: '2026-11-21T00:00:00Z' },
+    ] } });
+  const view = src(client).forRepositories([1, 2], { name: 'both' });
+  assert.deepEqual((await view.snapshot()).items.map((c) => c.id), ['one', 'two', 'legacy']);
+  assert.equal((await view.snapshot()).conflicting, 1);
+  const standup = await view.standupData();
+  assert.deepEqual(standup.cards.map((c) => c.card_key), ['one', 'two', 'legacy']);
+  assert.deepEqual(standup.freshness, { state: 'stale', last_polled_at: '2026-11-20T00:00:00Z' });
+  assert.deepEqual(await view.reviewData('conflict'), { found: false });
+  assert.deepEqual(await view.getCard('conflict'), { card: null, repositoryId: 1, inRepository: false });
+  assert.deepEqual((await view.lookupCards()).map((c) => c.card_key), ['one', 'two', 'legacy']);
+  await assert.rejects(view.lookupCard('conflict'), /card-out-of-scope/);
+  assert.deepEqual(await src(boardClient({ cfactory_list_git_repositories: both, cfactory_get_card: foreign })).forRepositories([1, 2]).getCard('foreign'), { card: null, repositoryId: 3, inRepository: false });
+  assert.equal(await view.repositoryProject(), 'example/intake');
+  assert.equal(client.calls.some((c) => c.name === 'cfactory_card_comments'), false);
+  assert.deepEqual((await src(client).getCard('conflict')).card, conflict);
+});
+
+test('repository views fail when any selected repository disappears', async () => {
+  const client = boardClient({ cfactory_list_git_repositories: repos });
+  const view = src(client).forRepositories([1, 99]);
+  await assert.rejects(view.start(), /source-error: repository-missing/);
+  await assert.rejects(view.snapshot(), /source-error: repository-missing/);
+  await assert.rejects(view.standupData(), /source-error: repository-missing/);
+  await assert.rejects(view.reviewData('FCT-1'), /source-error: repository-missing/);
+  await assert.rejects(view.lookupCards(), /source-error: repository-missing/);
+  await assert.rejects(view.lookupCard('FCT-1'), /source-error: repository-missing/);
+});
+
+test('a one-repository view keeps board and keyed read signatures', async () => {
+  const card = { card_key: 'FCT-1', repository_id: 2, issue_ref: 'example/demo#11', status: 'ready', title: 'Title' };
+  const client = boardClient({ cfactory_list_cards: { cards: [card] }, cfactory_get_card: card,
+    cfactory_investigation_recover: { card_key: 'FCT-1' },
+    cfactory_investigation_get: { state: 'running' },
+    cfactory_investigation_logs: { entries: [], cursor: 0 } });
+  const view = createCfactorySource({ client, repositoryId: 1, redactor: makeRedactor([]) }).forRepositories([2]);
+  assert.deepEqual((await view.boardView()).cards.map((c) => c.key), ['FCT-1']);
+  assert.deepEqual(await view.lookupCard('FCT-1'), card);
+  assert.equal((await view.lookupComments('FCT-1')).issue_ref, 'example/demo#11');
+  assert.equal((await view.lookupRun('FCT-1')).card_key, 'FCT-1');
+  assert.equal((await view.investigationState('FCT-1', 'run')).state, 'running');
+  assert.equal((await view.investigationRecord('FCT-1')).card_key, 'FCT-1');
+  assert.equal((await view.investigationLogs('FCT-1', 'run', 0)).cursor, 0);
+  assert.deepEqual(client.calls.filter((c) => c.name === 'cfactory_investigation_get')[0].arguments, { card_key: 'FCT-1', run_id: 'run' });
+});
+
+test('project reads are uncached and fail closed on errors or malformed replies', async () => {
+  const project = { id: 'p', name: 'Project', slug: 'project', repository_ids: [1, 2], repo_paths: ['a', 'b'], created_at: null };
+  const values = { cfactory_list_projects: [[project], [project, project]],
+    cfactory_resolve_project: [{ project }, { project }] };
+  const client = { calls: [], async callTool(req) {
+    this.calls.push(req);
+    return reply(values[req.name].shift());
+  } };
+  const source = src(client);
+  assert.deepEqual(await source.listProjects(), [project]);
+  assert.deepEqual(await source.listProjects(), [project, project]);
+  assert.deepEqual(await source.resolveProject('project'), { project });
+  assert.deepEqual(await source.resolveProject('project'), { project });
+  assert.deepEqual(client.calls.map((c) => c.name), ['cfactory_list_projects', 'cfactory_list_projects', 'cfactory_resolve_project', 'cfactory_resolve_project']);
+  assert.deepEqual(client.calls[2].arguments, { ref: 'project' });
+  for (const bad of [{ error: 'boom' }, {}, { project: {} }, new Error('down')]) {
+    const broken = src(boardClient({ cfactory_resolve_project: bad, cfactory_list_projects: bad }));
+    await assert.rejects(broken.resolveProject('x'), /project-resolve-failed/);
+    await assert.rejects(broken.listProjects(), /project-resolve-failed/);
+  }
+  // unknown and ambiguous are answers, not failures; a wrapped list is accepted
+  for (const error of ['unknown', 'ambiguous']) assert.deepEqual(await src(boardClient({ cfactory_resolve_project: { error } })).resolveProject('x'), { error });
+  assert.deepEqual(await src(boardClient({ cfactory_list_projects: { projects: [project] } })).listProjects(), [project]);
 });
