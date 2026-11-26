@@ -72,3 +72,9 @@ parent: intent/2026-11-17-1-meeting-agent.md
    - **Recommended:** "RFactory" and its accepted mishearings work only where they open what someone says, under the same rule as "Factory". The alias is removed in a later small PR.
    - **Alternative:** keep "RFactory" working anywhere for now, which keeps today's false triggers.
 3. **The greeting words** allowed before the name: recommended "hey", "hi", "hello", "ok" and "okay". Anything else, such as "so" or "right", doesn't open it.
+
+## Decisions (owner, 2026-11-26: "approved", with the recommendations)
+
+1. **The new name** counts as "factory" or "factories", case-insensitive.
+2. **The old name:** "RFactory" and its accepted mishearings follow the same opening rule. The alias is removed in a later small PR.
+3. **The greetings allowed before the name:** "hey", "hi", "hello", "ok" and "okay".
