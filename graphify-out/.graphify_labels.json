@@ -22,7 +22,6 @@
   "82": "spike spike/package.json",
   "84": "test run.test.js",
   "89": "bot run()",
-  "92": "test test/board.test.js",
   "93": "desktop desktop/package.json",
   "101": "k3d k14-env.sh",
   "102": "verify handover.sh",

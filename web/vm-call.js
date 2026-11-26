@@ -31,28 +31,31 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
     const avatar = opts?.env?.RFACTORY_AVATAR; // call.js's chosen portrait; the guest bot validates it against its manifest
     const { RFACTORY_LISTEN: listen, RFACTORY_LANGUAGE: language } = opts?.env || {};
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
-    let id = null, sock = null, beat = null, closed = false;
+    let id = null, sock = null, beat = null, closed = false, creating = null;
     const close = (why) => {
       if (closed) return;
       closed = true;
       clearInterval(beat);
       if (why) child.stderr.write(why);
       sock?.destroy();
-      if (id) runner.destroy(id).catch(() => {});
-      child.stdout.end();
-      child.emit('close', why ? 1 : 0);
+      // 'close' frees the call slot, so it waits for the VM to be gone, including one still being created
+      Promise.resolve(creating).catch(() => {}).then(() => id && runner.destroy(id)).catch(() => {}).then(() => {
+        child.stdout.end();
+        child.emit('close', why ? 1 : 0);
+      });
     };
     child.kill = () => close();
     (async () => {
       const platform = platformOf(await firstLine(child.stdin));
       if (closed) return;
       if (!platform) throw new Error('unsupported call link');
-      const made = await runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}),
-        ...(listen ? { listen } : {}), ...(language ? { language } : {}) });
+      creating = runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}),
+        ...(listen ? { listen } : {}), ...(language ? { language } : {}) })
+        .then((made) => { if (made.status === 200) id = made.body.desktop_id; return made; });
+      const made = await creating;
       if (made.status !== 200) throw new Error(`runner refused: ${made.body && made.body.error}`);
-      id = made.body.desktop_id;
       child.desktop_id = id;
-      if (closed) return runner.destroy(id).catch(() => {}); // killed while the VM was being created
+      if (closed) return; // killed while the VM was being created: close() destroys it
       // the runner ends a VM with no server heartbeat after 60 s, and the guest channel can take up to 2 minutes to appear
       beat = setInterval(() => runner.call('heartbeat', { desktop_id: id }).catch(() => {}), heartbeatMs);
       for (let n = 0; !sock; n++) { // the guest channel connects a few seconds after boot

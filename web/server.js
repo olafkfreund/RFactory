@@ -33,6 +33,27 @@ const HEADERS = {
 };
 const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
 
+// #52: the approval lists of a project without the default repository
+const EMPTY_LISTS = {
+  actions: { pending: [], history: [] },
+  shares: { pending: [], running: null, history: [] },
+  investigations: { pending: [], running: null, active: [], history: [] },
+};
+const refusal = (status, code) => Object.assign(new Error(code), { refusal: status });
+const CLOSED = "Changes aren't available for this project yet.";
+
+// #52: a project's repositories, joined by id; CFactory's two lists are sorted independently, so never zip them
+function repositoriesOf(project, repos) {
+  const joined = project.repository_ids.map((id) => {
+    const repo = repos.find((r) => r.id === id);
+    const where = repo?.intake_project ?? repo?.project;
+    if (typeof where !== 'string' || !where) throw new Error('project-resolve-failed');
+    return { id, path: where };
+  });
+  if (!joined.length) throw new Error('project-resolve-failed');
+  return joined;
+}
+
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
   if (typeof link !== 'string' || link.length > 2048) return false;
@@ -72,14 +93,58 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '' }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null }) {
   let busy = false;
+  let starting = false; // #52: the call slot, reserved while a project is resolved
+  const allowed = scope?.projects ? new Set(scope.projects.allow.map((p) => p.id)) : null; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
 
-  async function standup() {
+  // nothing is cached: every start and read resolves the project again, and the allowlist is checked before CFactory is asked
+  async function bind(id) {
+    if (!allowed.has(id)) throw refusal(403, 'project-not-allowed');
+    const project = (await source.listProjects()).find((p) => p.id === id);
+    if (!project) throw refusal(404, 'project-unknown');
+    const repositories = repositoriesOf(project, await source.listRepositories());
+    return { projectId: project.id, name: project.name, repositories,
+      writable: repositories.some((r) => r.id === scope.source.repository_id) };
+  }
+  const viewOf = (binding) => source.forRepositories(binding.repositories.map((r) => r.id), { name: binding.name });
+  const readView = async (query) => allowed ? viewOf(await bind(query.get('project'))) : source;
+  const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
+    : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
+  const describe = (project, repos) => ({ id: project.id, name: project.name, slug: project.slug, repositories: repositoriesOf(project, repos) });
+
+  // #52: approve, reject and stop come from a project that may change things. The running call's frozen binding
+  // answers for its own project, so a Stop does not depend on CFactory; any other is resolved afresh.
+  function decide(res, query, act) {
+    if (!allowed) return act();
+    const id = query.get('project');
+    const running = call?.project?.id === id ? call.projectCall : null;
+    return Promise.resolve(running || bind(id)).then(({ writable }) => (writable ? act()
+      : json(res, 403, { error: 'project-read-only', text: CLOSED }))).catch(readFailed(res));
+  }
+
+  async function listProjects() {
+    const [projects, repos] = await Promise.all([source.listProjects(), source.listRepositories()]);
+    // one project that cannot be joined must not take the picker away from the others
+    return projects.filter((p) => allowed.has(p.id)).flatMap((p) => {
+      try { return [describe(p, repos)]; }
+      catch { console.error(`rfactory-web: project skipped: ${p.id} repository-missing`); return []; }
+    });
+  }
+
+  // a link names a project by its canonical slug only: an id, alias or ambiguous name is unknown
+  async function resolveSlug(slug) {
+    const { project } = slug ? await source.resolveProject(slug) : {};
+    if (!project || project.slug.toLowerCase() !== slug.toLowerCase()) throw refusal(404, 'project-unknown');
+    if (!allowed.has(project.id)) throw refusal(403, 'project-not-allowed');
+    return describe(project, await source.listRepositories());
+  }
+
+  async function standup(view) {
     let data;
-    try { data = await source.standupData(); }
+    try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
     const { cards, conflicting, freshness, fetched_at } = data;
     const items = cards.map(mapCard);
@@ -96,23 +161,30 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     const email = req.headers['x-forwarded-email'];
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
-    const url = req.url.split('?')[0];
+    const [url, ...search] = req.url.split('?');
+    const query = new URLSearchParams(search.join('?'));
+    if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
+    if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
+      (url === '/api/projects' ? listProjects() : resolveSlug(query.get('slug')))
+        .then((body) => json(res, 200, body), readFailed(res));
+      return;
+    }
     if (req.method === 'GET' && url === '/api/review') {
-      source.standupData().then(({ cards, conflicting, freshness, fetched_at }) =>
+      readView(query).then((view) => view.standupData()).then(({ cards, conflicting, freshness, fetched_at }) =>
         json(res, 200, { ...reviewProject(cards, freshness), conflicting, fetched_at }))
-        .catch((error) => json(res, 502, { error: sourceCode(error) }));
+        .catch(readFailed(res));
       return;
     }
     if (req.method === 'GET' && url.startsWith('/api/review/')) {
       const card_key = url.slice('/api/review/'.length);
       if (!/^[\w.-]{1,128}$/.test(card_key)) return json(res, 400, { error: 'bad-request' });
-      source.reviewData(card_key).then((result) => result.found
+      readView(query).then((view) => view.reviewData(card_key)).then((result) => result.found
         ? json(res, 200, reviewCard(result.card, result.discussion, result.freshness))
         : json(res, 404, { error: 'not-found' }))
-        .catch((error) => json(res, 502, { error: sourceCode(error) }));
+        .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}) });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -122,45 +194,49 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       req.resume();
       if (busy) return json(res, 409, { error: 'busy' });
       busy = true;
-      standup().then(([status, body]) => json(res, status, body),
-        (error) => json(res, 502, { error: sourceCode(error) }))
+      readView(query).then(standup).then(([status, body]) => json(res, status, body), readFailed(res))
         .finally(() => { busy = false; });
       return;
     }
-    if (actions && req.method === 'GET' && url === '/api/actions') {
-      return json(res, 200, { ...actions.list(), can_approve: roles.has(email, 'approver') });
-    }
+    // #52: a project sees the entries only when it holds the default repository, which every entry belongs to
+    const sendList = (kind, manager) => {
+      const reply = (writable) => json(res, 200, { ...(writable ? manager.list() : EMPTY_LISTS[kind]), can_approve: roles.has(email, 'approver') });
+      if (!allowed) return reply(true);
+      bind(query.get('project')).then((binding) => reply(binding.writable)).catch(readFailed(res));
+    };
+    if (actions && req.method === 'GET' && url === '/api/actions') return sendList('actions', actions);
     const act = actions && req.method === 'POST' && /^\/api\/actions\/([\w-]{1,64})\/(approve|reject)$/.exec(url);
     if (act) {
       if (req.headers['x-rfactory-action'] !== '1') { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       let origin;
       try { origin = new URL(req.headers.origin).host; } catch { origin = null; }
       if (!origin || origin !== req.headers.host) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
-      readJson(req).then((body) => {
+      readJson(req).then((body) => decide(res, query, () => {
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
-      });
+      }));
       return;
     }
     // shares (#12) and investigations (#18) have the same routes and checks
     const approvals = { shares, investigations };
     const listed = req.method === 'GET' && /^\/api\/(shares|investigations)$/.exec(url);
-    if (listed && approvals[listed[1]]) {
-      return json(res, 200, { ...approvals[listed[1]].list(), can_approve: roles.has(email, 'approver') });
-    }
+    if (listed && approvals[listed[1]]) return sendList(listed[1], approvals[listed[1]]);
     const decision = req.method === 'POST' && /^\/api\/(shares|investigations)\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
     if (decision && approvals[decision[1]]) {
       const [, kind, id, verb, stop] = decision;
       const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      readJson(req).then((body) => {
-        // an investigation Stop carries the id it was shown for; shares ignore it
-        if (stop) return manager.stop(email, body?.id).then(reply, () => json(res, 500, { error: 'internal' }));
+      readJson(req).then((body) => decide(res, query, () => {
+        // Stop carries the id it was shown for; a share needs it only with projects, so no id there matches nothing
+        if (stop) {
+          return manager.stop(email, decision[1] === 'shares' ? (allowed ? String(body?.id ?? '') : undefined) : body?.id)
+            .then(reply, () => json(res, 500, { error: 'internal' }));
+        }
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return manager[verb](id, email, body.hash).then(reply, () => json(res, 500, { error: 'internal' }));
-      });
+      }));
       return;
     }
     const prof = profiles && /^\/api\/profiles(?:\/([0-9a-f-]{36})(\/attach)?)?$/.exec(url);
@@ -184,30 +260,58 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       return;
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
+    if (allowed && call && req.method === 'GET' && url === '/api/call/status') {
+      return json(res, 200, { running: call.running, starting, generation: call.generation, project: call.project });
+    }
     if (call && url === '/api/call') {
       if (req.method === 'POST') {
         readJson(req).then((body) => {
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
-          if (call.running) return json(res, 409, { error: 'busy' });
-          return call.start(body.link, { listen: body.listen }).then(() => json(res, 202, { ok: true }),
-            (error) => (error && error.message === 'busy' ? json(res, 409, { error: 'busy' })
-              : error?.message === 'stt-not-configured' ? json(res, 400, { error: 'stt-not-configured' }) : json(res, 500, { error: 'call-error' })));
+          if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
+          if (starting || call.running) return json(res, 409, { error: 'busy' });
+          let started;
+          if (allowed) {
+            starting = true; // before any await: an overlapping start is refused
+            started = bind(body.project_id).then((binding) => call.start(body.link, { listen: body.listen, binding, view: viewOf(binding) }))
+              .finally(() => { starting = false; });
+          } else started = call.start(body.link, { listen: body.listen });
+          return started.then(() => json(res, 202, { ok: true }), (error) => {
+            if (error?.refusal || error?.message === 'project-resolve-failed') return readFailed(res)(error);
+            if (error?.message === 'busy') return json(res, 409, { error: 'busy' });
+            return error?.message === 'stt-not-configured' ? json(res, 400, { error: 'stt-not-configured' }) : json(res, 500, { error: 'call-error' });
+          });
         });
         return;
       }
       if (req.method === 'DELETE') {
-        req.resume();
-        call.stop('requested').then(() => json(res, 200, { ok: true }), () => json(res, 500, { error: 'call-error' }));
+        const stopCall = () => call.stop('requested').then(() => json(res, 200, { ok: true }), () => json(res, 500, { error: 'call-error' }));
+        if (!allowed) { req.resume(); stopCall(); return; }
+        // #52: Stop names the call its page saw, so it cannot end a later one
+        readJson(req).then((body) => {
+          if (starting) return json(res, 409, { error: 'starting' });
+          if (body?.generation !== call.generation) return json(res, 409, { error: 'stale-generation' });
+          return stopCall();
+        });
         return;
       }
     }
     if (call && req.method === 'GET' && url === '/api/call/events') {
       res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/event-stream' });
       res.write(': open\n\n');
-      for (const event of call.current()) res.write(`data: ${JSON.stringify(event)}\n\n`);
-      const off = call.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
-      const timer = setInterval(() => res.write(': keepalive\n\n'), 15000);
+      const write = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+      // #52: a project's stream carries only that project's running call, and closes when it ends
+      if (allowed && (!call.running || call.project?.id !== query.get('project'))) {
+        write(call.running ? { type: 'busy', project: call.project } : { type: 'idle' });
+        return res.end();
+      }
+      for (const event of call.current()) write(event);
+      let timer = null;
+      const off = call.subscribe((event) => {
+        write(event);
+        if (allowed && event.type === 'ended') { clearInterval(timer); off(); res.end(); }
+      });
+      timer = setInterval(() => res.write(': keepalive\n\n'), 15000);
       req.on('close', () => { clearInterval(timer); off(); });
       return;
     }
@@ -267,9 +371,14 @@ async function composeLookups({ scope, key, redactor, token, createSource = requ
     github = require('@rfactory/core/src/sources/github-read.js').createGithubRead({ token });
   }
   const lookups = createLookups({ source, github, redactor });
-  const endpoint = createLookupEndpoint({ lookups });
+  // #52: one endpoint serves every turn; a project call's context carries its own lookups, over its repositories only
+  const none = { tools: () => [], call: async () => ({ error: 'lookup-refused' }) };
+  const own = (ctx) => ctx.lookups || (ctx.project?.bound ? none : lookups); // a project turn never falls back to the default repository
+  const endpoint = createLookupEndpoint({ lookups: { tools: (ctx) => own(ctx).tools(ctx), call: (ctx, name, args) => own(ctx).call(ctx, name, args) } });
+  const lookupsFor = (ids) => createLookups({ source: source.forRepositories(ids),
+    github: ids.includes(scope.source.repository_id) ? github : null, redactor });
   const lookupUrl = await endpoint.start();
-  return { lookups, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
+  return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
 
 async function main() {
@@ -298,11 +407,13 @@ async function main() {
       cert: process.env.RFACTORY_RUNNER_CERT, ca: process.env.RFACTORY_RUNNER_CA });
   }
   let desktop = null;
+  let call = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
       isAllowed: async () => true, // no per-scope action allowlist exists yet: the approver's handover hosts and the runner's network allowlist bound what can run
-      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, snapshot: async () => { const raw = await source.snapshot();
+      cancel: (id) => guest('cancel', { desktop_id: id }), brain, redactor, projectCall: () => call?.projectCall ?? null,
+      snapshot: async (view = source) => { const raw = await view.snapshot();
         return { items: raw.items, counts: summarise(raw.items), unknown: raw.items.filter((i) => i.state === 'unknown'), fetched_at: raw.fetched_at, newest_update: raw.newest_update }; },
       // revoke cancels first; the session destroys the VM if this fails or takes over 2 s
       run: (name, args, ctx) => guest('action', { desktop_id: ctx.running.desktop_id, message: { type: name, ...args, hosts: ctx.hosts } }),
@@ -310,7 +421,6 @@ async function main() {
       startShare: (b) => guest('share-start', b), stopShare: (b) => guest('share-stop', b),
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
-  let call = null;
   if (process.env.RFACTORY_CALLS === '1') {
     const { createTts } = require('./tts.js');
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
@@ -320,7 +430,7 @@ async function main() {
       ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 

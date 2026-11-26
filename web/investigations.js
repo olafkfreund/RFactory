@@ -72,7 +72,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   function publish(event) {
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt the run. */ } }
   }
-  const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry) });
+  const emit = (entry) => publish({ type: 'investigation-updated', investigation: publicEntry(entry), generation: entry.generation });
   async function summarize(report) {
     const result = await brain.summarize(redactor.logSafeWindow(report)); // a brain without summarize() throws: no summary
     return String(result.text).split(/(?<=[.!?])\s+/).filter((sentence) => !COUNT_CLAIM.test(sentence)).join(' ');
@@ -84,7 +84,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       try { summary = await summarize(entry.report); }
       catch { summary = 'I could not summarise the findings.'; }
     }
-    publish({ type: 'investigation-result', investigation: { id: entry.payload.id },
+    publish({ type: 'investigation-result', investigation: { id: entry.payload.id }, generation: entry.generation,
       counts: testSentences(entry.tests, entry.payload.test_command), summary });
   }
   function row(entry, state, extra) {

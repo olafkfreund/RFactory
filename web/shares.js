@@ -25,7 +25,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   let recovered = false;
 
   function emit(type, entry, extra = {}) {
-    const event = safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state, ...extra } });
+    const event = { ...safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state, ...extra } }), generation: entry.generation };
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt sharing. */ } }
   }
 
@@ -250,10 +250,13 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   // ends one share by its id; a pending proposal and any other share are left alone
   async function close(id) { if (active?.payload.id === id) await stopEntry(active, 'investigation-ended'); }
 
-  async function stop(email) {
+  // id (project deployments): Stop ends only the entry its page showed
+  async function stop(email, id) {
     if (!approvers.has(email, 'member')) return reply(403, 'Forbidden.');
-    if (pending) await expire(pending);
-    if (active && !await stopEntry(active, 'manual')) return reply(500, 'The share viewer did not close.');
+    const named = (entry) => entry && (id === undefined || entry.payload.id === id);
+    if (id !== undefined && !named(pending) && !named(active)) return reply(409, 'This share is no longer active.');
+    if (named(pending)) await expire(pending);
+    if (named(active) && !await stopEntry(active, 'manual')) return reply(500, 'The share viewer did not close.');
     return reply(200, 'Stopped sharing.');
   }
 

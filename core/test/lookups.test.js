@@ -240,3 +240,22 @@ test('the CFactory source refuses deleted, foreign and conflicting cards before 
     assert.ok(calls.every((name) => ['cfactory_list_git_repositories', 'cfactory_list_cards', 'cfactory_get_card'].includes(name)), calls.join());
   }
 });
+
+test('a project call gets issue and PR numbers only from the GitHub-bound repository', async () => {
+  const bound = { owner: 'Bound', repo: 'Demo' };
+  const read = async (refs, project) => {
+    const c = ctx(bound); c.project = { ...c.project, ...project };
+    return (await lookup(source({ ...card, ...refs }), {}).call(c, 'get_card', { card_key: 'PROJ-1' })).result;
+  };
+  const own = { issue_ref: 'bound/demo#4', pr_ref: 'bound/demo#5', issue_state: 'open', pr_state: 'open' };
+  const other = { ...own, issue_ref: 'bound/demo-two#4', pr_ref: 'other/demo#5' };
+  const mine = await read(own, { bound: true });
+  assert.deepEqual([mine.issue.number, mine.pr.number], [4, 5]);
+  for (const result of [await read(other, { bound: true }), await read(own, { bound: true, github: null })]) {
+    assert.equal(Object.hasOwn(result, 'issue') || Object.hasOwn(result, 'pr'), false);
+  }
+  assert.equal((await read({}, { bound: true })).issue, null);
+  assert.deepEqual((await read(other, {})).issue.number, 4); // without projects, as before
+  const described = lookup(source(), {}).tools(ctx(bound));
+  assert.ok(described.filter((x) => GITHUB.includes(x.name)).every((x) => x.description.endsWith('in the GitHub repository Bound/Demo')));
+});

@@ -10,7 +10,7 @@ const MEMBER = 'member@example.com', APPROVER = 'approver@example.com', ADMIN = 
 const roles = loadRoles({ RFACTORY_ALLOWED_EMAILS: `${MEMBER},${APPROVER},${ADMIN}`, RFACTORY_APPROVERS: APPROVER, RFACTORY_ADMINS: ADMIN });
 const HOST = 'https://preview.example.com';
 
-async function start(t, { writesEnabled = true, isAllowed = async () => true, stopFails = false, cancelFn, result = {}, withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null, loginFails = false } = {}) {
+async function start(t, { writesEnabled = true, isAllowed = async () => true, stopFails = false, cancelFn, result = {}, withDesktop = true, proposal = { action: 'desktop_screenshot', args: {} }, pageText = null, loginFails = false, extra = {} } = {}) {
   const clock = { t: 1_000_000, now() { return this.t; } };
   let nextProposal = proposal;
   const ran = [], shares = [], stops = [], prompts = [], logins = [];
@@ -19,7 +19,7 @@ async function start(t, { writesEnabled = true, isAllowed = async () => true, st
     runner: { list: async () => ({ status: 200, body: { desktops: [{ desktop_id: 'd1', call_id: 'c1', scope: 's1', nonce: 'n1' }, { desktop_id: 'd2', call_id: 'c2', scope: 'other' }], alert: 'cleanup blocked' } }) },
     run: async (name, args, ctx) => { ran.push({ name, args, ctx }); return { ok: true, ...(pageText ? { content: pageText } : {}), ...result }; },
     login: async (x) => { logins.push(x); if (loginFails) throw new Error('x'); },
-    startShare: async (x) => shares.push(x), stopShare: async (x) => { if (stopFails) throw new Error('x'); stops.push(x); }, destroy: async () => {} });
+    startShare: async (x) => shares.push(x), stopShare: async (x) => { if (stopFails) throw new Error('x'); stops.push(x); }, destroy: async () => {}, ...extra });
   const server = createApp({ roles, source: {}, brain: {}, desktop: withDesktop ? desktop : null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -357,4 +357,37 @@ test('a handover can fill a stored preview login; the profile id is the only thi
   assert.equal((await off.call('POST', '/api/desktop/d1/handover', APPROVER, { ...grant, login: 'p1' })).status, 403);
   assert.deepEqual(off.logins, []);
   assert.equal((await (await off.call('GET', '/api/desktop/d1/state', APPROVER)).json()).handover, null);
+});
+
+test('a project call without write access proposes and dispatches nothing; with it the snapshot is the call\'s view', async (t) => {
+  const seen = [];
+  let running = null;
+  const s = await start(t, { extra: { projectCall: () => running, snapshot: async (view) => { seen.push(view); return { items: [] }; } } });
+  const ctx = { scope: 's1', call_id: 'c1', desktop_id: 'd1' };
+  await s.desktop.queue.enqueue({ name: 'desktop_scroll', args: { dy: 1 }, running: ctx, reason: 'no-session' });
+  await s.desktop.queue.enqueue({ name: 'propose_share', args: { url: `${HOST}/page` }, running: ctx, reason: 'share-approval' });
+  const [action, share] = s.desktop.queue.list('d1');
+  running = { writable: false, view: 'closed-view' };
+  const closed = "Changes aren't available for this project yet.";
+  for (const [path, body] of [['handover', grant], [`actions/${action.id}/approve`, { hash: action.hash }], [`share/${share.id}/approve`, { hash: share.hash }]]) {
+    const r = await s.call('POST', `/api/desktop/d1/${path}`, APPROVER, body);
+    assert.deepEqual([r.status, await r.json()], [409, { error: closed }], path);
+  }
+  const asked = await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
+  assert.deepEqual(await asked.json(), { text: closed });
+  assert.deepEqual(await s.desktop.request('take a screenshot', 'd1', { items: [] }), { text: closed });
+  assert.equal((await s.desktop.queue.approve(action.id, 'd1', action.hash, APPROVER)).status, 502); // dispatch refuses on its own too
+  assert.deepEqual([s.ran.length, s.shares.length, s.prompts.length, seen.length], [0, 0, 0, 0]);
+  assert.equal((await s.call('POST', `/api/desktop/d1/actions/${share.id}/reject`, APPROVER, { hash: share.hash })).status, 200);
+  running = { writable: true, view: 'own-view' };
+  await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
+  assert.deepEqual(seen, ['own-view']);
+  assert.equal(s.prompts.length, 1);
+});
+
+test('a desktop proposal is dropped when another project call starts while it is made', async (t) => {
+  let running = { writable: true };
+  const s = await start(t, { extra: { projectCall: () => running, brain: { propose: async () => { running = { writable: true }; return { action: 'desktop_screenshot', args: {} }; } } } });
+  assert.deepEqual(await s.desktop.request('take a screenshot', 'd1', { items: [] }), { text: "I can't do that." });
+  assert.equal(s.desktop.queue.list('d1').length, 0);
 });

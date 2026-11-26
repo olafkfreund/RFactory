@@ -35,9 +35,11 @@ function repositoryOf(card, repos) {
 }
 
 function inScope(card, repos, repositoryId) {
-  if (!card || card.deleted_at != null || repositoryOf(card, repos) !== repositoryId) return false;
+  if (!card || card.deleted_at != null) return false;
+  const id = repositoryOf(card, repos);
+  if (!(Array.isArray(repositoryId) ? repositoryId.includes(id) : id === repositoryId)) return false;
   const m = typeof card.issue_ref === 'string' ? REF.exec(card.issue_ref) : null;
-  const repo = repos.repositories.find((r) => r.id === repositoryId);
+  const repo = repos.repositories.find((r) => r.id === id);
   return !m || `${m[1]}/${m[2]}` === (repo?.intake_project ?? repo?.project);
 }
 
@@ -114,19 +116,21 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     const r = await call('cfactory_list_git_repositories', deadline, {}, signal);
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
-  // a failed or empty repository read is a source failure, never "every card is conflicting"
-  const hasRepo = (repos) => repos.repositories.some((r) => r.id === repositoryId);
   const sourceError = (error) => new Error(error?.message === 'source-timeout' ? 'source-timeout' : 'source-error');
+  function view(ids, legacy = false) {
+  const hasRepo = (repos) => ids.every((id) => repos.repositories.some((r) => r.id === id));
+  const missingRepo = () => new Error(legacy ? 'source-error' : 'source-error: repository-missing');
   async function scopedCards(deadline) {
     let repos, response;
     try { [repos, response] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]); }
     catch (error) { throw sourceError(error); }
-    if (!hasRepo(repos) || response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+    if (!hasRepo(repos)) throw missingRepo();
+    if (response.error || !Array.isArray(response.cards)) throw new Error('source-error');
     const cards = [];
     let conflicting = 0;
     for (const card of response.cards) {
-      if (inScope(card, repos, repositoryId)) cards.push(card);
-      else if (card && card.deleted_at == null && repositoryOf(card, repos) === repositoryId) conflicting++;
+      if (inScope(card, repos, ids)) cards.push(card);
+      else if (card && card.deleted_at == null && ids.includes(repositoryOf(card, repos))) conflicting++;
     }
     return { cards, conflicting };
   }
@@ -134,9 +138,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     try {
       const state = await call('cfactory_card_sync_state', deadline);
       if (state.error) return { state: 'unavailable', last_polled_at: null };
-      const entry = Array.isArray(state.repositories) && state.repositories.find((r) => r.repository_id === repositoryId);
-      if (entry && entry.stale === true) return { state: 'stale', last_polled_at: entry.last_polled_at ?? null };
-      if (entry && entry.stale === false && entry.last_polled_at != null) return { state: 'current', last_polled_at: entry.last_polled_at };
+      const entries = ids.map((id) => Array.isArray(state.repositories) && state.repositories.find((r) => r.repository_id === id));
+      const last_polled_at = entries.map((entry) => entry?.last_polled_at).filter(Boolean).sort()[0] ?? null;
+      if (entries.some((entry) => !entry || (entry.stale !== true && (entry.stale !== false || entry.last_polled_at == null)))) return { state: 'unavailable', last_polled_at: legacy ? null : last_polled_at };
+      if (entries.some((entry) => entry.stale === true)) return { state: 'stale', last_polled_at };
+      return { state: 'current', last_polled_at };
     } catch {}
     return { state: 'unavailable', last_polled_at: null };
   }
@@ -150,11 +156,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
   return {
     async start() {
       if (!c) await connect();
-      if (!(await repoList()).repositories.some((r) => r.id === repositoryId)) throw new Error('scope-unknown-repository');
+      if (!hasRepo(await repoList())) throw new Error(legacy ? 'scope-unknown-repository' : 'source-error: repository-missing');
     },
     // the owner/repo a card's issue must be in (inScope's rule); the lookup GitHub binding is checked against it
     async repositoryProject() {
-      const repo = (await repoList()).repositories.find((r) => r.id === repositoryId);
+      const repo = (await repoList()).repositories.find((r) => r.id === ids[0]);
       return repo?.intake_project ?? repo?.project;
     },
     async snapshot() {
@@ -174,34 +180,41 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
       let repos, card;
       try { [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]); }
       catch (error) { throw sourceError(error); }
-      if (!hasRepo(repos)) throw new Error('source-error');
-      if (card.error || !card.card_key || !inScope(card, repos, repositoryId)) return { found: false };
+      if (!hasRepo(repos)) throw missingRepo();
+      if (card.error || !card.card_key || !inScope(card, repos, ids)) return { found: false };
       const [discussion, sync] = await Promise.all([comments(card, deadline), freshness(deadline)]);
       return { found: true, card, discussion, freshness: sync };
     },
     async boardView() {
       if (typeof redactor?.logSafe !== 'function') throw new Error('board-redactor-required');
+      if (ids.length !== 1) throw new Error('board-requires-one-repository');
       const deadline = Date.now() + timeoutMs;
       const [repos, { cards }] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]);
-      return require('../share/board.js').projectBoard(cards, repos, repositoryId, repos.repositories.find((r) => r.id === repositoryId)?.project || '', redactor, new Date().toISOString());
+      if (!legacy && !hasRepo(repos)) throw missingRepo();
+      return require('../share/board.js').projectBoard(cards, repos, ids[0], repos.repositories.find((r) => r.id === ids[0])?.project || '', redactor, new Date().toISOString());
     },
     // Fresh read for the action path; read key only. Timeouts reject; an error payload gives { error }.
     async getCard(card_key) {
       const deadline = Date.now() + timeoutMs;
       const [repos, card] = await Promise.all([repoList(deadline), call('cfactory_get_card', deadline, { card_key })]);
+      if (!legacy && !hasRepo(repos)) throw missingRepo();
       if (card.error || !card.card_key) return { error: str(card.error) || 'unknown card' };
-      return { card, inRepository: repositoryOf(card, repos) === repositoryId };
+      const repositoryId = repositoryOf(card, repos);
+      const inRepository = inScope(card, repos, ids);
+      return legacy ? { card, inRepository: repositoryId === ids[0] } : { card: inRepository ? card : null, repositoryId, inRepository };
     },
     async lookupCards(signal) {
       const deadline = Date.now() + timeoutMs;
       const [repos, response] = await Promise.all([repoList(deadline, signal), call('cfactory_list_cards', deadline, {}, signal)]);
-      if (!hasRepo(repos) || response.error || !Array.isArray(response.cards)) throw new Error('source-error');
-      return response.cards.filter((card) => inScope(card, repos, repositoryId));
+      if (!hasRepo(repos)) throw missingRepo();
+      if (response.error || !Array.isArray(response.cards)) throw new Error('source-error');
+      return response.cards.filter((card) => inScope(card, repos, ids));
     },
     async lookupCard(card_key, signal) {
       const deadline = Date.now() + timeoutMs;
       const [repos, card] = await Promise.all([repoList(deadline, signal), call('cfactory_get_card', deadline, { card_key }, signal)]);
-      if (!hasRepo(repos) || card.error || !inScope(card, repos, repositoryId) || card.card_key !== card_key) throw new Error('card-out-of-scope');
+      if (!hasRepo(repos)) throw missingRepo();
+      if (card.error || !inScope(card, repos, ids) || card.card_key !== card_key) throw new Error('card-out-of-scope');
       return card;
     },
     async lookupComments(card_key, signal) {
@@ -216,7 +229,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     },
     // Investigation reads; read key only. Bodies are relayed as CFactory and AIFactory return them; an error payload gives { error }.
     // { repository_id, repo, default_branch, sha, test_command|null }
-    investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: repositoryId }),
+    investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: ids[0] }),
     // Hidden by CFactory while it drains.
     async investigateAvailable() {
       const { tools = [] } = await withClient((current) => current.listTools(), Date.now() + timeoutMs);
@@ -227,6 +240,41 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     // { entries: [{ seq, at, line }], cursor }
     investigationLogs: (card_key, run_id, after, limit = 200) => call('cfactory_investigation_logs', undefined, { card_key, run_id, after, limit }),
     investigationRecord: (card_key) => call('cfactory_investigation_recover', undefined, { card_key }),
+  };
+  }
+  const source = view([repositoryId], true);
+  const validProject = (p) => p && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.slug === 'string'
+    && Array.isArray(p.repository_ids) && p.repository_ids.every(Number.isInteger)
+    && Array.isArray(p.repo_paths) && p.repo_paths.every((path) => typeof path === 'string')
+    && (p.created_at === null || typeof p.created_at === 'string');
+  return {
+    ...source,
+    forRepositories(ids, { name } = {}) { return view([...ids]); },
+    // the tenant's full repository list, which a project's ids are joined against
+    // an error payload or a missing list is a failure, never "no repositories" (which would empty the picker quietly)
+    async listRepositories() {
+      let reply;
+      try { reply = await call('cfactory_list_git_repositories'); } catch { throw new Error('project-resolve-failed'); }
+      if (!reply || reply.error || !Array.isArray(reply.repositories)) throw new Error('project-resolve-failed');
+      return reply.repositories;
+    },
+    async listProjects() {
+      try {
+        const reply = await call('cfactory_list_projects');
+        const projects = Array.isArray(reply) ? reply : reply?.projects; // a bare list or { projects }
+        if (reply?.error || !Array.isArray(projects) || !projects.every(validProject) ||
+            new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error('malformed');
+        return projects;
+      } catch { throw new Error('project-resolve-failed'); }
+    },
+    async resolveProject(ref) {
+      try {
+        const reply = await call('cfactory_resolve_project', undefined, { ref });
+        if (reply?.error === 'unknown' || reply?.error === 'ambiguous') return { error: reply.error }; // the page shows these as 404
+        if (reply?.error || !validProject(reply?.project)) throw new Error('malformed');
+        return { project: reply.project };
+      } catch (error) { throw new Error('project-resolve-failed'); }
+    },
     close: () => (c && c.close ? c.close() : undefined),
   };
 }
