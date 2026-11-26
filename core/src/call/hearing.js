@@ -1,6 +1,7 @@
 'use strict';
 
-const WAKE = /(?:^[\s"'“‘(]*|[.!?]\s+)(?:(?:hey|hi|hello|okay|ok)(?:[,!.]+\s*|\s+))?(?<name>factor(?:y|ies)|r[ -]*factor(?:y|ies)|(?:our|are|art|or|ah)[ -]+factor(?:y|ies))\b(?![\'’])/gi;
+const WAKE = /(?:^[\s"'“‘(]*|[.!?…]\s+)(?:(?<greet>hey|hi|hello)(?:[,!.]+\s*|\s+)|(?:ok|okay)(?:[,!.]+\s*|\s+))?factor(?:y|ies)\b(?!['’]|-\w)/gi;
+const SEP = /^\s*(?:[,.!?:;…–—]|-+(?:\s|$))/;
 // a leave command must START the utterance and end it or a clause ("leave; give a standup" leaves,
 // "why did the build stop?" and "should we leave FCT-1 blocked?" are questions)
 const LEAVE = /^[\s,.:;-]*(?:please\s+)?(?:leave(?: the call)?|go away|goodbye|stop|you can go)(?:\s+(?:please|now|thanks|thank you))*\s*(?:[.!?;]|$)/i;
@@ -12,7 +13,7 @@ const SHARE = /^(?=[\s\S]*\b(?:board|screen)\b)[\s,.:;-]*(?:please[,\s]+)?(?:(?:
 const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
 
-// the bot's own caption labels (new and old names): its own speech never wakes it (#62)
+// keep old caption labels for rollback; the bot's own speech never wakes it (#62)
 const SELF_NAMES = Object.freeze(['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']);
 
 function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES }) {
@@ -52,14 +53,15 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
         let i = 0;
         while (match) {
           const next = wake.exec(block.text);
+          const accepted = match.groups.greet || SEP.test(block.text.slice(match.index + match[0].length));
           const addressed = block.text.slice(match.index + match[0].length, next?.index ?? block.text.length)
-            .replace(/^[\s,.:;!?-]+/, '').trim();
+            .replace(/^[\s,.:;!?…–—-]+/, '').trim();
           // punctuation-insensitive ("FCT-163" = "FCT 163"), so an edit to punctuation alone is the same request
           const n = addressed.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
           // a slot answers once: later text that extends it (word completion, punctuation, growth) is the same request
           // a slot keeps every request it answered, so restoring earlier wording replays nothing
           const history = block.slots[i] || (block.slots[i] = []);
-          if (addressed && n && !history.some((seen) => n.startsWith(seen) || seen.startsWith(n))) {
+          if (accepted && addressed && n && !history.some((seen) => n.startsWith(seen) || seen.startsWith(n))) {
             history.push(n);
             onAddressed({
               kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
