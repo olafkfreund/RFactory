@@ -119,3 +119,16 @@ In full:
   - "The factory pipeline is red." gets no answer;
   - "Hey Factory, what's blocked?" is answered;
   - "RFactory, what's blocked?" is answered (the alias).
+
+## Amendment (owner, 2026-11-26): share requests in natural words (#63)
+
+The owner asked the bot to share, and the request was answered as a question, because `SHARE` requires the word "board". Folded in here because it is the same file and the same rule work:
+
+- **`SHARE` in `core/src/call/hearing.js` becomes:**
+  `/^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:show|display|share|put up|bring up)\b(?=.*\b(?:board|screen)\b)/i`
+  So "share your screen", "share the screen", "can you share the screen", "show us the board", "bring up the board" and "put the board up" all count. "Show me what's blocked" stays a question.
+- **A share still shares the project board** (`web/shares.js`). It still needs an approver on the page, and its spoken refusals (sharing off, no desktop, already waiting) are unchanged.
+- **Ordering:** `SHARE` is still checked before the desktop rule in `web/call.js:393`. That rule treats an utterance starting with "share" as a desktop action, but a classified share skips it.
+- **Tests** (`core/test/hearing.test.js` share test):
+  - share: "share your screen", "share the screen", "can you share the screen", "please share your screen", "show us the board", "bring up the board";
+  - unchanged: "show me what's blocked" is a question, "move FCT-9 to done" an action, "run the standup" a standup, "leave the call" leave.
