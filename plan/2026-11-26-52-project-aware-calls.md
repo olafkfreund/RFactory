@@ -207,7 +207,7 @@ Both reviews of the first plan draft found that almost all of the risk sits in *
 9. **Deploy slice A in RFactory (lead; owner's OK; agent bus first):**
    - **a.** The owner promotes CFactory `dev` to `main` with PR A. Verify that `cfactory_list_projects` answers.
    - **b.** Pin the RFactory web image through factory-gitops: Argo CD, the digest, and the smoke check with **no** `projects` block (today's behaviour).
-   - **c.** Add `projects.allow` to `scope.cluster.json`: `5d78d4b9-35f9-4445-92c1-78f3ff60a494` (repositories 1 and 2), plus one other project the owner names, for the cross-project check. Push it with `bootstrap-secrets.sh`, then restart through the pod-template annotation.
+   - **c.** Add `projects.allow` to `scope.cluster.json`: `5d78d4b9-35f9-4445-92c1-78f3ff60a494` (repositories 1 and 2), plus one `e2e-…` test project (the owner's choice, 2026-11-26), for the cross-project check. The `e2e-*` repositories are cleaned up afterwards, in their own tracked task. It is not part of this plan, and every deletion is confirmed with the owner first. Push it with `bootstrap-secrets.sh`, then restart through the pod-template annotation.
    - **d.** Live check through RFactory's own page (step 11, first part).
 10. **CFactory PR B: the portal** (worktree from `origin/dev`; agy implements; **merge only after step 9 has passed**):
     - **`useDashboard.ts`** takes projects from `GET …/projects`, and routes `/p/<ref>` through `GET …/projects/resolve`. It uses the server's canonical slugs.
