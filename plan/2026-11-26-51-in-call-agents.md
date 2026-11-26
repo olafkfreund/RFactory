@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 51
 spec: spec/2026-11-26-51-in-call-agents.md
 coders:
