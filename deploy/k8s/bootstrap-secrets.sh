@@ -38,25 +38,43 @@ fi
 # #18: an absent RFACTORY_INVESTIGATIONS is off (the web app reads it that way too)
 investigations=$(env_of RFACTORY_INVESTIGATIONS) || investigations=
 investigations=${investigations:-off}
-if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ || ! $investigations =~ ^(on|off)$ ]]; then
-  echo "deploy/rfactory's RFACTORY_WRITES, RFACTORY_SHARES and RFACTORY_INVESTIGATIONS must be on or off" >&2; exit 2
+agents=$(env_of RFACTORY_AGENTS) || agents=
+agents=${agents:-off}
+if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ || ! $investigations =~ ^(on|off)$ || ! $agents =~ ^(on|off)$ ]]; then
+  echo "deploy/rfactory's RFACTORY_WRITES, RFACTORY_SHARES, RFACTORY_INVESTIGATIONS and RFACTORY_AGENTS must be on or off" >&2; exit 2
 fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-python3 - "$cfg" "$writes" "$shares" "$investigations" "$tmp" <<'PY'
+python3 - "$cfg" "$writes" "$shares" "$investigations" "$agents" "$tmp" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
-cfg, writes, shares, investigations, tmp = sys.argv[1:]
+cfg, writes, shares, investigations, agents, tmp = sys.argv[1:]
 try:
     scope = json.loads((pathlib.Path(cfg) / 'scope.cluster.json').read_text())
     if scope['writes_enabled'] is not (writes == 'on') or scope['shares_enabled'] is not (shares == 'on'):
         raise ValueError("scope's writes_enabled/shares_enabled disagree with deploy/rfactory")
     if scope.get('investigations_enabled', False) is not (investigations == 'on'):
         raise ValueError("scope's investigations_enabled disagrees with deploy/rfactory")
+    scope_agents = scope.get('agents')
+    if agents == 'on':
+        if not isinstance(scope_agents, list) or not scope_agents:
+            raise ValueError("scope's agents disagrees with deploy/rfactory")
+    elif scope_agents is not None:
+        raise ValueError("scope's agents disagrees with deploy/rfactory")
+    agent_names = []
+    for agent in scope_agents or []:
+        if not isinstance(agent, dict):
+            raise ValueError('invalid agent entry')
+        name = agent.get('name')
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9-]{1,32}', name) or name in agent_names:
+            raise ValueError('invalid agent name')
+        if agent.get('key_file') != f'/run/rfactory/keys/agent-{name}':
+            raise ValueError('invalid agent key_file')
+        agent_names.append(name)
     lines = (pathlib.Path(cfg) / 'roles.env').read_text().splitlines()
     if len(lines) != 3 or any(not line.startswith(name + '=') for line, name in zip(lines, ('ALLOWED', 'APPROVERS', 'ADMINS'))):
         raise ValueError('roles.env needs ALLOWED, APPROVERS, ADMINS in order')
@@ -71,12 +89,24 @@ except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueE
     sys.exit(2)
 for name, line in zip(('allowed-emails', 'approvers', 'admins'), lines):
     (pathlib.Path(tmp) / name).write_text(line.split('=', 1)[1])
+(pathlib.Path(tmp) / 'agents').write_text('\n'.join(agent_names))
 PY
+
+mapfile -t agent_names <"$tmp/agents"
+agent_key_names=()
+agent_key_args=()
+for name in "${agent_names[@]}"; do
+  f="agent-keys/$name"
+  [[ -f $cfg/$f ]] || { echo "missing $cfg/$f" >&2; exit 2; }
+  [[ $(stat -c %a "$cfg/$f") == 600 ]] || { echo "$cfg/$f must be mode 600" >&2; exit 2; }
+  agent_key_names+=("agent-$name")
+  agent_key_args+=("--from-file=agent-$name=$cfg/$f")
+done
 
 names=(rfactory-config rfactory-keys rfactory-stt-path oauth2-proxy-rfactory rfactory-runner-client)
 keys=(
   'scope.json allowed-emails approvers admins'
-  'cfactory-read-key cfactory-write-key'
+  "cfactory-read-key cfactory-write-key${agent_key_names[*]:+ ${agent_key_names[*]}}"
   'path'
   'client-secret cookie-secret'
   'client.crt client.key ca.crt'
@@ -111,7 +141,8 @@ write_secret rfactory-config \
   "--from-file=admins=$tmp/admins"
 write_secret rfactory-keys \
   "--from-file=cfactory-read-key=$cfg/cfactory-read-key" \
-  "--from-file=cfactory-write-key=$cfg/cfactory-write-key"
+  "--from-file=cfactory-write-key=$cfg/cfactory-write-key" \
+  "${agent_key_args[@]}"
 write_secret rfactory-stt-path "--from-file=path=$cfg/stt-path"
 write_secret oauth2-proxy-rfactory \
   "--from-file=client-secret=$cfg/keycloak-client-secret" \

@@ -12,7 +12,7 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 case " $* " in
   *' get deploy rfactory '*)
     [[ ${FAKE_NO_DEPLOY:-0} != 1 ]] || exit 1
-    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
+    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;; *RFACTORY_AGENTS*) printf '%s' "${FAKE_AGENTS:-}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
   *' get secret '*'jsonpath='*) echo 2026-01-02 ;;
   *' get secret '*) if [[ ${FAKE_EXISTING:-0} == 1 ]]; then echo secret/existing; fi ;;
   *' create secret generic '*)
@@ -52,7 +52,7 @@ fixture() {
 run() {
   local result=0
   bash "$here/bootstrap-secrets.sh" "$@" >"$root/output" 2>&1 || result=$?
-  if grep -Eq 'keycloak-value|certificate-value|0123456789abcdef|owner@example.test|admin@example.test' "$root/output"; then
+  if grep -Eq 'keycloak-value|certificate-value|0123456789abcdef|owner@example.test|admin@example.test|agent-key-value' "$root/output"; then
     echo 'secret value appeared in output' >&2
     exit 1
   fi
@@ -128,5 +128,34 @@ fixture
 FAKE_EXISTING=1 run --rotated --no-restart
 [[ $(grep -c "^annotated: rotation.factory.dev/rotated-at=$(date -u +%Y-%m-%d)$" "$FAKE_LOG") == 5 ]]
 if grep -q ' rollout restart\| apply ' "$FAKE_LOG"; then exit 1; fi
+
+agent_fixture() {
+  fixture
+  mkdir -p "$RFACTORY_CONFIG/agent-keys"
+  printf 'agent-key-value' >"$RFACTORY_CONFIG/agent-keys/claude-code"
+  chmod 600 "$RFACTORY_CONFIG/agent-keys/claude-code"
+  printf '{"writes_enabled":true,"shares_enabled":true,"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+  chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+}
+
+agent_fixture
+FAKE_AGENTS=on run --dry-run
+grep -q '^rfactory-keys: cfactory-read-key cfactory-write-key agent-claude-code$' "$root/output"
+
+agent_fixture
+FAKE_AGENTS=on run --no-restart
+grep -q -- "--from-file=agent-claude-code=$RFACTORY_CONFIG/agent-keys/claude-code" "$FAKE_LOG"
+
+agent_fixture; FAKE_AGENTS=off refused
+fixture; FAKE_AGENTS=on refused
+agent_fixture; chmod 644 "$RFACTORY_CONFIG/agent-keys/claude-code"; FAKE_AGENTS=on refused
+agent_fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/other","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_AGENTS=on refused
+agent_fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]},{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_AGENTS=on refused
 
 echo 'bootstrap-secrets tests passed'
