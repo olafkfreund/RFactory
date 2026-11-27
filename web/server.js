@@ -31,14 +31,6 @@ const HEADERS = {
 };
 const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
 
-// #52: the approval lists of a project without the default repository
-const EMPTY_LISTS = {
-  actions: { pending: [], history: [] },
-  shares: { pending: [], running: null, history: [] },
-  investigations: { pending: [], running: null, active: [], history: [] },
-};
-const CLOSED = "Changes aren't available for this project yet.";
-
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
   if (typeof link !== 'string' || link.length > 2048) return false;
@@ -91,14 +83,23 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
   const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
 
-  // #52: approve, reject and stop come from a project that may change things. The running call's frozen binding
+  // #52: an entry belongs to a project by its recorded project_id; an older entry has none and belongs to the project holding the default repository
+  const belongs = (entry, binding) => entry.project_id === undefined
+    ? binding.repositories.some((r) => r.id === scope.source.repository_id) : entry.project_id === binding.projectId;
+  const mine = (list, binding) => ({ ...list, ...Object.fromEntries(['pending', 'history', 'active'].filter((k) => k in list)
+    .map((k) => [k, list[k].filter((e) => belongs(e, binding))])), ...('running' in list ? { running: list.running && belongs(list.running, binding) ? list.running : null } : {}) });
+
+  // #52: approve, reject and stop act on an entry of the requested project only. The running call's frozen binding
   // answers for its own project, so a Stop does not depend on CFactory; any other is resolved afresh.
-  function decide(res, query, act) {
+  function decide(res, query, manager, entryId, act) {
     if (!allowed) return act();
     const id = query.get('project');
-    const running = call?.project?.id === id ? call.projectCall : null;
-    return Promise.resolve(running || bind(id)).then(({ writable }) => (writable ? act()
-      : json(res, 403, { error: 'project-read-only', text: CLOSED }))).catch(readFailed(res));
+    const running = call?.project?.id === id ? call.projectCall?.binding : null;
+    return Promise.resolve(running || bind(id)).then((binding) => {
+      const list = manager.list(true);
+      const entry = [...list.pending, ...(list.active || []), ...(list.running ? [list.running] : [])].find((e) => e.id === entryId);
+      return entry && !belongs(entry, binding) ? json(res, 409, { error: 'not-this-project' }) : act();
+    }).catch(readFailed(res));
   }
 
   // a link names a project by its canonical slug only: an id, alias or ambiguous name is unknown
@@ -109,7 +110,20 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     return describe(project, await source.listRepositories());
   }
 
+  const WORDS = { done: 'done', in_progress: 'in progress', blocked: 'blocked', left: 'left', unknown: 'unknown' };
+  async function githubStandup(view) {
+    let raw;
+    try { raw = await view.snapshot(); }
+    catch (error) { return [502, { error: sourceCode(error) }]; }
+    const counts = summarise(raw.items);
+    const summary = `Repository: ${Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ')}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
+    // titles, states and evidence are copied from GitHub: the whole reply is redacted
+    return [200, redactor.toModel({ items: raw.items, counts, unknown: raw.items.filter((i) => i.state === 'unknown'),
+      fetched_at: raw.fetched_at, newest_update: raw.newest_update, truncated: raw.truncated, summary, summary_error: null, destination: 'the server' })];
+  }
+
   async function standup(view) {
+    if (view.kind === 'github') return githubStandup(view);
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
@@ -128,6 +142,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .then((body) => json(res, 200, body), readFailed(res));
       return;
     }
+    if (source.kind === 'github' && req.method === 'GET' && /^\/api\/review(\/|$)/.test(url)) return json(res, 404, { error: 'not-found' });
     if (req.method === 'GET' && url === '/api/review') {
       readView(query).then((view) => reads.reviewProject(view)).then((body) => json(res, 200, body))
         .catch(readFailed(res));
@@ -142,7 +157,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed, ...(source.kind === 'github' ? { source: 'github' } : {}) });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -156,20 +171,19 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .finally(() => { busy = false; });
       return;
     }
-    // #52: a project sees the entries only when it holds the default repository, which every entry belongs to
-    const sendList = (kind, manager) => {
-      const reply = (writable) => json(res, 200, { ...(writable ? manager.list() : EMPTY_LISTS[kind]), can_approve: roles.has(email, 'approver') });
-      if (!allowed) return reply(true);
-      bind(query.get('project')).then((binding) => reply(binding.writable)).catch(readFailed(res));
+    const sendList = (manager) => {
+      const reply = (list) => json(res, 200, { ...list, can_approve: roles.has(email, 'approver') });
+      if (!allowed) return reply(manager.list());
+      bind(query.get('project')).then((binding) => reply(mine(manager.list(), binding))).catch(readFailed(res));
     };
-    if (actions && req.method === 'GET' && url === '/api/actions') return sendList('actions', actions);
+    if (actions && req.method === 'GET' && url === '/api/actions') return sendList(actions);
     const act = actions && req.method === 'POST' && /^\/api\/actions\/([\w-]{1,64})\/(approve|reject)$/.exec(url);
     if (act) {
       if (req.headers['x-rfactory-action'] !== '1') { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       let origin;
       try { origin = new URL(req.headers.origin).host; } catch { origin = null; }
       if (!origin || origin !== req.headers.host) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
-      readJson(req).then((body) => decide(res, query, () => {
+      readJson(req).then((body) => decide(res, query, actions, act[1], () => {
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
@@ -179,14 +193,14 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     // shares (#12) and investigations (#18) have the same routes and checks
     const approvals = { shares, investigations };
     const listed = req.method === 'GET' && /^\/api\/(shares|investigations)$/.exec(url);
-    if (listed && approvals[listed[1]]) return sendList(listed[1], approvals[listed[1]]);
+    if (listed && approvals[listed[1]]) return sendList(approvals[listed[1]]);
     const decision = req.method === 'POST' && /^\/api\/(shares|investigations)\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
     if (decision && approvals[decision[1]]) {
       const [, kind, id, verb, stop] = decision;
       const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      readJson(req).then((body) => decide(res, query, () => {
+      readJson(req).then((body) => decide(res, query, manager, stop ? String(body?.id ?? '') : id, () => {
         // Stop carries the id it was shown for; a share needs it only with projects, so no id there matches nothing
         if (stop) {
           return manager.stop(email, decision[1] === 'shares' ? (allowed ? String(body?.id ?? '') : undefined) : body?.id)
@@ -290,7 +304,7 @@ function refuseKeyEnv(env) {
 
 // The record exists when writes, shares, investigations, lookups or agents are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
-async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
+async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind }) {
   let actions = null, shares = null, investigations = null;
   if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.agents?.length) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
@@ -303,10 +317,10 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
   if (scope.writes_enabled) {
     const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
     const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
-    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true });
+    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true, rebind });
     await actions.recover();
     if (scope.investigations_enabled) {
-      investigations = require('./investigations.js').createInvestigationManager({ readSource: source, writer, brain, shares, record, redactor, scope, roles, enabled: true });
+      investigations = require('./investigations.js').createInvestigationManager({ readSource: source, writer, brain, shares, record, redactor, scope, roles, enabled: true, rebind });
       await investigations.recover();
     }
   }
@@ -315,7 +329,7 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
 
 // #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
 // The lookups read CFactory through their own bounded source; the app's source is untouched.
-async function composeLookups({ scope, key, redactor, token, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
+async function composeLookups({ scope, key, redactor, token, tokens = {}, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
   if (!scope.lookups_enabled) return null;
   const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
   await source.start();
@@ -333,8 +347,32 @@ async function composeLookups({ scope, key, redactor, token, createSource = requ
   const none = { tools: () => [], call: async () => ({ error: 'lookup-refused' }) };
   const own = (ctx) => ctx.lookups || (ctx.project?.bound ? none : lookups); // a project turn never falls back to the default repository
   const endpoint = createLookupEndpoint({ lookups: { tools: (ctx) => own(ctx).tools(ctx), call: (ctx, name, args) => own(ctx).call(ctx, name, args) } });
-  const lookupsFor = (ids) => createLookups({ source: source.forRepositories(ids),
-    github: ids.includes(scope.source.repository_id) ? github : null, redactor });
+  const lookupsFor = (binding) => {
+    const selected = [];
+    const candidates = binding.repositories.map((r) => {
+      const config = scope.projects?.allow.find((p) => p.id === binding.projectId)?.github_read?.find((g) => g.repository_id === r.id)
+        ?? (r.id === scope.source.repository_id && token ? scope.source.github_read : null);
+      return { repository: r, config };
+    });
+    const names = candidates.map(({ config, repository }) => config &&
+      `${config.owner}/${config.repo}`.toLowerCase() === repository.path.toLowerCase()
+      ? `${config.owner}/${config.repo}`.toLowerCase() : null);
+    for (const [i, { repository, config }] of candidates.entries()) {
+      if (!config) continue;
+      const name = names[i];
+      if (name !== repository.path.toLowerCase() || names.filter((n) => n === name).length > 1 ||
+        !(repository.id === scope.source.repository_id && token ? token : tokens[repository.id])) {
+        console.error(`rfactory-web: github-binding-unmatched ${repository.id}`);
+        continue;
+      }
+      selected.push({ repositoryId: repository.id, owner: config.owner, repo: config.repo });
+    }
+    const clients = new Map(selected.map((g) => [`${g.owner}/${g.repo}`.toLowerCase(),
+      g.repositoryId === scope.source.repository_id && token ? github
+        : require('@rfactory/core/src/sources/github-read.js').createGithubRead({ token: tokens[g.repositoryId] })]));
+    return { lookups: createLookups({ source: source.forRepositories(binding.repositories.map((r) => r.id)),
+      github: selected.length > 1 ? clients : clients.values().next().value ?? null, redactor }), githubs: selected };
+  };
   const lookupUrl = await endpoint.start();
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
@@ -352,6 +390,15 @@ async function composeAgents({ scope, agents, key, redactor, call, slot, actions
   return { endpoint, url, source, close: async () => { await endpoint.close(); await source.close?.(); } };
 }
 
+// The GitHub scope reads one repository and does nothing else: every CFactory feature is refused, not skipped.
+async function composeStandalone({ scope, token, env, createSource = require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
+  if (scope.shares_enabled || scope.lookups_enabled || env.RFACTORY_CALLS === '1' || env.RFACTORY_DESKTOP === '1') throw new Error('unsupported-scope');
+  if (!token) throw new Error('github-token-missing');
+  const source = createSource({ scope, bin: env.GITHUB_MCP_SERVER_BIN, token });
+  await source.start();
+  return source;
+}
+
 async function main() {
   refuseKeyEnv(process.env);
   const roles = require('@rfactory/core/src/roles.js').loadRoles(process.env);
@@ -363,14 +410,21 @@ async function main() {
   const extras = {};
   const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
+  if (scope.source.kind === 'github') {
+    const source = await composeStandalone({ scope, token: extras.githubToken, env: process.env });
+    return createApp({ source, scope, redactor: makeRedactor(secrets), roles, commit: process.env.RFACTORY_COMMIT || '' })
+      .listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  }
   if (scope.source.kind !== 'cfactory' || scope.brain.kind !== 'claude-cli') throw new Error('unsupported-scope');
   const redactor = makeRedactor(secrets);
   const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id, redactor });
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
-  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken });
+  const reads = createReads({ scope });
+  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
+    rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
+  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
@@ -405,7 +459,7 @@ async function main() {
   const commit = process.env.RFACTORY_COMMIT || '';
   const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
   console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
-  createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
@@ -418,4 +472,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, composeAgents, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };

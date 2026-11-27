@@ -22,10 +22,16 @@ function setup(options = {}) {
   const writer = { apply: async (...args) => { calls.push(args); return options.result || { outcome: 'done (started)', detail: 'Work started.', card }; } };
   const manager = createActionManager({ readSource, writer, brain, record, redactor, clock,
     scope: { writes_enabled: true, source: { repository_id: 1 } }, roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,admin@example.com', RFACTORY_APPROVERS: 'owner@example.com', RFACTORY_ADMINS: 'admin@example.com' }),
-    enabled: options.enabled ?? true });
+    enabled: options.enabled ?? true, rebind: options.rebind });
   manager.subscribe((event) => events.push(event));
   return { manager, card, clock, entries, events, calls, record, writer, readSource };
 }
+
+const binding = { projectId: 'project-a', name: 'Project A', repositories: [
+  { id: 1, path: 'owner/first' }, { id: 2, path: 'owner/second' },
+] };
+const projectView = (f, repositoryId = 1) => ({ snapshot: f.readSource.snapshot,
+  getCard: async () => ({ card: f.card, repositoryId, inRepository: true }) });
 
 async function proposal(f) {
   const response = await f.manager.request('move FCT-9', 'Someone');
@@ -33,6 +39,95 @@ async function proposal(f) {
   return response.action;
 }
 const approve = (f, action, email = 'owner@example.com', hash = action.hash) => f.manager.approve(action.id, email, hash);
+
+test('project create asks for a repository, then hashes and writes the named target', async () => {
+  let selected;
+  const f = setup({ propose: async (_snapshot, options) => {
+    assert.deepEqual(options.repositories, binding.repositories);
+    return { action: 'create_card', args: { title: 'New', ...(selected ? { repository_id: selected } : {}) } };
+  }, rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+  assert.equal((await f.manager.request('create New', 'Caller')).text, 'Which repository: first or second?');
+  assert.deepEqual(f.manager.list().pending, []);
+  selected = 2;
+  const action = (await f.manager.request('create New in second', 'Caller')).action;
+  assert.equal(action.project_id, binding.projectId);
+  assert.equal(action.repository_id, 2);
+  assert.equal(action.repository_path, 'owner/second');
+  assert.equal(action.args.repository_id, 2);
+  assert.match(f.manager.list().pending[0].description, /in owner\/second\.$/);
+  const { hashPayload } = require('@rfactory/core/src/actions/allowlist.js');
+  const { hash, ...payload } = action;
+  assert.equal(hash, hashPayload(payload));
+  assert.notEqual(hash, hashPayload({ ...payload, repository_id: 1 }));
+  assert.equal((await approve(f, action, 'owner@example.com', hashPayload({ ...payload, repository_id: 1 }))).status, 409);
+  assert.equal((await approve(f, action)).status, 200);
+  assert.equal(f.calls[0][1].repository_id, 2);
+});
+
+test('project card target comes from the view and cannot be outside the binding', async () => {
+  const f = setup({ rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, 1) });
+  const action = await proposal(f);
+  assert.equal(action.repository_id, 1);
+  assert.equal(action.repository_path, 'owner/first');
+  assert.equal((await approve(f, action)).status, 200);
+  const other = setup({ rebind: async () => binding });
+  await other.manager.recover(); await other.manager.startCall(1, { binding, view: projectView(other, 3) });
+  assert.equal((await other.manager.request('move FCT-9', 'Caller')).status, 400);
+  assert.deepEqual(other.manager.list().pending, []);
+});
+
+test('project approval refuses lost authority or repository, and expires a moved card', async () => {
+  for (const rebind of [async () => { throw new Error('gone'); }, async () => ({ ...binding, repositories: binding.repositories.slice(1) })]) {
+    const f = setup({ rebind });
+    await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+    const action = await proposal(f);
+    assert.equal((await approve(f, action)).status, 409);
+    assert.equal(f.entries.at(-1).state, 'refused');
+    assert.equal(f.calls.length, 0);
+  }
+  const moved = setup({ rebind: async () => binding });
+  await moved.manager.recover();
+  const view = projectView(moved);
+  await moved.manager.startCall(1, { binding, view });
+  const action = await proposal(moved);
+  view.getCard = async () => ({ card: { ...moved.card, repository_id: 2 }, repositoryId: 2, inRepository: true });
+  assert.equal((await approve(moved, action)).status, 409);
+  assert.equal(moved.entries.at(-1).state, 'expired');
+  assert.equal(moved.calls.length, 0);
+});
+
+test('project proposals expire across calls; recovery keeps target fields', async () => {
+  const f = setup({ rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+  const action = await proposal(f);
+  await f.manager.endCall();
+  await f.manager.startCall(2, { binding: { ...binding, projectId: 'project-b' }, view: projectView(f) });
+  assert.equal((await approve(f, action)).status, 409);
+  const recovery = setup({ unfinished: [{ id: 'old', state: 'executing', project_id: 'project-a', repository_id: 1 }] });
+  await recovery.manager.recover();
+  assert.deepEqual(recovery.entries[0], { id: 'old', state: 'uncertain', project_id: 'project-a', repository_id: 1,
+    detail: 'The result could not be confirmed.' });
+});
+
+test('expired pending actions remain available for project ownership checks', async () => {
+  const f = setup({ rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+  const action = await proposal(f);
+  f.clock.t = Date.parse(action.expires_at);
+  assert.deepEqual(f.manager.list().pending, []);
+  assert.equal(f.manager.list(true).pending[0].id, action.id);
+});
+
+test('one-repository project refuses a foreign create target instead of rewriting it', async () => {
+  const only = { ...binding, repositories: binding.repositories.slice(0, 1) };
+  const f = setup({ propose: async () => ({ action: 'create_card', args: { title: 'New', repository_id: 2 } }),
+    rebind: async () => only });
+  await f.manager.recover(); await f.manager.startCall(1, { binding: only, view: projectView(f) });
+  assert.equal((await f.manager.request('create New', 'Caller')).status, 400);
+  assert.deepEqual(f.manager.list().pending, []);
+});
 
 test('sixth pending action is declined', async () => {
   const f = setup(); await f.manager.recover(); f.manager.startCall(1);

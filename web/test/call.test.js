@@ -1396,7 +1396,7 @@ test('a brain that ignores the signal cannot hang the queue', async () => {
 });
 
 // #52: a call bound to one project
-const bindingFor = (name, ids, writable) => ({ projectId: name.toLowerCase(), name, writable,
+const bindingFor = (name, ids) => ({ projectId: name.toLowerCase(), name,
   repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
 const viewFor = (title) => ({ snapshot: async () => ({ items: [{ id: 'FCT-1', state: 'blocked', title }], fetched_at: 'today', newest_update: 'today' }),
   standupData: async () => ({ cards: [{ card_key: 'FCT-1', title, status: 'ready' }], conflicting: 0,
@@ -1416,7 +1416,7 @@ test('a project call greets by name, keeps its project event, reads its own view
   const f = setup({ sourceSnapshot: async () => { throw new Error('default-source-read'); },
     brainTurn: async (snapshot) => { turns.push(snapshot.items[0].title); return { text: 'Unknown.' }; } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [1, 2], true), view: viewFor('Alpha card') });
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1, 2]), view: viewFor('Alpha card') });
     assert.deepEqual([f.manager.generation, f.manager.project], [1, { id: 'alpha', name: 'Alpha' }]);
     assert.deepEqual(f.manager.current().find((e) => e.type === 'project'),
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
@@ -1429,7 +1429,7 @@ test('a project call greets by name, keeps its project event, reads its own view
     await endCall(f);
     assert.deepEqual(f.events.slice(-2), [{ type: 'state', state: 'stopped' }, { type: 'ended' }]);
     assert.equal(f.manager.project, null);
-    await f.manager.start('link', { binding: bindingFor('Beta', [3], false), view: viewFor('Beta card') });
+    await f.manager.start('link', { binding: bindingFor('Beta', [3]), view: viewFor('Beta card') });
     assert.equal(f.manager.current().find((e) => e.type === 'project').name, 'Beta');
     assert.doesNotMatch(JSON.stringify(f.manager.current()), /Alpha/);
     await endCall(f);
@@ -1448,7 +1448,7 @@ test('a project call drops a manager event from another call: not delivered, rep
   const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
   const f = setup({ extra: { actions, shares, investigations } });
   try {
-    const options = { binding: bindingFor('Alpha', [2], true), view: viewFor('card') };
+    const options = { binding: bindingFor('Alpha', [2]), view: viewFor('card') };
     await f.manager.start('link', options);
     await endCall(f);
     await f.manager.start('link', options);
@@ -1472,35 +1472,39 @@ test('a project call drops a manager event from another call: not delivered, rep
   } finally { f.restore(); }
 });
 
-test('writes: a project without the default repository answers an action as a question', async () => {
-  const actions = fakeManager(), turns = [];
-  const f = setup({ brainTurn: async (snapshot, options) => { turns.push(options.question); return { text: 'Unknown.' }; }, extra: { actions } });
+test('writes: a project without the default repository takes an action like any other', async () => {
+  const actions = fakeManager();
+  const f = setup({ extra: { actions } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [3], false), view: viewFor('card') });
-    await f.heard('a', 'Factory, build status of FCT-1?');
+    const options = { binding: bindingFor('Alpha', [3]), view: viewFor('card') };
+    await f.manager.start('link', options);
+    await f.heard('a', 'Factory, create a card called Login');
     await speakAll(f);
-    assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
-    assert.equal(turns.length, 1);
-    assert.equal(actions.requests.length, 0);
+    assert.equal(actions.requests.length, 1);
+    assert.deepEqual(actions.started, [[1, options]]);
     assert.doesNotMatch(said(f).join(' '), /Changes aren't available/);
     await endCall(f);
   } finally { f.restore(); }
 });
 
-test('writes: a project without the default repository refuses investigations, shares and desktop requests; with it they work', async () => {
-  for (const writable of [false, true]) {
+test('writes: every project proposes actions, shares, investigations and desktop requests for its own call', async () => {
+  for (const ids of [[2], [3]]) {
     const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager(), desktop = fakeManager();
     const f = setup({ desktop, extra: { actions, shares, investigations } });
     try {
-      await f.manager.start('link', { binding: bindingFor('Alpha', [writable ? 2 : 3], writable), view: viewFor('card') });
+      const options = { binding: bindingFor('Alpha', ids), view: viewFor('card') };
+      await f.manager.start('link', options);
       for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure'], ['d', 'open the settings page']]) {
         await f.heard(id, `Factory, ${text}`);
         await speakAll(f);
       }
-      const managers = [actions, shares, investigations];
-      assert.deepEqual([...managers, desktop].map((m) => m.requests.length), writable ? [1, 1, 1, 1] : [0, 0, 0, 0]);
-      assert.deepEqual(managers.map((m) => m.started.length), writable ? [1, 1, 1] : [0, 0, 0]);
-      assert.equal(said(f).filter((s) => s === "Changes aren't available for this project yet.").length, writable ? 0 : 3); // share, investigation, desktop; the card request became a question
+      assert.deepEqual([actions, shares, investigations, desktop].map((m) => m.requests.length), [1, 1, 1, 1]);
+      assert.deepEqual(actions.started, [[1, options]]);
+      assert.deepEqual(investigations.started, [[1, options]]);
+      assert.equal(shares.started[0][1].binding, options.binding);
+      assert.equal(shares.started[0][1].view, options.view);
+      assert.equal(f.manager.projectCall.binding, options.binding);
+      assert.doesNotMatch(said(f).join(' '), /Changes aren't available/);
       await endCall(f);
     } finally { f.restore(); }
   }
@@ -1510,21 +1514,54 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
   const made = [], contexts = [], records = [];
   const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
   const f = setup({ brainTurn: async () => ({ text: 'Unknown.', cost: 0 }), extra: { lookups: {}, endpoint, lookupUrl: 'url',
-    lookupsFor: (ids) => { const own = { ids }; made.push(own); return own; }, project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
+    lookupsFor: (binding) => { const own = { ids: binding.repositories.map((r) => r.id) }; made.push(own);
+      return { lookups: own, githubs: own.ids.includes(2) ? [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }] : [] }; },
+    project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
     scope: { lookups_enabled: true }, record: { append: async (line) => { records.push(line); } } } });
   try {
-    for (const [n, binding] of [bindingFor('Alpha', [1, 2], true), bindingFor('Beta', [3], false)].entries()) {
+    for (const [n, binding] of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])].entries()) {
       await f.manager.start('link', { binding, view: viewFor('card') });
       await f.heard(`q${n}`, 'Factory, what is blocked?');
       await speakAll(f);
-      assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.writable ? 'Olaf/Demo' : null);
+      assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.repositories.some((r) => r.id === 2) ? 'Olaf/Demo' : null);
       await endCall(f);
     }
     assert.deepEqual(made.map((m) => m.ids), [[1, 2], [3]]);
     assert.deepEqual(contexts.map((c) => c.lookups), made);
     assert.deepEqual(contexts.map((c) => c.tools.includes('read_file')), [true, false]);
-    assert.deepEqual(contexts.map((c) => c.project.github), [{ owner: 'Olaf', repo: 'Demo' }, null]);
+    assert.deepEqual(contexts.map((c) => c.project.github), [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }, null]);
     assert.deepEqual(records.map((r) => [r.project_id, r.repository_ids]), [['alpha', [1, 2]], ['beta', [3]]]);
+  } finally { f.restore(); }
+});
+
+test('two bound repositories offer GitHub tools and keep same-number and same-path sources distinct across calls', async () => {
+  const contexts = [], made = [], rows = [];
+  const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
+  const f = setup({ brainTurn: async () => {
+    const reads = contexts.at(-1).reads;
+    for (const repo of ['Owner/One', 'Owner/Two']) for (const [kind, ref] of [['issue', '7'], ['file', 'src/a.js']])
+      reads.push({ tool: kind, ok: true, kind, ref, repo, title: ref });
+    return { text: 'Unknown.', cost: 0 };
+  }, extra: { lookups: {}, endpoint, lookupUrl: 'url', scope: { lookups_enabled: true },
+    project: { repositoryId: 9, github: null }, record: { append: async (row) => rows.push(row) },
+    lookupsFor: (binding) => { const result = { lookups: { call: () => {} }, githubs: binding.projectId === 'alpha'
+      ? [{ repositoryId: 1, owner: 'Owner', repo: 'One' }, { repositoryId: 2, owner: 'Owner', repo: 'Two' }] : [] };
+    made.push(result); return result; } } });
+  try {
+    for (const binding of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])]) {
+      await f.manager.start('link', { binding, view: viewFor('card') });
+      await f.heard(`q${made.length}`, 'Factory, what happened?'); await speakAll(f);
+      const limits = f.manager.current().find((e) => e.type === 'limits');
+      assert.deepEqual(limits.githubs, binding.projectId === 'alpha' ? ['Owner/One', 'Owner/Two'] : []);
+      assert.equal(limits.github, null);
+      const answer = f.events.filter((e) => e.type === 'answer').at(-1);
+      assert.equal(answer.sources.length, 4);
+      assert.deepEqual(answer.sources.map((s) => s.repo), ['Owner/One', 'Owner/One', 'Owner/Two', 'Owner/Two']);
+      await endCall(f);
+    }
+    assert.notEqual(made[0].lookups, made[1].lookups);
+    assert.deepEqual(contexts.map((c) => c.tools.includes('get_issue')), [true, false]);
+    assert.equal(rows.length, 2);
   } finally { f.restore(); }
 });
 
@@ -1592,7 +1629,7 @@ test('a project standup is read from the call\'s own view', async () => {
   const view = viewFor('Own card');
   const f = setup({ sourceStandup: async () => { throw new Error('default-source-read'); } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [1], false), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
     await f.heard('s', 'Factory, standup');
     await speakAll(f);
     assert.deepEqual(read, ['view']);
@@ -1601,14 +1638,14 @@ test('a project standup is read from the call\'s own view', async () => {
   } finally { f.restore(); }
 });
 
-test('a writable project binding reaches all three proposal managers', async () => {
+test('the call project id reaches all three proposal managers', async () => {
   const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
   const f = setup({ extra: { actions, shares, investigations } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [1], true), view: viewFor('card') });
-    assert.deepEqual(actions.started, [[1, { projectId: 'alpha' }]]);
-    assert.deepEqual(investigations.started, [[1, { projectId: 'alpha' }]]);
-    assert.equal(shares.started[0][1].projectId, 'alpha');
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: viewFor('card') });
+    for (const manager of [actions, investigations, shares]) {
+      assert.equal(manager.started[0][1].binding.projectId, 'alpha');
+    }
     await endCall(f);
   } finally { f.restore(); }
 });

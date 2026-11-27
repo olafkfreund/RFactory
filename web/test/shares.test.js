@@ -69,6 +69,13 @@ test('proposal expires at ten minutes; a running share stops at thirty minutes',
   assert.equal(f.entries.at(-1).reason, 'lifetime');
 });
 
+test('expired pending shares remain available for project ownership checks', async () => {
+  const f = setup(); const p = await ready(f);
+  f.clock.t = Date.parse(p.expires_at);
+  assert.deepEqual(f.manager.list().pending, []);
+  assert.equal(f.manager.list(true).pending[0].id, p.id);
+});
+
 test('concurrent approvals claim one share before awaiting work', async () => {
   const gate = deferred(); const f = setup({ board: () => gate.promise }); const p = await ready(f);
   const first = approve(f, p), second = approve(f, p);
@@ -336,4 +343,52 @@ test('share recovery keeps the project of a starting line', async () => {
   await f.manager.recover();
   assert.equal(f.entries[0].project_id, 'repo:2');
   assert.equal(f.manager.list().history[0].project_id, 'repo:2');
+});
+
+const binding = { projectId: 'p-a', name: 'tfactory-testing', repositories: [{ id: 1, path: 'o/one' }, { id: 2, path: 'o/two' }] };
+const projectView = (marker) => ({ boardView: async () => ({ project: 'tfactory-testing', at: '2026-11-17T12:00:00.000Z', cards: [{ title: marker }] }) });
+const callOf = (f, generation, marker) => f.manager.startCall(generation, { desktop: f.desktop, binding, view: projectView(marker) });
+
+test('a project board share draws from its call view and carries the project target', async () => {
+  const f = setup(); await f.manager.recover(); await callOf(f, 1, 'view-a');
+  const p = await proposed(f);
+  assert.equal(p.project, 'tfactory-testing');
+  assert.equal(p.project_id, 'p-a');
+  assert.deepEqual(p.repository_ids, [1, 2]);
+  assert.match(f.entries.at(-1).approval_text, /board of tfactory-testing/);
+  assert.equal((await approve(f, p)).status, 200);
+  await until(() => f.entries.at(-1).state === 'running');
+  assert.equal(f.calls.find((c) => c[0] === 'openView')[3].cards[0].title, 'view-a');
+  assert.deepEqual(f.entries.at(-1).repository_ids, [1, 2]);
+});
+
+test('a share proposed in call A cannot be approved in call B', async () => {
+  const f = setup(); await f.manager.recover(); await callOf(f, 1, 'view-a');
+  const p = await proposed(f);
+  await callOf(f, 2, 'view-b');
+  assert.equal((await approve(f, p)).status, 409);
+  assert.equal(f.calls.some((c) => c[0] === 'openView'), false);
+  assert.equal(f.entries.at(-1).state, 'expired');
+});
+
+test('openFor refuses another generation and records the target of a log share', async () => {
+  const f = setup(); await f.manager.recover(); await callOf(f, 2, 'x');
+  const provider = async () => ({ repo: 'o/two', sha: 'a'.repeat(40), at: '2026-11-17T12:00:00.000Z', lines: ['ok'] });
+  assert.equal((await f.manager.openFor('owner@example.com', { view: 'log', provider, generation: 1, target: { project_id: 'p-a', repository_id: 2 } })).status, 409);
+  assert.equal(f.entries.length, 0);
+  assert.equal((await f.manager.openFor('owner@example.com', { view: 'log', provider, generation: 2, target: { project_id: 'p-a', repository_id: 2 } })).status, 200);
+  await until(() => f.entries.at(-1).state === 'running');
+  for (const row of f.entries) assert.deepEqual([row.project_id, row.repository_id], ['p-a', 2]);
+  assert.deepEqual([f.manager.list().running.project_id, f.manager.list().running.repository_id], ['p-a', 2]);
+});
+
+test('a project share interrupted by a restart is recorded stopped with its target fields', async () => {
+  const f = setup({ unfinishedShares: [{ id: 'old', kind: 'share', state: 'running', project_id: 'p-a', repository_ids: [1, 2] }] });
+  await f.manager.recover();
+  assert.deepEqual(f.entries.at(-1), { id: 'old', kind: 'share', state: 'stopped', reason: 'restart', project_id: 'p-a', repository_ids: [1, 2] });
+});
+
+test('without a binding the share payload has no target keys', async () => {
+  const f = setup(); const p = await ready(f);
+  assert.equal(Object.hasOwn(p, 'project_id') || Object.hasOwn(p, 'repository_ids'), false);
 });

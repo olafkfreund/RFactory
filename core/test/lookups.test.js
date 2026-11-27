@@ -259,3 +259,55 @@ test('a project call gets issue and PR numbers only from the GitHub-bound reposi
   const described = lookup(source(), {}).tools(ctx(bound));
   assert.ok(described.filter((x) => GITHUB.includes(x.name)).every((x) => x.description.endsWith('in the GitHub repository Bound/Demo')));
 });
+
+test('two GitHub bindings require a known repo, use separate readers and commit pins, and label reads', async () => {
+  const calls = [];
+  const bindings = [{ repositoryId: 1, owner: 'Owner', repo: 'One' }, { repositoryId: 2, owner: 'Owner', repo: 'Two' }];
+  const clients = new Map(bindings.map((b) => [`${b.owner}/${b.repo}`.toLowerCase(), {
+    getIssue: async (context, number) => { calls.push([b.repositoryId, context.commit, context.signal, number]);
+      context.commit = `sha-${b.repositoryId}`; return { title: `issue ${number}`, state: 'open' }; },
+    issueComments: async (context, number) => { calls.push([b.repositoryId, context.commit, context.signal, number]); return []; },
+    prDiff: async (context, number) => { calls.push([b.repositoryId, context.commit, context.signal, number]); return []; },
+    readFile: async (context, path) => { calls.push([b.repositoryId, context.commit, context.signal, path]); return { path, content: 'ok' }; },
+  }]));
+  const l = lookup(source(), clients);
+  const c = ctx(); c.project = { bound: true, github: null, githubs: bindings }; c.tools = [...FACTORY, ...GITHUB];
+  const tools = l.tools(c); assert.equal(tools.length, FACTORY.length + GITHUB.length);
+  for (const tool of tools.filter((x) => GITHUB.includes(x.name))) {
+    assert.deepEqual(tool.inputSchema.properties.repo.enum, ['owner/one', 'owner/two']);
+    assert.ok(tool.inputSchema.required.includes('repo'));
+  }
+  for (const args of [{ number: 7 }, { number: 7, repo: 'other/repo' }]) {
+    assert.deepEqual(await l.call(c, 'get_issue', args), { error: 'lookup-refused' });
+  }
+  assert.equal(c.reads.every((r) => !r.ok && r.ref === ''), true);
+  for (const repo of ['owner/one', 'owner/two']) {
+    await l.call(c, 'get_issue', { number: 7, repo });
+    await l.call(c, 'issue_comments', { number: 7, repo });
+    await l.call(c, 'pr_diff', { number: 7, repo });
+    await l.call(c, 'read_file', { path: 'src/a.js', repo });
+  }
+  assert.deepEqual(calls.map(([id, pin, signal]) => [id, pin, signal === c.signal]),
+    [[1, null, true], [1, 'sha-1', true], [1, 'sha-1', true], [1, 'sha-1', true],
+      [2, null, true], [2, 'sha-2', true], [2, 'sha-2', true], [2, 'sha-2', true]]);
+  assert.deepEqual(c.reads.filter((r) => r.ok).map((r) => r.repo),
+    ['Owner/One', 'Owner/One', 'Owner/One', 'Owner/One', 'Owner/Two', 'Owner/Two', 'Owner/Two', 'Owner/Two']);
+  assert.deepEqual(c.reads.filter((r) => r.evidence).map((r) => r.evidence.id), ['Owner/One#7', 'Owner/Two#7']);
+});
+
+test('get_card numbers include the repository only with multiple bound repositories', async () => {
+  const bindings = [{ owner: 'Owner', repo: 'One' }, { owner: 'Owner', repo: 'Two' }];
+  const c = ctx(); c.project = { bound: true, github: null, githubs: bindings };
+  const github = new Map([['owner/one', { getIssue: async () => ({ title: 'issue', state: 'open' }) }],
+    ['owner/two', { getIssue: async () => ({ title: 'issue', state: 'open' }) }]]);
+  const l = lookup(source({ ...card, issue_ref: 'Owner/Two#7', pr_ref: 'Owner/One#8' }), github);
+  c.tools = [...FACTORY, ...GITHUB];
+  const result = await l.call(c, 'get_card', { card_key: 'PROJ-1' });
+  assert.deepEqual(result.result.issue, { number: 7, state: undefined, repo: 'owner/two' });
+  assert.deepEqual(result.result.pr, { number: 8, state: undefined, repo: 'owner/one' });
+  assert.equal((await l.call(c, 'get_issue', { number: result.result.issue.number, repo: result.result.issue.repo })).result.title.text, 'issue');
+  assert.equal((await l.call(c, 'get_issue', { number: result.result.pr.number, repo: result.result.pr.repo })).result.title.text, 'issue');
+  const single = ctx(bindings[0]); single.project.bound = true;
+  assert.equal(Object.hasOwn((await lookup(source({ ...card, issue_ref: 'Owner/One#7' }), {}).call(single, 'get_card',
+    { card_key: 'PROJ-1' })).result.issue, 'repo'), false);
+});
