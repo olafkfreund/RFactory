@@ -334,7 +334,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   async function requestAction(c, item, generation) {
     let text;
     try {
-      const result = item.desktop ? await desktop.request(item.text, c.child.desktop_id, await snapshot(c))
+      const result = item.desktop ? await desktop.request(item.text, c.child.desktop_id, await snapshot(c), c.projectCall) // this call, so a later call cannot take the proposal
         : await actions.request(item.text, item.speaker);
       if (result.question) return answer(c, { ...item, kind: 'question' }, generation);
       text = result.text;

@@ -328,3 +328,7 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
 ## Approval (2026-11-27)
 
 The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (including the recovery note: no per-repository recovery view, because those reads are by card and run) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
+
+## Deviations
+
+1. Step 7 (i52 manager): the spoken desktop path in `web/call.js` (l.337) also passes `c.projectCall` to `desktop.request`, the same fix as the route: the plan named only the route. Without a `projects` block both sides are `null`. No test of its own; the existing "dropped when another project call starts" test covers the comparison.
