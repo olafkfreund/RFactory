@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 53
 author: olafkfreund
 ---
@@ -55,9 +55,11 @@ What the cluster can enforce:
   the code inside the pod does.
 - The list is in git (factory-gitops) and reviewed like any other change.
 - In-cluster targets are named exactly: DNS, Keycloak `:8080`, the runner API `:8443`.
-- Public targets are limited by host name, not by "any public address": Anthropic, the CFactory MCP name, and
-  `api.github.com` when GitHub reads are on.
-- A refused connection is visible to the operator: which host, and when.
+- Public targets (Anthropic, the CFactory MCP name, and `api.github.com` when GitHub reads are on) are limited
+  in this slice to "any public IPv4 address on TCP 443". Private, link-local and cluster ranges are refused
+  unless named above. Limiting them by host name is a later slice (decision 1).
+- A refused connection shows as the app's own error. Host-level refusal logs come with the later slice
+  (decision 7).
 - Everything that works today still works: sign-in, standup, lookups, writes, shares, investigations, desktops,
   calls, and the Claude credential refresh.
 - A repeatable check proves both sides: an allowed host connects, a host off the list does not.
@@ -66,8 +68,8 @@ What the cluster can enforce:
 
 - **Owner / operator:** approves the list; sees refusals; one more thing to maintain when a host is added.
 - **Users of RFactory:** no visible change if the list is right; a failed sign-in, answer or call if it is wrong.
-- **factory-gitops:** `apps/rfactory/manifests/manifests.yaml` gains the egress rules, and maybe a proxy.
-- **RFactory code, only if a proxy is chosen:**
+- **factory-gitops:** `apps/rfactory/manifests/manifests.yaml` gains the egress rules. No proxy in this slice.
+- **RFactory code:** no change in this slice. For the later proxy slice:
   - the Claude CLI gets a fixed environment with no proxy variable (`core/src/brains/claude-cli.js:22`);
   - a Claude settings file with a `proxy` or `env` key is refused (`core/src/brains/destination.js:41`);
   - Node's `fetch` ignores `HTTPS_PROXY` unless told otherwise, and so does the runner client (`https.request`).
@@ -75,7 +77,7 @@ What the cluster can enforce:
   A CNI change would touch all of them.
 - **`rfactory-desktops` namespace:** already default-deny, with its own allowlist proxy (`desktop/proxy/proxy.js`).
   The runner accepts `:8443` from any source (`rfactory-runner-api`), so no change is needed there.
-- **Cloudflare tunnel / `cloudflared`:** on the path if CFactory MCP stays on its public name.
+- **Cloudflare tunnel / `cloudflared`:** on the path, because CFactory MCP stays on its public name (decision 2).
 
 ## Constraints
 
@@ -95,21 +97,27 @@ What the cluster can enforce:
 
 ## Open questions
 
-1. **How to pin the public hosts?** The cluster cannot do FQDN rules. Options: (a) an allowlist CONNECT proxy,
-   with the pod's own policy allowing only DNS, Keycloak, the runner and the proxy; (b) replace the CNI with one
-   that has FQDN rules (Cilium), on a shared cluster; (c) accept "any public address on 443" for now.
-   The spec will compare them. Is (b) open at all, and is (c) acceptable as a first step?
-2. **CFactory MCP: public name or in-cluster?** The issue says "in-cluster service", but the pod uses the public
-   Cloudflare name, `scope.js:64` refuses `http://cfactory.factory.svc:3111`, and #33 decided to keep the public
-   name. Keep it on the list, or reopen that decision so the pod talks to the Service directly?
-3. **Which Anthropic hosts?** The API host is certain. The hosts for the OAuth token refresh and any telemetry
-   are not measured. Allow only what a measured run needs, and switch telemetry off?
-4. **`api.github.com`:** on the list now, or only when a scope turns `github_read` on? It is off in the cluster.
-5. **A new proxy or the existing one?** `rfactory-proxy` in `rfactory-desktops` already does allowlisted CONNECT,
-   but it serves untrusted guest VMs and takes its list per desktop. Reuse its code in a separate instance, or
-   use a stock proxy?
-6. **DNS:** DNS to `kube-dns` can itself carry data out. Accept that, or is it in scope here?
-7. **How visible must a refusal be?** A plain NetworkPolicy logs nothing. Is "the app's own error" enough for
-   in-cluster targets, with host-level logs only for public ones?
-8. **Only the pod, or the node too?** A policy covers the pod's own traffic. Processes on the node and
-   host-network pods are outside it. Out of scope here?
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this intent with "use recommendations". The draft gave no recommendation for any of the
+eight questions, so each answer below is marked: (no recommendation was given; lead's default, owner may revisit).
+
+1. **Pinning the public hosts:** this slice allows any public IPv4 address on TCP 443, with exact in-cluster
+   targets. Host-name pinning by an allowlist proxy is a later slice. A CNI swap is not pursued.
+   (no recommendation was given; lead's default, owner may revisit)
+2. **CFactory MCP:** stays on the public name, as #33 decided. The public-443 rule covers it. No code or scope
+   change. (no recommendation was given; lead's default, owner may revisit)
+3. **Anthropic hosts:** no host list in this slice; the public-443 rule covers them. The hosts are measured when
+   the proxy slice is specified. (no recommendation was given; lead's default, owner may revisit)
+4. **`api.github.com`:** no separate rule; the public-443 rule covers it when a scope turns `github_read` on.
+   (no recommendation was given; lead's default, owner may revisit)
+5. **New proxy or the existing one:** deferred to the proxy slice.
+   (no recommendation was given; lead's default, owner may revisit)
+6. **DNS:** allowed to `kube-dns` only, port 53. Data leaving through DNS is accepted and out of scope.
+   (no recommendation was given; lead's default, owner may revisit)
+7. **Refusal visibility:** the app's own error is enough in this slice. Host-level logs come with the proxy
+   slice. (no recommendation was given; lead's default, owner may revisit)
+8. **Node traffic:** out of scope. The limit covers the pod's own traffic only.
+   (no recommendation was given; lead's default, owner may revisit)
