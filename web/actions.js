@@ -17,6 +17,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
   const history = [];
   let pending = new Map();
   let generation;
+  let projectId;
   let budget = { used: 0 };
   let recovered = false;
 
@@ -29,7 +30,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     entry.state = state;
     if (entry.timer) (clock.clearTimeout || clearTimeout)(entry.timer);
     pending.delete(entry.payload.id);
-    const item = safe({ ...entry.payload, hash: entry.hash, state, ...extra });
+    const item = safe({ ...entry.payload, hash: entry.hash, state, ...(entry.project_id ? { project_id: entry.project_id } : {}), ...extra });
     await record.append(item);
     history.push(item);
     emit('action-updated', item, entry.generation);
@@ -47,7 +48,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
   async function request(text, speaker) {
     if (!enabled || !scope.writes_enabled) return reply(403, 'Changes are turned off here.');
     if (generation === undefined) return reply(409, 'There is no call right now.');
-    const callGeneration = generation;
+    const callGeneration = generation, callProjectId = projectId;
     const snapshot = await readSource.snapshot();
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     const proposal = await brain.propose(snapshot, { deadline: now() + 55000, request: text });
@@ -77,14 +78,16 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
       proposed_by: safe(String(speaker || 'Unknown')), proposed_at,
       expires_at: new Date(now() + LIFETIME).toISOString() });
     const hash = hashPayload(payload);
-    const entry = { payload, hash, state: 'pending', generation: callGeneration, budget };
+    const entry = { payload, hash, state: 'pending', generation: callGeneration,
+      ...(callProjectId ? { project_id: callProjectId } : {}), budget };
     pending.set(payload.id, entry);
-    try { await record.append({ ...payload, hash, state: 'proposed' }); }
+    try { await record.append({ ...payload, hash, state: 'proposed', ...(entry.project_id ? { project_id: entry.project_id } : {}) }); }
     catch { pending.delete(payload.id); return reply(500, 'The action could not be recorded.'); }
     if (callGeneration !== generation) { await expire(entry); return reply(409, 'The call has ended.'); }
     entry.timer = (clock.setTimeout || setTimeout)(() => { expire(entry).catch(() => {}); }, Math.max(0, Date.parse(payload.expires_at) - now()));
     entry.timer.unref?.();
-    emit('action-pending', { ...payload, hash, state: 'pending', description: describe(payload, effects) }, callGeneration);
+    emit('action-pending', { ...payload, hash, state: 'pending', description: describe(payload, effects),
+      ...(entry.project_id ? { project_id: entry.project_id } : {}) }, callGeneration);
     return reply(202, safe(describe(payload, effects)), safe({ ...payload, hash }));
   }
 
@@ -100,7 +103,8 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     entry.state = 'executing';
     pending.delete(id);
     entry.budget.used += reserved;
-    const base = { ...entry.payload, hash, approved_by: String(email).toLowerCase() };
+    const base = { ...entry.payload, hash, approved_by: String(email).toLowerCase(),
+      ...(entry.project_id ? { project_id: entry.project_id } : {}) };
     try {
       await record.append({ ...base, state: 'approved' });
       await record.append({ ...base, state: 'executing' });
@@ -173,13 +177,15 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
 
   function list() {
     return { pending: [...pending.values()].filter(live).map((entry) => safe({ ...entry.payload, hash: entry.hash, state: entry.state,
-      description: describe(entry.payload, entry.payload.effects) })), history: history.map(safe) };
+      description: describe(entry.payload, entry.payload.effects),
+      ...(entry.project_id ? { project_id: entry.project_id } : {}) })), history: history.map(safe) };
   }
 
-  function startCall(nextGeneration) {
+  function startCall(nextGeneration, { projectId: nextProjectId } = {}) {
     const old = [...pending.values()];
     pending = new Map();
     generation = nextGeneration;
+    projectId = nextProjectId;
     budget = { used: 0 };
     history.length = 0;
     return Promise.all(old.map(expire));
@@ -189,6 +195,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const old = [...pending.values()];
     pending = new Map();
     generation = undefined;
+    projectId = undefined;
     return Promise.all(old.map(expire));
   }
 

@@ -247,3 +247,27 @@ test('actions.request refuses an investigate proposal: only the investigation ma
     assert.deepEqual(f.manager.list().pending, []);
   }
 });
+
+test('project id follows an action through list, events, record, and the unchanged hash', async () => {
+  const { hashPayload } = require('@rfactory/core/src/actions/allowlist.js');
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { projectId: 'repo:2' });
+  const p = await proposal(f);
+  assert.equal(f.manager.list().pending[0].project_id, 'repo:2');
+  assert.equal(f.events.find((e) => e.type === 'action-pending').action.project_id, 'repo:2');
+  const { hash, state, project_id, ...payload } = f.entries[0];
+  assert.equal(hashPayload(payload), hash);
+  assert.equal(project_id, 'repo:2');
+  await approve(f, p);
+  assert.ok(f.entries.every((e) => e.project_id === 'repo:2'));
+  assert.ok(f.manager.list().history.every((e) => e.project_id === 'repo:2'));
+  const plain = setup(); await plain.manager.recover(); await plain.manager.startCall(2);
+  await approve(plain, await proposal(plain));
+  assert.ok(plain.entries.every((e) => !('project_id' in e)));
+});
+
+test('action recovery keeps the project of an executing line', async () => {
+  const f = setup({ unfinished: [{ id: 'old', state: 'executing', project_id: 'repo:2' }] });
+  await f.manager.recover();
+  assert.equal(f.entries[0].project_id, 'repo:2');
+  assert.equal(f.manager.list().history[0].project_id, 'repo:2');
+});

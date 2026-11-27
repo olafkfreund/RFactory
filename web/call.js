@@ -589,12 +589,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       const generation = ++callCount;
       bound = !!binding;
       // a project without the default repository gets no write manager: nothing can be proposed in it
-      if (actions && writable) Promise.resolve(actions.startCall(generation)).catch((error) => logFor(c, `actions start failed: ${error.message}`));
+      if (actions && writable) Promise.resolve(binding ? actions.startCall(generation, { projectId: binding.projectId })
+        : actions.startCall(generation)).catch((error) => logFor(c, `actions start failed: ${error.message}`));
       // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
       const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
       c.showLog = !!(writable && shares && shareDesktop); // the log can only be shown through a share on this call's desktop
-      if (investigations && writable) Promise.resolve(investigations.startCall(generation)).catch((error) => logFor(c, `investigations start failed: ${error.message}`));
-      if (shares && writable) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
+      if (investigations && writable) Promise.resolve(binding ? investigations.startCall(generation, { projectId: binding.projectId })
+        : investigations.startCall(generation)).catch((error) => logFor(c, `investigations start failed: ${error.message}`));
+      if (shares && writable) Promise.resolve(shares.startCall(generation,
+        { desktop: shareDesktop, ...(binding ? { projectId: binding.projectId } : {}) })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
       if (binding) emit({ type: 'project', id: binding.projectId, name: binding.name, repositories: binding.repositories });
       emit({ type: 'voice', voice: c.voice });
       emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',

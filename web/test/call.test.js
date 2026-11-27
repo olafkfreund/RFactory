@@ -1485,3 +1485,15 @@ test('a project standup is read from the call\'s own view', async () => {
     await endCall(f);
   } finally { f.restore(); }
 });
+
+test('a writable project binding reaches all three proposal managers', async () => {
+  const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+  const f = setup({ extra: { actions, shares, investigations } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1], true), view: viewFor('card') });
+    assert.deepEqual(actions.started, [[1, { projectId: 'alpha' }]]);
+    assert.deepEqual(investigations.started, [[1, { projectId: 'alpha' }]]);
+    assert.equal(shares.started[0][1].projectId, 'alpha');
+    await endCall(f);
+  } finally { f.restore(); }
+});
