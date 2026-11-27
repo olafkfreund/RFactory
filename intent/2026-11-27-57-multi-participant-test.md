@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 57
 author: olafkfreund
 ---
@@ -130,3 +130,7 @@ This intent assumes **real team members**, as the owner asked. The issue body de
 8. **#56:** must it be fixed first, or is a throwaway first question by the host acceptable? *Recommendation:* accept the workaround if the fix is not released by the call date.
 9. **Where are the observer scripts?** The issue names `session3.js` and `joiner.js`; neither is in this repository. They are needed for question 3, and for question 1 if the answer is synthetic.
 10. **Call language:** the bot's language is fixed per call. *Recommendation:* English only.
+
+## Approval (2026-11-27)
+
+The owner approved this intent with the recommended answers: "approve all with recommendations and start implementing". Every open question above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
