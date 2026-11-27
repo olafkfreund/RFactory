@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 53
 spec: spec/2026-11-27-53-pod-egress-limit.md
 coders:
@@ -275,3 +275,7 @@ No `core`, `web`, `bot` or `desktop` test changes: no code there is touched.
 - **Deleting the policy by hand does not help:** self-heal puts it back. The revert is the only undo.
 - **The script:** it changes nothing in the cluster. Leaving it in place is harmless.
 - **No data migration:** nothing is stored.
+
+## Approval (2026-11-27)
+
+The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (including the lookup question in step 8 and the one new baseline run after a changed script) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
