@@ -239,3 +239,5 @@ All pass. A scratch-copy trial of the step 1 and step 2 code broke exactly the f
 ## Approval (2026-11-27)
 
 The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (the live check runs the branch locally before merge; the narrower first-caption fallback is kept) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
+
+2. **Review fixes (Opus and agy, final review):** `web/call.js` takes a `captions` line only when `c.holdGreeting` (Meet captions mode), not on `c.listen === 'platform'` alone, matching Part C; and `captionSeen` runs only after `in-call`, so a stray early `heard` line cannot log an epoch time. The first captions test also asserts the `captions off ms=<n>` log line. Web suite: 330 pass.

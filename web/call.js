@@ -517,9 +517,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       if (msg.state === 'in-call') { c.inCall = true; c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
-      if (c.holdGreeting) captionSeen(c);
+      if (c.holdGreeting && c.inCall) captionSeen(c);
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
-    } else if (msg.type === 'captions' && c.listen === 'platform' && c.inCall && typeof msg.on === 'boolean') {
+    } else if (msg.type === 'captions' && c.holdGreeting && c.inCall && typeof msg.on === 'boolean') {
       logFor(c, `captions ${msg.on ? 'on' : 'off'} ms=${now() - c.inCallAt}`);
       emit({ type: 'hearing', state: msg.on ? 'captions' : 'captions-off', ...(!sttConfigured ? { notConfigured: true } : {}) });
       if (msg.on) greet(c);

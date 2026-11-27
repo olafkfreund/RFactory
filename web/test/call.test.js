@@ -161,6 +161,7 @@ test('Meet captions off holds the greeting; a later on greets once', async () =>
     f.children[0].output({ type: 'captions', on: false });
     await flush();
     assert.equal(speaks(f).length, 0);
+    assert.ok(logsOf(f).some((m) => /^captions off ms=\d+$/.test(m)));
     assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions-off', notConfigured: true });
     f.children[0].output({ type: 'captions', on: true });
     f.children[0].output({ type: 'captions', on: true });
