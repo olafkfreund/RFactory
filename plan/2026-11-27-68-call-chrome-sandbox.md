@@ -62,7 +62,8 @@ reviewers:
    it resolves, the chown got `('/d', 991, 991)` and the args hold no
    `--no-sandbox`. In the existing test, assert no chown call.
    → verify: `node --test desktop/guest/agent/kubevirt.test.js`, then
-   `node --test desktop/guest/agent/` (all pass). The worktree has no
+   `node --test desktop/guest/agent/*.test.js` (all pass; the directory form
+   runs the folder as one file on this Node). The worktree has no
    `bot/node_modules`: link it from the main checkout (untracked) to run them.
    Not a gap: `o.args` from `bot/run.js` (l.472) carries no flags, and
    `callLaunchArgs` (`share.js` l.9) only adds `--auto-select-desktop-capture-source`;
@@ -106,10 +107,12 @@ reviewers:
 
 ## Rollback
 
-Revert the PR: it restores the #69 pins in `runner.yaml` (boot `2c6b8bb6…`,
+Revert the PR, then run `deploy/k3d/import-images.sh guest-kubevirt-boot-image
+guest-kubevirt-disk-image` from the reverted tree and check the printed digests
+match the restored pins (the script removes other versions of the guest images
+from the nodes, so the #69 images are gone once this release's import ran). The revert restores the #69 pins in `runner.yaml` (boot `2c6b8bb6…`,
 disk `1245fd51…`, cmdline `z0sn1rb2…`, kept in `scratchpad/68-release/guest-main.txt`),
 the images deployed before this change. Hard-refresh Argo CD `rfactory-desktops`.
-The old images stay imported (pinned against kubelet GC) on the nodes.
 
 ## Accepted risk
 
@@ -126,3 +129,7 @@ file disables user namespaces. Rollback is one revert.
    `host.context.pages()`, so two `call worker` tests had failed on main
    ("link, speak with WAV…" and "the share belongs to the call Chrome…"),
    before this change too (checked on dca2548). Test-only.
+2. Step 3 (lead): `import-images.sh` removed the #69 guest images from both
+   nodes when it imported these, so from the import until the merge no new
+   desktop VM could start (calls that need one fail). Rollback updated above.
+   Pins: boot `97f692cf…`, disk `090e8302…`, cmdline `66qmdzwb…` (same on both nodes).
