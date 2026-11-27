@@ -5,7 +5,6 @@
   "14": "runner runner.test.js",
   "18": "runner runner.js",
   "20": "test server.test.js",
-  "21": "test brain.test.js",
   "22": "test avatar-state.test.js",
   "29": "web server.js",
   "32": "test claude-cli.test.js",
