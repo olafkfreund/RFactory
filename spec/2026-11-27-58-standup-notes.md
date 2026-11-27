@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 58
 intent: intent/2026-11-27-58-standup-notes.md
 ---
@@ -209,7 +209,13 @@ Lines go to the existing record (`web/actions-record.js`), with `kind: 'notes'`,
 
 ## Open questions
 
-1. **Notes in memory only, or on disk?** Recommended: memory only. A restart inside the 24 hours loses unreviewed notes, and the page says so. The alternative keeps them in a file on the record volume, deleted at 24 hours.
-2. **Does the brain shape each note, or is the dictated sentence kept as said?** Recommended: the brain shapes it, as the intent requires. Keeping the sentence is the smaller change and has no model error, but it stores speech as said and needs an intent change.
-3. **Pull request state as close evidence is left out of this slice.** Recommended: accept that; the close shows stage results and "Pull request: not checked". The alternative needs CFactory to link a card to its pull request first.
-4. **Order with #28 slice 2,** which changes the same function in `web/actions.js`. Recommended: #28 slice 2 lands first if its plan is approved first; otherwise #58, and the other rebases.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved the spec with the recommended answers.
+
+1. **Notes are kept in memory only.** A restart inside the 24 hours loses unreviewed notes, and the page says so.
+2. **The brain shapes each note,** as the intent requires.
+3. **Pull request state is left out of close evidence** in this slice; the close shows stage results and "Pull request: not checked".
+4. **Order with #28 slice 2:** whichever plan is approved first lands first; the other rebases.
