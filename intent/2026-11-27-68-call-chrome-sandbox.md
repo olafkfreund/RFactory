@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 68
 author: olafkfreund
 ---
@@ -59,3 +59,7 @@ live check for #67, #56 and #68 can run.
 1. A user of its own for the call Chrome (`rfcall`, uid 991) or reuse
    `rfchrome`? Recommended: its own user, so the call Chrome and a granted
    page in the control Chrome cannot read each other's profile.
+
+## Decisions (approved 2026-11-27)
+
+1. The call Chrome gets a user of its own, `rfcall` (uid/gid 991), apart from `rfchrome`.
