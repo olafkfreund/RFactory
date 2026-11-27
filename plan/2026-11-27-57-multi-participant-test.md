@@ -335,3 +335,4 @@ The owner approved this plan with its recommendations.
 ## Deviations
 
 1. Step 2 (i57 manager): `desktop/` has no `package-lock.json`, so the Tests section's `npm ci` cannot run there; use `npm install --no-package-lock` in `desktop/` (playwright-core stays pinned to 1.65.1 in package.json).
+2. Step 1 (lead): the fixtures were made with docker (root /mnt/build/docker), not podman: the owner keeps container storage off the home disk (2026-11-27). Same released image (`rfactory-web:sha-784468f@sha256:01318f11…`), `--network none`; `say` reported `voice=piper:en_US-ljspeech-medium`.
