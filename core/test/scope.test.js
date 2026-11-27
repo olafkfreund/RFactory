@@ -301,3 +301,56 @@ test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
     assert.throws(() => f.load(), /invalid-projects/); // projects need a CFactory source
   } finally { f.cleanup(); }
 });
+
+test('projects.allow github_read: per-repository bindings, tokens after the key', () => {
+  const f = fixture();
+  try {
+    const dir = path.dirname(f.keyFile);
+    const tf = (n, text = `token-value-${n}`, mode = 0o600) => {
+      const file = path.join(dir, `gh-${n}`);
+      fs.writeFileSync(file, text, { mode });
+      fs.chmodSync(file, mode);
+      return file;
+    };
+    const bind = (n, extra = {}) => ({ repository_id: n, owner: 'olaf', repo: `r${n}`, token_file: tf(n), ...extra });
+    const id = '5d78d4b9-35f9-4445-92c1-78f3ff60a494';
+    f.scope.lookups_enabled = true;
+    f.scope.projects = { allow: [{ id, github_read: [bind(1), bind(3)] }, { id: 'repo:21', github_read: [bind(21)] }, { id: 'repo:9' }] };
+    const secrets = [], extras = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    loadScope(path.join(dir, 'scope.json'), {}, secrets, extras);
+    assert.deepEqual(secrets, [key, 'token-value-1', 'token-value-3', 'token-value-21']);
+    assert.deepEqual(extras, { githubTokens: { 1: 'token-value-1', 3: 'token-value-3', 21: 'token-value-21' } });
+
+    const bad = [
+      [{ id, github_read: [bind(1)] }, { id: 'repo:5', github_read: [bind(1)] }], // repository twice
+      [{ id, github_read: [bind(1), bind(1)] }],
+      [{ id, github_read: [bind(2)] }], // the default repository, whose source.github_read is set
+      [{ id: 'repo:4', github_read: [bind(5)] }], // repo:<n> entry for another repository
+      [{ id, github_read: [] }], [{ id, github_read: Array.from({ length: 21 }, (_, i) => bind(100 + i)) }],
+      [{ id, github_read: [bind(1, { extra: 1 })] }], [{ id, github_read: [bind(1, { repository_id: '1' })] }],
+      [{ id, github_read: [bind(1, { owner: 'a/b' })] }], [{ id, github_read: [bind(1, { repo: '..' })] }],
+      [{ id, github_read: [bind(1, { token_file: 'relative' })] }], [{ id, github_read: [{ repository_id: 1, owner: 'o', repo: 'r' }] }],
+    ];
+    f.scope.source.github_read = { owner: 'o', repo: 'r', token_file: tf('d') };
+    for (const allow of bad) {
+      f.scope.projects = { allow };
+      assert.throws(() => f.load(), /invalid-projects/, JSON.stringify(allow));
+    }
+    delete f.scope.source.github_read;
+    f.scope.projects = { allow: [{ id, github_read: [bind(2)] }] };
+    assert.deepEqual(f.load(), f.scope); // without source.github_read the default repository may be bound here
+
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: tf(1, 'token-value-1', 0o644) }] }] };
+    assert.throws(() => f.load(), /github-token-file-mode/);
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: tf(1, 'short') }] }] };
+    assert.throws(() => f.load(), /invalid-github-token/);
+    // lookups off: a missing token file still loads, and no token is read
+    f.scope.lookups_enabled = false;
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: path.join(dir, 'missing') }] }] };
+    const s2 = [], e2 = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    loadScope(path.join(dir, 'scope.json'), {}, s2, e2);
+    assert.deepEqual([s2, e2], [[key], {}]);
+  } finally { f.cleanup(); }
+});
