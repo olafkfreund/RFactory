@@ -56,6 +56,17 @@ test('init script forwards only same-window tap messages from the top frame', as
   vm.runInNewContext(`(${s.context.init.toString()})()`, { window: child });
 });
 
+test('init script disables Meet insertable streams in the top frame', async () => {
+  const s = await setup();
+  const window = { addEventListener() {} };
+  window.top = window;
+  class RTCRtpReceiver { createEncodedStreams() {} }
+  class RTCRtpSender { createEncodedStreams() {} }
+  vm.runInNewContext(`(${s.context.init.toString()})()`, { window, RTCRtpReceiver, RTCRtpSender });
+  assert.equal(Object.hasOwn(RTCRtpReceiver.prototype, 'createEncodedStreams'), false);
+  assert.equal(Object.hasOwn(RTCRtpSender.prototype, 'createEncodedStreams'), false);
+});
+
 test('refuses invalid PCM, rates, timestamps and more than four open streams', async () => {
   const s = await setup();
   for (let i = 1; i <= 4; i++) s.send(event(`s${i}`, 'attached'));
