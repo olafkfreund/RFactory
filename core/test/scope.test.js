@@ -349,6 +349,63 @@ test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
   } finally { f.cleanup(); }
 });
 
+test('agents: C1 rules, switch and output', () => {
+  const f = fixture();
+  try {
+    const dir = path.dirname(f.keyFile);
+    const agentKey = 'rfk_' + 'a'.repeat(32);
+    const keyPath = (n, text = agentKey, mode = 0o600) => {
+      const p = path.join(dir, `agent-${n}`);
+      fs.writeFileSync(p, `${text}\n`, { mode });
+      fs.chmodSync(p, mode);
+      return p;
+    };
+    const env = { RFACTORY_AGENTS: 'on' };
+    f.scope.projects = { allow: [{ id: 'repo:2' }, { id: 'repo:3' }] };
+    const entry = (over = {}) => ({ name: 'claude-code', scope: 'read', key_file: keyPath('claude-code'), projects: ['repo:2'], ...over });
+    const fails = (agents, code, e = env) => { f.scope.agents = agents; assert.throws(() => f.load([], e), new RegExp(`^Error: ${code}$`), JSON.stringify(agents)); };
+
+    f.scope.agents = [entry()];
+    const secrets = []; const extras = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    const scope = loadScope(path.join(dir, 'scope.json'), env, secrets, extras);
+    assert.deepEqual(scope.agents[0].projects, ['repo:2']);
+    assert.deepEqual(extras.agents, [{ name: 'claude-code', scope: 'read', projects: ['repo:2'], key: agentKey }]);
+    assert.deepEqual(secrets, [key, agentKey]);
+    assert.ok(!('key' in scope.agents[0]));
+
+    const second = keyPath('b', 'rfk_' + 'b'.repeat(32));
+    assert.equal(f.load([], env).source.repository_id, 2);
+    f.scope.agents = [entry(), entry({ name: 'b', key_file: second, projects: ['repo:3'] })];
+    assert.equal(f.load([], env).agents.length, 2);
+
+    for (const bad of [null, [], 'x', {}, Array.from({ length: 11 }, (_, i) => entry({ name: `a${i}` }))]) fails(bad, 'invalid-agents');
+    fails([entry({ extra: 1 })], 'invalid-agents');
+    fails([{ name: 'x', scope: 'read', key_file: keyPath('x'), projects: ['repo:2'], extra: 1 }].map(({ extra, ...o }) => { delete o.projects; return o; }), 'invalid-agents');
+    for (const name of ['', 'A', 'a_b', 'a'.repeat(33), 5]) fails([entry({ name })], 'invalid-agents');
+    fails([entry(), entry()], 'invalid-agents');
+    fails([entry({ scope: 'write' })], 'invalid-agents');
+    for (const projects of [[], 'repo:2', ['repo:9'], ['repo:2', 'repo:2']]) fails([entry({ projects })], 'invalid-agents');
+    fails([entry({ key_file: 'relative' })], 'invalid-agents');
+    fails([entry({ key_file: keyPath('loose', agentKey, 0o644) })], 'agent-key-file-mode');
+    fails([entry({ key_file: path.join(dir, 'missing-agent-key') })], 'agent-key-file-mode');
+    fails([entry({ key_file: dir })], 'agent-key-file-mode');
+    fails([entry({ key_file: keyPath('short', 'rfk_' + 'a'.repeat(31)) })], 'invalid-agent-key');
+    fails([entry({ key_file: keyPath('cf', key) })], 'invalid-agent-key');
+    fails([entry(), entry({ name: 'dup', key_file: keyPath('dup') })], 'invalid-agent-key');
+    fails([entry()], 'agents-enabled', {});
+    fails([entry()], 'agents-enabled', { RFACTORY_AGENTS: 'off' });
+
+    delete f.scope.agents;
+    assert.throws(() => f.load([], { RFACTORY_AGENTS: 'on' }), /agents-enabled-env/);
+    assert.ok(f.load([], { RFACTORY_AGENTS: 'off' }));
+    assert.ok(f.load([], {}));
+    delete f.scope.projects;
+    f.scope.agents = [entry()];
+    assert.throws(() => f.load([], env), /invalid-agents/); // agents need projects
+  } finally { f.cleanup(); }
+});
+
 test('projects.allow github_read: per-repository bindings, tokens after the key', () => {
   const f = fixture();
   try {

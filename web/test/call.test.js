@@ -1637,3 +1637,15 @@ test('a project standup is read from the call\'s own view', async () => {
     await endCall(f);
   } finally { f.restore(); }
 });
+
+test('the call project id reaches all three proposal managers', async () => {
+  const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+  const f = setup({ extra: { actions, shares, investigations } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: viewFor('card') });
+    for (const manager of [actions, investigations, shares]) {
+      assert.equal(manager.started[0][1].binding.projectId, 'alpha');
+    }
+    await endCall(f);
+  } finally { f.restore(); }
+});

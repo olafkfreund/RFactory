@@ -633,3 +633,30 @@ test('Stop reports what was observed', async () => {
     assert.equal((await stop(f, p)).text, text);
   }
 });
+
+test('investigation project follows its list, record, and log share', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { projectId: 'repo:2' });
+  const p = (await f.manager.request('why', 'Caller', true)).investigation;
+  assert.equal(p.project_id, 'repo:2');
+  assert.equal(f.manager.list().pending[0].project_id, 'repo:2');
+  await approve(f, p);
+  await until(() => f.calls.some((c) => c[0] === 'share'));
+  assert.equal(f.calls.find((c) => c[0] === 'share')[2].projectId, 'repo:2');
+  assert.ok(f.entries.every((e) => e.project_id === 'repo:2'));
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  await f.manager.endCall();
+  const plain = setup(); await plain.manager.recover(); await plain.manager.startCall(2);
+  const next = (await plain.manager.request('why', 'Caller')).investigation;
+  assert.ok(!('project_id' in next));
+  await approve(plain, next);
+  await until(() => plain.manager.list().running?.state === 'running');
+  assert.ok(plain.entries.every((e) => !('project_id' in e)));
+});
+
+test('investigation recovery keeps the project outside its payload', async () => {
+  const f = setup({ unfinished: [{ id: 'old', state: 'starting', repo: 'owner/notes-api', sha: SHA,
+    request: 'why', card_key: 'FCT-1', dispatched_at: '2026-11-17T12:00:00Z', project_id: 'repo:2' }] });
+  await f.manager.recover();
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  assert.equal(f.entries.at(-1).project_id, 'repo:2');
+});

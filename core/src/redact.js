@@ -6,7 +6,7 @@ const PATTERNS = [
   /sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/g,
   /xox[abprs]-[A-Za-z0-9-]{10,}/g,
   /AKIA[0-9A-Z]{16}/g,
-  /\b(acw|cfk)_[A-Za-z0-9]{16,}/g,
+  /\b(acw|cfk|rfk)_[A-Za-z0-9]{16,}/g,
 ];
 const KEY_VALUE = /(authorization|x-api-key|api[_-]?key|token|password)(\s*[:=]\s*)("[^"]+"|'[^']+'|\S+)/gi;
 const KEY_VALUE_WINDOW = /(authorization|x-api-key|api[_-]?key|token|password)([ \t]*(?:\r?\n[ \t]*)?[:=][ \t]*|[ \t]*[:=][ \t]*(?:\r?\n[ \t]*)?)(?=\S)/gi;
@@ -23,7 +23,7 @@ const WRAP_MIN = 40;
 // behind is cut back to the last join inside it if `min` allows, else the search retries one character later.
 const JOINED_RULES = [
   ...PATTERNS.filter((pattern) => !pattern.source.startsWith('\\b')).map((re) => ({ re })),
-  { re: /\b(?:acw|cfk)_[A-Za-z0-9]{16,}/g, join: /(?:acw|cfk)_[A-Za-z0-9]{16,}/y },
+  { re: /\b(?:acw|cfk|rfk)_[A-Za-z0-9]{16,}/g, join: /(?:acw|cfk|rfk)_[A-Za-z0-9]{16,}/y },
   { re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}/g, join: /(?:AKIA|ASIA)[0-9A-Z]{16}/y, inside: word },
   { re: /\b[A-Fa-f0-9]{40,}/g, join: /[A-Fa-f0-9]{40,}/y, inside: word, min: 40 },
   { re: /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g, join: /[A-Za-z0-9+/]{40,}={0,2}/y, inside: base64, min: 40 },

@@ -64,6 +64,32 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       }
     }
   }
+  let agents;
+  if (Object.hasOwn(scope, 'agents')) {
+    const list = scope.agents;
+    const allow = new Set(scope.projects?.allow.map((p) => p.id));
+    const plain = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+    if (!scope.projects || !Array.isArray(list) || list.length < 1 || list.length > 10) throw new Error('invalid-agents');
+    for (const a of list) {
+      if (!plain(a) || Object.keys(a).sort().join() !== 'key_file,name,projects,scope' ||
+          typeof a.name !== 'string' || !/^[a-z0-9-]{1,32}$/.test(a.name) || a.scope !== 'read' ||
+          typeof a.key_file !== 'string' || !path.isAbsolute(a.key_file) ||
+          !Array.isArray(a.projects) || a.projects.length < 1 || new Set(a.projects).size !== a.projects.length ||
+          !a.projects.every((id) => allow.has(id))) throw new Error('invalid-agents');
+    }
+    if (new Set(list.map((a) => a.name)).size !== list.length) throw new Error('invalid-agents');
+    agents = list.map((a) => {
+      let file;
+      try { file = fs.statSync(a.key_file); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('agent-key-file-mode'); throw error; }
+      if (!file.isFile() || (file.mode & 0o777) !== 0o600) throw new Error('agent-key-file-mode');
+      const agentKey = fs.readFileSync(a.key_file, 'utf8').trim();
+      if (!/^rfk_[A-Za-z0-9]{32,}$/.test(agentKey)) throw new Error('invalid-agent-key');
+      return { name: a.name, scope: a.scope, projects: a.projects, key: agentKey };
+    });
+    if (new Set(agents.map((a) => a.key)).size !== agents.length) throw new Error('invalid-agent-key');
+    if (env.RFACTORY_AGENTS !== 'on') throw new Error('agents-enabled');
+  } else if (env.RFACTORY_AGENTS && env.RFACTORY_AGENTS !== 'off') throw new Error('agents-enabled-env');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
@@ -124,6 +150,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (key) secrets.push(key);
   if (githubToken) { secrets.push(githubToken); extras.githubToken = githubToken; } // after the key: secrets[0] stays CFactory's
   secrets.push(...projectTokens);
+  if (agents) { for (const a of agents) secrets.push(a.key); extras.agents = agents; }
   return scope;
 }
 

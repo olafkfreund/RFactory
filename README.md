@@ -25,6 +25,16 @@ The factory cluster is the deployment: see `plan/2026-11-24-33-rfactory-in-clust
 
 Approvers and admins must also be members; otherwise the web app refuses to start (`roles-not-members`).
 
+## Agents (MCP)
+
+- **What an agent can do:** read-only access through seven MCP tools (`whoami`, `status`, `projects`, `standup`, `review`, `approvals`, `record`); an agent can change nothing.
+- **Make a key:** `umask 077; printf 'rfk_%s' "$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 32)" > ~/.config/rfactory/agent-keys/<name>`.
+- **Configure:** add the agent to `agents` in `scope.cluster.json` (`{ "name": "<name>", "scope": "read", "key_file": "/run/rfactory/keys/agent-<name>", "projects": ["repo:2"] }`), set `RFACTORY_AGENTS=on` on `deploy/rfactory`, and run `deploy/k8s/bootstrap-secrets.sh`.
+- **Forward:** `kubectl port-forward deploy/rfactory 8090:8090 -n factory`.
+- **Connect Claude Code:** point the HTTP MCP client at `http://127.0.0.1:8090/mcp` with the key in an `Authorization: Bearer` header, without putting the key on a command line, in shell history, in the environment or in a file in Git.
+- **Revoke:** remove the `agents` entry and `~/.config/rfactory/agent-keys/<name>`, set `RFACTORY_AGENTS` to `off` when it was the last key, run `deploy/k8s/bootstrap-secrets.sh`, and wait for `kubectl rollout status deploy/rfactory -n factory`.
+- **Where the data goes:** what a tool returns goes to the agent's model provider.
+
 ## Standup and review
 
 RFactory reads the configured project's cards from CFactory, read-only. A card counts only when its repository is the configured one and its issue belongs to that repository's project; other cards are left out, and cards whose issue points elsewhere are only counted ("conflicting").

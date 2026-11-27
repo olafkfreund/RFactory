@@ -313,6 +313,38 @@ test('a Stop naming an entry ends only that entry and refuses any other id', asy
   assert.equal(f.manager.list().pending.length, 0);
 });
 
+test('project id follows a board share and a log share uses its investigation project', async () => {
+  const f = setup(); await f.manager.recover();
+  await f.manager.startCall(1, { desktop: f.desktop, projectId: 'repo:2' });
+  const p = await proposed(f);
+  assert.equal(f.manager.list().pending[0].project_id, 'repo:2');
+  assert.equal(f.events.at(-1).share.project_id, 'repo:2');
+  await approve(f, p);
+  await until(() => f.manager.list().running?.state === 'running');
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  await f.manager.stop('member@example.com', p.id);
+  assert.ok(f.entries.every((e) => e.project_id === 'repo:2'));
+  await f.manager.startCall(2, { desktop: f.desktop, projectId: 'repo:3' });
+  const opened = await f.manager.openFor('owner@example.com', { view: 'log', title: 'Log',
+    provider: async () => ({ repo: 'x', sha: 'a'.repeat(40), at: 'now', lines: [] }), projectId: 'repo:2' });
+  assert.equal(opened.status, 200);
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  assert.equal(f.entries.at(-1).project_id, 'repo:2');
+  assert.equal(f.entries.at(-1).hash, '');
+  await f.manager.endCall();
+  const plain = setup(); await plain.manager.recover(); await plain.manager.startCall(3, { desktop: plain.desktop });
+  await approve(plain, await proposed(plain));
+  await until(() => plain.manager.list().running?.state === 'running');
+  assert.ok(plain.entries.every((e) => !('project_id' in e)));
+});
+
+test('share recovery keeps the project of a starting line', async () => {
+  const f = setup({ unfinishedShares: [{ id: 'old', state: 'starting', project_id: 'repo:2' }] });
+  await f.manager.recover();
+  assert.equal(f.entries[0].project_id, 'repo:2');
+  assert.equal(f.manager.list().history[0].project_id, 'repo:2');
+});
+
 const binding = { projectId: 'p-a', name: 'tfactory-testing', repositories: [{ id: 1, path: 'o/one' }, { id: 2, path: 'o/two' }] };
 const projectView = (marker) => ({ boardView: async () => ({ project: 'tfactory-testing', at: '2026-11-17T12:00:00.000Z', cards: [{ title: marker }] }) });
 const callOf = (f, generation, marker) => f.manager.startCall(generation, { desktop: f.desktop, binding, view: projectView(marker) });

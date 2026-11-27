@@ -79,6 +79,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
 
   function publicEntry(entry) {
     return safe({ ...entry.payload, hash: entry.hash, state: entry.state,
+      ...(entry.project_id ? { project_id: entry.project_id } : {}),
       ...(entry.state === 'proposed' ? { approval_text: investigationApprovalText(entry.payload) } : {}),
       ...(entry.approved_by ? { approved_by: entry.approved_by } : {}),
       ...(entry.card_key ? { card_key: entry.card_key } : {}),
@@ -115,6 +116,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   function row(entry, state, extra) {
     entry.state = state;
     return safe({ ...entry.payload, kind: 'investigation', hash: entry.hash, state,
+      ...(entry.project_id ? { project_id: entry.project_id } : {}),
       ...(entry.approved_by ? { approved_by: entry.approved_by } : {}),
       ...(entry.card_key ? { card_key: entry.card_key } : {}),
       ...(entry.run_id ? { run_id: entry.run_id } : {}),
@@ -308,7 +310,8 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
       proposed_at: new Date(now()).toISOString(), expires_at: new Date(now() + PROPOSAL_MS).toISOString() });
     if (!revalidate(payload, now(), { scope, repo: context.repo, redactor })) return reply(400, "I can't do that.");
     if (pending || slots.size) return reply(409, 'An investigation is already in progress.');
-    const entry = { payload, hash: hashPayload(payload), generation: call, state: 'proposed', token: 0, view: source };
+    const entry = { payload, hash: hashPayload(payload), generation: call,
+      ...(!repository && target?.projectId ? { project_id: target.projectId } : {}), state: 'proposed', token: 0, view: source };
     pending = entry;
     const approval_text = investigationApprovalText(payload);
     try { await write(entry, 'proposed', { approval_text }); }
@@ -387,8 +390,10 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     const { repo, sha } = entry.payload;
     try {
       const opened = await shares.openFor(entry.approved_by, { view: 'log', title: `Investigation: ${repo}`, initial: { repo, sha },
-        ...(Object.hasOwn(entry.payload, 'project_id') ? { generation: entry.generation,
-          target: { project_id: entry.payload.project_id, repository_id: entry.payload.repository_id } } : {}),
+        generation: entry.generation,
+        ...(Object.hasOwn(entry.payload, 'project_id')
+          ? { target: { project_id: entry.payload.project_id, repository_id: entry.payload.repository_id } }
+          : { projectId: entry.project_id }),
         provider: async () => {
           const logs = await readSource.investigationLogs(entry.card_key, entry.run_id, entry.cursor || 0, 200);
           if (logs?.error || !Array.isArray(logs?.entries)) throw new Error('log read failed');
@@ -450,21 +455,21 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     if (pending) expire(pending);
     await Promise.all(ending.map((entry) => stopEntry(entry, 'call-ended')));
   }
-  async function startCall(nextGeneration, { binding, view } = {}) {
+  async function startCall(nextGeneration, target) {
     const ending = endCall(); // its synchronous part clears the old call; an unconfirmed stop must not delay the new one
     generation = nextGeneration;
-    callTarget = binding ? { binding, view } : undefined;
+    callTarget = target;
     await ending;
   }
   async function recover() {
     for (const item of record.unfinishedInvestigations()) {
       const entry = { payload: { id: item.id, kind: 'investigate', repo: item.repo, sha: item.sha,
-        ...(Object.hasOwn(item, 'project_id') ? { project_id: item.project_id } : {}),
-        ...(Object.hasOwn(item, 'repository_id') ? { repository_id: item.repository_id } : {}),
+        ...(Object.hasOwn(item, 'repository_id') ? { project_id: item.project_id, repository_id: item.repository_id } : {}),
         request: item.request, test_command: item.test_command, limits: item.limits, show_log: item.show_log,
         proposed_by: item.proposed_by, proposed_at: item.proposed_at, expires_at: item.expires_at },
       hash: item.hash, approved_by: item.approved_by, card_key: item.card_key, run_id: item.run_id,
-      generation, state: 'uncertain', token: 0, stopping: true, stopReason: 'restart', stopAt: now() };
+      generation, ...(!Object.hasOwn(item, 'repository_id') && item.project_id ? { project_id: item.project_id } : {}),
+      state: 'uncertain', token: 0, stopping: true, stopReason: 'restart', stopAt: now() };
       // no card means nothing was dispatched
       if (!entry.card_key && !entry.run_id) { slots.add(entry); finish(entry, 'stopped', 'restart'); continue; }
       slots.add(entry);

@@ -3,9 +3,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
-const { mapCard } = require('@rfactory/core/src/sources/cfactory.js');
-const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
-const { reviewCard, reviewProject } = require('@rfactory/core/src/review.js');
+const { createReads, refusal, describe, CARD_KEY } = require('./reads.js');
 
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {
@@ -32,33 +30,6 @@ const HEADERS = {
   'Cache-Control': 'no-store',
 };
 const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
-
-const refusal = (status, code) => Object.assign(new Error(code), { refusal: status });
-
-// #52: a project's repositories, joined by id; CFactory's two lists are sorted independently, so never zip them
-function repositoriesOf(project, repos) {
-  const joined = project.repository_ids.map((id) => {
-    const repo = repos.find((r) => r.id === id);
-    const where = repo?.intake_project ?? repo?.project;
-    if (typeof where !== 'string' || !where) throw new Error('project-resolve-failed');
-    return { id, path: where };
-  });
-  if (!joined.length) throw new Error('project-resolve-failed');
-  return joined;
-}
-
-// #52: resolves a project afresh on every call (nothing is cached); the allowlist is checked before CFactory is asked
-function createBinder({ source, scope }) {
-  const allowed = new Set(scope.projects.allow.map((p) => p.id));
-  async function bind(id) {
-    if (!allowed.has(id)) throw refusal(403, 'project-not-allowed');
-    const project = (await source.listProjects()).find((p) => p.id === id);
-    if (!project) throw refusal(404, 'project-unknown');
-    return { projectId: project.id, name: project.name, repositories: repositoriesOf(project, await source.listRepositories()) };
-  }
-  const viewOf = (binding) => source.forRepositories(binding.repositories.map((r) => r.id), { name: binding.name });
-  return { bind, viewOf };
-}
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
@@ -99,18 +70,18 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
-  let starting = false; // #52: the call slot, reserved while a project is resolved
-  const allowed = scope?.projects ? new Set(scope.projects.allow.map((p) => p.id)) : null; // null: everything below is as before #52
+  const reads = createReads({ scope });
+  const { allowed } = reads; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
 
-  const { bind, viewOf } = allowed ? createBinder({ source, scope }) : {};
+  const bind = (id) => reads.bind(source, id);
+  const viewOf = (binding) => reads.viewOf(source, binding);
   const readView = async (query) => allowed ? viewOf(await bind(query.get('project'))) : source;
   const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
-  const describe = (project, repos) => ({ id: project.id, name: project.name, slug: project.slug, repositories: repositoriesOf(project, repos) });
 
   // #52: an entry belongs to a project by its recorded project_id; an older entry has none and belongs to the project holding the default repository
   const belongs = (entry, binding) => entry.project_id === undefined
@@ -129,15 +100,6 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       const entry = [...list.pending, ...(list.active || []), ...(list.running ? [list.running] : [])].find((e) => e.id === entryId);
       return entry && !belongs(entry, binding) ? json(res, 409, { error: 'not-this-project' }) : act();
     }).catch(readFailed(res));
-  }
-
-  async function listProjects() {
-    const [projects, repos] = await Promise.all([source.listProjects(), source.listRepositories()]);
-    // one project that cannot be joined must not take the picker away from the others
-    return projects.filter((p) => allowed.has(p.id)).flatMap((p) => {
-      try { return [describe(p, repos)]; }
-      catch { console.error(`rfactory-web: project skipped: ${p.id} repository-missing`); return []; }
-    });
   }
 
   // a link names a project by its canonical slug only: an id, alias or ambiguous name is unknown
@@ -165,15 +127,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
-    const { cards, conflicting, freshness, fetched_at } = data;
-    const items = cards.map(mapCard);
-    const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
-    const counts = summarise(items);
-    const summary = buildStandup(data);
-    const headline = speakStandupHeadline(summary, redactor || { toModel: (s) => s });
-    return [200, { items, counts, unknown: items.filter((i) => i.state === 'unknown'),
-      fetched_at, newest_update, summary: headline, summary_error: null, destination: 'the server',
-      standup: summary, headline, freshness, conflicting }];
+    return [200, reads.standupBody(data, redactor)];
   }
 
   const server = http.createServer((req, res) => {
@@ -184,22 +138,21 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     const query = new URLSearchParams(search.join('?'));
     if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
     if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
-      (url === '/api/projects' ? listProjects() : resolveSlug(query.get('slug')))
+      (url === '/api/projects' ? reads.listProjects(source) : resolveSlug(query.get('slug')))
         .then((body) => json(res, 200, body), readFailed(res));
       return;
     }
     if (source.kind === 'github' && req.method === 'GET' && /^\/api\/review(\/|$)/.test(url)) return json(res, 404, { error: 'not-found' });
     if (req.method === 'GET' && url === '/api/review') {
-      readView(query).then((view) => view.standupData()).then(({ cards, conflicting, freshness, fetched_at }) =>
-        json(res, 200, { ...reviewProject(cards, freshness), conflicting, fetched_at }))
+      readView(query).then((view) => reads.reviewProject(view)).then((body) => json(res, 200, body))
         .catch(readFailed(res));
       return;
     }
     if (req.method === 'GET' && url.startsWith('/api/review/')) {
       const card_key = url.slice('/api/review/'.length);
-      if (!/^[\w.-]{1,128}$/.test(card_key)) return json(res, 400, { error: 'bad-request' });
-      readView(query).then((view) => view.reviewData(card_key)).then((result) => result.found
-        ? json(res, 200, reviewCard(result.card, result.discussion, result.freshness))
+      if (!CARD_KEY.test(card_key)) return json(res, 400, { error: 'bad-request' });
+      readView(query).then((view) => reads.reviewCard(view, card_key)).then((body) => body
+        ? json(res, 200, body)
         : json(res, 404, { error: 'not-found' }))
         .catch(readFailed(res));
       return;
@@ -280,7 +233,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
     if (allowed && call && req.method === 'GET' && url === '/api/call/status') {
-      return json(res, 200, { running: call.running, starting, generation: call.generation, project: call.project });
+      return json(res, 200, { running: call.running, starting: slot.starting, generation: call.generation, project: call.project });
     }
     if (call && url === '/api/call') {
       if (req.method === 'POST') {
@@ -288,12 +241,12 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
-          if (starting || call.running) return json(res, 409, { error: 'busy' });
+          if (slot.starting || call.running) return json(res, 409, { error: 'busy' });
           let started;
           if (allowed) {
-            starting = true; // before any await: an overlapping start is refused
+            slot.starting = true; // before any await: an overlapping start is refused
             started = bind(body.project_id).then((binding) => call.start(body.link, { listen: body.listen, binding, view: viewOf(binding) }))
-              .finally(() => { starting = false; });
+              .finally(() => { slot.starting = false; });
           } else started = call.start(body.link, { listen: body.listen });
           return started.then(() => json(res, 202, { ok: true }), (error) => {
             if (error?.refusal || error?.message === 'project-resolve-failed') return readFailed(res)(error);
@@ -308,7 +261,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         if (!allowed) { req.resume(); stopCall(); return; }
         // #52: Stop names the call its page saw, so it cannot end a later one
         readJson(req).then((body) => {
-          if (starting) return json(res, 409, { error: 'starting' });
+          if (slot.starting) return json(res, 409, { error: 'starting' });
           if (body?.generation !== call.generation) return json(res, 409, { error: 'stale-generation' });
           return stopCall();
         });
@@ -346,14 +299,14 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
 }
 
 function refuseKeyEnv(env) {
-  if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k))) throw new Error('key-in-environment');
+  if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k) || /^RFACTORY_AGENT.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
-// The record exists when writes, shares, investigations or lookups are on; only writes build a writer and its managers
+// The record exists when writes, shares, investigations, lookups or agents are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
 async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind }) {
   let actions = null, shares = null, investigations = null;
-  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled) return { actions, shares, investigations };
+  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.agents?.length) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
@@ -424,6 +377,19 @@ async function composeLookups({ scope, key, redactor, token, tokens = {}, create
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
 
+// #27: the agents' read-only MCP listener, over its own bounded source (views share their parent's client, so never the page's).
+async function composeAgents({ scope, agents, key, redactor, call, slot, actions, shares, investigations, record, commit, port = 8090,
+  createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
+  if (!agents?.length) return null;
+  const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
+  await source.start();
+  const reads = createReads({ scope });
+  const tools = require('./agent-tools.js').createAgentTools({ reads, source, redactor, call, slot, actions, shares, investigations, record, commit });
+  const endpoint = require('@rfactory/core/src/agent-endpoint.js').createAgentEndpoint({ agents, tools, port });
+  const url = await endpoint.start();
+  return { endpoint, url, source, close: async () => { await endpoint.close(); await source.close?.(); } };
+}
+
 // The GitHub scope reads one repository and does nothing else: every CFactory feature is refused, not skipped.
 async function composeStandalone({ scope, token, env, createSource = require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
   if (scope.shares_enabled || scope.lookups_enabled || env.RFACTORY_CALLS === '1' || env.RFACTORY_DESKTOP === '1') throw new Error('unsupported-scope');
@@ -442,6 +408,7 @@ async function main() {
   const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
   const secrets = [];
   const extras = {};
+  const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
   if (scope.source.kind === 'github') {
     const source = await composeStandalone({ scope, token: extras.githubToken, env: process.env });
@@ -454,8 +421,9 @@ async function main() {
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
+  const reads = createReads({ scope });
   const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
-    rebind: scope.projects ? createBinder({ source, scope }).bind : undefined });
+    rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
@@ -488,8 +456,11 @@ async function main() {
       ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
+  const commit = process.env.RFACTORY_COMMIT || '';
+  const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
+  console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
   return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
-    commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+    commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 // The stored preview login goes through the runner's own login route; a 200 {ok:false} (the guest's fill failed) is a failure too.
@@ -501,4 +472,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
