@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 56
 author: olafkfreund
 ---
@@ -66,7 +66,7 @@ So the bot says it is ready at step 3, but can only hear from step 4 on.
 - **People in a Meet call** with the bot in captions mode. On Meet, `auto` picks captions even when own transcription is configured (`core/src/scope.js:12-16`), so this is the default for every Meet call.
 - **`bot/run.js`:** what the bot does after joining and what it reports.
 - **`web/call.js`:** the greeting and the call log.
-- **`core/src/call/hearing.js`:** only if cause 5 is confirmed.
+- **`core/src/call/hearing.js`:** not changed here. Cause 5 goes to a new issue if the log confirms it.
 - **`@vibeconferencing/calls` 0.1.0-alpha.3:** read here, not edited. The captions click and its retry live in it.
 - **`docs/hearing.md`:** describes when the bot starts to hear.
 
@@ -75,16 +75,22 @@ So the bot says it is ready at step 3, but can only hear from step 4 on.
 - **No caption or question text in logs.** Logs may hold times, counts and lengths only.
 - **Do not edit `node_modules`.**
 - **Audio mode keeps its behaviour.**
-- **The #65 wake rule stays** unless the owner reopens it. A plain mention must not wake the bot.
+- **The #65 wake rule stays.** A plain mention must not wake the bot.
 - **A caption in the bot's own voice never wakes it** (#62).
-- **The cause is not yet proven.** Code reading makes causes 1 and 2 the most likely and rules none out. Telling them apart needs a live Meet call, which this intent did not make.
+- **The cause is not yet proven.** Code reading makes causes 1 and 2 the most likely and rules none out. Telling them apart needs a live Meet call, which this intent did not make. The fix covers causes 1 and 2 without that proof (decision 1).
 - **PR #69 touches `bot/run.js`** around the join. This work should land after it, or be rebased on it.
 
 ## Open questions
 
-1. **Measure first, or fix now?** Option A: one PR adds the timing log, a live check names the cause, then a second PR fixes it. Option B: one PR adds the log and also holds the greeting until captions are on, which covers causes 1 and 2 without proof. Recommended: B, with a live check before merge.
-2. **May the greeting come later?** Holding it until captions are on delays it by an unknown time, at least 30 s if the first click is lost. Is a silent bot for that long acceptable, or should it say something else first?
-3. **If captions never come on:** should the bot say so in the call, in chat, or only on the page?
-4. **Is a live check on a test Meet approved** for the spec's verification? It needs one observer.
-5. **Cause 5:** if the log shows captions heard without a wake on the first question, is the #65 rule reopened here or in a new issue?
-6. **Upstream:** should the slow retry after a lost captions click be reported to the library's authors?
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved the recommendations on 2026-11-27.
+
+1. **Fix now, in one PR.** The PR adds the timing log and holds the spoken greeting until captions are on. A live check comes before merge.
+2. **The spoken greeting may come later.** The bot says nothing else first, so it never invites a question it cannot hear. (no recommendation was given; lead's default, owner may revisit)
+3. **If captions never come on, the page says so.** The bot does not announce it in the call or in chat, and does not invite questions. (no recommendation was given; lead's default, owner may revisit)
+4. **A live check on a test Meet is approved** for verification, with one observer. This follows from decision 1.
+5. **Cause 5 goes to a new issue.** If the log shows a caption that did not wake the bot, the #65 rule is not reopened here. (no recommendation was given; lead's default, owner may revisit)
+6. **No upstream report in this task.** The PR description records the slow retry, and the owner may report it. (no recommendation was given; lead's default, owner may revisit)
