@@ -285,14 +285,14 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
 }
 
 function refuseKeyEnv(env) {
-  if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k))) throw new Error('key-in-environment');
+  if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k) || /^RFACTORY_AGENT.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
-// The record exists when writes, shares, investigations or lookups are on; only writes build a writer and its managers
+// The record exists when writes, shares, investigations, lookups or agents are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
 async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
   let actions = null, shares = null, investigations = null;
-  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled) return { actions, shares, investigations };
+  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.agents?.length) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
@@ -339,6 +339,19 @@ async function composeLookups({ scope, key, redactor, token, createSource = requ
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
 
+// #27: the agents' read-only MCP listener, over its own bounded source (views share their parent's client, so never the page's).
+async function composeAgents({ scope, agents, key, redactor, call, slot, actions, shares, investigations, record, commit, port = 8090,
+  createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
+  if (!agents?.length) return null;
+  const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
+  await source.start();
+  const reads = createReads({ scope });
+  const tools = require('./agent-tools.js').createAgentTools({ reads, source, redactor, call, slot, actions, shares, investigations, record, commit });
+  const endpoint = require('@rfactory/core/src/agent-endpoint.js').createAgentEndpoint({ agents, tools, port });
+  const url = await endpoint.start();
+  return { endpoint, url, source, close: async () => { await endpoint.close(); await source.close?.(); } };
+}
+
 async function main() {
   refuseKeyEnv(process.env);
   const roles = require('@rfactory/core/src/roles.js').loadRoles(process.env);
@@ -348,6 +361,7 @@ async function main() {
   const { createClaudeBrain } = require('@rfactory/core/src/brains/claude-cli.js');
   const secrets = [];
   const extras = {};
+  const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
   if (scope.source.kind !== 'cfactory' || scope.brain.kind !== 'claude-cli') throw new Error('unsupported-scope');
   const redactor = makeRedactor(secrets);
@@ -388,8 +402,11 @@ async function main() {
       ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
+  const commit = process.env.RFACTORY_COMMIT || '';
+  const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
+  console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
   createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
-    commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+    commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 // The stored preview login goes through the runner's own login route; a 200 {ok:false} (the guest's fill failed) is a failure too.
@@ -401,4 +418,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeAgents, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
