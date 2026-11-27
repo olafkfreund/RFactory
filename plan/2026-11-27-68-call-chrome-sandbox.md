@@ -118,3 +118,11 @@ call Chrome in the KubeVirt guest is the live check in step 5 (Codex review,
 high). The control Chrome is configured the same way (`rfchrome`, sandbox on) in
 this guest, though its comment says that is unverified in a VM run; no guest Nix
 file disables user namespaces. Rollback is one revert.
+
+## Deviations
+
+1. Step 2 (lead): `desktop/guest/agent/call.test.js` l.21, the fake browser
+   context gains `pages: () => []`. Since #69 the bot's Meet guest helper calls
+   `host.context.pages()`, so two `call worker` tests had failed on main
+   ("link, speak with WAV…" and "the share belongs to the call Chrome…"),
+   before this change too (checked on dca2548). Test-only.
