@@ -126,7 +126,16 @@ test('start, greeting, voice, mic and stopped state', async () => {
     await assert.rejects(f.manager.start('other'), /busy/);
     f.children[0].output({ type: 'state', state: 'in-call' });
     await flush();
+    assert.equal(f.messages().find((m) => m.type === 'speak'), undefined);
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions-off', notConfigured: true });
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     assert.equal(f.messages().find((m) => m.type === 'speak').seq, 0);
+    assert.equal(f.manager.current().find((e) => e.type === 'hearing').state, 'captions');
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     f.children[0].output({ type: 'mic', muted: false });
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' });
     assert.ok(f.events.some((e) => e.type === 'greeting' && e.result === 'done'));
@@ -136,6 +145,111 @@ test('start, greeting, voice, mic and stopped state', async () => {
     f.children[0].close(); await stopping;
     assert.equal(f.manager.running, false);
     assert.equal(f.events.at(-1).state, 'stopped');
+  } finally { f.restore(); }
+});
+
+const MEET = 'https://meet.google.com/abc-defg-hij';
+const logsOf = (f) => f.events.filter((e) => e.type === 'log').map((e) => e.message);
+const speaks = (f) => f.messages().filter((m) => m.type === 'speak');
+async function stopNow(f) { const stopping = f.manager.stop(); f.children[0].close(); await stopping; }
+
+test('Meet captions off holds the greeting; a later on greets once', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.children[0].output({ type: 'captions', on: false });
+    await flush();
+    assert.equal(speaks(f).length, 0);
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions-off', notConfigured: true });
+    f.children[0].output({ type: 'captions', on: true });
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(speaks(f).length, 1);
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('caption timing lines count from in-call and the summary fires 5 s after a heard line', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.clock.tick(2000);
+    f.children[0].output({ type: 'captions', on: true });
+    f.clock.tick(1000);
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'secret caption words', final: true });
+    f.children[0].output({ type: 'heard', id: 2, speaker: 'P', text: 'secret caption words', final: true });
+    f.clock.tick(5000);
+    await flush();
+    const lines = logsOf(f).filter((m) => /caption/.test(m));
+    assert.deepEqual(lines, ['captions on ms=2000', 'first caption ms=3000', 'captions heard ms=8000 lines=2']);
+    f.children[0].output({ type: 'heard', id: 3, speaker: 'P', text: 'secret caption words', final: true });
+    f.clock.tick(5000);
+    assert.equal(logsOf(f).filter((m) => m.startsWith('captions heard'))[1], 'captions heard ms=13000 lines=1');
+    for (const m of logsOf(f).filter((m) => /^(captions|first caption)/.test(m)))
+      assert.match(m, /^((captions (on|off)|first caption) ms=\d+|captions heard ms=\d+ lines=\d+)$/);
+    assert.ok(!logsOf(f).some((m) => m.includes('secret')));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Stop clears the pending caption summary', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.children[0].output({ type: 'captions', on: true });
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'hello', final: true });
+    const stopping = f.manager.stop();
+    f.clock.tick(5000);
+    f.children[0].close(); await stopping;
+    assert.ok(!logsOf(f).some((m) => m.startsWith('captions heard')));
+  } finally { f.restore(); }
+});
+
+test('a captions line before in-call is dropped', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    const before = f.events.length;
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(speaks(f).length, 0);
+    assert.ok(!f.events.slice(before).some((e) => e.type === 'hearing'));
+    assert.ok(!logsOf(f).some((m) => m.startsWith('captions on')));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Meet with listen audio greets on in-call and drops a captions line', async () => {
+  const f = setup({ stt: { transcribe: async () => ({ text: '' }) } });
+  try {
+    await f.manager.start(MEET, { listen: 'audio' });
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await flush();
+    assert.equal(speaks(f).length, 1);
+    const before = f.events.length;
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.ok(!f.events.slice(before).some((e) => e.type === 'hearing'));
+    assert.ok(logsOf(f).some((m) => /unknown/.test(m)));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Teams in platform mode greets on in-call and writes no caption timing lines', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    assert.equal(f.manager.current().find((e) => e.type === 'hearing').state, 'captions');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await flush();
+    assert.equal(speaks(f)[0].seq, 0);
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'hello', final: true });
+    f.clock.tick(5000);
+    assert.ok(!logsOf(f).some((m) => /first caption|captions heard/.test(m)));
+    await stopNow(f);
   } finally { f.restore(); }
 });
 
