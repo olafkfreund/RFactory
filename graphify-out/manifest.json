@@ -156,9 +156,9 @@
     "semantic_hash": "e66632c1c801a7287fc155e9c1089d8c"
   },
   "core/src/scope.js": {
-    "mtime": 1795785614.014529,
-    "seen": 1795785997.299662,
-    "ast_hash": "a59183cf15143bd3e835f43003a87b71",
+    "mtime": 1795786103.1518304,
+    "seen": 1795786144.841037,
+    "ast_hash": "fe79cec7d9af1dae2e4f3805525038e0",
     "semantic_hash": ""
   },
   "core/src/share/board.js": {
@@ -306,9 +306,9 @@
     "semantic_hash": "f4d3808ed1f9824f4674abe3a2c5a141"
   },
   "core/test/scope.test.js": {
-    "mtime": 1795785614.0165203,
-    "seen": 1795785997.2997549,
-    "ast_hash": "39df0ceb910250d722ffec9e791c043f",
+    "mtime": 1795786123.2050946,
+    "seen": 1795786144.8411236,
+    "ast_hash": "9d05535da1796861dc23299df66d2de5",
     "semantic_hash": ""
   },
   "core/test/speech.test.js": {

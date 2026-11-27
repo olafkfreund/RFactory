@@ -1,7 +1,7 @@
 # Graph Report - RFactory-t2  (2026-11-27)
 
 ## Corpus Check
-- 312 files · ~469,972 words
+- 312 files · ~470,218 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 21 file(s) not represented in the graph (top: (none) 10, .nix 6, .css 4)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e7c7e68f`
+- Built from commit: `3b371a02`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -1063,7 +1063,7 @@ Nodes (3): Avatar portraits, Changes, Provenance
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Steps` connect `loadScope` to `Cursor`, `makeRedactor`, `gateway.js`, `test brain.test.js`, `Profiles`, `checkFacts`?**
+- **Why does `Websock` connect `Websock` to `.rQwait`, `rfb.js`, `Cursor`, `browser.js`?**
   _High betweenness centrality (0.099) - this node is a cross-community bridge._
 - **Are the 23 inferred relationships involving `createLifecycle()` (e.g. with `lifecycle.js` and `action()`) actually correct?**
   _`createLifecycle()` has 23 INFERRED edges - model-reasoned connections that need verification._
@@ -1071,7 +1071,7 @@ _Questions this graph is uniquely positioned to answer:_
   _35 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `verify lib.sh` be split into smaller, more focused modules?**
   _Cohesion score 0.07080200501253132 - nodes in this community are weakly interconnected._
-- **Why does `Websock` connect `Websock` to `.rQwait`, `rfb.js`, `Cursor`, `browser.js`?**
+- **Why does `Steps` connect `loadScope` to `Cursor`, `makeRedactor`, `gateway.js`, `test brain.test.js`, `Profiles`, `checkFacts`?**
   _High betweenness centrality (0.098) - this node is a cross-community bridge._
 - **Should `rfb.js` be split into smaller, more focused modules?**
   _Cohesion score 0.05519480519480519 - nodes in this community are weakly interconnected._

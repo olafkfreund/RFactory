@@ -278,6 +278,53 @@ test('github_read: 600-mode token is read after the CFactory key, into extras an
   } finally { f.cleanup(); }
 });
 
+test('GitHub token_file loads into secrets and extras after checking the file', () => {
+  const f = fixture();
+  const file = path.join(path.dirname(f.keyFile), 'scope.json');
+  const tokenFile = path.join(path.dirname(f.keyFile), 'github-token');
+  const token = 'synthetic-read-token';
+  const load = (secrets = [], extras = {}) => {
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    return loadScope(file, {}, secrets, extras);
+  };
+  try {
+    f.scope.source = { kind: 'github', owner: 'o', repo: 'r', token_file: tokenFile };
+    fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+    const secrets = [], extras = {};
+    assert.deepEqual(load(secrets, extras), f.scope);
+    assert.deepEqual(secrets, [token]);
+    assert.deepEqual(extras, { githubToken: token });
+
+    f.scope.source.token_file = 'relative/token';
+    assert.throws(() => load(), /invalid-scope/);
+    f.scope.source.token_file = tokenFile;
+    fs.chmodSync(tokenFile, 0o640);
+    const readFileSync = fs.readFileSync;
+    try {
+      fs.readFileSync = (name, ...args) => {
+        if (name === tokenFile) throw new Error('token read before mode check');
+        return readFileSync(name, ...args);
+      };
+      assert.throws(() => load(), /github-token-file-mode/);
+    } finally { fs.readFileSync = readFileSync; }
+    f.scope.source.token_file = path.dirname(tokenFile);
+    assert.throws(() => load(), /github-token-file-mode/);
+    f.scope.source.token_file = tokenFile;
+    fs.chmodSync(tokenFile, 0o600);
+    for (const bad of ['1234567', 'token with space']) {
+      fs.writeFileSync(tokenFile, bad);
+      assert.throws(() => load(), /invalid-github-token/);
+    }
+    delete f.scope.source.token_file;
+    const absentSecrets = [], absentExtras = {};
+    assert.deepEqual(load(absentSecrets, absentExtras), f.scope);
+    assert.deepEqual([absentSecrets, absentExtras], [[], {}]);
+    f.scope.writes_enabled = true;
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    assert.throws(() => loadScope(file, { RFACTORY_WRITES: 'on' }), /invalid-scope/);
+  } finally { f.cleanup(); }
+});
+
 test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
   const f = fixture();
   try {
