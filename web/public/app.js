@@ -346,6 +346,7 @@ function renderAction(doc, a, store, now) {
   li.appendChild(el(doc, 'span', a.description || `${a.action} ${a.card_key || ''}`.trim(), 'action-text'));
   li.appendChild(el(doc, 'pre', JSON.stringify({ action: a.action, args: a.args, card_key: a.card_key }, null, 2), 'action-payload'));
   li.appendChild(el(doc, 'div', `Effects: ${a.effects && a.effects.text ? a.effects.text : 'none'}`, 'evidence'));
+  if (a.repository_path) li.appendChild(el(doc, 'div', `Repository: ${a.repository_path}`, 'evidence'));
   li.appendChild(el(doc, 'div', `Proposed by ${a.proposed_by} (display name, not verified)`, 'evidence'));
   if (a.state === 'pending') {
     const left = Math.max(0, Math.round((Date.parse(a.expires_at) - now) / 60000));
@@ -387,13 +388,17 @@ function handleAction(doc, event, now) {
   renderActions(doc, now);
 }
 
+// the reply to approve, reject or stop, for actions, shares and investigations
+const decided = (r, body) => r.status === 409 && body.error === 'not-this-project' ? "This belongs to another project's call."
+  : body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+
 async function decide(doc, a, verb) {
   const status = doc.getElementById('actions-status');
   try {
     const r = await fetch(scoped(doc, `/api/actions/${encodeURIComponent(a.id)}/${verb}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify({ hash: a.hash }) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -466,7 +471,7 @@ async function decideShare(doc, tail, hash, id) {
     const r = await fetch(scoped(doc, `/api/shares/${tail}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : named) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -542,7 +547,7 @@ async function decideInvestigation(doc, tail, payload) {
     const r = await fetch(scoped(doc, `/api/investigations/${tail}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(payload) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -563,6 +568,7 @@ async function loadInvestigations(doc) {
 // #51: lookup sources. GitHub links go to the bound repository (from the limits event) and nowhere else;
 // a card opens the page's own card review (CFactory has no card page).
 const lookupRepos = new WeakMap();
+const lookupGithubs = new WeakMap(); // #52: every bound repository of a project call
 
 function sourceUrl(repo, { kind, ref }) {
   const value = String(ref);
@@ -587,7 +593,10 @@ function renderSource(doc, source) {
     row.appendChild(btn);
     return row;
   }
-  const url = sourceUrl(lookupRepos.get(doc), source);
+  const githubs = lookupGithubs.get(doc);
+  // a source naming its own repository links only when that repository is bound
+  const repo = source.repo ? (githubs && githubs.includes(source.repo) ? source.repo : null) : lookupRepos.get(doc);
+  const url = sourceUrl(repo, source);
   if (!url) { row.textContent = label; return row; }
   const a = el(doc, 'a', label);
   a.setAttribute('href', url);
@@ -599,6 +608,7 @@ function renderSource(doc, source) {
 
 function renderLimits(doc, event) {
   lookupRepos.set(doc, event.github);
+  lookupGithubs.set(doc, Array.isArray(event.githubs) ? event.githubs : null);
   const line = doc.getElementById('call-limits');
   if (!line) return;
   line.textContent = event.exhausted ? 'lookup budget used'
