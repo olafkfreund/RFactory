@@ -331,3 +331,7 @@ The owner approved this plan with its recommendations.
 2. **If one mode fails, the script still tries the other,** only when the failed mode's call was stopped and the stop was confirmed. The result is still a no-go.
 3. **The owner names the command once, or runs it and hands over the filtered lines,** to read the lookup record from the web pod. The command itself is not named here: that stays a separate owner action when step 6 is reached.
 4. **The observer's interface is accepted:** `ask-<name>` files and one directory per mode, instead of one `ask` file.
+
+## Deviations
+
+1. Step 2 (i57 manager): `desktop/` has no `package-lock.json`, so the Tests section's `npm ci` cannot run there; use `npm install --no-package-lock` in `desktop/` (playwright-core stays pinned to 1.65.1 in package.json).

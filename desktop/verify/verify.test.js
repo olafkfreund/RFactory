@@ -38,6 +38,66 @@ test('callstream gives up after its tries', async () => {
   await assert.rejects(join({ client, id: 'ab', link: 'l', out: new PassThrough(), tries: 3, sleep: async () => {} }), /call-refused-404/);
 });
 
+const NOW = new Date('2026-11-27T10:00:00Z');
+test('callevents filter in timings mode keeps no text and no names', () => {
+  const { filter } = require('./callevents');
+  const events = [
+    { type: 'question', id: 'q1', speaker: 'Ann', text: 'secret', kind: 'ask' },
+    { type: 'answer', text: 'secret', snapshot: { a: 1 }, sources: ['s'] },
+    { type: 'limits', budget_usd: 5, spent_usd: 1.5, exhausted: false, name: 'x' },
+    { type: 'hearing', state: 'own', dropped: 3 },
+    { type: 'state', state: 'in-call', code: 'Bad Code!' },
+    { type: 'project', id: 'p', name: 'N', repositories: ['r'] },
+    { type: 'roster', names: ['Ann'] },
+    ...['dropped question: queue full', 'dropped question: batch full', 'brain failed: x', 'source failed: y', 'chat line failed: z', 'something else']
+      .map((message) => ({ type: 'log', message })),
+  ];
+  const out = events.map((e) => require('./callevents').filter(e, { now: NOW }));
+  const bad = ['text', 'speaker', 'sources', 'snapshot', 'message', 'name', 'repositories'];
+  for (const o of out.filter(Boolean)) for (const k of bad) assert.ok(!(k in o), k);
+  assert.deepEqual(out[0], { received_at: NOW.toISOString(), type: 'question', id: 'q1', kind: 'ask' });
+  assert.deepEqual(out[1], { received_at: NOW.toISOString(), type: 'answer' });
+  assert.deepEqual(out[2], { received_at: NOW.toISOString(), type: 'limits', budget_usd: 5, spent_usd: 1.5, exhausted: false });
+  assert.equal(out[3].dropped, 3);
+  assert.deepEqual(out[4], { received_at: NOW.toISOString(), type: 'state', state: 'in-call' });
+  assert.equal(out[5], null);
+  assert.equal(out[6], null);
+  assert.deepEqual(out.slice(7, 12).map((o) => o.class), ['dropped-queue-full', 'dropped-batch-full', 'brain-failed', 'source-failed', 'notice-failed']);
+  assert.equal(out[12], null);
+  assert.equal(filter({ type: 'state', state: 'error', code: 'meet-denied' }, { now: NOW }).code, 'meet-denied');
+});
+
+test('callevents filter --full keeps the text but not the roster', () => {
+  const { filter } = require('./callevents');
+  assert.equal(filter({ type: 'answer', text: 'hi' }, { full: true, now: NOW }).text, 'hi');
+  assert.equal(filter({ type: 'roster' }, { full: true, now: NOW }), null);
+});
+
+// run the real callevents.js against a local server that answers every request with <status>, <headers> and <body>
+async function runEvents(status, headers, body, args = ['p 1']) {
+  const server = http.createServer((req, res) => { res.writeHead(status, headers); res.end(body); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const child = spawn(process.execPath, [path.join(__dirname, 'callevents.js'), ...args], {
+      env: { ...process.env, VERIFY_SERVER_URL: `http://127.0.0.1:${server.address().port}/`, VERIFY_APPROVER_COOKIE: 'c=1' },
+    });
+    let stdout = '';
+    child.stdout.on('data', (c) => { stdout += c; });
+    const code = await new Promise((r) => child.on('close', r));
+    return { code, stdout };
+  } finally { server.close(); }
+}
+const SSE = { 'content-type': 'text/event-stream' };
+
+test('callevents exits 2 on a redirect, 3 on idle, 0 after the stream', async () => {
+  assert.equal((await runEvents(302, { location: '/login' }, '')).code, 2);
+  const idle = await runEvents(200, SSE, 'data: {"type":"idle"}\n\n');
+  assert.deepEqual([idle.code, idle.stdout], [3, '']);
+  const two = await runEvents(200, SSE, ': hi\ndata: {"type":"state","state":"in-call"}\n\ndata: nope\n\ndata: {"type":"hearing","state":"own"}\n\n');
+  assert.equal(two.code, 0);
+  assert.equal(two.stdout.trim().split('\n').length, 2);
+});
+
 test('fixture /login reports lengths only and /reset clears them', async () => {
   const [a, b] = [18931, 18932];
   const child = spawn(process.execPath, [path.join(__dirname, 'fixture.js'), String(a), String(b)], { stdio: 'ignore' });
