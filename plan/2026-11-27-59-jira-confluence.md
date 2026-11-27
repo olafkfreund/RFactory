@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 59
 spec: spec/2026-11-27-59-jira-confluence.md
 coders:
@@ -262,9 +262,10 @@ the place by the name given.
      - `cd core && npm test` and
        `cd web && NODE_PATH=$PWD/../bot/node_modules npm test` pass
        before any Jira edit;
-     - the owner's answer to that plan's open question 6 (a page with no
-       model does not go through `createGateway`) is recorded in that
-       plan. It is decided there, once, for both slices.
+     - the owner's answer to that plan's decision 6 (a page with no
+       model does not go through `createGateway`; decided 2026-11-27: no
+       spec update needed) is recorded in that plan. It is decided there,
+       once, for both slices.
    - **Then the lead re-reads steps 4 and 5 against the merged code** and
      corrects names that landed differently (the mode variable in
      `app.js`, how `composeStandalone` picks its source). A changed name
@@ -708,21 +709,14 @@ Jira scope still in place the old code refuses to start
 
 ## Open questions
 
-1. **The Jira site for step 9** (spec question 1, still open): which
-   site and projects, and who creates the account and token?
-   Recommended: the owner names them before step 9; steps 1 to 8 do not
-   wait for it.
-2. **Start steps 1 to 3 before "web-github" lands?** They touch only
-   `core/`. Recommended: no. Wait for step 0, because "web-github" also
-   edits `core/src/scope.js` at the same lines, and one rebase is
-   cheaper than a conflict.
-3. **Deviations D1 to D4** above. Recommended: approve them with the
-   plan. D1 corrects a live-check line of the spec that the spec's own
-   rules cannot meet.
-4. **Codex writes steps 1 to 4, the coder steps 5 and 6.** Both
-   reviewers asked for the credential and server steps to go to Codex.
-   Recommended: keep it; delete an entry to move a step back to the
-   coder.
-5. **The token mount for a pod** is not in this plan (no change under
-   `deploy/`). Recommended: add it with the first real Jira deployment,
-   in its own change, with the owner's OK for that host.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this plan with its recommendations.
+
+1. **The Jira site, its projects, the account and the token are not decided here.** The owner names them before step 9, and gives the OK for the live check. Steps 1 to 8 do not wait for it. This stays a separate owner action.
+2. **Steps 1 to 3 wait for step 0 ("web-github") to land,** because it also edits `core/src/scope.js` at the same lines.
+3. **Deviations D1 to D4 are approved** with the plan.
+4. **Codex writes steps 1 to 4 and the coder steps 5 and 6,** as the `coders:` entries say.
+5. **The token mount for a pod is not in this plan.** It is added with the first real Jira deployment, in its own change, with the owner's OK for that host.
