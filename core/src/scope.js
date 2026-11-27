@@ -7,6 +7,7 @@ const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const DESTINATIONS = new Set(['third-party', 'rfactory-host', 'other-machine']);
 const LISTEN = new Set(['auto', 'platform', 'audio']);
+const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
 
 // auto: Meet keeps its captions, the other platforms use own transcription when it is configured.
 function resolveListen({ listen = 'auto', platform, sttConfigured }) {
@@ -43,11 +44,25 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
   if (Object.hasOwn(scope, 'projects')) {
     if (scope.source?.kind !== 'cfactory') throw new Error('invalid-projects'); // projects come from CFactory
-    const onlyKey = (o, key) => !!o && Object.keys(o).join() === key;
+    const onlyKey = (o, key) => !!o && Object.keys(o).sort().join() === key.split(',').sort().join();
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
-        !allow.every((p) => onlyKey(p, 'id') && typeof p.id === 'string' && /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
+        !allow.every((p) => (onlyKey(p, 'id') || onlyKey(p, 'id,github_read')) && typeof p.id === 'string' &&
+          /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
         new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
+    const seen = new Set();
+    for (const p of allow) {
+      if (!Object.hasOwn(p, 'github_read')) continue;
+      const reads = p.github_read;
+      if (!Array.isArray(reads) || reads.length < 1 || reads.length > 20) throw new Error('invalid-projects');
+      for (const r of reads) {
+        if (!onlyKey(r, 'repository_id,owner,repo,token_file') || !Number.isInteger(r.repository_id) ||
+            !name(r.owner) || !name(r.repo) || typeof r.token_file !== 'string' || !path.isAbsolute(r.token_file) ||
+            seen.has(r.repository_id) || (Object.hasOwn(scope.source, 'github_read') && r.repository_id === scope.source.repository_id) ||
+            (p.id.startsWith('repo:') && r.repository_id !== Number(p.id.slice(5)))) throw new Error('invalid-projects');
+        seen.add(r.repository_id);
+      }
+    }
   }
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
@@ -55,6 +70,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
        (typeof scope.source.owner !== 'string' || !scope.source.owner ||
         typeof scope.source.repo !== 'string' || !scope.source.repo))) throw new Error('invalid-scope');
   let key, githubToken;
+  const projectTokens = [];
   if (scope.source?.kind === 'cfactory') {
     const source = scope.source;
     if (typeof source.mcp_url !== 'string' || !URL.canParse(source.mcp_url) ||
@@ -73,13 +89,22 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     // with lookups off the GitHub fields are ignored, so a missing token mount cannot stop start-up
     if (scope.lookups_enabled && Object.hasOwn(source, 'github_read')) {
       const read = source.github_read;
-      const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
       if (!name(read?.owner) || !name(read.repo) || typeof read.token_file !== 'string' ||
           !path.isAbsolute(read.token_file)) throw new Error('invalid-scope');
       const tokenFile = fs.statSync(read.token_file);
       if (!tokenFile.isFile() || (tokenFile.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
       githubToken = fs.readFileSync(read.token_file, 'utf8').trim();
       if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
+    }
+    if (scope.lookups_enabled) {
+      for (const r of (scope.projects?.allow ?? []).flatMap((p) => p.github_read ?? [])) {
+        const tokenFile = fs.statSync(r.token_file);
+        if (!tokenFile.isFile() || (tokenFile.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
+        const token = fs.readFileSync(r.token_file, 'utf8').trim();
+        if (!/^\S{8,}$/.test(token)) throw new Error('invalid-github-token');
+        (extras.githubTokens ??= {})[r.repository_id] = token;
+        projectTokens.push(token);
+      }
     }
   } else {
     if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
@@ -98,6 +123,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
        !DESTINATIONS.has(scope.brain.destination))) throw new Error('invalid-scope');
   if (key) secrets.push(key);
   if (githubToken) { secrets.push(githubToken); extras.githubToken = githubToken; } // after the key: secrets[0] stays CFactory's
+  secrets.push(...projectTokens);
   return scope;
 }
 

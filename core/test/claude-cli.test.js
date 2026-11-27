@@ -136,6 +136,17 @@ test('action proposal uses the action prompt, redacted untrusted request, and th
   assert.ok(input.items[0].content.text.includes('[redacted]'));
 });
 
+test('action proposal names repository ids and short names only when supplied', async (t) => {
+  const s = setup(t, { result: '{"action":"none"}' });
+  await s.brain.propose(snapshot, { request: 'create a card in second', repositories: [
+    { id: 1, path: 'owner/first' }, { id: 2, path: 'owner/second' },
+  ] });
+  assert.deepEqual(JSON.parse(s.calls[1].stdin).repositories,
+    [{ id: 1, name: 'first' }, { id: 2, name: 'second' }]);
+  await s.brain.propose(snapshot, { request: 'create a card' });
+  assert.equal(JSON.parse(s.calls.at(-1).stdin).repositories, undefined);
+});
+
 test('action result must be one JSON proposal object; hostile requests cannot invoke a tool', async (t) => {
   for (const result of [
     'I will move it. {"action":"move_card","args":{}}',

@@ -265,6 +265,16 @@ test('investigation reads: names and arguments, read client only', async () => {
   ]);
 });
 
+test('repository view requires an explicit in-set investigation target before calling CFactory', async () => {
+  const client = inv({ cfactory_investigation_context: { repository_id: 1 } });
+  const view = src(client).forRepositories([1, 2]);
+  await assert.rejects(view.investigationContext(), { message: 'source-error: repository-missing' });
+  await assert.rejects(view.investigationContext(3), { message: 'source-error: repository-missing' });
+  assert.deepEqual(client.calls, []);
+  assert.equal((await view.investigationContext(1)).repository_id, 1);
+  assert.deepEqual(client.calls, [{ name: 'cfactory_investigation_context', arguments: { repository_id: 1 } }]);
+});
+
 test('log cursor advances over three reads; pods_gone and report shapes pass through', async () => {
   const pages = [{ entries: [{ seq: 1, at: 't', line: 'a' }, { seq: 2, at: 't', line: 'b' }], cursor: 2 }, { entries: [{ seq: 3, at: 't', line: 'c' }], cursor: 3 }, { entries: [], cursor: 3 }];
   const client = { async callTool(req) { return reply(pages.shift()); } };

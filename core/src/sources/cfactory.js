@@ -117,7 +117,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     return { repositories: Array.isArray(r.repositories) ? r.repositories : [], default_repository_id: r.default_repository_id };
   };
   const sourceError = (error) => new Error(error?.message === 'source-timeout' ? 'source-timeout' : 'source-error');
-  function view(ids, legacy = false) {
+  function view(ids, legacy = false, name) {
   const hasRepo = (repos) => ids.every((id) => repos.repositories.some((r) => r.id === id));
   const missingRepo = () => new Error(legacy ? 'source-error' : 'source-error: repository-missing');
   async function scopedCards(deadline) {
@@ -187,11 +187,11 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     },
     async boardView() {
       if (typeof redactor?.logSafe !== 'function') throw new Error('board-redactor-required');
-      if (ids.length !== 1) throw new Error('board-requires-one-repository');
       const deadline = Date.now() + timeoutMs;
       const [repos, { cards }] = await Promise.all([repoList(deadline), call('cfactory_list_cards', deadline)]);
       if (!legacy && !hasRepo(repos)) throw missingRepo();
-      return require('../share/board.js').projectBoard(cards, repos, ids[0], repos.repositories.find((r) => r.id === ids[0])?.project || '', redactor, new Date().toISOString());
+      return require('../share/board.js').projectBoard(legacy ? cards : cards.filter((card) => inScope(card, repos, ids)), repos,
+        legacy ? ids[0] : ids, name ?? (repos.repositories.find((r) => r.id === ids[0])?.project || ''), redactor, new Date().toISOString());
     },
     // Fresh read for the action path; read key only. Timeouts reject; an error payload gives { error }.
     async getCard(card_key) {
@@ -229,7 +229,10 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     },
     // Investigation reads; read key only. Bodies are relayed as CFactory and AIFactory return them; an error payload gives { error }.
     // { repository_id, repo, default_branch, sha, test_command|null }
-    investigationContext: () => call('cfactory_investigation_context', undefined, { repository_id: ids[0] }),
+    investigationContext: async (repositoryId) => {
+      if (!legacy && !ids.includes(repositoryId)) throw missingRepo();
+      return call('cfactory_investigation_context', undefined, { repository_id: legacy ? ids[0] : repositoryId });
+    },
     // Hidden by CFactory while it drains.
     async investigateAvailable() {
       const { tools = [] } = await withClient((current) => current.listTools(), Date.now() + timeoutMs);
@@ -249,7 +252,7 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
     && (p.created_at === null || typeof p.created_at === 'string');
   return {
     ...source,
-    forRepositories(ids, { name } = {}) { return view([...ids]); },
+    forRepositories(ids, { name } = {}) { return view([...ids], false, name); },
     // the tenant's full repository list, which a project's ids are joined against
     // an error payload or a missing list is a failure, never "no repositories" (which would empty the picker quietly)
     async listRepositories() {

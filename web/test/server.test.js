@@ -754,14 +754,18 @@ test('project lookups: the endpoint serves each turn its own repositories', asyn
     await client.close();
     return JSON.parse(result.content[0].text).result.map((c) => c.card_key);
   };
-  assert.deepEqual(await found(made.lookupsFor([1, 3])), ['FCT-1', 'FCT-3']);
+  assert.deepEqual(await found(made.lookupsFor({ projectId: 'project-a', name: 'Project A',
+    repositories: [{ id: 1, path: 'o/r1' }, { id: 3, path: 'o/r3' }] }).lookups), ['FCT-1', 'FCT-3']);
   assert.deepEqual(await found(undefined), ['FCT-2']);
 });
 
-test('project approvals: approve, reject and stop need the project that may change things', async (t) => {
+const entriesOf = () => [{ id: 'x', project_id: ALPHA }, { id: 'y', project_id: BETA }, { id: 'old' }]; // an older entry has no project_id: it is the default repository's (ALPHA)
+test('project approvals: approve, reject and stop act on an entry of the requested project only', async (t) => {
   const done = [];
   const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
-  const manager = { list: () => ({}), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const manager = { list: (includeExpired) => ({ pending: [...entriesOf(), ...(includeExpired ? [{ id: 'stale', project_id: ALPHA }] : [])],
+    running: { id: 'log', project_id: BETA, repository_id: 3 }, active: [], history: [] }),
+  approve: act('approve'), reject: act('reject'), stop: act('stop') };
   const roles = rolesFor(ME, ME);
   const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
   const base = await a.get('/api/config');
@@ -777,22 +781,48 @@ test('project approvals: approve, reject and stop need the project that may chan
     });
     return r;
   };
-  const routes = ['actions/x/approve', 'actions/x/reject', 'shares/x/approve', 'shares/x/reject', 'shares/stop',
-    'investigations/x/approve', 'investigations/x/reject', 'investigations/stop'];
-  for (const route of routes) {
+  const routes = (id) => [`actions/${id}/approve`, `actions/${id}/reject`, `shares/${id}/approve`, `shares/${id}/reject`, 'shares/stop',
+    `investigations/${id}/approve`, `investigations/${id}/reject`, 'investigations/stop'];
+  for (const route of routes('x')) {
     assert.deepEqual(await send(`/api/${route}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }], route);
     assert.deepEqual(await send(`/api/${route}?project=${HIDDEN}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }]);
-    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }),
-      [403, { error: 'project-read-only', text: "Changes aren't available for this project yet." }]);
+    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }), [409, { error: 'not-this-project' }], route); // ALPHA's entry
   }
+  for (const route of routes('old')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'old' }), [409, { error: 'not-this-project' }], route);
+  for (const route of routes('stale')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'stale' }),
+    [409, { error: 'not-this-project' }], route);
   assert.deepEqual(done, []);
-  for (const route of routes) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
-  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x']]);
+  for (const route of routes('x')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
+  for (const route of routes('old')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'old' }))[0], 200, route);
+  for (const route of routes('y')) assert.equal((await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'y' }))[0], 200, route);
+  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x'], [ME, 'old'], [ME, 'old'], [ME, 'y'], [ME, 'y']]);
+  // a running log share, opened by BETA's investigation: stopped from BETA's page only
+  assert.deepEqual(await send(`/api/shares/stop?project=${ALPHA}`, { id: 'log' }), [409, { error: 'not-this-project' }]);
+  assert.equal(done.length, 24); // nothing reached the manager
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'log' }))[0], 200);
   await a.begin(ALPHA);
   a.w.fail = 'listProjects';
   assert.equal((await send(`/api/shares/stop?project=${ALPHA}`, { id: 'x' }))[0], 200); // the running call answers for itself
-  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'x' }))[0], 502);
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'y' }))[0], 502);
   await a.stop();
+});
+
+test('project approval lists show a project its own entries, in all three lists', async (t) => {
+  const mk = (project_id, id) => ({ id, ...(project_id ? { project_id } : {}) });
+  const rows = () => [mk(ALPHA, 'a'), mk(BETA, 'b'), mk(undefined, 'old'), { ...mk(BETA, 'log'), repository_id: 3 }];
+  const manager = { list: () => ({ pending: rows(), running: mk(BETA, 'b'), active: rows(), history: rows() }) };
+  const a = await projectApp(t, { roles: rolesFor(ME, ME), actions: manager, shares: manager, investigations: manager });
+  const ids = (list) => [list.pending, list.active, list.history].map((l) => l.map((e) => e.id));
+  for (const kind of ['actions', 'shares', 'investigations']) {
+    const alpha = (await a.reply(`/api/${kind}?project=${ALPHA}`))[1];
+    assert.deepEqual(ids(alpha), [['a', 'old'], ['a', 'old'], ['a', 'old']], kind);
+    assert.equal(alpha.running, null);
+    const beta = (await a.reply(`/api/${kind}?project=${BETA}`))[1];
+    assert.deepEqual(ids(beta), [['b', 'log'], ['b', 'log'], ['b', 'log']], kind);
+    assert.equal(beta.running.id, 'b');
+    assert.equal(beta.can_approve, true);
+  }
+  assert.equal((await a.reply(`/api/actions?project=${HIDDEN}`))[0], 403);
 });
 
 test('project lookups: GitHub only with the default repository, and a project turn never falls back to it', async (t) => {
@@ -804,9 +834,14 @@ test('project lookups: GitHub only with the default repository, and a project tu
     key: 'k', redactor: makeRedactor([]), token: 'token-value', createSource });
   t.after(() => made.endpoint.close());
   const ctx = (extra) => ({ project: { ...made.project, ...extra }, tools: ['find_cards', 'get_issue'] });
-  assert.deepEqual(made.lookupsFor([1, 2]).tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
-  assert.match(made.lookupsFor([2]).tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
-  assert.deepEqual(made.lookupsFor([3]).tools(ctx()).map((x) => x.name), ['find_cards']);
+  const bound = (ids) => ({ projectId: 'project-a', name: 'Project A', repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
+  const both = made.lookupsFor(bound([1, 2]));
+  assert.deepEqual(both.githubs.map((g) => g.repositoryId), [2]);
+  assert.deepEqual(both.lookups.tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
+  assert.match(made.lookupsFor(bound([2])).lookups.tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
+  const other = made.lookupsFor(bound([3]));
+  assert.deepEqual(other.githubs, []);
+  assert.deepEqual(other.lookups.tools(ctx()).map((x) => x.name), ['find_cards']);
   const sdk = (name) => require(require.resolve(`@modelcontextprotocol/sdk/${name}`, { paths: [path.dirname(require.resolve('@rfactory/core/src/scope.js'))] }));
   const { Client } = sdk('client/index.js');
   const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
@@ -817,6 +852,60 @@ test('project lookups: GitHub only with the default repository, and a project tu
   assert.deepEqual((await client.listTools()).tools, []);
   assert.equal((await client.callTool({ name: 'find_cards', arguments: { text: 'x' } })).isError, true);
   await client.close();
+});
+
+test('project GitHub bindings match each repository, ignore mismatches and duplicate names, and never fall back', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const bindings = (github_read) => ({ allow: [{ id: 'a', github_read }] });
+  const scope = { lookups_enabled: true, source: { repository_id: 9, mcp_url: 'x' }, projects: bindings([
+    { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'Owner', repo: 'Two' }]) };
+  const createSource = () => ({ start: async () => {}, forRepositories: (ids) => ({ ids }) });
+  const made = await composeLookups({ scope, key: 'k', redactor: makeRedactor([]), tokens: { 1: 'token-one', 2: 'token-two' }, createSource });
+  t.after(() => made.endpoint.close());
+  const binding = { projectId: 'a', repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'OWNER/TWO' }] };
+  const fetcher = globalThis.fetch, requested = [];
+  globalThis.fetch = async (url, init) => {
+    requested.push([String(url), init.headers.Authorization]);
+    const pathname = new URL(url).pathname;
+    const data = pathname.endsWith('/commits/main') ? { sha: 'a'.repeat(40) } : pathname.endsWith('/issues/7')
+      ? { title: 'issue seven', state: 'open' } : { default_branch: 'main' };
+    return new Response(JSON.stringify(data));
+  };
+  try {
+    const selected = made.lookupsFor(binding);
+    assert.deepEqual(selected.githubs.map((g) => g.repositoryId), [1, 2]);
+    assert.equal(selected.lookups.tools({ project: { github: null, githubs: selected.githubs }, tools: ['get_issue'] }).length, 1);
+    const controller = new AbortController();
+    const ctx = { project: { bound: true, github: null, githubs: selected.githubs }, tools: ['get_issue'],
+      signal: controller.signal, reads: [] };
+    for (const repo of ['owner/one', 'owner/two']) await selected.lookups.call(ctx, 'get_issue', { number: 7, repo });
+    assert.deepEqual(ctx.reads.map((r) => r.repo), ['Owner/One', 'Owner/Two']);
+    assert.deepEqual(requested.map(([, auth]) => auth),
+      ['Bearer token-one', 'Bearer token-one', 'Bearer token-one', 'Bearer token-two', 'Bearer token-two', 'Bearer token-two']);
+    assert.ok(requested.slice(0, 3).every(([url]) => url.includes('/Owner/One')));
+    assert.ok(requested.slice(3).every(([url]) => url.includes('/Owner/Two')));
+  } finally { globalThis.fetch = fetcher; }
+  const errors = []; const original = console.error;
+  console.error = (line) => errors.push(line);
+  try {
+    const unmatched = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'other/repo' }] });
+    assert.deepEqual(unmatched.githubs, []);
+    assert.deepEqual(unmatched.lookups.tools({ project: { github: null, githubs: [] }, tools: ['get_issue', 'find_cards'] }).map((x) => x.name), ['find_cards']);
+    const duplicate = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] });
+    assert.deepEqual(duplicate.githubs.map((g) => g.repositoryId), [1]); // only the matching binding survives
+    const misconfigured = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => misconfigured.endpoint.close());
+    assert.deepEqual(misconfigured.lookupsFor(binding).githubs.map((g) => g.repositoryId), [1]);
+    const sameName = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => sameName.endpoint.close());
+    assert.deepEqual(sameName.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] }).githubs, []);
+  } finally { console.error = original; }
+  assert.ok(errors.length >= 3);
+  assert.ok(errors.every((line) => /^rfactory-web: github-binding-unmatched [12]$/.test(line)));
 });
 
 // slice web-github (#2): a GitHub source gives the older reply, redacted, and nothing else
