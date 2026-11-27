@@ -66,8 +66,10 @@ function validateInvestigation(payload, { scope, repo, redactor }) {
   const refuse = () => ({ ok: false, reason: "I can't do that." });
   // investigations need a CFactory source; `repo` is the trusted name from CFactory's context read for its repository_id
   const scopeRepo = scope?.source?.kind === 'cfactory' && Number.isInteger(scope.source.repository_id) ? repo : null;
-  if (!plain(payload) || Object.keys(payload).length !== INVESTIGATION_FIELDS.length ||
+  const project = plain(payload) && (Object.hasOwn(payload, 'project_id') || Object.hasOwn(payload, 'repository_id'));
+  if (!plain(payload) || Object.keys(payload).length !== INVESTIGATION_FIELDS.length + (project ? 2 : 0) ||
       INVESTIGATION_FIELDS.some((field) => !Object.hasOwn(payload, field)) ||
+      (project && (typeof payload.project_id !== 'string' || !Number.isInteger(payload.repository_id))) ||
       payload.kind !== 'investigate' || scope?.investigations_enabled !== true ||
       !scopeRepo || repo !== scopeRepo || payload.repo !== repo ||
       !bounded(payload.id, 1, 128) || typeof payload.sha !== 'string' || !/^[a-fA-F0-9]{40}$/.test(payload.sha) ||

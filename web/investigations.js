@@ -21,6 +21,30 @@ const QUANTITY = String.raw`(?:\d+|zero|one|two|three|four|five|six|seven|eight|
 const COUNT_CLAIM = new RegExp(String.raw`\b${QUANTITY}(?:\W+(?:of|the|these|those|our|its|their|your|my|a|an))*\W+${TEST_WORD}\b|\b${TEST_WORD}(?:\W+\w+)?\W+\d+\b`, 'i');
 const count = (value) => Number.isInteger(value) && value >= 0;
 
+function namedRepository(request, repositories) {
+  if (repositories.length === 1) return repositories[0];
+  const words = String(request).toLowerCase().match(/[a-z0-9]+/g) || [];
+  const matches = [];
+  for (const repository of repositories) {
+    for (const name of [repository.path.split('/').at(-1), repository.path]) {
+      const wanted = (name.toLowerCase().match(/[a-z0-9]+/g) || []).join('');
+      if (!wanted) continue;
+      for (let start = 0; start < words.length; start++) {
+        let joined = '';
+        for (let end = start; end < words.length && joined.length < wanted.length; end++) {
+          joined += words[end];
+          if (joined === wanted) matches.push({ repository, start, end });
+        }
+      }
+    }
+  }
+  const outer = matches.filter((match) => !matches.some((other) =>
+    other.start <= match.start && other.end >= match.end &&
+    (other.start < match.start || other.end > match.end)));
+  const ids = new Set(outer.map((match) => match.repository.id));
+  return ids.size === 1 ? outer[0].repository : undefined;
+}
+
 // run_tests results are checked once, as they arrive; what cannot be read is reported as unread
 function readTests(tests) {
   return tests.map((item) => {
@@ -40,7 +64,7 @@ function testSentences(tests, testCommand) {
 }
 
 function createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock = Date, scope, roles, enabled,
-  log = (message) => console.error(`rfactory-web: ${message}`) }) {
+  rebind, log = (message) => console.error(`rfactory-web: ${message}`) }) {
   const now = () => clock.now();
   const timer = (fn, ms) => (clock.setTimeout || setTimeout).call(clock, fn, ms);
   const clear = (id) => { if (id) (clock.clearTimeout || clearTimeout).call(clock, id); };
@@ -50,6 +74,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
   let pending;
   const slots = new Set(); // what blocks a new investigation: the approved one, or every unresolved one after a restart
   let generation;
+  let callTarget;
   let recovered = false;
 
   function publicEntry(entry) {
@@ -263,20 +288,27 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     if (slots.size) return reply(409, 'An investigation is already in progress.');
     if (pending) return reply(409, 'An investigation is waiting for approval.');
     const call = generation;
+    const target = callTarget;
+    const source = target?.view || readSource;
+    const repositories = target?.binding?.repositories;
+    const repository = repositories && namedRepository(text, repositories);
+    if (repositories && !repository) return reply(400,
+      `Which repository: ${repositories.map((repo) => repo.path.split('/').at(-1)).join(' or ')}?`);
     let context;
     try {
-      if (!await readSource.investigateAvailable()) return reply(403, OFF); // CFactory hides the tool while it drains
-      context = await readSource.investigationContext();
+      if (!await source.investigateAvailable()) return reply(403, OFF); // CFactory hides the tool while it drains
+      context = await (repository ? source.investigationContext(repository.id) : source.investigationContext());
     } catch { return reply(503, 'The investigation context is unavailable.'); }
     if (call !== generation) return reply(409, 'The call has ended.');
-    if (context?.error || context?.repository_id !== scope.source?.repository_id) return reply(503, 'The investigation context is unavailable.');
+    if (context?.error || context?.repository_id !== (repository?.id ?? scope.source?.repository_id)) return reply(503, 'The investigation context is unavailable.');
     const payload = Object.freeze({ id: randomUUID(), kind: 'investigate', repo: context.repo, sha: context.sha,
+      ...(repository ? { project_id: target.binding.projectId, repository_id: repository.id } : {}),
       request: safe(String(text)), test_command: context.test_command, limits: { ...INVESTIGATION_LIMITS },
       show_log, proposed_by: safe(String(speaker || 'Unknown')),
       proposed_at: new Date(now()).toISOString(), expires_at: new Date(now() + PROPOSAL_MS).toISOString() });
     if (!revalidate(payload, now(), { scope, repo: context.repo, redactor })) return reply(400, "I can't do that.");
     if (pending || slots.size) return reply(409, 'An investigation is already in progress.');
-    const entry = { payload, hash: hashPayload(payload), generation: call, state: 'proposed', token: 0 };
+    const entry = { payload, hash: hashPayload(payload), generation: call, state: 'proposed', token: 0, view: source };
     pending = entry;
     const approval_text = investigationApprovalText(payload);
     try { await write(entry, 'proposed', { approval_text }); }
@@ -292,14 +324,25 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     try {
       await write(entry, 'starting');
       if (!valid(entry, token)) return;
-      const context = await readSource.investigationContext();
+      if (Object.hasOwn(entry.payload, 'project_id')) {
+        try {
+          const binding = await rebind(entry.payload.project_id);
+          if (binding.projectId !== entry.payload.project_id ||
+              !binding.repositories.some((repo) => repo.id === entry.payload.repository_id)) {
+            finish(entry, 'rejected', 'context changed'); return;
+          }
+        } catch { finish(entry, 'rejected', 'context changed'); return; }
+      }
+      if (!valid(entry, token)) return;
+      const context = await (Object.hasOwn(entry.payload, 'repository_id')
+        ? entry.view.investigationContext(entry.payload.repository_id) : entry.view.investigationContext());
       if (!valid(entry, token)) return;
       if (context?.error || context.sha !== entry.payload.sha || context.repo !== entry.payload.repo ||
-          context.test_command !== entry.payload.test_command || context.repository_id !== scope.source.repository_id ||
+          context.test_command !== entry.payload.test_command || context.repository_id !== (entry.payload.repository_id ?? scope.source.repository_id) ||
           !revalidate(entry.payload, now(), { scope, repo: context.repo, redactor })) {
         finish(entry, 'rejected', 'context changed'); return;
       }
-      const card = await writer.createInvestigationCard(entry.payload.request, context.repository_id);
+      const card = await writer.createInvestigationCard(entry.payload.request, entry.payload.repository_id ?? context.repository_id);
       if (typeof card?.card_key === 'string' && card.card_key) entry.card_key = card.card_key;
       if (!valid(entry, token)) return;
       if (card?.error || !entry.card_key) { finish(entry, 'rejected', 'card refused'); return; }
@@ -344,6 +387,8 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     const { repo, sha } = entry.payload;
     try {
       const opened = await shares.openFor(entry.approved_by, { view: 'log', title: `Investigation: ${repo}`, initial: { repo, sha },
+        ...(Object.hasOwn(entry.payload, 'project_id') ? { generation: entry.generation,
+          target: { project_id: entry.payload.project_id, repository_id: entry.payload.repository_id } } : {}),
         provider: async () => {
           const logs = await readSource.investigationLogs(entry.card_key, entry.run_id, entry.cursor || 0, 200);
           if (logs?.error || !Array.isArray(logs?.entries)) throw new Error('log read failed');
@@ -400,18 +445,22 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     running: active[0] || null, active, history: history.map(safe) }; }
   async function endCall() {
     generation = undefined;
+    callTarget = undefined;
     const ending = [...slots]; // taken now: a new call's investigation is not ours to stop
     if (pending) expire(pending);
     await Promise.all(ending.map((entry) => stopEntry(entry, 'call-ended')));
   }
-  async function startCall(nextGeneration) {
+  async function startCall(nextGeneration, { binding, view } = {}) {
     const ending = endCall(); // its synchronous part clears the old call; an unconfirmed stop must not delay the new one
     generation = nextGeneration;
+    callTarget = binding ? { binding, view } : undefined;
     await ending;
   }
   async function recover() {
     for (const item of record.unfinishedInvestigations()) {
       const entry = { payload: { id: item.id, kind: 'investigate', repo: item.repo, sha: item.sha,
+        ...(Object.hasOwn(item, 'project_id') ? { project_id: item.project_id } : {}),
+        ...(Object.hasOwn(item, 'repository_id') ? { repository_id: item.repository_id } : {}),
         request: item.request, test_command: item.test_command, limits: item.limits, show_log: item.show_log,
         proposed_by: item.proposed_by, proposed_at: item.proposed_at, expires_at: item.expires_at },
       hash: item.hash, approved_by: item.approved_by, card_key: item.card_key, run_id: item.run_id,

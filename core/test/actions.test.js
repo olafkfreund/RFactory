@@ -138,6 +138,12 @@ test('investigation payload accepts only the approved shape and scope', () => {
     show_log: true, proposed_by: 'Alice', proposed_at: '2026-11-24T10:00:00.000Z',
     expires_at: '2026-11-24T10:10:00.000Z' };
   assert.equal(validateInvestigation(payload, check).ok, true);
+  const targeted = { ...payload, project_id: 'project-a', repository_id: 1 };
+  assert.equal(validateInvestigation(targeted, check).ok, true);
+  for (const badTarget of [{ project_id: 'project-a' }, { repository_id: 1 },
+    { project_id: 2, repository_id: 1 }, { project_id: 'project-a', repository_id: '1' },
+    { project_id: 'project-a', repository_id: 1, extra: true }])
+    assert.equal(validateInvestigation({ ...payload, ...badTarget }, check).ok, false, JSON.stringify(badTarget));
   assert.equal(validateInvestigation(payload, { ...check,
     scope: { investigations_enabled: true, source: { kind: 'github', owner: 'owner', repo: 'notes-api' } } }).ok, false);
   assert.equal(validateInvestigation({ ...payload, test_command: null }, check).ok, true);
