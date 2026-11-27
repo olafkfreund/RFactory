@@ -3,9 +3,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
-const { mapCard } = require('@rfactory/core/src/sources/cfactory.js');
-const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
-const { reviewCard, reviewProject } = require('@rfactory/core/src/review.js');
+const { createReads, refusal, describe, CARD_KEY } = require('./reads.js');
 
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {
@@ -39,20 +37,7 @@ const EMPTY_LISTS = {
   shares: { pending: [], running: null, history: [] },
   investigations: { pending: [], running: null, active: [], history: [] },
 };
-const refusal = (status, code) => Object.assign(new Error(code), { refusal: status });
 const CLOSED = "Changes aren't available for this project yet.";
-
-// #52: a project's repositories, joined by id; CFactory's two lists are sorted independently, so never zip them
-function repositoriesOf(project, repos) {
-  const joined = project.repository_ids.map((id) => {
-    const repo = repos.find((r) => r.id === id);
-    const where = repo?.intake_project ?? repo?.project;
-    if (typeof where !== 'string' || !where) throw new Error('project-resolve-failed');
-    return { id, path: where };
-  });
-  if (!joined.length) throw new Error('project-resolve-failed');
-  return joined;
-}
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
@@ -93,27 +78,18 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
-  let starting = false; // #52: the call slot, reserved while a project is resolved
-  const allowed = scope?.projects ? new Set(scope.projects.allow.map((p) => p.id)) : null; // null: everything below is as before #52
+  const reads = createReads({ scope });
+  const { allowed } = reads; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
 
-  // nothing is cached: every start and read resolves the project again, and the allowlist is checked before CFactory is asked
-  async function bind(id) {
-    if (!allowed.has(id)) throw refusal(403, 'project-not-allowed');
-    const project = (await source.listProjects()).find((p) => p.id === id);
-    if (!project) throw refusal(404, 'project-unknown');
-    const repositories = repositoriesOf(project, await source.listRepositories());
-    return { projectId: project.id, name: project.name, repositories,
-      writable: repositories.some((r) => r.id === scope.source.repository_id) };
-  }
-  const viewOf = (binding) => source.forRepositories(binding.repositories.map((r) => r.id), { name: binding.name });
+  const bind = (id) => reads.bind(source, id);
+  const viewOf = (binding) => reads.viewOf(source, binding);
   const readView = async (query) => allowed ? viewOf(await bind(query.get('project'))) : source;
   const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
-  const describe = (project, repos) => ({ id: project.id, name: project.name, slug: project.slug, repositories: repositoriesOf(project, repos) });
 
   // #52: approve, reject and stop come from a project that may change things. The running call's frozen binding
   // answers for its own project, so a Stop does not depend on CFactory; any other is resolved afresh.
@@ -123,15 +99,6 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     const running = call?.project?.id === id ? call.projectCall : null;
     return Promise.resolve(running || bind(id)).then(({ writable }) => (writable ? act()
       : json(res, 403, { error: 'project-read-only', text: CLOSED }))).catch(readFailed(res));
-  }
-
-  async function listProjects() {
-    const [projects, repos] = await Promise.all([source.listProjects(), source.listRepositories()]);
-    // one project that cannot be joined must not take the picker away from the others
-    return projects.filter((p) => allowed.has(p.id)).flatMap((p) => {
-      try { return [describe(p, repos)]; }
-      catch { console.error(`rfactory-web: project skipped: ${p.id} repository-missing`); return []; }
-    });
   }
 
   // a link names a project by its canonical slug only: an id, alias or ambiguous name is unknown
@@ -146,15 +113,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
-    const { cards, conflicting, freshness, fetched_at } = data;
-    const items = cards.map(mapCard);
-    const newest_update = items.map((i) => i.updated_at).filter(Boolean).sort().pop() || null;
-    const counts = summarise(items);
-    const summary = buildStandup(data);
-    const headline = speakStandupHeadline(summary, redactor || { toModel: (s) => s });
-    return [200, { items, counts, unknown: items.filter((i) => i.state === 'unknown'),
-      fetched_at, newest_update, summary: headline, summary_error: null, destination: 'the server',
-      standup: summary, headline, freshness, conflicting }];
+    return [200, reads.standupBody(data, redactor)];
   }
 
   const server = http.createServer((req, res) => {
@@ -165,21 +124,20 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     const query = new URLSearchParams(search.join('?'));
     if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
     if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
-      (url === '/api/projects' ? listProjects() : resolveSlug(query.get('slug')))
+      (url === '/api/projects' ? reads.listProjects(source) : resolveSlug(query.get('slug')))
         .then((body) => json(res, 200, body), readFailed(res));
       return;
     }
     if (req.method === 'GET' && url === '/api/review') {
-      readView(query).then((view) => view.standupData()).then(({ cards, conflicting, freshness, fetched_at }) =>
-        json(res, 200, { ...reviewProject(cards, freshness), conflicting, fetched_at }))
+      readView(query).then((view) => reads.reviewProject(view)).then((body) => json(res, 200, body))
         .catch(readFailed(res));
       return;
     }
     if (req.method === 'GET' && url.startsWith('/api/review/')) {
       const card_key = url.slice('/api/review/'.length);
-      if (!/^[\w.-]{1,128}$/.test(card_key)) return json(res, 400, { error: 'bad-request' });
-      readView(query).then((view) => view.reviewData(card_key)).then((result) => result.found
-        ? json(res, 200, reviewCard(result.card, result.discussion, result.freshness))
+      if (!CARD_KEY.test(card_key)) return json(res, 400, { error: 'bad-request' });
+      readView(query).then((view) => reads.reviewCard(view, card_key)).then((body) => body
+        ? json(res, 200, body)
         : json(res, 404, { error: 'not-found' }))
         .catch(readFailed(res));
       return;
@@ -261,7 +219,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
     if (allowed && call && req.method === 'GET' && url === '/api/call/status') {
-      return json(res, 200, { running: call.running, starting, generation: call.generation, project: call.project });
+      return json(res, 200, { running: call.running, starting: slot.starting, generation: call.generation, project: call.project });
     }
     if (call && url === '/api/call') {
       if (req.method === 'POST') {
@@ -269,12 +227,12 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
-          if (starting || call.running) return json(res, 409, { error: 'busy' });
+          if (slot.starting || call.running) return json(res, 409, { error: 'busy' });
           let started;
           if (allowed) {
-            starting = true; // before any await: an overlapping start is refused
+            slot.starting = true; // before any await: an overlapping start is refused
             started = bind(body.project_id).then((binding) => call.start(body.link, { listen: body.listen, binding, view: viewOf(binding) }))
-              .finally(() => { starting = false; });
+              .finally(() => { slot.starting = false; });
           } else started = call.start(body.link, { listen: body.listen });
           return started.then(() => json(res, 202, { ok: true }), (error) => {
             if (error?.refusal || error?.message === 'project-resolve-failed') return readFailed(res)(error);
@@ -289,7 +247,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         if (!allowed) { req.resume(); stopCall(); return; }
         // #52: Stop names the call its page saw, so it cannot end a later one
         readJson(req).then((body) => {
-          if (starting) return json(res, 409, { error: 'starting' });
+          if (slot.starting) return json(res, 409, { error: 'starting' });
           if (body?.generation !== call.generation) return json(res, 409, { error: 'stale-generation' });
           return stopCall();
         });
