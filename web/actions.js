@@ -3,6 +3,7 @@
 const { randomUUID } = require('node:crypto');
 const { validate, hashPayload, canonical } = require('@rfactory/core/src/actions/allowlist.js');
 const { deriveEffects, describe } = require('@rfactory/core/src/actions/effects.js');
+const { closeEvidence } = require('@rfactory/core/src/notes.js');
 
 const LIMIT = 10;
 const PENDING_LIMIT = 5;
@@ -53,7 +54,13 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const proposal = await brain.propose(snapshot, { deadline: now() + 55000, request: text });
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     if (proposal.action === 'none') return { status: 200, question: true };
-    const snapshotKeys = new Set(snapshot.items.map((item) => item.id));
+    return submit(proposal, speaker, { generation: callGeneration, snapshotKeys: new Set(snapshot.items.map((item) => item.id)) });
+  }
+
+  async function submit(proposal, speaker, { generation: callGeneration, snapshotKeys, evidence = false, confirm, quiet = false } = {}) {
+    if (!enabled || !scope.writes_enabled) return reply(403, 'Changes are turned off here.');
+    if (generation === undefined) return reply(409, 'There is no call right now.');
+    if (callGeneration === undefined || callGeneration !== generation) return reply(409, 'The call has ended.');
     const checked = validate(proposal, { scope, snapshotKeys, redactor });
     if (!checked.ok) return reply(400, checked.reason);
     const { action, args } = checked.payload;
@@ -65,6 +72,11 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
       if (found.error || !found.inRepository) return reply(400, "I can't do that.");
       before = found.card;
     }
+    const proof = evidence ? safe(closeEvidence(before)) : null;
+    if (proof?.verdict === 'contradicted' && confirm !== hashPayload(proof)) {
+      return { ...reply(409, 'The stage results contradict this.'), contradicted: true,
+        evidence: proof, evidence_hash: hashPayload(proof) };
+    }
     for (const entry of [...pending.values()]) if (!live(entry)) await expire(entry);
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     if (pending.size >= PENDING_LIMIT) return reply(409, 'There are already five actions waiting for approval.');
@@ -75,9 +87,10 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const payload = Object.freeze({ id: randomUUID(), action, args: Object.freeze(safeArgs),
       effects: Object.freeze(structuredClone(effects)), card_key, card_updated_at: before?.updated_at || null,
       proposed_by: safe(String(speaker || 'Unknown')), proposed_at,
+      ...(proof ? { evidence: Object.freeze({ ...proof, stages: Object.freeze(proof.stages.map((stage) => Object.freeze(stage))) }) } : {}),
       expires_at: new Date(now() + LIFETIME).toISOString() });
     const hash = hashPayload(payload);
-    const entry = { payload, hash, state: 'pending', generation: callGeneration, budget };
+    const entry = { payload, hash, state: 'pending', generation: callGeneration, budget, quiet };
     pending.set(payload.id, entry);
     try { await record.append({ ...payload, hash, state: 'proposed' }); }
     catch { pending.delete(payload.id); return reply(500, 'The action could not be recorded.'); }
@@ -118,6 +131,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
         try {
           const found = await readSource.getCard(entry.payload.card_key);
           if (found.error || !found.inRepository || found.card.updated_at !== entry.payload.card_updated_at) state = 'expired';
+          else if (entry.payload.evidence && canonical(safe(closeEvidence(found.card))) !== canonical(entry.payload.evidence)) state = 'expired';
           else before = found.card;
         } catch { state = 'expired'; } // re-check could not read the card: nothing was sent, so not uncertain
       }
@@ -144,15 +158,16 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
       state = FINAL.has(result?.outcome) ? result.outcome : 'uncertain';
       if (!['done (started)', 'uncertain'].includes(state)) entry.budget.used -= reserved;
       const item = await finish(entry, state, { approved_by: base.approved_by, detail: safe(result?.detail || ''), card: safe(result?.card || null) });
-      const target = entry.payload.card_key || `'${entry.payload.args.title}'`;
+      const target = entry.payload.card_key || (entry.quiet ? 'the new card' : `'${entry.payload.args.title}'`);
       const work = { plan_card: 'planning', code_card: 'build', test_card: 'test', run_card: 'work' }[entry.payload.action] || 'work';
-      const sentence = state === 'uncertain' ? `I'm not sure ${target} went through; check the board.`
+      let sentence = state === 'uncertain' ? `I'm not sure ${target} went through; check the board.`
         : state === 'already done' ? `${target}'s ${work} already finished.`
           : state === 'done (started)' ? entry.payload.action === 'run_card'
             ? `${target} starts ${entry.payload.effects.stages.map((name) => ({ plan: 'planning', code: 'a build', test: 'tests' })[name]).join(', then ')}.`
             : `${target} changed and work started.`
             : state === 'done, start failed' ? `${target} changed, but work did not start.`
-              : state === 'done' ? `${target} changed.` : `${target} failed. ${item.detail}`;
+              : state === 'done' ? `${target} changed.` : `${target} failed.${entry.quiet ? '' : ` ${item.detail}`}`;
+      if (entry.quiet && !entry.payload.card_key) sentence = sentence[0].toUpperCase() + sentence.slice(1);
       emit('action-result', { generation: entry.generation, text: safe(sentence) }, entry.generation);
       return reply(200, safe(sentence), item);
     } catch {
@@ -202,7 +217,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     recovered = true;
   }
 
-  return { request, approve, reject, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  return { request, submit, approve, reject, list, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     startCall, endCall, recover };
 }
 

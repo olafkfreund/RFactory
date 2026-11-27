@@ -352,3 +352,7 @@ Repo traps for every step:
 ## Approval (2026-11-27)
 
 The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question and every choice in "Choices made in this plan" above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
+
+## Deviations
+
+- **Step 5 (Codex):** a quiet `create_card` that fails is spoken as "The new card failed." without the writer's detail. The plan said no other sentence changes; the detail can repeat the title, which is note text (choice 1). The page still gets the detail in the action item.
