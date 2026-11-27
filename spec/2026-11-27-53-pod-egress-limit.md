@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 53
 intent: intent/2026-11-27-53-pod-egress-limit.md
 ---
@@ -150,3 +150,10 @@ All on `k3d-factory`. ArgoCD syncs `apps/rfactory` automatically with self-heal
 6. **This repo:** `shellcheck deploy/k8s/check-egress.sh` is clean.
 
 Steps 2 to 5 need the owner: they run against the live cluster.
+
+## Decisions (2026-11-27)
+
+The owner approved the spec with the recommended answers.
+
+1. **The check script `deploy/k8s/check-egress.sh` is in this slice;** it is the intent's repeatable check.
+2. **The owner merges the factory-gitops PR,** with no call running, because Argo CD syncs it within minutes.
