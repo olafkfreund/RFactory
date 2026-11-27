@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 57
 spec: spec/2026-11-27-57-multi-participant-test.md
 coders:
@@ -79,7 +79,7 @@ Steps 1 to 9 are slice 1: a readiness-check tool and a runbook page, in one PR. 
 
 ## Steps
 
-1. **The observer's audio (lead):** `desktop/verify/fixtures/ask.wav`, "Hey Factory, how many cards are in progress?", and `desktop/verify/fixtures/throwaway.wav`, "Hey Factory, what is blocked?" (Open question 1; if refused, only `ask.wav`).
+1. **The observer's audio (lead):** `desktop/verify/fixtures/ask.wav`, "Hey Factory, how many cards are in progress?", and `desktop/verify/fixtures/throwaway.wav`, "Hey Factory, what is blocked?" (decision 1).
    - Make them with the product's voice: inside the released `rfactory-web` image, run locally with podman, call `createTts({ voicePath: process.env.RFACTORY_VOICE })` from `web/tts.js`, then `say(text)`, and write the buffer to the file. Piper is not installed on the workstation; the image has it (`web/Containerfile:23-37`).
    - The scratch `s60.wav` may be used instead only if the lead's own notes show it was made this way.
    - **Check:** after `say`, the object's `voice` starts with `piper:`. `file` says 16 bit, mono, 22050 Hz for each; each is under 300 KB.
@@ -152,7 +152,7 @@ Steps 1 to 9 are slice 1: a readiness-check tool and a runbook page, in one PR. 
          - **answered:** after that `question` event, an `answer` event that has `sources` or `snapshot`, within `VERIFY_ANSWER_WAIT` of `asked ask`, with no `log` event whose message starts with `brain failed` or `source failed` between the two. Print `readiness-<mode>-answer-seconds <n>`.
      11. **notice** and **spoken:** `owner_confirm readiness-<mode>-notice "Is the bot's chat notice in the Meet chat?"` and `owner_confirm readiness-<mode>-spoken "Did you hear the bot answer 'how many cards are in progress'?"`. `owner_confirm` prints the PASS or FAIL itself; a "no" or no answer in 900 s is a FAIL, and the script goes on to stop.
      12. **stop** (one function, used here and nowhere else): `touch "$WORK/$mode/end"`; set `STOP_SENT=1`; `approver DELETE /api/call` with `{generation: GEN}`, `|| true`. PASS if `.ok` is true and, within `VERIFY_STOP_WAIT`, `GET /api/call/status` shows `running` false and `starting` false. Then, and only then, clear `GEN` and `STOP_SENT`. Kill and `wait` for `EVPID` and `OBSPID` and clear them. If the stop is not confirmed: `die` with "the call may still be running; check the call page". The next mode never starts after an unconfirmed stop.
-   - **Between the modes:** print `readiness-switch-seconds <n>`: from the platform stop to the audio `in-call`. If one mode failed but its stop was confirmed, the other mode still runs (Open question 2).
+   - **Between the modes:** print `readiness-switch-seconds <n>`: from the platform stop to the audio `in-call`. If one mode failed but its stop was confirmed, the other mode still runs (decision 2).
    - **`extra_cleanup`:** use `${VAR:-}` for every variable. If `GEN` is set and `STOP_SENT` is not, send one `DELETE` with it, `|| true`, and print a FAIL line if `.ok` is not true. It never sends a second `DELETE` after a failed stop. Kill `EVPID` and `OBSPID` if set. `rm -rf "$WORK"`: the screenshots, the browser profiles and the full event files are in it.
    - **Output rule:** PASS and FAIL lines carry check names, event field values (`state`, `code`, `error`), seconds and stderr of the reader only. Never a response body as a whole, never the link, never the cookie.
    - **End:** `finish`.
@@ -292,7 +292,7 @@ Steps 1 to 9 are slice 1: a readiness-check tool and a runbook page, in one PR. 
       - nobody is admitted who has not agreed.
 
 14. **Results and issues (lead):**
-    - Read the day's lookup record lines from the web pod, read-only (Open question 3): the file is `${RFACTORY_ACTIONS_DIR:-/var/lib/rfactory/actions}/<UTC date>.jsonl` (`web/server.js:338`, `web/actions-record.js:12-17`). Keep only lines with `kind == "lookup"`, the test project's `project_id`, and an `at` inside one of the two noted call windows; from those, only `at`, `outcome` and `cost`.
+    - Read the day's lookup record lines from the web pod, read-only (decision 3): the file is `${RFACTORY_ACTIONS_DIR:-/var/lib/rfactory/actions}/<UTC date>.jsonl` (`web/server.js:338`, `web/actions-record.js:12-17`). Keep only lines with `kind == "lookup"`, the test project's `project_id`, and an `at` inside one of the two noted call windows; from those, only `at`, `outcome` and `cost`.
     - Post the results comment on #57 from the template, from the score sheet, the timings files and the lookup lines. The segment-drop number is the highest `dropped` seen, as "at least".
     - Open one issue per gap found. Expected: speaker names in own transcription, memory across turns, silent drops, no cost for snapshot answers, no saved events for scoring, quota errors not told apart.
     - Delete the timings files, the lookup lines, `readiness.txt` and the answer key copy from the scratchpad.
@@ -321,7 +321,13 @@ All pass. The desktop suite includes the new filter and reader tests and the thr
 
 ## Open questions
 
-1. **A second WAV for the throwaway question?** The spec approved one file. In the captions mode the readiness check asks twice; with the same words twice it is unknown whether Meet's captions or the bot treat the repeat differently, and the owner could not tell which answer they heard. *Recommendation:* yes, add `throwaway.wav` (about 100 KB), so the single run cannot fail for that reason. If refused, step 4.9 plays `ask.wav`.
-2. **If one mode fails in the readiness run, does the script still try the other?** *Recommendation:* yes, but only when the failed mode's call was stopped and the stop was confirmed. The run is the only one, so it should say as much as it can. The result is still a no-go.
-3. **How does the lead read the lookup record?** The pod and namespace names are not in this repository, and `kubectl exec` into the web pod to read one file is the only step here that is not a plain `get`. *Recommendation:* the owner names the command once, or runs it and hands over the filtered lines.
-4. **The observer speaks a different interface than the spec says:** `ask-<name>` files and one directory per mode, instead of one `ask` file. *Recommendation:* accept; it is what lets two files and two modes work in one run.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this plan with its recommendations.
+
+1. **A second WAV is added:** `throwaway.wav` (about 100 KB), so the single readiness run cannot fail for that reason.
+2. **If one mode fails, the script still tries the other,** only when the failed mode's call was stopped and the stop was confirmed. The result is still a no-go.
+3. **The owner names the command once, or runs it and hands over the filtered lines,** to read the lookup record from the web pod. The command itself is not named here: that stays a separate owner action when step 6 is reached.
+4. **The observer's interface is accepted:** `ask-<name>` files and one directory per mode, instead of one `ask` file.
