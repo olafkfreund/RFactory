@@ -760,7 +760,7 @@ const entriesOf = () => [{ id: 'x', project_id: ALPHA }, { id: 'y', project_id: 
 test('project approvals: approve, reject and stop act on an entry of the requested project only', async (t) => {
   const done = [];
   const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
-  const manager = { list: () => ({ pending: entriesOf(), running: null, active: [], history: [] }), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const manager = { list: () => ({ pending: entriesOf(), running: { id: 'log', project_id: BETA, repository_id: 3 }, active: [], history: [] }), approve: act('approve'), reject: act('reject'), stop: act('stop') };
   const roles = rolesFor(ME, ME);
   const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
   const base = await a.get('/api/config');
@@ -789,6 +789,10 @@ test('project approvals: approve, reject and stop act on an entry of the request
   for (const route of routes('old')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'old' }))[0], 200, route);
   for (const route of routes('y')) assert.equal((await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'y' }))[0], 200, route);
   assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x'], [ME, 'old'], [ME, 'old'], [ME, 'y'], [ME, 'y']]);
+  // a running log share, opened by BETA's investigation: stopped from BETA's page only
+  assert.deepEqual(await send(`/api/shares/stop?project=${ALPHA}`, { id: 'log' }), [409, { error: 'not-this-project' }]);
+  assert.equal(done.length, 24); // nothing reached the manager
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'log' }))[0], 200);
   await a.begin(ALPHA);
   a.w.fail = 'listProjects';
   assert.equal((await send(`/api/shares/stop?project=${ALPHA}`, { id: 'x' }))[0], 200); // the running call answers for itself
