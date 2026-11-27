@@ -348,3 +348,20 @@ test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
     assert.throws(() => f.load(), /invalid-projects/); // projects need a CFactory source
   } finally { f.cleanup(); }
 });
+
+test('the README "Without the Factories" scope file loads', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');
+  const block = /## Without the Factories[\s\S]*?```json\n([\s\S]*?)\n```/.exec(readme)[1];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-readme-scope-'));
+  try {
+    const tokenFile = path.join(dir, 'github-token');
+    fs.writeFileSync(tokenFile, 'synthetic-readme-token\n', { mode: 0o600 });
+    const scope = JSON.parse(block);
+    scope.source.token_file = tokenFile;
+    const file = path.join(dir, 'scope.json');
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const extras = {};
+    assert.deepEqual(loadScope(file, {}, [], extras), scope);
+    assert.equal(extras.githubToken, 'synthetic-readme-token');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
