@@ -11,6 +11,7 @@ The factory cluster is the deployment: see `plan/2026-11-24-33-rfactory-in-clust
 - `roles.env` (mode 600) holds `ALLOWED=`, `APPROVERS=` and `ADMINS=` as comma lists.
 - `scope.cluster.json` is the cluster's scope file (the in-cluster CFactory URL). `scope.json` stays for the p620 pod.
 - **Change a member:** edit `roles.env`, run `deploy/k8s/bootstrap-secrets.sh`; the pod restarts.
+- **Check the egress limit:** `deploy/k8s/check-egress.sh` (`--baseline` before a policy change). It probes from the pod and changes nothing.
 - **Re-seed the shared Claude login:** update the `factory-cli-creds` Secret as `docs/secrets-management.md` in factory-gitops describes, then `kubectl --context k3d-factory -n factory rollout restart deploy/rfactory`.
 - `deploy/pod.sh` is a development path only.
 
