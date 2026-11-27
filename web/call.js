@@ -33,11 +33,11 @@ function spoken(text) {
 // what the turn delivered, one entry per card, issue, PR or file
 function sourcesOf(reads) {
   const sources = new Map();
-  for (const { ok, kind, ref, title } of reads) {
+  for (const { ok, kind, ref, title, repo } of reads) {
     if (!ok) continue;
     for (const one of (kind === 'card' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'; a file name may hold a comma
-      const key = `${kind}:${one}`;
-      if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title });
+      const key = `${kind}:${repo || ''}:${one}`;
+      if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title, ...(repo ? { repo } : {}) });
     }
   }
   return [...sources.values()];
@@ -220,7 +220,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function emitLimits(c) {
     if (call !== c) return;
     emit({ type: 'limits', budget_usd: budget, spent_usd: c.lookupSpend, answer_seconds: ANSWER_MS / 1000,
-      lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repositoryName(c.project) });
+      lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repositoryName(c.project),
+      ...(c.project?.bound ? { githubs: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}) });
   }
 
   // one line per question turn; never question text, answer text or tool output
@@ -243,7 +244,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const { signal } = controller;
     const deadline = question.arrivedAt + ANSWER_MS;
     const ctx = { project: c.project, ...(c.lookups ? { lookups: c.lookups } : {}), deadline, controller, signal,
-      tools: [...FACTORY, ...(c.project.github ? GITHUB : [])],
+      tools: [...FACTORY, ...(c.project.github || c.project.githubs?.length ? GITHUB : [])],
       rounds: 0, roundLimited: false, commit: null, reads: [] };
     const token = endpoint.register(ctx);
     c.lookupTurn = ctx;
@@ -269,6 +270,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       ({ cost = null, model = null } = result);
       if (signal.aborted) throw new Error('aborted');
       const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
+        ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
         evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
       text = checked.text;
       outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
@@ -542,11 +544,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const callTts = resolvedAvatar?.startsWith('m') ? maleTts : tts;
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
-    // #52: the whole call reads through its project's view; GitHub stays the default repository's binding
+    // #52: the whole call reads through its project's view
     const target = binding ? { binding, view } : undefined;
+    const own = binding && lookupsOn ? lookupsFor(binding) : null;
     const c = { binding, view: binding ? view : source,
-      project: binding && project ? { repositoryId: project.repositoryId, github: binding.repositories.some((r) => r.id === project.repositoryId) ? project.github : null, bound: true } : project,
-      lookups: binding && lookupsOn ? lookupsFor(binding.repositories.map((r) => r.id)) : null,
+      project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
+        githubs: own?.githubs ?? [], bound: true } : project,
+      lookups: own?.lookups ?? null,
       projectCall: target ?? null, // what the desktop routes may do, and read
       child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,

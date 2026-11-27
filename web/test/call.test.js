@@ -1399,7 +1399,9 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
   const made = [], contexts = [], records = [];
   const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
   const f = setup({ brainTurn: async () => ({ text: 'Unknown.', cost: 0 }), extra: { lookups: {}, endpoint, lookupUrl: 'url',
-    lookupsFor: (ids) => { const own = { ids }; made.push(own); return own; }, project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
+    lookupsFor: (binding) => { const own = { ids: binding.repositories.map((r) => r.id) }; made.push(own);
+      return { lookups: own, githubs: own.ids.includes(2) ? [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }] : [] }; },
+    project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
     scope: { lookups_enabled: true }, record: { append: async (line) => { records.push(line); } } } });
   try {
     for (const [n, binding] of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])].entries()) {
@@ -1412,8 +1414,39 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
     assert.deepEqual(made.map((m) => m.ids), [[1, 2], [3]]);
     assert.deepEqual(contexts.map((c) => c.lookups), made);
     assert.deepEqual(contexts.map((c) => c.tools.includes('read_file')), [true, false]);
-    assert.deepEqual(contexts.map((c) => c.project.github), [{ owner: 'Olaf', repo: 'Demo' }, null]);
+    assert.deepEqual(contexts.map((c) => c.project.github), [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }, null]);
     assert.deepEqual(records.map((r) => [r.project_id, r.repository_ids]), [['alpha', [1, 2]], ['beta', [3]]]);
+  } finally { f.restore(); }
+});
+
+test('two bound repositories offer GitHub tools and keep same-number and same-path sources distinct across calls', async () => {
+  const contexts = [], made = [], rows = [];
+  const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
+  const f = setup({ brainTurn: async () => {
+    const reads = contexts.at(-1).reads;
+    for (const repo of ['Owner/One', 'Owner/Two']) for (const [kind, ref] of [['issue', '7'], ['file', 'src/a.js']])
+      reads.push({ tool: kind, ok: true, kind, ref, repo, title: ref });
+    return { text: 'Unknown.', cost: 0 };
+  }, extra: { lookups: {}, endpoint, lookupUrl: 'url', scope: { lookups_enabled: true },
+    project: { repositoryId: 9, github: null }, record: { append: async (row) => rows.push(row) },
+    lookupsFor: (binding) => { const result = { lookups: { call: () => {} }, githubs: binding.projectId === 'alpha'
+      ? [{ repositoryId: 1, owner: 'Owner', repo: 'One' }, { repositoryId: 2, owner: 'Owner', repo: 'Two' }] : [] };
+    made.push(result); return result; } } });
+  try {
+    for (const binding of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])]) {
+      await f.manager.start('link', { binding, view: viewFor('card') });
+      await f.heard(`q${made.length}`, 'Factory, what happened?'); await speakAll(f);
+      const limits = f.manager.current().find((e) => e.type === 'limits');
+      assert.deepEqual(limits.githubs, binding.projectId === 'alpha' ? ['Owner/One', 'Owner/Two'] : []);
+      assert.equal(limits.github, null);
+      const answer = f.events.filter((e) => e.type === 'answer').at(-1);
+      assert.equal(answer.sources.length, 4);
+      assert.deepEqual(answer.sources.map((s) => s.repo), ['Owner/One', 'Owner/One', 'Owner/Two', 'Owner/Two']);
+      await endCall(f);
+    }
+    assert.notEqual(made[0].lookups, made[1].lookups);
+    assert.deepEqual(contexts.map((c) => c.tools.includes('get_issue')), [true, false]);
+    assert.equal(rows.length, 2);
   } finally { f.restore(); }
 });
 

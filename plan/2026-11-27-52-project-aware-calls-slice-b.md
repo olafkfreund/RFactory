@@ -332,3 +332,5 @@ The owner approved this plan with the recommended answers: "approve all with rec
 ## Deviations
 
 1. Step 7 (i52 manager): the spoken desktop path in `web/call.js` (l.337) also passes `c.projectCall` to `desktop.request`, the same fix as the route: the plan named only the route. Without a `projects` block both sides are `null`. No test of its own; the existing "dropped when another project call starts" test covers the comparison.
+2. Step 8 (Codex, i52 manager): `core/src/facts.js` refuses a bare `#n` whenever two known items share that number, also without `repos` (legacy mode); the plan words the rule "with `repos`". Before, the last one won; a single-repository snapshot cannot hold two, so legacy behaviour is unchanged in practice.
+3. Step 8: the `limits` event gains `githubs` only in project calls; the legacy event is unchanged. A binding whose token file is absent is logged `github-binding-unmatched` and skipped.

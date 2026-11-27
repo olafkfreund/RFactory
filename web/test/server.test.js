@@ -752,7 +752,8 @@ test('project lookups: the endpoint serves each turn its own repositories', asyn
     await client.close();
     return JSON.parse(result.content[0].text).result.map((c) => c.card_key);
   };
-  assert.deepEqual(await found(made.lookupsFor([1, 3])), ['FCT-1', 'FCT-3']);
+  assert.deepEqual(await found(made.lookupsFor({ projectId: 'project-a', name: 'Project A',
+    repositories: [{ id: 1, path: 'o/r1' }, { id: 3, path: 'o/r3' }] }).lookups), ['FCT-1', 'FCT-3']);
   assert.deepEqual(await found(undefined), ['FCT-2']);
 });
 
@@ -827,9 +828,14 @@ test('project lookups: GitHub only with the default repository, and a project tu
     key: 'k', redactor: makeRedactor([]), token: 'token-value', createSource });
   t.after(() => made.endpoint.close());
   const ctx = (extra) => ({ project: { ...made.project, ...extra }, tools: ['find_cards', 'get_issue'] });
-  assert.deepEqual(made.lookupsFor([1, 2]).tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
-  assert.match(made.lookupsFor([2]).tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
-  assert.deepEqual(made.lookupsFor([3]).tools(ctx()).map((x) => x.name), ['find_cards']);
+  const bound = (ids) => ({ projectId: 'project-a', name: 'Project A', repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
+  const both = made.lookupsFor(bound([1, 2]));
+  assert.deepEqual(both.githubs.map((g) => g.repositoryId), [2]);
+  assert.deepEqual(both.lookups.tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
+  assert.match(made.lookupsFor(bound([2])).lookups.tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
+  const other = made.lookupsFor(bound([3]));
+  assert.deepEqual(other.githubs, []);
+  assert.deepEqual(other.lookups.tools(ctx()).map((x) => x.name), ['find_cards']);
   const sdk = (name) => require(require.resolve(`@modelcontextprotocol/sdk/${name}`, { paths: [path.dirname(require.resolve('@rfactory/core/src/scope.js'))] }));
   const { Client } = sdk('client/index.js');
   const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
@@ -840,4 +846,53 @@ test('project lookups: GitHub only with the default repository, and a project tu
   assert.deepEqual((await client.listTools()).tools, []);
   assert.equal((await client.callTool({ name: 'find_cards', arguments: { text: 'x' } })).isError, true);
   await client.close();
+});
+
+test('project GitHub bindings match each repository, ignore mismatches and duplicate names, and never fall back', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const bindings = (github_read) => ({ allow: [{ id: 'a', github_read }] });
+  const scope = { lookups_enabled: true, source: { repository_id: 9, mcp_url: 'x' }, projects: bindings([
+    { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'Owner', repo: 'Two' }]) };
+  const createSource = () => ({ start: async () => {}, forRepositories: (ids) => ({ ids }) });
+  const made = await composeLookups({ scope, key: 'k', redactor: makeRedactor([]), tokens: { 1: 'token-one', 2: 'token-two' }, createSource });
+  t.after(() => made.endpoint.close());
+  const binding = { projectId: 'a', repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'OWNER/TWO' }] };
+  const fetcher = globalThis.fetch, requested = [];
+  globalThis.fetch = async (url, init) => {
+    requested.push([String(url), init.headers.Authorization]);
+    const pathname = new URL(url).pathname;
+    const data = pathname.endsWith('/commits/main') ? { sha: 'a'.repeat(40) } : pathname.endsWith('/issues/7')
+      ? { title: 'issue seven', state: 'open' } : { default_branch: 'main' };
+    return new Response(JSON.stringify(data));
+  };
+  try {
+    const selected = made.lookupsFor(binding);
+    assert.deepEqual(selected.githubs.map((g) => g.repositoryId), [1, 2]);
+    assert.equal(selected.lookups.tools({ project: { github: null, githubs: selected.githubs }, tools: ['get_issue'] }).length, 1);
+    const controller = new AbortController();
+    const ctx = { project: { bound: true, github: null, githubs: selected.githubs }, tools: ['get_issue'],
+      signal: controller.signal, reads: [] };
+    for (const repo of ['owner/one', 'owner/two']) await selected.lookups.call(ctx, 'get_issue', { number: 7, repo });
+    assert.deepEqual(ctx.reads.map((r) => r.repo), ['Owner/One', 'Owner/Two']);
+    assert.deepEqual(requested.map(([, auth]) => auth),
+      ['Bearer token-one', 'Bearer token-one', 'Bearer token-one', 'Bearer token-two', 'Bearer token-two', 'Bearer token-two']);
+    assert.ok(requested.slice(0, 3).every(([url]) => url.includes('/Owner/One')));
+    assert.ok(requested.slice(3).every(([url]) => url.includes('/Owner/Two')));
+  } finally { globalThis.fetch = fetcher; }
+  const errors = []; const original = console.error;
+  console.error = (line) => errors.push(line);
+  try {
+    const unmatched = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'other/repo' }] });
+    assert.deepEqual(unmatched.githubs, []);
+    assert.deepEqual(unmatched.lookups.tools({ project: { github: null, githubs: [] }, tools: ['get_issue', 'find_cards'] }).map((x) => x.name), ['find_cards']);
+    const duplicate = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] });
+    assert.deepEqual(duplicate.githubs.map((g) => g.repositoryId), [1]); // only the matching binding survives
+    const sameName = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => sameName.endpoint.close());
+    assert.deepEqual(sameName.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] }).githubs, []);
+  } finally { console.error = original; }
+  assert.ok(errors.length >= 3);
+  assert.ok(errors.every((line) => /^rfactory-web: github-binding-unmatched [12]$/.test(line)));
 });

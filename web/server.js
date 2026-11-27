@@ -362,7 +362,7 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir, rebin
 
 // #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
 // The lookups read CFactory through their own bounded source; the app's source is untouched.
-async function composeLookups({ scope, key, redactor, token, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
+async function composeLookups({ scope, key, redactor, token, tokens = {}, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
   if (!scope.lookups_enabled) return null;
   const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
   await source.start();
@@ -380,8 +380,30 @@ async function composeLookups({ scope, key, redactor, token, createSource = requ
   const none = { tools: () => [], call: async () => ({ error: 'lookup-refused' }) };
   const own = (ctx) => ctx.lookups || (ctx.project?.bound ? none : lookups); // a project turn never falls back to the default repository
   const endpoint = createLookupEndpoint({ lookups: { tools: (ctx) => own(ctx).tools(ctx), call: (ctx, name, args) => own(ctx).call(ctx, name, args) } });
-  const lookupsFor = (ids) => createLookups({ source: source.forRepositories(ids),
-    github: ids.includes(scope.source.repository_id) ? github : null, redactor });
+  const lookupsFor = (binding) => {
+    const selected = [];
+    const candidates = binding.repositories.map((r) => {
+      const config = scope.projects?.allow.find((p) => p.id === binding.projectId)?.github_read?.find((g) => g.repository_id === r.id)
+        ?? (r.id === scope.source.repository_id && token ? scope.source.github_read : null);
+      return { repository: r, config };
+    });
+    const names = candidates.map(({ config }) => config && `${config.owner}/${config.repo}`.toLowerCase());
+    for (const [i, { repository, config }] of candidates.entries()) {
+      if (!config) continue;
+      const name = names[i];
+      if (name !== repository.path.toLowerCase() || names.filter((n) => n === name).length > 1 ||
+        !(repository.id === scope.source.repository_id && token ? token : tokens[repository.id])) {
+        console.error(`rfactory-web: github-binding-unmatched ${repository.id}`);
+        continue;
+      }
+      selected.push({ repositoryId: repository.id, owner: config.owner, repo: config.repo });
+    }
+    const clients = new Map(selected.map((g) => [`${g.owner}/${g.repo}`.toLowerCase(),
+      g.repositoryId === scope.source.repository_id && token ? github
+        : require('@rfactory/core/src/sources/github-read.js').createGithubRead({ token: tokens[g.repositoryId] })]));
+    return { lookups: createLookups({ source: source.forRepositories(binding.repositories.map((r) => r.id)),
+      github: selected.length > 1 ? clients : clients.values().next().value ?? null, redactor }), githubs: selected };
+  };
   const lookupUrl = await endpoint.start();
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
@@ -404,7 +426,7 @@ async function main() {
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
   const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
     rebind: scope.projects ? createBinder({ source, scope }).bind : undefined });
-  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken });
+  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged

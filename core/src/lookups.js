@@ -21,10 +21,11 @@ function runResult(tests) {
   return tests.every((t) => t?.exit_code === 0 || (t?.parsed !== false && t?.failed === 0)) ? 'passed' : 'not-run';
 }
 
-function validate(name, args) {
+function validate(name, args, repos = []) {
   const spec = specs[name];
   if (!spec || !args || typeof args !== 'object' || Array.isArray(args)) return false;
-  if (Object.keys(args).some((key) => !Object.hasOwn(spec, key))) return false;
+  if (Object.keys(args).some((key) => !Object.hasOwn(spec, key) && !(repos.length > 1 && GITHUB.includes(name) && key === 'repo'))) return false;
+  if (repos.length > 1 && GITHUB.includes(name) && !repos.includes(args.repo)) return false;
   for (const [key, type] of Object.entries(spec)) {
     if (type.endsWith('?') && args[key] === undefined) continue;
     if (type === 'integer' ? !validNumber(args[key]) : typeof args[key] !== 'string') return false;
@@ -34,7 +35,7 @@ function validate(name, args) {
   if (name === 'read_file') return validPath(args.path);
   return true;
 }
-function schema(name) {
+function schema(name, repos = []) {
   const properties = {};
   const required = [];
   for (const [key, type] of Object.entries(specs[name])) {
@@ -44,6 +45,7 @@ function schema(name) {
   if (name === 'find_cards') { properties.text.minLength = 1; properties.text.maxLength = 200; properties.state.enum = STATES; }
   if (properties.card_key) properties.card_key.pattern = CARD.source;
   if (properties.path) properties.path.maxLength = 300;
+  if (repos.length > 1 && GITHUB.includes(name)) { properties.repo = { type: 'string', enum: repos }; required.push('repo'); }
   return { type: 'object', properties, required, additionalProperties: false };
 }
 function cap(value, limit) {
@@ -79,18 +81,29 @@ function cap(value, limit) {
   return final();
 }
 function createLookups({ source, github, redactor }) {
+  const clients = github instanceof Map ? github : null;
+  const names = clients ? [...clients.keys()] : [];
+  const bound = (ctx) => ctx.project?.github || ctx.project?.githubs?.length;
   return {
-    tools(ctx) { return ctx.tools.filter((name) => specs[name] && (FACTORY.includes(name) || (github && ctx.project.github))).map((name) => ({
+    tools(ctx) { return ctx.tools.filter((name) => specs[name] && (FACTORY.includes(name) || (github && bound(ctx)))).map((name) => ({
       name, description: `Read ${name.replaceAll('_', ' ')} in ${GITHUB.includes(name)
-        ? `the GitHub repository ${ctx.project.github.owner}/${ctx.project.github.repo}` : 'the bound project'}`, inputSchema: schema(name),
+        ? names.length > 1 ? 'the selected GitHub repository' : `the GitHub repository ${ctx.project.github.owner}/${ctx.project.github.repo}` : 'the bound project'}`, inputSchema: schema(name, names),
     })); },
     async call(ctx, name, args) {
       // only a delivered read logs a ref: a model's argument could carry question text into the record
       const entry = { tool: name, ref: '', ok: false };
       let ref = args?.card_key ?? args?.number ?? args?.path ?? '';
       try {
-        if (!ctx.tools.includes(name) || !validate(name, args) || (GITHUB.includes(name) && (!github || !ctx.project.github))) throw new Error('lookup-refused');
+        if (!ctx.tools.includes(name) || !validate(name, args, names) || (GITHUB.includes(name) && (!github || !bound(ctx)))) throw new Error('lookup-refused');
         if (ctx.signal?.aborted) throw new Error('aborted');
+        const selected = GITHUB.includes(name) ? names.length > 1 ? args.repo : names[0] : null;
+        const reader = selected ? clients.get(selected) : github;
+        const gh = selected ? ctx.project.githubs.find((b) => `${b.owner}/${b.repo}`.toLowerCase() === selected) : ctx.project.github;
+        const readCtx = selected ? (ctx.githubContexts ??= new Map()).get(selected) || (() => {
+          const own = { project: { github: gh }, signal: ctx.signal, commit: null };
+          ctx.githubContexts.set(selected, own);
+          return own;
+        })() : ctx;
         let result, kind, title, evidence;
         if (name === 'find_cards') {
           // lookupCards returns in-scope cards only
@@ -105,9 +118,12 @@ function createLookups({ source, github, redactor }) {
           kind = 'card'; title = card.title; evidence = mapCard(card);
           if (name === 'get_card') {
             // a project call may span repositories: a number is given only when the GitHub tools would read the repository it is in
-            const bound = ctx.project.github && `${ctx.project.github.owner}/${ctx.project.github.repo}#`.toLowerCase();
-            const numbered = (key, ref, state) => (ctx.project.bound && ref && !(bound && String(ref).toLowerCase().startsWith(bound))
-              ? {} : { [key]: ref ? { number: Number(ref.match(/#(\d+)$/)?.[1]), state } : null });
+            const bindings = ctx.project.githubs?.length ? ctx.project.githubs : ctx.project.github ? [ctx.project.github] : [];
+            const numbered = (key, ref, state) => {
+              const match = bindings.find((b) => ref && String(ref).toLowerCase().startsWith(`${b.owner}/${b.repo}#`.toLowerCase()));
+              return ctx.project.bound && ref && !match ? {} : { [key]: ref ? { number: Number(ref.match(/#(\d+)$/)?.[1]), state,
+                ...(bindings.length > 1 ? { repo: `${match.owner}/${match.repo}` } : {}) } : null };
+            };
             result = { card_key: card.card_key, title: wrap(card.title), state: evidence.state,
               plan: wrap(card.plan || card.description), acceptance: wrap(card.acceptance || card.acceptance_criteria),
               ...numbered('issue', card.issue_ref, card.issue_state), ...numbered('pr', card.pr_ref, card.pr_state),
@@ -137,19 +153,19 @@ function createLookups({ source, github, redactor }) {
         } else {
           const number = args.number;
           if (name === 'get_issue') {
-            const issue = await github.getIssue(ctx, number);
+            const issue = await reader.getIssue(readCtx, number);
             kind = issue.head === undefined ? 'issue' : 'pr'; title = issue.title;
-            evidence = { id: `${ctx.project.github.owner}/${ctx.project.github.repo}#${number}`, kind: kind === 'pr' ? 'pull_request' : 'issue',
+            evidence = { id: `${gh.owner}/${gh.repo}#${number}`, kind: kind === 'pr' ? 'pull_request' : 'issue',
               title: issue.title, state: issue.state === 'closed' ? 'done' : kind === 'pr' ? 'in_progress' : 'left', source_state: issue.state, rule: 'live', basis: 'observed', assignees: [], updated_at: '', evidence: [] };
             result = { ...issue, title: wrap(issue.title), body: wrap(issue.body), labels: issue.labels?.map(wrap),
               ...(issue.head === undefined ? {} : { head: wrap(issue.head), base: wrap(issue.base) }) };
-          } else if (name === 'issue_comments') { kind = 'issue'; title = `#${number}`; result = (await github.issueComments(ctx, number)).map((x) => ({ ...x, author: wrap(x.author), text: wrap(x.text) })); }
-          else if (name === 'pr_diff') { kind = 'pr'; title = `#${number}`; result = (await github.prDiff(ctx, number)).map((x) => ({ ...x, filename: wrap(x.filename), patch: wrap(x.patch) })); }
-          else { kind = 'file'; title = args.path; result = await github.readFile(ctx, args.path); if (result.content !== undefined) result.content = wrap(result.content); }
+          } else if (name === 'issue_comments') { kind = 'issue'; title = `#${number}`; result = (await reader.issueComments(readCtx, number)).map((x) => ({ ...x, author: wrap(x.author), text: wrap(x.text) })); }
+          else if (name === 'pr_diff') { kind = 'pr'; title = `#${number}`; result = (await reader.prDiff(readCtx, number)).map((x) => ({ ...x, filename: wrap(x.filename), patch: wrap(x.patch) })); }
+          else { kind = 'file'; title = args.path; result = await reader.readFile(readCtx, args.path); if (result.content !== undefined) result.content = wrap(result.content); }
         }
         const safe = cap(redactor.toModel({ result }), 8 * 1024);
         const proof = evidence && redactor.toModel(evidence);
-        Object.assign(entry, { ref: redactor.toModel(ref), ok: true, ...(kind ? { kind } : {}),
+        Object.assign(entry, { ref: redactor.toModel(ref), ok: true, ...(GITHUB.includes(name) && ctx.project.bound ? { repo: `${gh.owner}/${gh.repo}` } : {}), ...(kind ? { kind } : {}),
           ...(title ? { title: clip(redactor.toModel(title)) } : {}), ...(proof ? { evidence: { ...proof, title: clip(proof.title) } } : {}) });
         return safe;
       } catch { return { error: 'lookup-refused' }; }
