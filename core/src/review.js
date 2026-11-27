@@ -101,4 +101,4 @@ function reviewProject(cards = [], freshness = {}) {
   };
 }
 
-module.exports = { reviewCard, reviewProject, PROVENANCE_NOTE };
+module.exports = { reviewCard, reviewProject, ACTIVE, PROVENANCE_NOTE };

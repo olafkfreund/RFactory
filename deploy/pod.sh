@@ -86,6 +86,17 @@ up() {
     case $RFACTORY_INVESTIGATIONS in on | off) ;; *) echo "RFACTORY_INVESTIGATIONS must be on or off" >&2; exit 2 ;; esac
     investigate=(-e RFACTORY_INVESTIGATIONS="$RFACTORY_INVESTIGATIONS")
   fi
+  # #58: standup notes only with RFACTORY_NOTES=on (and the scope's notes_enabled, which the web app checks); they keep
+  # their record with the action record, so the volume is mounted here unless writes or shares already did
+  note=()
+  if [ -n "${RFACTORY_NOTES:-}" ]; then
+    case $RFACTORY_NOTES in on | off) ;; *) echo "RFACTORY_NOTES must be on or off" >&2; exit 2 ;; esac
+    note=(-e RFACTORY_NOTES="$RFACTORY_NOTES")
+    if [ "$RFACTORY_NOTES" = on ] && [[ " ${write[*]} ${share[*]} " != *" -v rfactory-actions:"* ]]; then
+      podman volume exists rfactory-actions || podman volume create rfactory-actions >/dev/null
+      note+=(-v rfactory-actions:/var/lib/rfactory/actions:U)
+    fi
+  fi
   desktop=()
   if [ -n "${RFACTORY_DESKTOP:-}" ]; then
     [ "$RFACTORY_DESKTOP" = 1 ] || { echo "RFACTORY_DESKTOP must be 1 or unset" >&2; exit 2; }
@@ -122,7 +133,7 @@ up() {
   fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${share[@]}" "${investigate[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
+    "${write[@]}" "${share[@]}" "${investigate[@]}" "${note[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \

@@ -39,6 +39,10 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (scope.investigations_enabled !== true && env.RFACTORY_INVESTIGATIONS && env.RFACTORY_INVESTIGATIONS !== 'off') throw new Error('investigations-enabled-env');
   // an investigation creates a card and a run with the write key, so "writes off" turns it off too
   if (scope.investigations_enabled === true && !scope.writes_enabled) throw new Error('investigations-need-writes');
+  if (Object.hasOwn(scope, 'notes_enabled') && typeof scope.notes_enabled !== 'boolean') throw new Error('notes-enabled');
+  if (scope.notes_enabled === true && env.RFACTORY_NOTES !== 'on') throw new Error('notes-enabled');
+  if (scope.notes_enabled !== true && env.RFACTORY_NOTES && env.RFACTORY_NOTES !== 'off') throw new Error('notes-enabled-env');
+  if (scope.notes_enabled === true && scope.brain?.kind !== 'claude-cli') throw new Error('notes-need-claude-brain');
   if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
   const budget = scope.lookup_budget_usd;
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');

@@ -100,3 +100,19 @@ test('pod.sh forwards RFACTORY_INVESTIGATIONS and refuses other values', () => {
   assert.doesNotMatch(run({}).web, /RFACTORY_INVESTIGATIONS/);
   assert.equal(run({ RFACTORY_INVESTIGATIONS: 'yes' }).status, 2);
 });
+
+test('pod.sh forwards RFACTORY_NOTES, mounts the record when writes and shares are off, and refuses other values', () => {
+  const off = run({ RFACTORY_WRITES: 'off', RFACTORY_NOTES: 'on' });
+  assert.equal(off.status, 0);
+  assert.match(off.web, /-e RFACTORY_NOTES=on/);
+  assert.match(off.web, /-v rfactory-actions:\/var\/lib\/rfactory\/actions:U/);
+  const shared = run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'on', RFACTORY_NOTES: 'on' });
+  assert.equal(shared.web.split('rfactory-actions:/var/lib/rfactory/actions').length - 1, 1); // mounted once, by shares
+  const withWrites = run({ RFACTORY_NOTES: 'on', RFACTORY_APPROVERS: 'a@example.com' }, { writeKey: true });
+  assert.equal(withWrites.web.split('rfactory-actions:/var/lib/rfactory/actions').length - 1, 1); // mounted once, by writes
+  const explicitOff = run({ RFACTORY_WRITES: 'off', RFACTORY_NOTES: 'off' });
+  assert.match(explicitOff.web, /-e RFACTORY_NOTES=off/);
+  assert.doesNotMatch(explicitOff.web, /rfactory-actions/);
+  assert.doesNotMatch(run({ RFACTORY_WRITES: 'off' }).web, /RFACTORY_NOTES/);
+  assert.equal(run({ RFACTORY_WRITES: 'off', RFACTORY_NOTES: 'yes' }).status, 2);
+});

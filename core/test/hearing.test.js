@@ -27,10 +27,10 @@ function fakeClock() {
   };
 }
 
-function setup(quietMs) {
+function setup(quietMs, notes = false) {
   const clock = fakeClock();
   const addressed = [];
-  const hearing = createHearing({ clock, quietMs, onAddressed: (item) => addressed.push(item) });
+  const hearing = createHearing({ clock, quietMs, notes, onAddressed: (item) => addressed.push(item) });
   return { clock, addressed, heard: (id, text, speaker = 'Owner') => hearing.heard({ id, text, speaker }) };
 }
 
@@ -476,5 +476,61 @@ test('re-check fixes: restored wording, internal punctuation, and a narrow "brin
   for (const [text, kind] of [['bring me up to speed on the board', 'question'], ['bring the board up', 'share'], ['bring up the board', 'share']]) {
     const s = setup(); s.heard('c', `Factory, ${text}`); s.clock.tick(1500);
     assert.equal(s.addressed[0].kind, kind, text);
+  }
+});
+
+const noteRequests = [
+  'note that we ship Friday', 'note: ship Friday', 'note we ship Friday',
+  'make a note: ship Friday', 'add a note that FCT-1 is blocked', 'take a note',
+  'decision: we ship Friday', 'we decided to ship Friday', 'we’ve decided to ship',
+  'action for Ana: fix the login test by Tuesday', 'action item for Ana, fix it',
+  'blocker: the staging key expired', 'can you note that we ship Friday',
+  'please, note that we ship Friday',
+];
+const headlineRequests = [
+  'what did you note?', 'read back the notes', 'read the notes', 'what are the notes?',
+];
+const unchanged = [
+  ['add a card for the login bug', 'action'], ['make a card for it', 'action'],
+  ['add a note-taking card for the login bug', 'action'],
+  ['make a note template card for onboarding', 'action'],
+  ['show the board', 'share'], ['run the standup', 'standup'],
+  ['blocker count for the standup?', 'standup'],
+  ['what did you note in the previous standup?', 'standup'],
+  ['leave', 'leave'], ['investigate the login test', 'investigate'],
+  ["what's the note on FCT-1?", 'question'],
+  ['note-taking guide: where is it?', 'question'],
+  ['read the notes field on FCT-1', 'question'],
+  ['what are the notes on FCT-1?', 'question'],
+  ['action for ?', 'question'], ['decision on FCT-1?', 'question'],
+  ['notes for FCT-1?', 'question'], ['blockers?', 'question'],
+];
+
+test('notes on: dictated notes and the headline route without changing other kinds', () => {
+  for (const [request, expected] of [
+    ...noteRequests.map((request) => [request, 'note']),
+    ...headlineRequests.map((request) => [request, 'notes']),
+    ...unchanged,
+  ]) {
+    const { clock, addressed, heard } = setup(undefined, true);
+    heard('a', `Factory, ${request}`);
+    clock.tick(1500);
+    assert.equal(addressed[0]?.kind, expected, request);
+  }
+});
+
+test('notes off: all note phrases keep their previous routing', () => {
+  for (const [request, expected] of [
+    ...noteRequests.map((request) => [request, /^(?:make|add) a note/.test(request) ? 'action' : 'question']),
+    ...headlineRequests.map((request) => [request, 'question']),
+    ...unchanged,
+    ['create a card called Login', 'action'],
+    ['share your screen', 'share'],
+    ['give a stand up', 'standup'],
+  ]) {
+    const { clock, addressed, heard } = setup();
+    heard('a', `Factory, ${request}`);
+    clock.tick(1500);
+    assert.equal(addressed[0]?.kind, expected, request);
   }
 });

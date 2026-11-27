@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 const { createActionManager } = require('../actions.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
+const { hashPayload } = require('@rfactory/core/src/actions/allowlist.js');
 
 const KEY = 'cfk_abcdefghijklmnopqrstuvwx';
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -21,7 +22,7 @@ function setup(options = {}) {
   const brain = { propose: options.propose || (async () => ({ action: 'move_card', args: { card_key: 'FCT-9', status: 'ready' } })) };
   const writer = { apply: async (...args) => { calls.push(args); return options.result || { outcome: 'done (started)', detail: 'Work started.', card }; } };
   const manager = createActionManager({ readSource, writer, brain, record, redactor, clock,
-    scope: { writes_enabled: true, source: { repository_id: 1 } }, roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,admin@example.com', RFACTORY_APPROVERS: 'owner@example.com', RFACTORY_ADMINS: 'admin@example.com' }),
+    scope: { writes_enabled: options.writesEnabled ?? true, source: { repository_id: 1 } }, roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,admin@example.com', RFACTORY_APPROVERS: 'owner@example.com', RFACTORY_ADMINS: 'admin@example.com' }),
     enabled: options.enabled ?? true, rebind: options.rebind });
   manager.subscribe((event) => events.push(event));
   return { manager, card, clock, entries, events, calls, record, writer, readSource };
@@ -340,6 +341,123 @@ test('actions.request refuses an investigate proposal: only the investigation ma
     await f.manager.recover(); await f.manager.startCall(1);
     assert.equal((await f.manager.request('look into it', 'Caller')).status, 400);
     assert.deepEqual(f.manager.list().pending, []);
+  }
+});
+
+const move = { action: 'move_card', args: { card_key: 'FCT-9', status: 'done' } };
+const create = { action: 'create_card', args: { title: 'Synthetic note item', status: 'backlog' } };
+const submit = (f, proposal = move, options = {}) => f.manager.submit(proposal, 'Someone', {
+  generation: 1, snapshotKeys: new Set(['FCT-9']), ...options,
+});
+
+test('project note proposals use the default repository and keep the project approval checks', async () => {
+  let repositoryId = 1;
+  const f = setup({ rebind: async () => binding });
+  const view = { ...projectView(f), getCard: async () => ({ card: f.card, repositoryId, inRepository: true }) };
+  await f.manager.recover();
+  await f.manager.startCall(1, { binding, view });
+  const created = await submit(f, create, { quiet: true });
+  assert.equal(created.status, 202);
+  assert.equal(created.action.project_id, binding.projectId);
+  assert.equal(created.action.repository_id, 1);
+  assert.equal((await approve(f, created.action)).text, 'The new card changed and work started.');
+  assert.equal(f.calls[0][1].repository_id, 1);
+
+  const close = await submit(f, move, { evidence: true });
+  assert.equal(close.status, 202);
+  assert.ok(close.action.evidence);
+  repositoryId = 2;
+  assert.equal((await approve(f, close.action)).status, 409);
+  assert.equal((await submit(f, move, { evidence: true })).status, 400);
+  assert.equal(f.calls.length, 1);
+});
+
+test('submit enforces writes, a live generation, and call end during the card read', async () => {
+  const off = setup({ writesEnabled: false });
+  off.manager.startCall(1);
+  assert.equal((await submit(off)).status, 403);
+  const f = setup();
+  assert.equal((await submit(f)).status, 409);
+  f.manager.startCall(1);
+  assert.equal((await f.manager.submit(move, 'Someone', { snapshotKeys: new Set(['FCT-9']) })).status, 409);
+  await f.manager.endCall();
+  f.manager.startCall(2);
+  assert.equal((await submit(f)).status, 409);
+
+  const gate = deferred();
+  const waiting = setup({ getCard: () => gate.promise });
+  waiting.manager.startCall(1);
+  const result = submit(waiting);
+  await waiting.manager.endCall();
+  gate.resolve({ card: waiting.card, inRepository: true });
+  assert.equal((await result).status, 409);
+  assert.deepEqual(waiting.manager.list().pending, []);
+});
+
+test('submit shares the five pending action limit', async () => {
+  const f = setup(); f.manager.startCall(1);
+  for (let i = 0; i < 5; i++) assert.equal((await submit(f)).status, 202);
+  assert.equal((await submit(f)).status, 409);
+  assert.equal(f.manager.list().pending.length, 5);
+});
+
+test('close evidence is hashed, recorded and exposed on action views', async () => {
+  const f = setup(); await f.manager.recover(); f.manager.startCall(1);
+  f.card.stage_runs = { plan: { status: 'done' } };
+  const withEvidence = await submit(f, move, { evidence: true });
+  assert.equal(withEvidence.status, 202);
+  const { hash, ...hashed } = withEvidence.action;
+  const { evidence, ...withoutEvidence } = hashed;
+  assert.equal(hashPayload(hashed), hash);
+  assert.notEqual(hashPayload(withoutEvidence), hash); // the same action without its evidence
+  assert.ok(evidence);
+  assert.equal(withEvidence.action.evidence.verdict, 'no contradiction found');
+  assert.deepEqual(f.entries.at(-1).evidence, withEvidence.action.evidence);
+  assert.deepEqual(f.manager.list().pending.at(-1).evidence, withEvidence.action.evidence);
+  assert.deepEqual(f.events.at(-1).action.evidence, withEvidence.action.evidence);
+  assert.equal(f.manager.list().pending.at(-1).proposed_at, withEvidence.action.proposed_at);
+  await approve(f, withEvidence.action);
+  assert.deepEqual(f.manager.list().history.at(-1).evidence, withEvidence.action.evidence);
+});
+
+test('contradicted close needs the matching evidence hash before proposing', async () => {
+  const f = setup(); f.manager.startCall(1);
+  f.card.stage_runs = { test: { status: 'failed' } };
+  const first = await submit(f, move, { evidence: true });
+  assert.deepEqual([first.status, first.contradicted, first.evidence.verdict], [409, true, 'contradicted']);
+  assert.equal((await submit(f, move, { evidence: true, confirm: 'other' })).status, 409);
+  assert.equal(f.entries.length, 0);
+  assert.equal(f.manager.list().pending.length, 0);
+  const confirmed = await submit(f, move, { evidence: true, confirm: first.evidence_hash });
+  assert.equal(confirmed.status, 202);
+  assert.equal(f.entries.at(-1).evidence.verdict, 'contradicted');
+});
+
+test('evidence changing before approval expires the close; unchanged evidence succeeds', async () => {
+  const f = setup(); await f.manager.recover(); f.manager.startCall(1);
+  f.card.stage_runs = { plan: { status: 'done' } };
+  const changed = (await submit(f, move, { evidence: true })).action;
+  f.card.stage_runs.plan.status = 'failed';
+  assert.equal((await approve(f, changed)).status, 409);
+  assert.equal(f.entries.at(-1).state, 'expired');
+  assert.equal(f.calls.length, 0);
+  f.card.stage_runs.plan.status = 'done';
+  const same = (await submit(f, move, { evidence: true })).action;
+  assert.equal((await approve(f, same)).status, 200);
+  assert.equal(f.calls.length, 1);
+});
+
+test('quiet create-card results never speak the note title in any final state', async () => {
+  for (const outcome of ['done', 'done (started)', 'done, start failed', 'already done', 'failed', 'uncertain']) {
+    const f = setup({ result: { outcome, detail: outcome === 'failed' ? 'Synthetic note item rejected' : 'Synthetic result', card: null } });
+    await f.manager.recover(); f.manager.startCall(1);
+    const action = (await submit(f, create, { snapshotKeys: new Set(), quiet: true })).action;
+    assert.equal(action.quiet, undefined);
+    const result = await approve(f, action);
+    assert.equal(result.status, 200, outcome);
+    assert.doesNotMatch(result.text, /Synthetic note item/, outcome);
+    assert.match(result.text, /the new card/i, outcome);
+    assert.equal(result.text[0], result.text[0].toUpperCase(), outcome);
   }
 });
 

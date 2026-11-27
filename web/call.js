@@ -44,7 +44,7 @@ function sourcesOf(reads) {
 }
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, runner = null,
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, notes = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
   stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null }) {
   const lookupsOn = !!(lookups && scope?.lookups_enabled);
@@ -61,7 +61,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
-    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project'].includes(event.type)) current.set(event.type, event);
+    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project', 'notes'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     if (event.type === 'investigation-updated') investigationEvents.set(event.investigation.id, event);
@@ -108,6 +108,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     // redacted again here, immediately before speech
     queueSpeech(c, result ? [...event.counts, redactor.logSafeWindow(event.summary)].join(' ') : text);
   });
+  if (notes) notes.subscribe((event) => { if (!foreign(event)) emit(outgoing(event)); });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
   const logFor = (c, message) => { if (call === c) log(message); };
@@ -140,6 +141,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     for (const controller of c.requests) controller.abort();
     c.requests.clear();
     c.generation++;
+    notes?.closeIntake();
     c.queue.length = 0;
     clock.clearTimeout(c.limitTimer);
     clock.clearTimeout(c.captionTimer);
@@ -148,6 +150,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     c.stopping = (async () => {
       log(`stopping: ${reason}`);
       if (actions) await Promise.resolve().then(() => actions.endCall()).catch((error) => logFor(c, `actions end failed: ${error.message}`));
+      notes?.endCall(); // after the proposals expired above, so their notes hear it
       // not awaited: a slow CFactory must not keep the bot in the call; the manager holds its slot until the stop is confirmed
       if (investigations) Promise.resolve().then(() => investigations.endCall()).catch((error) => logFor(c, `investigations end failed: ${error.message}`));
       if (shares) await Promise.resolve().then(() => shares.endCall()).catch((error) => logFor(c, `shares end failed: ${error.message}`));
@@ -350,6 +353,26 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     await queueSpeech(c, text, generation);
   }
 
+  async function requestNote(c, item, generation) {
+    const stale = () => c.generation !== generation || c.stopping || call !== c;
+    let text;
+    try {
+      const snap = await snapshot(c);
+      if (stale()) return;
+      const raw = await brain.note(snap, { request: item.text, deadline: now() + 55000 });
+      if (stale()) return;
+      if (raw?.note === 'none') return answer(c, { ...item, kind: 'question' }, generation);
+      const result = notes.note(raw, { snapshotKeys: new Set(snap.items.map((i) => i.id)), speaker: item.speaker, generation: callCount });
+      if (result.dropped) return;
+      text = result.text;
+    } catch (error) {
+      if (stale()) return;
+      log(`note failed: ${String(error?.message).split(':')[0].slice(0, 40)}`);
+      text = "Sorry, I couldn't note that.";
+    }
+    await queueSpeech(c, text, generation);
+  }
+
   async function requestShare(c, item, generation) {
     let result;
     try { result = shares ? await shares.request(item.text, item.speaker) : { status: 403, text: 'Sharing is turned off here.' }; }
@@ -383,7 +406,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const question = c.queue.shift();
     c.runningBatch = question.batch;
     const generation = c.generation;
-    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => logFor(c, `answer failed: ${error.message}`)).finally(() => {
+    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : question.kind === 'notes' ? queueSpeech(c, notes.headline(), generation) : question.kind === 'note' ? requestNote(c, question, generation) : answer(c, question, generation)).catch((error) => logFor(c, `answer failed: ${error.message}`)).finally(() => {
       c.working = false;
       drain(c);
     });
@@ -392,7 +415,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
-    question.desktop = !!desktop && !['share', 'investigate'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
+    question.desktop = !!desktop && !['share', 'investigate', 'note', 'notes'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
     // no write path here: 1b behaviour
     if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question';
@@ -412,8 +435,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       for (const resolve of c.waiters.values()) resolve('cancelled');
       c.waiters.clear();
       c.speech = Promise.resolve();
-      const timer = clock.setTimeout(() => stopCall(c, 'asked'), 5000);
-      queueSpeech(c, 'Leaving now.').finally(() => { clock.clearTimeout(timer); stopCall(c, 'asked'); });
+      notes?.closeIntake();
+      const withNotes = !!notes?.count();
+      const timer = clock.setTimeout(() => stopCall(c, 'asked'), withNotes ? 15000 : 5000);
+      queueSpeech(c, withNotes ? `${notes.headline()} Leaving now.` : 'Leaving now.').finally(() => { clock.clearTimeout(timer); stopCall(c, 'asked'); });
     } else if (question.batch.queued >= 4) log('dropped question: batch full');
     else if (!question.batch.queued && c.working && c.queue.length >= 2) log('dropped question: queue full');
     else {
@@ -591,7 +616,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     child.stdin.on('error', (error) => logFor(c, `child stdin failed: ${error.message}`));
     child.stderr.on('data', (data) => logFor(c, selected === 'audio' ? `child stderr: ${data.length} bytes` : data.toString()));
     try {
-      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item) });
+      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item), notes: !!notes });
       c.limitTimer = clock.setTimeout(() => stopCall(c, '60-minute limit'), 60 * 60 * 1000);
       let buffer = '', skipping = false;
       child.stdout.setEncoding('utf8');
@@ -618,6 +643,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
       const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
       c.showLog = !!(shares && shareDesktop); // the log can only be shown through a share on this call's desktop
+      notes?.startCall(generation, { project: binding ? { id: binding.projectId, name: binding.name } : null,
+        writable: !!(actions && (!binding || binding.writable)) });
       if (investigations) Promise.resolve(investigations.startCall(generation, ...(target ? [target] : []))).catch((error) => logFor(c, `investigations start failed: ${error.message}`));
       if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop, ...target })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
       if (binding) emit({ type: 'project', id: binding.projectId, name: binding.name, repositories: binding.repositories });

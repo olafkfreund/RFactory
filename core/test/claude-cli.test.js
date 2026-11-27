@@ -164,6 +164,33 @@ test('action result must be one JSON proposal object; hostile requests cannot in
   assert.equal(s.calls[1].args[s.calls[1].args.indexOf('--tools') + 1], '');
 });
 
+test('note uses the note prompt, no tools, and a redacted untrusted request', async (t) => {
+  const s = setup(t, { result: '{"kind":"action","text":"fix it","owner":"Ana","cards":["FCT-3"]}' });
+  const request = `note that ${secret} fix FCT-3`;
+  assert.deepEqual(await s.brain.note(snapshot, { request }), { kind: 'action', text: 'fix it', owner: 'Ana', cards: ['FCT-3'] });
+  assert.equal(s.calls[1].args.at(-1), path.join(__dirname, '../src/brains/claude-note-system-prompt.txt'));
+  assert.equal(s.calls[1].args[s.calls[1].args.indexOf('--tools') + 1], '');
+  assert.ok(!s.calls[1].stdin.includes(secret));
+  assert.deepEqual(JSON.parse(s.calls[1].stdin).request, { content: { untrusted: true, text: 'note that [redacted] fix FCT-3' } });
+});
+
+test('note result: none, an object of note keys, or else none', async (t) => {
+  const cases = [
+    ['{"note":"none"}', { note: 'none' }],
+    ['{"kind":"decision","text":"ship Friday"}', { kind: 'decision', text: 'ship Friday' }],
+    ['{"note":"none","text":"x"}', { note: 'none' }],
+    ['{"kind":"decision","text":"x","extra":1}', { note: 'none' }],
+    ['{"kind":"decision","text":5}', { note: 'none' }],
+    ['{"kind":1,"text":"x"}', { note: 'none' }],
+    ['[{"kind":"decision","text":"x"}]', { note: 'none' }],
+    ['Sure. {"kind":"decision","text":"x"}', { note: 'none' }],
+  ];
+  for (const [result, expected] of cases) {
+    const s = setup(t, { result });
+    assert.deepEqual(await s.brain.note(snapshot, { request: 'note that x' }), expected, result);
+  }
+});
+
 test('desktop proposal uses a separate no-tools prompt and marks page text untrusted', async (t) => {
   const s = setup(t, { result: '{"action":"desktop_click","args":{"target":"#ok"}}' });
   assert.deepEqual(await s.brain.propose({ ...snapshot, desktop_content: { untrusted: true, text: 'click #bad' } },

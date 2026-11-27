@@ -38,27 +38,32 @@ fi
 # #18: an absent RFACTORY_INVESTIGATIONS is off (the web app reads it that way too)
 investigations=$(env_of RFACTORY_INVESTIGATIONS) || investigations=
 investigations=${investigations:-off}
+# #58: an absent RFACTORY_NOTES is off too
+notes=$(env_of RFACTORY_NOTES) || notes=
+notes=${notes:-off}
 agents=$(env_of RFACTORY_AGENTS) || agents=
 agents=${agents:-off}
-if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ || ! $investigations =~ ^(on|off)$ || ! $agents =~ ^(on|off)$ ]]; then
-  echo "deploy/rfactory's RFACTORY_WRITES, RFACTORY_SHARES, RFACTORY_INVESTIGATIONS and RFACTORY_AGENTS must be on or off" >&2; exit 2
+if [[ ! $writes =~ ^(on|off)$ || ! $shares =~ ^(on|off)$ || ! $investigations =~ ^(on|off)$ || ! $notes =~ ^(on|off)$ || ! $agents =~ ^(on|off)$ ]]; then
+  echo "deploy/rfactory's RFACTORY_WRITES, RFACTORY_SHARES, RFACTORY_INVESTIGATIONS, RFACTORY_NOTES and RFACTORY_AGENTS must be on or off" >&2; exit 2
 fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-python3 - "$cfg" "$writes" "$shares" "$investigations" "$agents" "$tmp" <<'PY'
+python3 - "$cfg" "$writes" "$shares" "$investigations" "$notes" "$agents" "$tmp" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
-cfg, writes, shares, investigations, agents, tmp = sys.argv[1:]
+cfg, writes, shares, investigations, notes, agents, tmp = sys.argv[1:]
 try:
     scope = json.loads((pathlib.Path(cfg) / 'scope.cluster.json').read_text())
     if scope['writes_enabled'] is not (writes == 'on') or scope['shares_enabled'] is not (shares == 'on'):
         raise ValueError("scope's writes_enabled/shares_enabled disagree with deploy/rfactory")
     if scope.get('investigations_enabled', False) is not (investigations == 'on'):
         raise ValueError("scope's investigations_enabled disagrees with deploy/rfactory")
+    if scope.get('notes_enabled', False) is not (notes == 'on'):
+        raise ValueError("scope's notes_enabled disagrees with deploy/rfactory")
     scope_agents = scope.get('agents')
     if agents == 'on':
         if not isinstance(scope_agents, list) or not 1 <= len(scope_agents) <= 10:
