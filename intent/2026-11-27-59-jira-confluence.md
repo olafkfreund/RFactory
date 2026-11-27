@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 59
 author: olafkfreund
 parent: intent/2026-11-17-2-standalone-mode.md
@@ -133,3 +133,7 @@ New for this task:
 10. **Follow-ups to Jira (slice 3): which path?** Recommended: the same server-built proposal and approval as #58's card proposals, with a separate write credential, and only "create issue" and "transition issue" on a fixed list. It waits for #58's first slice. The approver's own right in Jira is required (see Constraints); that spec decides how it is checked.
 11. **Confluence (slice 4): where and how?** Recommended: one admin-configured space and parent page per project, a new page per standup, never an edit of an existing page. It is added as a destination to #58's publication approval, after #58's first slice, with its own write credential.
 12. **A Jira site for the live check.** Which site and project may be used, and who creates the account and token? Without one, the first slice cannot be verified.
+
+## Approval (2026-11-27)
+
+The owner approved this intent with the recommended answers: "approve all with recommendations and start implementing". Every open question (question 12, the Jira site, still needs the owner to name one) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
