@@ -126,6 +126,75 @@ function bash(script, { node = 'exit 0', env = {} } = {}) {
   fs.rmSync(dir, { recursive: true });
   return { out: r.stdout, err: r.stderr, log, status: r.status };
 }
+
+// Run the whole readiness script with local command fakes; no browser or server is contacted.
+function readiness({ refused = false, markStopped = true } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'readiness-'));
+  const chrome = path.join(dir, 'chrome');
+  fs.writeFileSync(chrome, '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'curl'), `#!/bin/sh
+cat >/dev/null
+method= path= body=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -X|--data) key=$1; shift; if [ "$key" = -X ]; then method=$1; else body=$1; fi ;;
+    http://dummy/*) path=$1 ;;
+  esac
+  shift
+done
+case "$path" in *'/api/call/status') route=status ;; *'/api/call') route=call ;; *) route=other ;; esac
+printf '%s %s %s\n' "$method" "$route" "$body" >> '${dir}/calls.log'
+case "$method $route" in
+  'POST call')
+    ${refused ? "echo '{\"error\":\"busy\"}'" : `rm -f '${dir}/stopped'; echo '{"ok":true}'`} ;;
+  'DELETE call')
+    ${markStopped ? `touch '${dir}/stopped'` : ':'}
+    echo '{"ok":true}' ;;
+  'GET status')
+    if [ -f '${dir}/stopped' ]; then echo '{"running":false,"starting":false,"generation":7}'
+    else echo '{"running":true,"starting":false,"generation":7,"project":{"id":"dummy-project"}}'; fi ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'node'), `#!/bin/sh
+case "$1" in
+  */callevents.js) echo reader >> '${dir}/calls.log'; echo 'stream closed: idle' >&2; exit 3 ;;
+  */observer.js) echo in-call; while :; do sleep 1; done ;;
+esac
+`, { mode: 0o755 });
+  try {
+    const r = spawnSync('bash', [path.join(__dirname, 'readiness.sh')], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, VERIFY_SERVER_URL: 'http://dummy',
+        VERIFY_APPROVER_COOKIE: 'dummy-cookie', VERIFY_MEET_LINK: 'dummy-link', VERIFY_PROJECT_ID: 'dummy-project',
+        CHROME_PATH: chrome, VERIFY_JOIN_WAIT: '1', VERIFY_ANSWER_WAIT: '1', VERIFY_TURN_WAIT: '1',
+        VERIFY_SETTLE: '0', VERIFY_STOP_WAIT: '1', VERIFY_CONFIRM_DIR: '' }, encoding: 'utf8', timeout: 10000,
+    });
+    return { ...r, log: fs.existsSync(path.join(dir, 'calls.log')) ? fs.readFileSync(path.join(dir, 'calls.log'), 'utf8').trim().split('\n') : [] };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('readiness closes an idle stream and stops each started mode with its generation', () => {
+  const r = readiness();
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-stream/);
+  assert.deepEqual(r.log.filter((line) => line.startsWith('DELETE call')).map((line) => line.includes('"generation":7')), [true, true]);
+  assert.deepEqual(r.log.slice(0, 3).map((line) => line.split(' ').slice(0, 2).join(' ')), ['POST call', 'GET status', 'reader']);
+});
+
+test('readiness does not stop a call when start was refused', () => {
+  const r = readiness({ refused: true });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-start/);
+  assert.equal(r.log.filter((line) => line.startsWith('DELETE call')).length, 0);
+});
+
+test('readiness does not retry a stop or start the next mode without stop confirmation', () => {
+  const r = readiness({ markStopped: false });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-stop/);
+  assert.equal(r.log.filter((line) => line.startsWith('DELETE call')).length, 1);
+  assert.equal(r.log.filter((line) => line.startsWith('POST call')).length, 1);
+});
+
 const beats = (log) => log.split('\n').filter((l) => /\/heartbeat/.test(l) && l.includes('"desktop_id":"abc"')).length;
 
 test('new_desktop keeps a server heartbeat running; NO_BEAT=1 withholds it', () => {
