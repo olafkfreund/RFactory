@@ -9,6 +9,7 @@ const { checkFacts } = require('../facts.js');
 const SYSTEM_PROMPT = path.join(__dirname, 'claude-system-prompt.txt');
 const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
 const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
+const NOTE_SYSTEM_PROMPT = path.join(__dirname, 'claude-note-system-prompt.txt');
 const DESKTOP_SYSTEM_PROMPT = path.join(__dirname, 'claude-desktop-system-prompt.txt');
 const SUMMARY_SYSTEM_PROMPT = path.join(__dirname, 'claude-summary-system-prompt.txt');
 const LOOKUP_SYSTEM_PROMPT = path.join(__dirname, 'claude-lookup-system-prompt.txt');
@@ -161,6 +162,36 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
+  // #58: shape one dictated note; the server checks the result (core/src/notes.js)
+  async function note(snapshot, { deadline = clock() + 55000, request } = {}) {
+    await checkDestination(deadline);
+
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
+    try {
+      const safe = redactor.toModel(snapshot);
+      const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
+        ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
+      })), request: { content: { untrusted: true, text: redactor.toModel(request) } } });
+      const timeout = Math.min(40000, deadline - clock() - 2000);
+      if (timeout <= 0) throw new Error('brain-timeout');
+      const { stdout, stderr } = await run([...ARGV.slice(0, -1), NOTE_SYSTEM_PROMPT], { cwd, input: prompt, timeout });
+      let response;
+      try { response = JSON.parse(stdout); }
+      catch { throw new Error('brain-error'); }
+      if (response.is_error || typeof response.result !== 'string') throw new Error(`brain-error: ${redactor.logSafe(stderr)}`);
+      try {
+        const raw = JSON.parse(response.result);
+        if (raw && !Array.isArray(raw) && typeof raw === 'object') {
+          const keys = Object.keys(raw);
+          if (keys.length === 1 && raw.note === 'none') return { note: 'none' };
+          if (keys.every((key) => ['kind', 'text', 'owner', 'due', 'cards'].includes(key)) &&
+            typeof raw.kind === 'string' && typeof raw.text === 'string') return raw;
+        }
+      } catch { /* A non-JSON result is not a note. */ }
+      return { note: 'none' };
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  }
+
   // #18: the investigation report is untrusted (it is agent output); its own prompt, never the standup one
   async function summarize(report, { deadline = clock() + 55000 } = {}) {
     await checkDestination(deadline);
@@ -182,7 +213,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     return `claude-cli (${destination}), approval ${scope.brain.approved_hash ? 'ok' : 'missing'}`;
   }
 
-  return { turn, propose, summarize, label };
+  return { turn, propose, note, summarize, label };
 }
 
 module.exports = { createClaudeBrain, ARGV };
