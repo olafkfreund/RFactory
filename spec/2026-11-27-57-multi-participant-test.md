@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 57
 intent: intent/2026-11-27-57-multi-participant-test.md
 ---
@@ -221,3 +221,7 @@ The intent left open whether scoring needs a code change. **It does not,** but t
 7. **If lookups are off in the deployed scope:** *Recommendation:* the owner turns them on in factory-gitops before the readiness check. A session on snapshot answers only would not test what #51 and #52 built.
 8. **The block length:** 15 minutes holds 10 direct questions only if answers come within about 40 s. *Recommendation:* keep 10. If a block runs over, steps 4 to 6 are cut first, since they are not gated.
 9. **May the lead read the day's lookup record lines from the web pod** (read-only; time, outcome, cost, no text) to count aborts, timeouts, budget fallbacks and provider errors? *Recommendation:* yes. Without it those four counts are reported as "unavailable".
+
+## Approval (2026-11-27)
+
+The owner approved this spec with the recommended answers: "approve all with recommendations". Every open question above is decided as its recommendation says; the owner still adds the verify cookie, turns lookups on, and gives the go before invitations go out. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
