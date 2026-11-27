@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 25
 author: olafkfreund
 ---
@@ -85,7 +85,7 @@ The task is delivered in two slices, each its own pull request. This intent cove
 
 - **Everything written is public.**
   - No secrets, member email addresses, real meeting links, participant names or private project names.
-  - That a detail is already in the repository doesn't clear it for the guide. Internal operational detail (host names, the cluster layout, the `kubectl` context) goes in, or is linked from, the README and guide only with the owner's OK (open question 2).
+  - That a detail is already in the repository doesn't clear it for the guide. Internal operational detail (host names, the cluster layout, the `kubectl` context) goes in, or is linked from, the README and guide only with the owner's OK (decision 2).
 - **Merging needs the owner's OK as a deploy does.** Each of the two merges starts an image build and a rollout. The owner picks the time, and it is announced on the agent bus first.
 - **Documentation only.** No behaviour change, no new dependency, no site generator, and no change to the deploy workflow in this task.
 - **Statements about behaviour are checked against the code or a landing record.** Intents and specs describe what was planned, so they aren't a source.
@@ -101,14 +101,14 @@ The task is delivered in two slices, each its own pull request. This intent cove
 
 ## Open questions
 
-1. **Slices.** Deliver the README and feature list first, then the guide (recommended, as above)? Or everything in one pull request, which is one rollout instead of two?
-2. **Operator detail on the public site.**
-   - **(a) Recommended:** the README leads with what RFactory is and the feature list. The operator pages describe the parts and the steps in general terms and link to the plans for detail, without repeating host names or the cluster layout.
-   - **(b)** The guide may repeat any operational detail that is already in the repository.
-   - **(c)** No operator pages in the public guide. Only the pages for people in calls are written.
-3. **Who the guide is for first.** People in calls (recommended, because the least exists for them), or operators?
-4. **Planned work in the public list.** Which open issues with nothing merged are listed as planned?
-   - **(a) Recommended:** the feature issues: #22, #26, #27, #58 and #59.
-   - **(b)** Only those with an approved intent.
-   - **(c)** None: the list shows only what is at least partly shipped.
-5. **The rollout on a documentation merge.** Accept it for this task's two merges (recommended, as the constraint says)? Or first open a separate issue to make the deploy workflow skip documentation-only pushes, and wait for it?
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this intent with its recommendations.
+
+1. **Two slices:** the README and feature list first, then the guide.
+2. **(a)** The README leads with what RFactory is and the feature list. The operator pages describe the parts and the steps in general terms and link to the plans for detail, without repeating host names or the cluster layout.
+3. **People in calls come first.**
+4. **(a)** The planned list is the feature issues #22, #26, #27, #58 and #59.
+5. **The rollout on a documentation merge is accepted** for this task's two merges. Each merge still needs the owner's OK on the time, as the constraints say.
