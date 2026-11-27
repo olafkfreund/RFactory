@@ -402,6 +402,7 @@ test('projects.allow github_read: per-repository bindings, tokens after the key'
     loadScope(path.join(dir, 'scope.json'), {}, s2, e2);
     assert.deepEqual([s2, e2], [[key], {}]);
   } finally { f.cleanup(); }
+});
 
 test('the README "Without the Factories" scope file loads', () => {
   const readme = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');

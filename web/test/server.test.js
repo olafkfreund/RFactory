@@ -906,6 +906,7 @@ test('project GitHub bindings match each repository, ignore mismatches and dupli
   } finally { console.error = original; }
   assert.ok(errors.length >= 3);
   assert.ok(errors.every((line) => /^rfactory-web: github-binding-unmatched [12]$/.test(line)));
+});
 
 // slice web-github (#2): a GitHub source gives the older reply, redacted, and nothing else
 const SECRET = 'planted-secret-value-123';
