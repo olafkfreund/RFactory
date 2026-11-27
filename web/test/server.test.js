@@ -816,3 +816,101 @@ test('project lookups: GitHub only with the default repository, and a project tu
   assert.equal((await client.callTool({ name: 'find_cards', arguments: { text: 'x' } })).isError, true);
   await client.close();
 });
+
+// #58: standup notes routes
+function fakeNotes() {
+  const calls = [];
+  const reply = (name) => async (...args) => { calls.push([name, ...args]); return { status: 200, text: 'ok' }; };
+  return { calls, list: (...args) => { calls.push(['list', ...args]); return { sets: [], can_approve: true }; },
+    edit: reply('edit'), remove: reply('remove'), propose: reply('propose'), approve: reply('approve'), discard: reply('discard'),
+    download: async (...args) => { calls.push(['download', ...args]); return args[0] === 'ready' ? { status: 200, body: '# Notes\n', filename: 'standup-2026-11-27.md' } : { status: 404, text: 'Not found.' }; } };
+}
+
+test('notes routes are absent without a manager (404)', async (t) => {
+  const get = await startActions(t, {});
+  assert.equal((await get('/api/notes', { method: 'GET' })).status, 404);
+  assert.equal((await get('/api/notes/s1/approve')).status, 404);
+  assert.equal((await get('/api/notes/s1/download', { method: 'GET' })).status, 404);
+});
+
+test('notes routes pass the contract arguments to the manager and refuse bad bodies', async (t) => {
+  const notes = fakeNotes();
+  const get = await startActions(t, { notes });
+  assert.equal((await (await get('/api/notes', { method: 'GET', email: 'other@example.com' })).json()).can_approve, true);
+  assert.deepEqual(notes.calls.at(-1), ['list', 'other@example.com', undefined]);
+  assert.equal((await get('/api/notes/s1/approve', { body: { hash: 'h1' } })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['approve', 's1', ME, 'h1', undefined]);
+  assert.equal((await get('/api/notes/s1/approve', { body: {} })).status, 400);
+  assert.equal((await get('/api/notes/s1/discard', { body: null })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['discard', 's1', ME, undefined]);
+  assert.equal((await get('/api/notes/s1/n1/remove', { body: null })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['remove', 's1', 'n1', ME, undefined]);
+  assert.equal((await get('/api/notes/s1/n1/edit', { body: { kind: 'action', text: 't', owner: 'o', due: 'd', cards: ['X'] } })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['edit', 's1', 'n1', ME, { kind: 'action', text: 't', owner: 'o', due: 'd' }, undefined]);
+  assert.equal((await get('/api/notes/s1/n1/edit', { body: null })).status, 400);
+  assert.equal((await get('/api/notes/s1/n1/propose', { body: { what: 'close', confirm: 'c' } })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['propose', 's1', 'n1', ME, { what: 'close', confirm: 'c' }, undefined]);
+  assert.equal((await get('/api/notes/s1/n1/propose', { body: { what: 'delete' } })).status, 400);
+  assert.equal((await get('/api/notes/s1/download')).status, 404); // a POST to download is no route
+  assert.equal((await get('/api/notes/s1', { method: 'GET' })).status, 404);
+});
+
+test('notes changes need the action header and the same origin; a rejected manager answers 500', async (t) => {
+  const notes = fakeNotes();
+  const get = await startActions(t, { notes });
+  const before = notes.calls.length;
+  assert.equal((await get('/api/notes/s1/approve', { headers: { 'X-RFactory-Action': '0' } })).status, 403);
+  assert.equal((await get('/api/notes/s1/discard', { headers: { Origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await get('/api/notes/s1/n1/remove', { headers: { Origin: '' } })).status, 403);
+  assert.equal(notes.calls.length, before);
+  notes.approve = async () => { throw new Error('boom'); };
+  const failed = await get('/api/notes/s1/approve', { body: { hash: 'h' } });
+  assert.deepEqual([failed.status, await failed.json()], [500, { error: 'internal' }]);
+});
+
+test('notes download is 404 before approval and carries both headers after', async (t) => {
+  const get = await startActions(t, { notes: fakeNotes() });
+  assert.equal((await get('/api/notes/s1/download', { method: 'GET' })).status, 404);
+  const file = await get('/api/notes/ready/download', { method: 'GET', email: 'other@example.com' });
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get('content-type'), 'text/markdown; charset=utf-8');
+  assert.equal(file.headers.get('content-disposition'), 'attachment; filename="standup-2026-11-27.md"');
+  assert.equal(await file.text(), '# Notes\n');
+});
+
+test('notes routes in a deployment with projects need an allowed project and pass it on', async (t) => {
+  const notes = fakeNotes();
+  const get = await startActions(t, { notes, scope: scope52 });
+  for (const query of ['', `?project=${HIDDEN}`, '?project=alpha']) {
+    assert.equal((await get(`/api/notes${query}`, { method: 'GET' })).status, 403);
+    assert.equal((await get(`/api/notes/s1/approve${query}`, { body: { hash: 'h' } })).status, 403);
+    assert.equal((await get(`/api/notes/ready/download${query}`, { method: 'GET' })).status, 403);
+  }
+  assert.deepEqual(notes.calls, []);
+  assert.equal((await get(`/api/notes?project=${ALPHA}`, { method: 'GET' })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['list', ME, ALPHA]);
+  assert.equal((await get(`/api/notes/s1/approve?project=${BETA}`, { body: { hash: 'h' } })).status, 200);
+  assert.deepEqual(notes.calls.at(-1), ['approve', 's1', ME, 'h', BETA]);
+  // another project's set id is the manager's 404
+  const real = require('../notes.js').createNotesManager({ record: { append: async () => {} }, redactor: makeRedactor([]), roles: rolesFor(ME, ME), actions: null });
+  const own = await startActions(t, { notes: real, scope: scope52 });
+  assert.equal((await own(`/api/notes/nope/approve?project=${ALPHA}`, { body: { hash: 'h' } })).status, 404);
+  assert.equal((await own(`/api/notes/nope/download?project=${ALPHA}`, { method: 'GET' })).status, 404);
+});
+
+test('composeWrites with only notes on builds the record and the notes manager, no writer', async () => {
+  const { composeWrites } = require('../server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-notes-'));
+  const scope = { name: 'F', writes_enabled: false, shares_enabled: false, notes_enabled: true, source: { kind: 'cfactory' } };
+  const brain = { ...fakeBrain, note: async () => ({ note: 'none' }) };
+  try {
+    const made = await composeWrites({ scope, source, brain, redactor: makeRedactor([]), roles: rolesFor(ME, ME), dir });
+    assert.equal(made.actions, null);
+    assert.equal(made.shares, null);
+    assert.ok(made.record);
+    assert.equal(typeof made.notes.startCall, 'function');
+    await assert.rejects(composeWrites({ scope, source, brain: fakeBrain, redactor: makeRedactor([]), roles: rolesFor(ME, ME), dir }), /notes-need-brain/);
+    const off = await composeWrites({ scope: { ...scope, notes_enabled: false }, source, brain, redactor: makeRedactor([]), roles: rolesFor(ME, ME), dir });
+    assert.equal(off.notes ?? null, null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

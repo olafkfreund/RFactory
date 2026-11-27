@@ -93,7 +93,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null }) {
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null }) {
   let busy = false;
   let starting = false; // #52: the call slot, reserved while a project is resolved
   const allowed = scope?.projects ? new Set(scope.projects.allow.map((p) => p.id)) : null; // null: everything below is as before #52
@@ -218,6 +218,41 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       }));
       return;
     }
+    const noteRoute = notes && /^\/api\/notes(?:\/([\w-]{1,64})(?:\/([\w-]{1,64})\/(edit|remove|propose)|\/(approve|discard|download))?)?$/.exec(url);
+    if (noteRoute) {
+      const [, setId, noteId, change, verb] = noteRoute;
+      const projectId = allowed ? query.get('project') : undefined;
+      if (allowed && !allowed.has(projectId)) { req.resume(); return json(res, 403, { error: 'project-not-allowed' }); }
+      const done = ({ status, ...rest }) => json(res, status, rest);
+      const fail = () => json(res, 500, { error: 'internal' });
+      if (req.method === 'GET' && !setId) return Promise.resolve(notes.list(email, projectId)).then((r) => json(res, 200, r), fail);
+      if (req.method === 'GET' && verb === 'download') {
+        return notes.download(setId, projectId).then(({ status, body, filename }) => {
+          if (status !== 200) return json(res, status, { error: 'not-found' });
+          res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"` });
+          res.end(body);
+        }, fail);
+      }
+      if (req.method === 'POST' && setId && (change || verb !== 'download')) {
+        if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+        readJson(req).then((body) => {
+          const bad = () => json(res, 400, { error: 'bad-request' });
+          const object = body && typeof body === 'object' && !Array.isArray(body);
+          if (verb === 'approve') return typeof body?.hash === 'string' ? notes.approve(setId, email, body.hash, projectId).then(done, fail) : bad();
+          if (verb === 'discard') return notes.discard(setId, email, projectId).then(done, fail);
+          if (change === 'remove') return notes.remove(setId, noteId, email, projectId).then(done, fail);
+          if (change === 'edit') {
+            return object ? notes.edit(setId, noteId, email, { kind: body.kind, text: body.text, owner: body.owner, due: body.due }, projectId).then(done, fail) : bad();
+          }
+          if (change === 'propose') {
+            return object && ['card', 'owner', 'close'].includes(body.what)
+              ? notes.propose(setId, noteId, email, { what: body.what, confirm: body.confirm }, projectId).then(done, fail) : bad();
+          }
+          return json(res, 404, { error: 'not-found' });
+        });
+        return;
+      }
+    }
     // shares (#12) and investigations (#18) have the same routes and checks
     const approvals = { shares, investigations };
     const listed = req.method === 'GET' && /^\/api\/(shares|investigations)$/.exec(url);
@@ -333,8 +368,8 @@ function refuseKeyEnv(env) {
 // The record exists when writes, shares, investigations or lookups are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
 async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
-  let actions = null, shares = null, investigations = null;
-  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled) return { actions, shares, investigations };
+  let actions = null, shares = null, investigations = null, notes = null;
+  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.notes_enabled) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
@@ -352,7 +387,11 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
       await investigations.recover();
     }
   }
-  return { actions, shares, investigations, record };
+  if (scope.notes_enabled) {
+    if (typeof brain?.note !== 'function') throw new Error('notes-need-brain');
+    notes = require('./notes.js').createNotesManager({ record, redactor, roles, actions });
+  }
+  return { actions, shares, investigations, notes, record };
 }
 
 // #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
@@ -397,7 +436,7 @@ async function main() {
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
+  const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
@@ -426,11 +465,11 @@ async function main() {
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
-    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, desktop,
+    call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, notes, desktop,
       ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  createApp({ source, scope, redactor, roles, call, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
