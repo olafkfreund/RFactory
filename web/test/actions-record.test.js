@@ -92,3 +92,16 @@ test('unfinished investigations retain uncertain starts and stops until a termin
     line({ id: 'done', state: 'stopped', reason: 'restart' }) + line({ id: 'stop', state: 'stopping', run_id: 'run-1' }));
   assert.deepEqual(rec.unfinishedInvestigations().map((e) => e.id), ['start', 'lost', 'stop']);
 });
+
+test('readDay returns numbered entries after an offset, skips an incomplete last line', async (t) => {
+  const { dir, rec } = setup(t);
+  fs.writeFileSync(path.join(dir, '2026-11-17.jsonl'), '{"id":"a"}\n\n{"id":"b"}\n{"id":"c"}\n{"id":"d"');
+  assert.deepEqual(await rec.readDay('2026-11-17'), [{ line: 1, entry: { id: 'a' } }, { line: 3, entry: { id: 'b' } }, { line: 4, entry: { id: 'c' } }]);
+  assert.deepEqual((await rec.readDay('2026-11-17', 3)).map((r) => r.line), [4]);
+});
+
+test('readDay: a missing file is empty, a bad day throws bad-day', async (t) => {
+  const { rec } = setup(t);
+  assert.deepEqual(await rec.readDay('2026-11-16'), []);
+  for (const day of ['../x', '2026-1-1', '2026-11-17.jsonl', '']) await assert.rejects(rec.readDay(day), /bad-day/);
+});

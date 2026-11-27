@@ -12,7 +12,13 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 case " $* " in
   *' get deploy rfactory '*)
     [[ ${FAKE_NO_DEPLOY:-0} != 1 ]] || exit 1
-    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
+    case " $* " in
+      *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;;
+      *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;;
+      *RFACTORY_NOTES*) printf '%s' "${FAKE_NOTES:-}" ;;
+      *RFACTORY_AGENTS*) printf '%s' "${FAKE_AGENTS:-}" ;;
+      *) printf '%s' "${FAKE_SHARES:-on}" ;;
+    esac ;;
   *' get secret '*'jsonpath='*) echo 2026-01-02 ;;
   *' get secret '*) if [[ ${FAKE_EXISTING:-0} == 1 ]]; then echo secret/existing; fi ;;
   *' create secret generic '*)
@@ -52,7 +58,7 @@ fixture() {
 run() {
   local result=0
   bash "$here/bootstrap-secrets.sh" "$@" >"$root/output" 2>&1 || result=$?
-  if grep -Eq 'keycloak-value|certificate-value|0123456789abcdef|owner@example.test|admin@example.test' "$root/output"; then
+  if grep -Eq 'keycloak-value|certificate-value|0123456789abcdef|owner@example.test|admin@example.test|rfk_[A-Za-z0-9]{32,}' "$root/output"; then
     echo 'secret value appeared in output' >&2
     exit 1
   fi
@@ -80,6 +86,9 @@ fixture; FAKE_SHARES=off refused
 fixture; FAKE_INVESTIGATIONS=on refused
 fixture; FAKE_INVESTIGATIONS=maybe refused
 fixture; printf '{"writes_enabled":true,"shares_enabled":true,"investigations_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
+fixture; FAKE_NOTES=on refused
+fixture; FAKE_NOTES=maybe refused
+fixture; printf '{"writes_enabled":true,"shares_enabled":true,"notes_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
 fixture; FAKE_NO_DEPLOY=1 refused
 fixture; refused --writes off
 
@@ -99,6 +108,10 @@ FAKE_INVESTIGATIONS=on run --dry-run
 
 fixture
 FAKE_INVESTIGATIONS=off run --dry-run
+
+fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"notes_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_NOTES=on run --dry-run
 
 fixture
 run --no-restart
@@ -128,5 +141,54 @@ fixture
 FAKE_EXISTING=1 run --rotated --no-restart
 [[ $(grep -c "^annotated: rotation.factory.dev/rotated-at=$(date -u +%Y-%m-%d)$" "$FAKE_LOG") == 5 ]]
 if grep -q ' rollout restart\| apply ' "$FAKE_LOG"; then exit 1; fi
+
+agent_fixture() {
+  fixture
+  mkdir -p "$RFACTORY_CONFIG/agent-keys"
+  printf 'rfk_%s' "$(printf 'a%.0s' {1..32})" >"$RFACTORY_CONFIG/agent-keys/claude-code"
+  chmod 600 "$RFACTORY_CONFIG/agent-keys/claude-code"
+  printf '{"writes_enabled":true,"shares_enabled":true,"source":{"kind":"cfactory"},"projects":{"allow":[{"id":"repo:2"}]},"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+  chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+}
+
+agent_fixture
+FAKE_AGENTS=on run --dry-run
+grep -q '^rfactory-keys: cfactory-read-key cfactory-write-key agent-claude-code$' "$root/output"
+
+agent_fixture
+FAKE_AGENTS=on run --no-restart
+grep -q -- "--from-file=agent-claude-code=$RFACTORY_CONFIG/agent-keys/claude-code" "$FAKE_LOG"
+
+agent_fixture; FAKE_AGENTS=off refused
+fixture; FAKE_AGENTS=on refused
+agent_fixture; chmod 644 "$RFACTORY_CONFIG/agent-keys/claude-code"; FAKE_AGENTS=on refused
+agent_fixture; printf 'wrong-key' >"$RFACTORY_CONFIG/agent-keys/claude-code"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/"scope":"read"/"scope":"write"/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/"projects":\["repo:2"\]/"projects":[]/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/"projects":\["repo:2"\]/"projects":["repo:2","repo:2"]/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/"projects":\["repo:2"\]/"projects":["repo:3"]/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/,"projects":{"allow":\[{"id":"repo:2"}\]}//' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture; sed -i 's/"kind":"cfactory"/"kind":"github"/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=on refused
+agent_fixture
+cp "$RFACTORY_CONFIG/agent-keys/claude-code" "$RFACTORY_CONFIG/agent-keys/beta"
+python3 - "$RFACTORY_CONFIG/scope.cluster.json" <<'PY'
+import json
+import pathlib
+import sys
+file = pathlib.Path(sys.argv[1])
+scope = json.loads(file.read_text())
+scope['agents'].append({'name': 'beta', 'scope': 'read', 'key_file': '/run/rfactory/keys/agent-beta', 'projects': ['repo:2']})
+file.write_text(json.dumps(scope))
+PY
+FAKE_AGENTS=on refused
+fixture; sed -i 's/}$/,"agents":null}/' "$RFACTORY_CONFIG/scope.cluster.json"; FAKE_AGENTS=off refused
+agent_fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/other","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_AGENTS=on refused
+agent_fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"agents":[{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]},{"name":"claude-code","scope":"read","key_file":"/run/rfactory/keys/agent-claude-code","projects":["repo:2"]}]}' >"$RFACTORY_CONFIG/scope.cluster.json"
+chmod 600 "$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_AGENTS=on refused
 
 echo 'bootstrap-secrets tests passed'

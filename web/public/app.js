@@ -156,6 +156,7 @@ function render(doc, data, now = Date.now()) {
 
 // #52: one project per page load (the picker navigates), so nothing on the page ever has to be reset
 const projectIds = new WeakMap();
+const githubMode = new WeakSet(); // a GitHub source: no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
 const UNAVAILABLE = "This project isn't available in Meet";
 
@@ -170,7 +171,7 @@ async function run(doc) {
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
   } catch { status.textContent = 'Failed: network'; }
-  loadReview(doc);
+  if (!githubMode.has(doc)) loadReview(doc);
   button.disabled = false;
 }
 
@@ -343,9 +344,17 @@ const storeOf = (doc) => { if (!stores.has(doc)) stores.set(doc, { items: new Ma
 function renderAction(doc, a, store, now) {
   const li = el(doc, 'li', undefined, 'card');
   li.appendChild(el(doc, 'span', a.card_key || 'new card', 'card-key'));
+  if (a.evidence) {
+    li.appendChild(el(doc, 'div', `Verdict: ${a.evidence.verdict}`, 'evidence'));
+    for (const s of a.evidence.stages || []) li.appendChild(el(doc, 'div', `${s.stage}: ${s.status}`, 'evidence'));
+    li.appendChild(el(doc, 'div', `Source: CFactory card, read ${a.proposed_at}`, 'evidence'));
+    if (a.evidence.note) li.appendChild(el(doc, 'div', a.evidence.note, 'evidence'));
+    li.appendChild(el(doc, 'div', 'Pull request: not checked.', 'evidence'));
+  }
   li.appendChild(el(doc, 'span', a.description || `${a.action} ${a.card_key || ''}`.trim(), 'action-text'));
   li.appendChild(el(doc, 'pre', JSON.stringify({ action: a.action, args: a.args, card_key: a.card_key }, null, 2), 'action-payload'));
   li.appendChild(el(doc, 'div', `Effects: ${a.effects && a.effects.text ? a.effects.text : 'none'}`, 'evidence'));
+  if (a.repository_path) li.appendChild(el(doc, 'div', `Repository: ${a.repository_path}`, 'evidence'));
   li.appendChild(el(doc, 'div', `Proposed by ${a.proposed_by} (display name, not verified)`, 'evidence'));
   if (a.state === 'pending') {
     const left = Math.max(0, Math.round((Date.parse(a.expires_at) - now) / 60000));
@@ -387,13 +396,17 @@ function handleAction(doc, event, now) {
   renderActions(doc, now);
 }
 
+// the reply to approve, reject or stop, for actions, shares and investigations
+const decided = (r, body) => r.status === 409 && body.error === 'not-this-project' ? "This belongs to another project's call."
+  : body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+
 async function decide(doc, a, verb) {
   const status = doc.getElementById('actions-status');
   try {
     const r = await fetch(scoped(doc, `/api/actions/${encodeURIComponent(a.id)}/${verb}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify({ hash: a.hash }) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -407,6 +420,193 @@ async function loadActions(doc) {
     for (const a of [...data.history, ...data.pending]) store.items.set(a.id, a);
     renderActions(doc);
   } catch { /* panels stay hidden */ }
+}
+
+// Notes (#58): one store per document; each load replaces the stored sets, and a live event replaces the running set.
+const notesStores = new WeakMap();
+const notesStoreOf = (doc) => { if (!notesStores.has(doc)) notesStores.set(doc, { sets: [], canApprove: false, seq: 0 }); return notesStores.get(doc); };
+const NOTE_KINDS = [
+  ['decision', 'Decisions'],
+  ['action', 'Action items'],
+  ['blocker', 'Blockers'],
+  ['discussed', 'Cards discussed'],
+];
+
+async function postNote(doc, tail, payload = {}) {
+  const status = doc.getElementById('notes-status');
+  try {
+    const r = await fetch(scoped(doc, `/api/notes/${tail}`), { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(payload) });
+    const body = await r.json().catch(() => ({}));
+    if (status) status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+  } catch {
+    if (status) status.textContent = 'Failed: network';
+  }
+  notesStoreOf(doc).editing = false;
+  await loadNotes(doc);
+}
+
+function renderNote(doc, set, n, store) {
+  const li = el(doc, 'li', undefined, 'card');
+  li.appendChild(el(doc, 'span', n.text, 'action-text'));
+  if (n.owner) li.appendChild(el(doc, 'div', `owner: ${n.owner}`, 'evidence'));
+  if (n.due) li.appendChild(el(doc, 'div', `due: ${n.due}`, 'evidence'));
+  if (Array.isArray(n.cards) && n.cards.length) li.appendChild(el(doc, 'div', `cards: ${n.cards.join(', ')}`, 'evidence'));
+  if (Array.isArray(n.unknown_cards) && n.unknown_cards.length) li.appendChild(el(doc, 'div', `not on the board: ${n.unknown_cards.join(', ')}`, 'evidence'));
+  if (n.redacted) li.appendChild(el(doc, 'div', 'redacted', 'evidence'));
+  const proposals = (set.proposals || []).filter((p) => p.note_id === n.id);
+  for (const p of proposals) {
+    const target = p.card_key || p.title || '';
+    li.appendChild(el(doc, 'div', `${p.action}${target ? ` ${target}` : ''}: ${p.state}`, 'evidence'));
+  }
+  const ev = n.close_evidence;
+  if (ev) {
+    for (const s of ev.stages || []) li.appendChild(el(doc, 'div', `${s.stage}: ${s.status}`, 'evidence'));
+    li.appendChild(el(doc, 'div', 'the stage results contradict this', 'evidence'));
+  }
+  if (store.canApprove && set.state === 'open') {
+    const row = el(doc, 'div', undefined, 'action-buttons');
+    const button = (label, fn) => {
+      const b = el(doc, 'button', label, 'btn');
+      b.setAttribute('type', 'button');
+      b.addEventListener('click', fn);
+      row.appendChild(b);
+    };
+    const sid = encodeURIComponent(set.id);
+    const nid = encodeURIComponent(n.id);
+    const form = el(doc, 'div', undefined, 'call-form');
+    form.hidden = true;
+    const kindSelect = el(doc, 'select');
+    for (const [k] of NOTE_KINDS) {
+      const opt = el(doc, 'option', k);
+      opt.value = k;
+      kindSelect.appendChild(opt);
+    }
+    kindSelect.value = n.kind;
+    kindSelect.setAttribute('aria-label', 'Kind');
+    const textInput = el(doc, 'input', undefined, 'call-input');
+    textInput.setAttribute('type', 'text');
+    textInput.value = n.text || '';
+    textInput.setAttribute('aria-label', 'Text');
+    const ownerInput = el(doc, 'input', undefined, 'call-input');
+    ownerInput.setAttribute('type', 'text');
+    ownerInput.value = n.owner || '';
+    ownerInput.setAttribute('aria-label', 'Owner');
+    const dueInput = el(doc, 'input', undefined, 'call-input');
+    dueInput.setAttribute('type', 'text');
+    dueInput.value = n.due || '';
+    dueInput.setAttribute('aria-label', 'Due');
+    const saveBtn = el(doc, 'button', 'Save', 'btn');
+    saveBtn.setAttribute('type', 'button');
+    saveBtn.addEventListener('click', () => {
+      const body = { kind: kindSelect.value, text: textInput.value };
+      if (kindSelect.value === 'action') { body.owner = ownerInput.value; body.due = dueInput.value; }
+      return postNote(doc, `${sid}/${nid}/edit`, body);
+    });
+    form.appendChild(kindSelect);
+    form.appendChild(textInput);
+    form.appendChild(ownerInput);
+    form.appendChild(dueInput);
+    form.appendChild(saveBtn);
+    button('Edit', () => { form.hidden = !form.hidden; store.editing = !form.hidden; if (form.hidden) renderNotes(doc); });
+    button('Remove', () => postNote(doc, `${sid}/${nid}/remove`));
+    if (!set.ended_at && set.writable && set.intake !== false) {
+      if (n.kind === 'action') button('Propose card', () => postNote(doc, `${sid}/${nid}/propose`, { what: 'card' }));
+      if (n.owner && proposals.some((p) => (p.what === 'card' || p.action === 'create_card') && p.card_key)) {
+        button('Propose owner', () => postNote(doc, `${sid}/${nid}/propose`, { what: 'owner' }));
+      }
+      if (Array.isArray(n.cards) && n.cards.length === 1) {
+        if (ev) button('Propose close anyway', () => postNote(doc, `${sid}/${nid}/propose`, { what: 'close', confirm: ev.evidence_hash }));
+        else button('Propose close', () => postNote(doc, `${sid}/${nid}/propose`, { what: 'close' }));
+      }
+    }
+    li.appendChild(row);
+    li.appendChild(form);
+  }
+  return li;
+}
+
+function renderNotes(doc) {
+  const panel = doc.getElementById('notes');
+  const ul = doc.getElementById('notes-list');
+  if (!panel || !ul) return;
+  const store = notesStoreOf(doc);
+  if (store.editing) return; // a poll or a live event must not close an open edit form; Save or Edit renders again
+  clear(ul);
+  for (const set of store.sets) {
+    const li = el(doc, 'li', undefined, 'card');
+    const proj = set.project ? ` · ${set.project.name || set.project.id}` : '';
+    li.appendChild(el(doc, 'div', `${day(set.started_at)}${proj} · ${set.state}`, 'action-text'));
+    for (const [kind, title] of NOTE_KINDS) {
+      li.appendChild(el(doc, 'h3', title, 'panel-title'));
+      const list = el(doc, 'ul');
+      const items = (set.notes || []).filter((n) => n.kind === kind);
+      for (const n of items) list.appendChild(renderNote(doc, set, n, store));
+      if (!items.length) list.appendChild(el(doc, 'li', 'None', 'none'));
+      li.appendChild(list);
+    }
+    const sid = encodeURIComponent(set.id);
+    if (set.ended_at) {
+      if (store.canApprove && set.state === 'open') {
+        if (set.markdown) {
+          li.appendChild(el(doc, 'pre', set.markdown, 'action-payload'));
+          li.appendChild(el(doc, 'div', 'Destination: this RFactory page. Every signed-in member of this deployment can read and download these notes until 24 hours after the call.', 'evidence'));
+          li.appendChild(el(doc, 'div', 'A downloaded file leaves RFactory.', 'evidence'));
+        } else {
+          li.appendChild(el(doc, 'div', 'Waiting for a card action to finish.', 'evidence'));
+        }
+      }
+      if (set.state === 'approved') {
+        if (set.approved_by) li.appendChild(el(doc, 'div', `Approved by ${set.approved_by}`, 'evidence'));
+        const a = el(doc, 'a', 'Download', 'btn');
+        a.setAttribute('href', scoped(doc, `/api/notes/${sid}/download`));
+        li.appendChild(a);
+      }
+      if (store.canApprove && (set.state === 'open' || set.state === 'approved')) {
+        const row = el(doc, 'div', undefined, 'action-buttons');
+        if (set.state === 'open' && set.markdown) {
+          const b = el(doc, 'button', 'Approve', 'btn');
+          b.setAttribute('type', 'button');
+          b.addEventListener('click', () => postNote(doc, `${sid}/approve`, { hash: set.hash }));
+          row.appendChild(b);
+        }
+        const d = el(doc, 'button', 'Discard', 'btn');
+        d.setAttribute('type', 'button');
+        d.addEventListener('click', () => postNote(doc, `${sid}/discard`));
+        row.appendChild(d);
+        li.appendChild(row);
+      }
+    }
+    ul.appendChild(li);
+  }
+  panel.hidden = !store.on;
+}
+
+function handleNotes(doc, event) {
+  const s = event.set;
+  if (!s || typeof s.id !== 'string') return;
+  const store = notesStoreOf(doc);
+  ++store.seq; // a poll that started before this event must not overwrite it
+  const idx = store.sets.findIndex((x) => x.id === s.id);
+  if (idx >= 0) store.sets[idx] = s;
+  else store.sets = [s, ...store.sets.filter((x) => x.ended_at)];
+  store.on = true;
+  renderNotes(doc);
+}
+
+async function loadNotes(doc) {
+  const store = notesStoreOf(doc);
+  const seq = ++store.seq;
+  try {
+    const r = await fetch(scoped(doc, '/api/notes'));
+    if (!r.ok) return r.status !== 404; // 404 when notes are off: the panel stays hidden and nothing polls
+    const data = await r.json();
+    if (store.seq !== seq) return;
+    store.on = true;
+    store.canApprove = !!data.can_approve;
+    store.sets = Array.isArray(data.sets) ? data.sets : [];
+    renderNotes(doc);
+  } catch { /* panel stays hidden */ }
 }
 
 // Share: one store per document, keyed by share id; call-level refusals use the key 'unavailable'.
@@ -466,7 +666,7 @@ async function decideShare(doc, tail, hash, id) {
     const r = await fetch(scoped(doc, `/api/shares/${tail}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(hash ? { hash } : named) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -542,7 +742,7 @@ async function decideInvestigation(doc, tail, payload) {
     const r = await fetch(scoped(doc, `/api/investigations/${tail}`), { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' }, body: JSON.stringify(payload) });
     const body = await r.json();
-    status.textContent = body.text || (r.ok ? 'Done.' : `Failed: ${body.error || r.status}`);
+    status.textContent = decided(r, body);
   } catch { status.textContent = 'Failed: network'; }
 }
 
@@ -563,6 +763,7 @@ async function loadInvestigations(doc) {
 // #51: lookup sources. GitHub links go to the bound repository (from the limits event) and nowhere else;
 // a card opens the page's own card review (CFactory has no card page).
 const lookupRepos = new WeakMap();
+const lookupGithubs = new WeakMap(); // #52: every bound repository of a project call
 
 function sourceUrl(repo, { kind, ref }) {
   const value = String(ref);
@@ -587,7 +788,10 @@ function renderSource(doc, source) {
     row.appendChild(btn);
     return row;
   }
-  const url = sourceUrl(lookupRepos.get(doc), source);
+  const githubs = lookupGithubs.get(doc);
+  // a source naming its own repository links only when that repository is bound
+  const repo = source.repo ? (githubs && githubs.includes(source.repo) ? source.repo : null) : lookupRepos.get(doc);
+  const url = sourceUrl(repo, source);
   if (!url) { row.textContent = label; return row; }
   const a = el(doc, 'a', label);
   a.setAttribute('href', url);
@@ -599,6 +803,7 @@ function renderSource(doc, source) {
 
 function renderLimits(doc, event) {
   lookupRepos.set(doc, event.github);
+  lookupGithubs.set(doc, Array.isArray(event.githubs) ? event.githubs : null);
   const line = doc.getElementById('call-limits');
   if (!line) return;
   line.textContent = event.exhausted ? 'lookup budget used'
@@ -612,6 +817,7 @@ function handleCall(doc, event, now = Date.now()) {
   if (event.type === 'action-pending' || event.type === 'action-updated') return handleAction(doc, event, now);
   if (typeof event.type === 'string' && event.type.startsWith('share-')) return handleShare(doc, event);
   if (event.type === 'investigation-updated') return handleInvestigation(doc, event);
+  if (event.type === 'notes') return handleNotes(doc, event);
   if (event.type === 'limits') return renderLimits(doc, event);
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
@@ -619,6 +825,7 @@ function handleCall(doc, event, now = Date.now()) {
     doc.getElementById('call-join').disabled = live;
     doc.getElementById('call-leave').disabled = !live;
     if (doc.getElementById('call-listen')) doc.getElementById('call-listen').disabled = live;
+    if (event.state === 'stopped') loadNotes(doc);
   } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
   else if (event.type === 'hearing') {
     const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
@@ -720,6 +927,7 @@ function wireProjectCall(doc, project) {
 function loadPanels(doc) {
   loadShares(doc);
   loadInvestigations(doc);
+  loadNotes(doc).then((on) => { if (on !== false) setInterval(() => loadNotes(doc), 30000); });
   loadActions(doc).then(() => setInterval(() => renderActions(doc), 30000));
   doc.getElementById('run').addEventListener('click', () => run(doc));
   return run(doc);
@@ -727,7 +935,14 @@ function loadPanels(doc) {
 
 // /p/<slug> names the page's project; the picker lists the others. Without projects (/api/config), the page of before.
 async function openPage(doc, location, config) {
-  if ((await config)?.projects !== true) { wireCall(doc); return loadPanels(doc); }
+  const loaded = await config;
+  if (loaded?.source === 'github') {
+    githubMode.add(doc);
+    doc.getElementById('call').hidden = true;
+    doc.getElementById('run').addEventListener('click', () => run(doc));
+    return run(doc);
+  }
+  if (loaded?.projects !== true) { wireCall(doc); return loadPanels(doc); }
   let list = [];
   try {
     const r = await fetch('/api/projects');
@@ -777,6 +992,6 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined') {
   module.exports = {
     render, renderItem, ago, handleCall, renderActions, loadActions, renderFooter, loadShares, loadInvestigations,
-    renderReview, loadReview, renderReviewCard, loadReviewCard, sourceUrl, openPage,
+    renderNotes, loadNotes, renderReview, loadReview, renderReviewCard, loadReviewCard, sourceUrl, openPage,
   };
 }
