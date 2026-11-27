@@ -10,6 +10,7 @@ const { makeRedactor } = require('../core/src/redact');
 const { buildRendererSource } = require('./avatar/renderer.js');
 const { installSttBridge } = require('./stt-bridge');
 const { SpeechGate } = require(path.join(__dirname, 'node_modules/@vibeconferencing/calls/hearing/speech-gate.js'));
+const { CALL_EVENTS } = require(path.join(__dirname, 'node_modules/@vibeconferencing/calls/core/call-provider.js'));
 const portraits = require('./avatars/manifest.json').portraits;
 
 const MAX_IN = 4 * 1024 * 1024;
@@ -53,6 +54,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
   let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
+  let holdChat = false, chatSent = false, captionsKnown = false;
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, joinWaitResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
@@ -347,14 +349,26 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     send({ type: 'spoke', seq: msg.seq, result });
   }
 
+  // #56, Meet captions mode: report captions on/off; the chat line invites questions, so it waits for the first "on"
+  function captions(on) {
+    if (closing) return;
+    captionsKnown = true;
+    send({ type: 'captions', on });
+    if (!on || chatSent) return;
+    chatSent = true; // latched before the send: captions-state {on:true} and captions-ready arrive back to back
+    call.chat.send(chatLine).catch((e) => { if (!closing) log(`chat line failed: ${e.message}`); });
+  }
+
   async function afterJoin() {
-    try { await call.chat.send(chatLine); } catch (e) {
-      log(`chat line failed: ${e.message}`);
-      if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
-        noticeTimer = null;
-        if (closing) return;
-        try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
-      }, 10000);
+    if (!holdChat) {
+      try { await call.chat.send(chatLine); } catch (e) {
+        log(`chat line failed: ${e.message}`);
+        if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
+          noticeTimer = null;
+          if (closing) return;
+          try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
+        }, 10000);
+      }
     }
     if (stopping) return;
     if (env.RFACTORY_AVATAR) startAvatar();
@@ -492,6 +506,16 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       }
     }
     sendState('in-call');
+    holdChat = !audio && call.platform === 'meet';
+    if (holdChat) {
+      // shortcut: private field of an alpha lib; if it goes or the events are renamed, the first caption still reports "on"
+      if (typeof call._inner?.on === 'function') {
+        call._inner.on(CALL_EVENTS.captionsReady, () => captions(true));
+        call._inner.on(CALL_EVENTS.captionsState, (s) => { if (typeof s?.on === 'boolean') captions(s.on); });
+      }
+      // registered before the 'heard' forwarder, so "captions on" reaches the manager before the caption itself
+      call.once('caption', () => { if (!captionsKnown) captions(true); }); // an explicit state from the library wins
+    }
     if (!audio) call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
     call.on('state', (s) => { if (TERMINAL.includes(s)) { sendState(s); stop(`state ${s}`, s === 'error' ? 1 : 0); } });
     if (audio && !closing) {

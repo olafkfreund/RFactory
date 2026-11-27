@@ -28,8 +28,8 @@ function setup(over = {}) {
     leave: async () => { calls.leave++; calls.order.push('leave'); },
     chat: { send: async (t) => { calls.chat.push(t); calls.order.push('chat'); if (over.chatFails) throw new Error('chat boom ' + SECRET); } },
     camera: { setOn: async (on) => { calls.camera.push(on); calls.order.push(`camera ${on}`); return over.setOn?.(on); } },
-    _inner: { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page,
-      mediaPage: {}, getParticipants: async () => over.participants || [] },
+    _inner: Object.assign(new EventEmitter(), { page: over.page === undefined ? { evaluate: async () => (over.mic === undefined ? false : over.mic) } : over.page,
+      mediaPage: {}, getParticipants: async () => over.participants || [] }),
   });
   const deps = {
     clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; }, now: () => over.now?.value ?? 0 },
@@ -128,7 +128,10 @@ test('joining and lobby via onState, then in-call; options as planned', async ()
   assert.strictEqual(s.calls.joinOpts.name, 'Factory (AI)');
   assert.strictEqual(s.calls.joinOpts.timeoutMs, 300000);
   assert.ok(s.calls.hostOpts.userDataDir.endsWith('X'));
+  assert.deepStrictEqual(s.calls.chat, []);
+  s.call._inner.emit('captions-ready');
   assert.deepStrictEqual(s.calls.chat, ["Factory (AI) is listening; say 'Hey Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory"]);
+  assert.deepStrictEqual(s.out.find((m) => m.type === 'captions'), { type: 'captions', on: true });
   assert.deepStrictEqual(s.out.find((m) => m.type === 'mic'), { type: 'mic', muted: false });
   assert.deepStrictEqual(s.calls.camera, []);
   s.stdin.end(); await s.done;
@@ -153,13 +156,16 @@ test('a Teams link reaches join unchanged and the avatar camera is not checked b
   await tick();
   try {
     assert.strictEqual(s.calls.joinOpts.link, link);
+    assert.strictEqual(s.calls.chat.length, 1);
+    s.call._inner.emit('captions-ready');
+    assert.ok(!s.out.some((m) => m.type === 'captions'));
     assert.deepStrictEqual(s.calls.camera, [true]); // a Meet-label check would have refused (confirmation false)
     s.timers.find((t) => t.ms === 3000).fn(); await tick();
     assert.ok(s.timers.some((t) => t.ms === 5000)); // past the camera check, polling
   } finally { s.stdin.end(); await s.done; }
 });
 
-test('avatar injects after chat, retries a refused camera, then polls render errors', async () => {
+test('avatar does not wait for the chat line, retries a refused camera, then polls render errors', async () => {
   const calls = { order: [] };
   const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page: avatarPage(calls, [false, true], 30), order: calls.order });
   try {
@@ -172,7 +178,8 @@ test('avatar injects after chat, retries a refused camera, then polls render err
     s.timers.find((t) => t.ms === 5000).fn(); await tick();
     assert.deepStrictEqual(s.calls.camera, [true, true, false]);
     assert.ok(s.logs().includes('avatar failed: render'));
-    assert.ok(s.calls.order.indexOf('chat') < calls.order.indexOf('inject'));
+    assert.ok(calls.order.includes('inject'));
+    assert.deepStrictEqual(s.calls.chat, []);
   } finally { s.stdin.end(); await s.done; }
 });
 
@@ -234,6 +241,7 @@ test('the injected commit appears in both chat and the avatar source line', asyn
   const calls = { order: [], scripts: [] };
   const s = await joined({ env: { RFACTORY_AVATAR: 'm01', RFACTORY_COMMIT: 'abc' }, page: avatarPage(calls) });
   try {
+    s.call._inner.emit('captions-ready');
     assert.ok(s.calls.chat[0].includes('/tree/abc'));
     assert.ok(calls.scripts[0].includes('github.com/olafkfreund/RFactory/tree/abc'));
   } finally { s.stdin.end(); await s.done; }
@@ -355,6 +363,55 @@ test('heard passes id, speaker, text, final as-is', async () => {
   s.stdin.end(); await s.done;
 });
 
+test('captions-state reports off but ignores a non-boolean state', async () => {
+  const s = await joined();
+  s.call._inner.emit('captions-state', { on: false });
+  s.call._inner.emit('captions-state', { on: 'true' });
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'captions'), [{ type: 'captions', on: false }]);
+  assert.deepStrictEqual(s.calls.chat, []);
+  s.stdin.end(); await s.done;
+});
+
+test('the first caption reports on before heard and sends chat once', async () => {
+  const s = await joined();
+  s.call.emit('caption', { text: 'first' });
+  s.call.emit('caption', { text: 'second' });
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'captions'), [{ type: 'captions', on: true }]);
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'captions' || m.type === 'heard').map((m) => m.type),
+    ['captions', 'heard', 'heard']);
+  assert.strictEqual(s.calls.chat.length, 1);
+  s.stdin.end(); await s.done;
+});
+
+test('captions-state on and captions-ready send the chat line once', async () => {
+  const s = await joined();
+  s.call._inner.emit('captions-state', { on: true });
+  s.call._inner.emit('captions-ready');
+  assert.strictEqual(s.calls.chat.length, 1);
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'captions'),
+    [{ type: 'captions', on: true }, { type: 'captions', on: true }]);
+  s.stdin.end(); await s.done;
+});
+
+test('a caption after an explicit off state does not turn captions on', async () => {
+  const s = await joined();
+  s.call._inner.emit('captions-state', { on: false });
+  s.call.emit('caption', { text: 'leftover' });
+  assert.deepStrictEqual(s.out.filter((m) => m.type === 'captions'), [{ type: 'captions', on: false }]);
+  assert.deepStrictEqual(s.calls.chat, []);
+  s.stdin.end(); await s.done;
+});
+
+test('caption signals after Stop do not send captions or chat', async () => {
+  const s = await joined();
+  s.msg({ type: 'leave' }); await tick();
+  s.call._inner.emit('captions-ready');
+  s.call.emit('caption', { text: 'late' });
+  assert.ok(!s.out.some((m) => m.type === 'captions'));
+  assert.deepStrictEqual(s.calls.chat, []);
+  s.stdin.end(); await s.done;
+});
+
 test('a 3 s WAV (over 64 KiB base64) is accepted and played; seq 0 is the greeting', async () => {
   const s = await joined();
   const wav = Buffer.alloc(22050 * 2 * 3, 1).toString('base64');
@@ -394,9 +451,12 @@ test('MutedError and a rejected done give spoke failed', async () => {
 
 test('the chat line is sent once and its failure only logged', async () => {
   const s = await joined({ chatFails: true });
+  s.call._inner.emit('captions-ready');
+  await tick();
   assert.strictEqual(s.calls.chat.length, 1);
   assert.ok(s.logs().includes('chat line failed'));
   assert.ok(!s.logs().includes(SECRET));
+  assert.ok(!s.timers.some((t) => t.ms === 10000));
   assert.deepStrictEqual(s.states(), ['joining', 'lobby', 'in-call']);
   s.stdin.end(); await s.done;
 });
@@ -804,8 +864,11 @@ test('an echo cut discards a dropped short stretch, so it is never joined across
 test('audio installs before join, starts after join and does not forward captions', async () => {
   const s = await audioJoined();
   s.call.emit('caption', { text: 'private' });
+  s.call._inner.emit('captions-ready');
   assert.deepStrictEqual(s.order.slice(0, 3), ['install', 'bind', 'tap start']);
   assert.ok(s.calls.chat[0].includes("transcribes this call on RFactory's own servers"));
+  assert.strictEqual(s.calls.chat.length, 1);
+  assert.ok(!s.out.some((m) => m.type === 'captions'));
   assert.ok(!s.out.some((m) => m.type === 'heard'));
   s.stdin.end(); await s.done;
 });
