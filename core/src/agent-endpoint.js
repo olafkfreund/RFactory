@@ -26,7 +26,7 @@ function createAgentEndpoint({ agents, tools, log = (line) => console.error(line
 
   function valid(body) {
     if (!plain(body) || Object.keys(body).some((key) => !['jsonrpc', 'id', 'method', 'params'].includes(key))) return false;
-    if (body.jsonrpc !== '2.0' || !METHODS.has(body.method) || (body.id !== undefined && !Number.isInteger(body.id))) return false;
+    if (body.jsonrpc !== '2.0' || !METHODS.has(body.method) || (body.id !== undefined && !Number.isSafeInteger(body.id))) return false;
     if (body.params !== undefined && !plain(body.params)) return false;
     if (body.method === 'tools/call' && (!plain(body.params) || typeof body.params.name !== 'string' || (body.params.arguments !== undefined && !plain(body.params.arguments)))) return false;
     return true;
@@ -60,7 +60,10 @@ function createAgentEndpoint({ agents, tools, log = (line) => console.error(line
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
     catch { res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD); return; }
     if (!valid(body)) { res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD); return; }
-    if (req.headers['mcp-protocol-version'] !== undefined && !SUPPORTED_PROTOCOL_VERSIONS.includes(req.headers['mcp-protocol-version'])) {
+    // The SDK answers these three headers itself, in its own words (and echoes the version): refuse them first.
+    const { accept = '', 'content-type': type = '', 'mcp-protocol-version': version } = req.headers;
+    if (!accept.includes('application/json') || !accept.includes('text/event-stream') || !/^application\/json\s*(;|$)/i.test(type)
+      || (version !== undefined && !SUPPORTED_PROTOCOL_VERSIONS.includes(version))) {
       res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD);
       return;
     }

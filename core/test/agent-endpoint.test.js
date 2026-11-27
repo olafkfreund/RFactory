@@ -46,8 +46,9 @@ test('protocol, key boundary, origin, path, and upgrade', async () => {
       const res = await request(url, opts);
       assert.equal(res.status, 401); assert.equal(res.body, '');
     }
-    assert.equal((await request(url + '?key=' + key)).status, 401);
-    assert.equal((await request(url, { headers: { 'X-Forwarded-Email': 'person@example.test' } })).status, 401);
+    for (const res of [await request(url + '?key=' + key), await request(url, { headers: { 'X-Forwarded-Email': 'person@example.test' } })]) {
+      assert.equal(res.status, 401); assert.equal(res.body, '');
+    }
     assert.equal((await request(url, { token: key, headers: { Origin: 'https://example.test' } })).status, 403);
     assert.equal((await request(url.replace('/mcp', '/other'), { token: key })).status, 404);
     assert.equal((await request(url, { token: key, method: 'GET' })).status, 405);
@@ -96,6 +97,10 @@ test('bad envelopes and SDK errors never echo input', async () => {
     assert.equal(unsupported.status, 400);
     assert.deepEqual(JSON.parse(unsupported.body), { jsonrpc: '2.0', error: { code: -32600, message: 'bad-request' }, id: null });
     assert.equal(unsupported.body.includes(secret), false);
+    for (const res of [await rpc(url, key, list, { Accept: secret }), await rpc(url, key, list, { 'Content-Type': secret }), await rpc(url, key, { ...list, id: 1e300 })]) {
+      assert.equal(res.status, 400);
+      assert.deepEqual(JSON.parse(res.body), { jsonrpc: '2.0', error: { code: -32600, message: 'bad-request' }, id: null });
+    }
     const supported = await rpc(url, key, list, { 'Mcp-Protocol-Version': SUPPORTED_PROTOCOL_VERSIONS[0] });
     assert.equal(supported.status, 200);
     assert.equal(supported.body.includes('whoami'), true);
