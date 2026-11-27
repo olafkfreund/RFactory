@@ -20,14 +20,19 @@ const bounded = (value, min, max) => typeof value === 'string' && value.length >
 const criteria = (value) => Array.isArray(value) && value.length <= 20 &&
   value.every((item) => bounded(item, 1, 500) && item.trim().length > 0);
 
-function validate(proposal, { scope, snapshotKeys, redactor }) {
+function validate(proposal, { scope, snapshotKeys, redactor, repositories }) {
   const refuse = () => ({ ok: false, reason: 'I can\'t do that.' });
   if (!plain(proposal) || Object.keys(proposal).some((key) => !['action', 'args'].includes(key)) ||
       !ACTIONS.has(proposal.action) || !plain(proposal.args)) return refuse();
   const { action, args } = proposal;
-  if (Object.keys(args).some((key) => !FIELDS[action].includes(key))) return refuse();
+  if (Object.keys(args).some((key) => !FIELDS[action].includes(key) && !(repositories && action === 'create_card' && key === 'repository_id'))) return refuse();
   if (action === 'create_card') {
-    if (!Number.isInteger(scope?.source?.repository_id) || !bounded(args.title, 1, 200)) return refuse();
+    if (repositories && !repositories.length) return refuse();
+    if (repositories && Object.hasOwn(args, 'repository_id') && !repositories.some((repo) => repo.id === args.repository_id)) return refuse();
+    if (!repositories && !Number.isInteger(scope?.source?.repository_id)) return refuse();
+    if (!bounded(args.title, 1, 200)) return refuse();
+    if (repositories?.length > 1 && !Object.hasOwn(args, 'repository_id')) return { ok: false,
+      reason: `Which repository: ${repositories.map((repo) => repo.path.split('/').at(-1)).join(' or ')}?` };
   } else if (!bounded(args.card_key, 1, 128) ||
       !(snapshotKeys instanceof Set ? snapshotKeys.has(args.card_key) : snapshotKeys?.includes(args.card_key))) return refuse();
   if ((action === 'update_card' && Object.keys(args).length === 1) ||
@@ -43,7 +48,8 @@ function validate(proposal, { scope, snapshotKeys, redactor }) {
   }
   if (JSON.stringify(redactor.toModel(args)) !== JSON.stringify(args)) return refuse();
   return { ok: true, payload: { action, args: action === 'create_card'
-    ? { ...args, repository_id: scope.source.repository_id } : { ...args } } };
+    ? { ...args, repository_id: repositories ? repositories.length === 1 ? repositories[0].id : args.repository_id
+      : scope.source.repository_id } : { ...args } } };
 }
 
 function canonical(payload) {

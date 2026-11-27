@@ -26,6 +26,20 @@ test('all eight actions accept their specified arguments', () => {
   for (const action of ['run_card', 'plan_card', 'code_card', 'test_card']) ok(action, { card_key: 'FCT-9' });
 });
 
+test('project create selects an allowed repository, asks when ambiguous, and never rewrites a foreign id', () => {
+  const repositories = [{ id: 1, path: 'owner/first' }, { id: 2, path: 'owner/second' }];
+  const check = (args, selected = repositories) => validate(proposal('create_card', args), { ...context, repositories: selected });
+  assert.equal(check({ title: 'New' }).reason, 'Which repository: first or second?');
+  assert.deepEqual(check({ title: 'New', repository_id: 2 }).payload.args, { title: 'New', repository_id: 2 });
+  assert.equal(check({ title: 'New', repository_id: 3 }).ok, false);
+  assert.equal(check({ title: 'New', repository_id: 2 }, repositories.slice(0, 1)).ok, false);
+  assert.deepEqual(check({ title: 'New' }, repositories.slice(0, 1)).payload.args,
+    { title: 'New', repository_id: 1 });
+  assert.equal(check({ title: 'New', issue_ref: 'owner/first#1' }).ok, false);
+  assert.equal(validate(proposal('move_card', { card_key: 'FCT-9', repository_id: 1, status: 'ready' }),
+    { ...context, repositories }).ok, false);
+});
+
 test('each action refuses an invalid or out-of-bounds argument', () => {
   for (const args of [{ title: '' }, { title: 'x'.repeat(201) }, { title: 'x', status: 'done' },
     { title: 'x', tier: 'huge' }, { title: 'x', acceptance_criteria: Array(21).fill('x') },

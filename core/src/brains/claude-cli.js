@@ -131,13 +131,14 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
-  async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false } = {}) {
+  async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false, repositories } = {}) {
     await checkDestination(deadline);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
     try {
       const safe = redactor.toModel(snapshot);
-      const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
+      const prompt = JSON.stringify({ ...safe, ...(repositories ? { repositories: repositories.map(({ id, path }) => ({ id, name: path.split('/').at(-1) })) } : {}),
+        items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
         ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
       })), request: { content: { untrusted: true, text: redactor.toModel(request) } } });
       const timeout = Math.min(40000, deadline - clock() - 2000);
