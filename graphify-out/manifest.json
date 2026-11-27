@@ -756,9 +756,9 @@
     "semantic_hash": "e42c778bbbb45b2ad21df6b3a1488f66"
   },
   "desktop/verify/verify.test.js": {
-    "mtime": 1795788101.180593,
-    "seen": 1795811433.7782962,
-    "ast_hash": "ee1f2cf2e3e8006ba961431de81a0dbf",
+    "mtime": 1795811931.2716684,
+    "seen": 1795811944.711548,
+    "ast_hash": "934100ee0d036c530c7f59deccc3e65c",
     "semantic_hash": ""
   },
   "spike/hello-call.js": {
@@ -2958,27 +2958,27 @@
     "semantic_hash": ""
   },
   "desktop/verify/callevents.js": {
-    "mtime": 1795786303.8464646,
-    "seen": 1795811433.7782576,
-    "ast_hash": "5160869e2cb0874766854e03cb6581f0",
+    "mtime": 1795811833.4264016,
+    "seen": 1795811944.7115054,
+    "ast_hash": "cf2c8ddad76e37c00f8069549a0cf86c",
     "semantic_hash": ""
   },
   "desktop/verify/observer.js": {
-    "mtime": 1795787650.768906,
-    "seen": 1795811433.7782824,
-    "ast_hash": "d6b187f16a885007570151f0742a0150",
+    "mtime": 1795811833.4264016,
+    "seen": 1795811944.711532,
+    "ast_hash": "59aecb64ff4816cf2b5c959abb552c3d",
     "semantic_hash": ""
   },
   "desktop/verify/readiness.sh": {
-    "mtime": 1795788093.9835117,
-    "seen": 1795811433.7782896,
-    "ast_hash": "fa1929042c60ef9217f021dee1ee5809",
+    "mtime": 1795811849.6116111,
+    "seen": 1795811944.7115405,
+    "ast_hash": "a9e50056f1c91d41217d4f1566bf0b7d",
     "semantic_hash": ""
   },
   "docs/multi-participant-test.md": {
-    "mtime": 1795811411.1594102,
-    "seen": 1795811433.7787952,
-    "ast_hash": "9fa37a190ea47ae6bd910a7d4dd93cfb",
+    "mtime": 1795811833.4264016,
+    "seen": 1795811944.712115,
+    "ast_hash": "db3ded8d4b64252100b3dd64efdc6c90",
     "semantic_hash": ""
   },
   "intent/2026-11-27-57-multi-participant-test.md": {
@@ -2988,9 +2988,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-27-57-multi-participant-test.md": {
-    "mtime": 1795786531.539434,
-    "seen": 1795811433.7788982,
-    "ast_hash": "a8d258a2d8f81af64f1adc27700e3c3a",
+    "mtime": 1795811931.2716684,
+    "seen": 1795811944.7122314,
+    "ast_hash": "0729995f38aab90d0e50f4626366d231",
     "semantic_hash": ""
   },
   "spec/2026-11-27-57-multi-participant-test.md": {

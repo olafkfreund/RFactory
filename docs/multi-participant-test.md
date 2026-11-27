@@ -79,7 +79,7 @@ Use one table per block, with one row per scripted item.
 
 | Item | Speaker | Shown on call page | Bot reacted | What it said | Correct against key | Used earlier answer | Attribution | Seconds to answer | Notes |
 | ---- | ------- | ------------------ | ----------- | ------------ | ------------------- | ------------------- | ----------- | ----------------- | ----- |
-| | P1..P10 | yes / no | no / cue only / spoke | answer / "sorry" / "model isn't available" / nothing | yes / no | yes / no (follow-ups only) | yes / no / unavailable | | outcome codes only; no names, no quotes |
+| | P1..P10 | yes / no | no / cue only / spoke | answer / "sorry" / "model isn't available" / nothing | yes / no | yes / no (follow-ups only) | Captions: read attribution from the call page (yes / no). Own transcription: always unavailable. | From the end of the question to the start of the answer | outcome codes only; no names, no quotes |
 
 Below the table, record per block:
 

@@ -11,15 +11,25 @@ trap 'exit 130' INT TERM
 
 GEN='' STOP_SENT='' EVPID='' OBSPID='' SWITCH_START=''
 WORK=$(mktemp -d)
+stop_helpers() {
+  local pid
+  for pid in "${EVPID:-}" "${OBSPID:-}"; do
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+  done
+  for pid in "${EVPID:-}" "${OBSPID:-}"; do
+    if [ -n "$pid" ]; then wait "$pid" 2>/dev/null || true; fi
+  done
+  EVPID='' OBSPID=''
+}
+
 # Called by lib.sh's exit trap, including after a failed or interrupted step.
 extra_cleanup() {
   local r
   if [ -n "${GEN:-}" ] && [ -z "${STOP_SENT:-}" ]; then
-    r=$(approver DELETE /api/call "$(jq -nc --argjson g "$GEN" '{generation:$g}')") || true
+    r=$(WEB_MAX=${VERIFY_STOP_WAIT:-30} approver DELETE /api/call "$(jq -nc --argjson g "$GEN" '{generation:$g}')") || r=
     if ! jq -e '.ok == true' >/dev/null 2>&1 <<<"$r"; then fail readiness-cleanup-stop 'the call may still be running; check the call page'; fi
   fi
-  [ -z "${EVPID:-}" ] || kill "$EVPID" 2>/dev/null || true
-  [ -z "${OBSPID:-}" ] || kill "$OBSPID" 2>/dev/null || true
+  stop_helpers
   [ -z "${WORK:-}" ] || rm -rf "$WORK"
 }
 
@@ -70,45 +80,44 @@ settle() {
 
 # Find the first answer after the first question past a cursor; scored answers also need data and a clean lookup.
 answer_after_question() {
-  tail -n "+$((1 + $1))" "$EV" | jq -n -e --argjson rich "$2" '
+  tail -n "+$((1 + $1))" "$EV" | jq -nr --argjson rich "$2" '
     reduce inputs as $e ({heard:false, failed:false, answered:false, settled:false};
       if .settled then .
       elif $e.type == "question" and (.heard | not) then .heard = true
       elif .heard and $e.type == "log" and (($e.message // "") | startswith("brain failed") or startswith("source failed")) then .failed = true
       elif .heard and $e.type == "answer" then .settled = true | .answered = (if $rich then ((($e | has("sources")) or ($e | has("snapshot"))) and (.failed | not)) else true end)
-      else . end) | .answered' >/dev/null 2>&1
+      else . end) | if .answered then "answered" elif .settled then "invalid" else "pending" end' 2>/dev/null
 }
 
 # A successful stop is the only point where this script releases its generation.
 stop_call() {
-  local mode=$1 r status deadline
+  local mode=$1 r status deadline remaining
+  if [ "$mode" = platform ]; then SWITCH_START=$SECONDS; fi
+  deadline=$((SECONDS + ${VERIFY_STOP_WAIT:-30}))
   touch "$WORK/$mode/end"
   STOP_SENT=1
-  r=$(approver DELETE /api/call "$(jq -nc --argjson g "$GEN" '{generation:$g}')") || true
-  if ! jq -e '.ok == true' >/dev/null 2>&1 <<<"$r"; then
-    fail "readiness-$mode-stop" 'the call may still be running; check the call page'
-    exit 1
+  remaining=$((deadline - SECONDS))
+  if [ "$remaining" -gt 0 ] &&
+    r=$(WEB_MAX=$remaining approver DELETE /api/call "$(jq -nc --argjson g "$GEN" '{generation:$g}')") &&
+    jq -e '.ok == true' >/dev/null 2>&1 <<<"$r"; then
+    while (( (remaining = deadline - SECONDS) > 0 )); do
+      if status=$(WEB_MAX=$remaining approver GET /api/call/status) &&
+        jq -e '.running == false and .starting == false' >/dev/null 2>&1 <<<"$status" &&
+        [ "$SECONDS" -lt "$deadline" ]; then
+        pass "readiness-$mode-stop"
+        GEN='' STOP_SENT=''
+        stop_helpers
+        return
+      fi
+      sleep 0.2
+    done
   fi
-  deadline=$((SECONDS + ${VERIFY_STOP_WAIT:-30}))
-  while :; do
-    status=$(approver GET /api/call/status) || true
-    if jq -e '.running == false and .starting == false' >/dev/null 2>&1 <<<"$status"; then break; fi
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      fail "readiness-$mode-stop" 'the call may still be running; check the call page'
-      exit 1
-    fi
-    sleep 0.2
-  done
-  pass "readiness-$mode-stop"
-  GEN='' STOP_SENT=''
-  for pid in "$EVPID" "$OBSPID"; do
-    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
-  done
-  EVPID='' OBSPID=''
+  fail "readiness-$mode-stop" 'the call may still be running; check the call page'
+  exit 1
 }
 
 mode_checks() {
-  local mode=$1 state budget cursor deadline started heard_at turn_deadline
+  local mode=$1 state limits cursor deadline started heard_at turn_deadline expected notice
   if ! wait_event 0 'select(.type=="state" and .state=="in-call")' "$((JOIN_START + ${VERIFY_JOIN_WAIT:-240}))"; then
     state=$(jq -rs '[.[] | select(.type=="state")] | last // {} | [.state // "none", .code // "none"] | join(" ")' "$EV")
     fail "readiness-$mode-join" "$WAIT_REASON; last state/code: $state"; return 1
@@ -117,21 +126,28 @@ mode_checks() {
   echo "readiness-$mode-join-seconds $((SECONDS - JOIN_START))"
   if [ "$mode" = audio ] && [ -n "$SWITCH_START" ]; then echo "readiness-switch-seconds $((SECONDS - SWITCH_START))"; fi
 
-  if ! wait_event 0 'select(.type=="hearing")' "$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))"; then
-    fail "readiness-$mode-hearing" "$WAIT_REASON"; return 1
-  fi
-  state=$(jq -rs '[.[] | select(.type=="hearing")] | last // {} | .state // "none"' "$EV")
-  if { [ "$mode" = platform ] && [ "$state" = captions ]; } || { [ "$mode" = audio ] && [ "$state" = own ]; }; then pass "readiness-$mode-hearing"
-  else fail "readiness-$mode-hearing" "state $state"; return 1; fi
+  expected=captions
+  if [ "$mode" = audio ]; then expected=own; fi
+  deadline=$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))
+  while :; do
+    alive || { fail "readiness-$mode-hearing" "$WAIT_REASON"; return 1; }
+    state=$(jq -rs '[.[] | select(.type=="hearing")] | last // {} | .state // "none"' "$EV")
+    if [ "$state" = "$expected" ]; then break; fi
+    if [ "$state" = no-audio ] || [ "$state" = notice-failed ] || [ "$SECONDS" -ge "$deadline" ]; then
+      fail "readiness-$mode-hearing" "state $state"; return 1
+    fi
+    sleep 0.2
+  done
+  pass "readiness-$mode-hearing"
 
-  if ! wait_event 0 'select(.type=="limits")' "$((SECONDS + ${VERIFY_JOIN_WAIT:-240}))"; then
-    if [ "$WAIT_REASON" = timeout ]; then fail "readiness-$mode-limits" 'no limits event: lookups are off in the deployed scope'
-    else fail "readiness-$mode-limits" "$WAIT_REASON"; fi
-    return 1
+  # Limits are emitted at startup, before the greeting, and included in the stream replay.
+  if ! wait_event 0 'select(.type=="limits" or .type=="greeting")' "$((SECONDS + 60))"; then
+    fail "readiness-$mode-limits" "$WAIT_REASON"; return 1
   fi
-  budget=$(jq -rs '[.[] | select(.type=="limits")] | last // {} | .budget_usd // "missing"' "$EV")
-  if [ "$budget" = 2 ]; then pass "readiness-$mode-limits"
-  else fail "readiness-$mode-limits" "budget is $budget, not 2"; return 1; fi
+  limits=$(jq -cs '[.[] | select(.type=="limits")] | last' "$EV")
+  if jq -e '.budget_usd == 2' >/dev/null <<<"$limits"; then pass "readiness-$mode-limits"
+  elif [ "$limits" = null ]; then fail "readiness-$mode-limits" 'no limits event: lookups are off in the deployed scope'; return 1
+  else fail "readiness-$mode-limits" "budget is $(jq -r '.budget_usd // "missing"' <<<"$limits"), not 2"; return 1; fi
 
   node "$ROOT/desktop/verify/observer.js" "$CHROME_PATH" "$WORK/$mode" >"$OBS" 2>&1 &
   OBSPID=$!
@@ -152,7 +168,7 @@ mode_checks() {
       turn_deadline=$((started + ${VERIFY_TURN_WAIT:-95}))
       while :; do
         alive || { fail readiness-platform-throwaway "$WAIT_REASON"; return 1; }
-        if answer_after_question "$cursor" false; then break; fi
+        if [ "$(answer_after_question "$cursor" false)" = answered ]; then break; fi
         if [ "$SECONDS" -ge "$turn_deadline" ]; then fail readiness-platform-throwaway 'heard but not settled'; return 1; fi
         sleep 0.2
       done
@@ -175,16 +191,25 @@ mode_checks() {
   pass "readiness-$mode-heard"
   while :; do
     alive || { fail "readiness-$mode-answered" "$WAIT_REASON"; return 1; }
-    if answer_after_question "$cursor" true; then break; fi
+    case $(answer_after_question "$cursor" true) in
+      answered) break ;;
+      invalid) fail "readiness-$mode-answered" 'first answer did not qualify'; return 1 ;;
+    esac
     if [ "$SECONDS" -ge "$deadline" ]; then fail "readiness-$mode-answered" 'no qualifying answer within the wait'; return 1; fi
     sleep 0.2
   done
   pass "readiness-$mode-answered"
   echo "readiness-$mode-answer-seconds $((SECONDS - heard_at))"
 
-  owner_confirm "readiness-$mode-notice" "Is the bot's chat notice in the Meet chat?"
+  notice="Did the bot post a new Meet chat notice for this captions join saying 'Factory (AI) is listening; say'?"
+  if [ "$mode" = audio ]; then
+    notice="Did the bot post a new Meet chat notice for this audio join saying it 'transcribes this call on RFactory's own servers'?"
+  fi
+  owner_confirm "readiness-$mode-notice" "$notice"
+  alive || { fail "readiness-$mode-live" "$WAIT_REASON after notice confirmation"; return 1; }
   [ "$CONFIRMED" = 1 ] || return 1
   owner_confirm "readiness-$mode-spoken" "Did you hear the bot answer 'how many cards are in progress'?"
+  alive || { fail "readiness-$mode-live" "$WAIT_REASON after spoken confirmation"; return 1; }
   [ "$CONFIRMED" = 1 ]
 }
 
@@ -218,12 +243,10 @@ for mode in platform audio; do
     error=$(head -c 200 "$EV.err" 2>/dev/null || true)
     fail "readiness-$mode-stream" "$WAIT_REASON; reader: $error"
     stop_call "$mode"
-    [ "$mode" = platform ] && SWITCH_START=$SECONDS
     continue
   fi
 
   mode_checks "$mode" || true
   stop_call "$mode"
-  [ "$mode" = platform ] && SWITCH_START=$SECONDS
 done
 finish

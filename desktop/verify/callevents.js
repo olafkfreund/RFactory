@@ -4,7 +4,7 @@
 //   node callevents.js <project_id> [--full]      env: VERIFY_SERVER_URL VERIFY_APPROVER_COOKIE
 // Exit 2: usage, login or read error; 3: no call running (first event idle or busy); 0: the stream ended.
 const STATES = ['joining', 'lobby', 'in-call', 'left', 'removed', 'error', 'stopped'];
-const HEARING = ['captions', 'own', 'no-audio', 'notice-failed'];
+const HEARING = ['captions', 'captions-off', 'own', 'no-audio', 'notice-failed'];
 const GREETING = ['done', 'cancelled', 'failed'];
 const LOG_CLASSES = [
   ['dropped question: queue full', 'dropped-queue-full'],

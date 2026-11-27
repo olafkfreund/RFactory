@@ -10,7 +10,7 @@ if (!chrome || !dir || !process.env.VERIFY_MEET_LINK) {
   process.exit(2);
 }
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref());
 const controller = new AbortController();
 let host;
 let closePromise;
@@ -31,6 +31,7 @@ if (fs.existsSync(path.join(dir, 'end'))) stop();
 (async () => {
   let screenshot;
   try {
+    if (controller.signal.aborted) return;
     const lib = path.join(__dirname, '../../bot/node_modules/@vibeconferencing/calls');
     const { playwrightHost } = require(path.join(lib, 'hosts/playwright'));
     const { join } = require(lib);
