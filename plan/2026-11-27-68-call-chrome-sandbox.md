@@ -39,30 +39,42 @@ reviewers:
    - l.44: `CHROME = "${callChrome}";` with the comment "the call Chrome runs as
      rfcall with the Chrome sandbox on (#68; Meet refuses --no-sandbox)", and add
      `CALL_UID = "991"; CALL_GID = "991";`.
-   → verify: `nix eval --raw .#nixosConfigurations` is not available for the
-   guest alone, so `nix-instantiate --parse desktop/guest/default.nix >/dev/null`
-   now, and the image build in step 3.
+   → verify: `nix-instantiate --parse desktop/guest/default.nix >/dev/null`
+   (syntax only); option names and bindings are checked by the image build in step 3.
    Traps: `CHROME` is also the fallback control Chrome in `index.js` l.110, used
    only when `CONTROL_CHROME` is unset; the guest always sets it, so no change.
 
 2. `desktop/guest/agent/call.js` l.84–87 (`workerDeps.playwrightHost`):
-   - when `env.CALL_UID` is set: `await (deps.chown || fs.promises.chown)(o.userDataDir, Number(env.CALL_UID), Number(env.CALL_GID))`
+   - add `const fs = require('node:fs');` to the imports (l.3–4); the test injects
+     `deps.chown`, so a missing import would pass the tests and fail in the VM;
+   - `const sandboxed = env.CALL_UID && env.CALL_GID;` when set:
+     `await (deps.chown || fs.promises.chown)(o.userDataDir, Number(env.CALL_UID), Number(env.CALL_GID))`
      before `withProxy(...)`, and leave `'--no-sandbox'` out of the args;
-   - when it is unset: args as today (`'--no-sandbox'` kept).
-   - a one-line comment with the why (#68: Meet refuses a `--no-sandbox` Chrome).
+   - when unset: args as today (`'--no-sandbox'` kept), no chown.
+   - a one-line comment with the why (#68: Meet refuses a `--no-sandbox` Chrome);
+     add `chown` to the deps list in the comment at l.78.
+   - `bot/run.js` l.470–472 makes the profile with `mkdtemp` and launches straight
+     after, writing nothing into it, so a non-recursive chown is enough.
    `desktop/guest/agent/kubevirt.test.js` l.66–83: keep the existing test as the
    "no CALL_UID" case (still expects `--no-sandbox`); add one test with
-   `env: { CALL_UID: '991', CALL_GID: '991' }` and a `deps.chown` spy: the
-   chown gets `('/d', 991, 991)` and happens before the launch, and the args
-   hold no `--no-sandbox`.
-   → verify: `node --test desktop/guest/agent/` (all pass).
+   `env: { CALL_UID: '991', CALL_GID: '991' }` and a `deps.chown` that returns a
+   promise held pending: the launch has not started while it is pending; after
+   it resolves, the chown got `('/d', 991, 991)` and the args hold no
+   `--no-sandbox`. In the existing test, assert no chown call.
+   → verify: `node --test desktop/guest/agent/kubevirt.test.js`, then
+   `node --test desktop/guest/agent/` (all pass). The worktree has no
+   `bot/node_modules`: link it from the main checkout (untracked) to run them.
+   Not a gap: `o.args` from `bot/run.js` (l.472) carries no flags, and
+   `callLaunchArgs` (`share.js` l.9) only adds `--auto-select-desktop-capture-source`;
+   the STT bridge and `share.js` use no files, devices or sockets (in-page only).
    Traps: `env` reaches `createCallWorker` from `index.js` (process.env); the
    chown must not run when the launch is skipped by an earlier failure; keep
    the `host.close()` cleanup path at l.88–94 unchanged.
 
-3. Build and pin (lead). Announce on the agent bus; record rollback values
-   (current pins in `runner.yaml`, already in `scratchpad/69-release/guest-live.txt`);
-   `deploy/k3d/import-images.sh guest-kubevirt-boot-image guest-kubevirt-disk-image > refs.txt`;
+3. Build and pin (lead). Announce on the agent bus; record rollback values:
+   the current `runner.yaml` pins on main (the #69 values: boot `2c6b8bb6…`,
+   disk `1245fd51…`, cmdline `z0sn1rb2…`) into `scratchpad/68-release/guest-main.txt`;
+   `deploy/k3d/import-images.sh guest-kubevirt-boot-image guest-kubevirt-disk-image > scratchpad/68-release/refs.txt`;
    pin the boot and disk `repo:tag@digest` and the cmdline `init=` path in
    `deploy/k8s/rfactory-desktops/runner.yaml` (inline `{name: X, value: "…"}` entries).
    → verify: both images build; the three values in `runner.yaml` match `refs.txt`
@@ -77,8 +89,13 @@ reviewers:
 
 5. Live check (lead, after release): observer in microVM `rf-observer` in the
    test Meet; one captions-mode call (tfactory-testing): the bot reaches
-   `in-call` on the first try, no "can't join"; ask s70.wav (covers #56); then one
-   audio-mode call with s71.wav (covers #67). Results on #68, #56, #67.
+   `in-call` on the first try, no "can't join" — this is also the first proof
+   that the call Chrome starts sandboxed as uid 991 in the KubeVirt guest (if
+   it does not start, roll back at once); ask s70.wav (covers #56); ask the bot
+   to share its board and confirm on the observer's screen that the share shows
+   (the spec's share check). Then one audio-mode call with s71.wav: the bot's
+   events show the question `heard` through STT and an answer (covers #67).
+   Results on #68, #56, #67.
 
 ## Tests
 
@@ -89,8 +106,14 @@ reviewers:
 
 ## Rollback
 
-Revert the PR, or re-pin `runner.yaml` to the values in
-`scratchpad/69-release/guest-live.txt` (boot `7d633f93…`, disk `8c41abdf…`,
-cmdline `8hzsyblw…`) — those are the pre-#69 values; the #69 values
-(boot `2c6b8bb6…`, disk `1245fd51…`, cmdline `z0sn1rb2…`) are on main and are
-the target of a revert. Hard-refresh Argo CD `rfactory-desktops`.
+Revert the PR: it restores the #69 pins in `runner.yaml` (boot `2c6b8bb6…`,
+disk `1245fd51…`, cmdline `z0sn1rb2…`, kept in `scratchpad/68-release/guest-main.txt`),
+the images deployed before this change. Hard-refresh Argo CD `rfactory-desktops`.
+The old images stay imported (pinned against kubelet GC) on the nodes.
+
+## Accepted risk
+
+There is no pre-merge run of the new guest: the first sandboxed start of the
+call Chrome in the KubeVirt guest is the live check in step 5 (Codex review,
+high). The control Chrome already runs as `rfchrome` with the sandbox on in
+this guest and no guest Nix file disables user namespaces; rollback is one revert.
