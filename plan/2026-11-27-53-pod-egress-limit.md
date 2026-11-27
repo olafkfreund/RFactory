@@ -276,6 +276,10 @@ No `core`, `web`, `bot` or `desktop` test changes: no code there is touched.
 - **The script:** it changes nothing in the cluster. Leaving it in place is harmless.
 - **No data migration:** nothing is stored.
 
+## Deviations
+
+- **Review fixes (final review by Codex, agy and Opus, 2026-11-27):** the probe program ends with `process.exit(0)` after printing, instead of ending by itself, because a timed-out `dns.lookup` cannot be cancelled and would keep node alive until `timeout 60` discarded the output (agy, Opus). The test unsets `RFACTORY_KUBE_CONTEXT` first (Codex, reproduced), and compares only the target and verdict of each probe line, because `nope.invalid` can fail as `EAI_AGAIN` instead of `ENOTFOUND` offline (agy).
+
 ## Approval (2026-11-27)
 
 The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (including the lookup question in step 8 and the one new baseline run after a changed script) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.

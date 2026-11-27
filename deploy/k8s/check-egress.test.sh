@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset RFACTORY_KUBE_CONTEXT
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(mktemp -d)
@@ -114,5 +115,6 @@ done
 read -r open closed udp <"$root/ports"
 node -e "$(cat "$FAKE_PROGRAM")" "tcp:127.0.0.1:$open" "tcp:127.0.0.1:$closed" "udp:127.0.0.1:$udp" tcp:nope.invalid:443 >"$root/probe-output"
 { printf 'tcp:127.0.0.1:%s connects ok\n' "$open"; printf 'tcp:127.0.0.1:%s refused ECONNREFUSED\n' "$closed"; printf 'udp:127.0.0.1:%s connects ok\n' "$udp"; printf 'tcp:nope.invalid:443 dns-error ENOTFOUND\n'; } >"$root/expected-output"
-cmp "$root/expected-output" "$root/probe-output"
+# nope.invalid may fail as ENOTFOUND or EAI_AGAIN offline: compare the first two fields only
+cmp <(cut -d' ' -f1,2 "$root/expected-output") <(cut -d' ' -f1,2 "$root/probe-output")
 echo 'check-egress tests passed'

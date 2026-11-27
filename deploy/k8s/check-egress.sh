@@ -74,6 +74,7 @@ function probe(target) {
 
 Promise.all(process.argv.slice(1).map(probe)).then(lines => {
   for (const line of lines) console.log(line);
+  process.exit(0); // a timed-out dns.lookup cannot be cancelled; don't wait for it (stdout to a pipe is synchronous on Linux)
 });
 JS
 )
