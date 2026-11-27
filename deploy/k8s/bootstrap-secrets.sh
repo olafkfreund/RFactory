@@ -61,19 +61,35 @@ try:
         raise ValueError("scope's investigations_enabled disagrees with deploy/rfactory")
     scope_agents = scope.get('agents')
     if agents == 'on':
-        if not isinstance(scope_agents, list) or not scope_agents:
+        if not isinstance(scope_agents, list) or not 1 <= len(scope_agents) <= 10:
             raise ValueError("scope's agents disagrees with deploy/rfactory")
-    elif scope_agents is not None:
+    elif 'agents' in scope:
         raise ValueError("scope's agents disagrees with deploy/rfactory")
     agent_names = []
+    allowed = set()
+    if scope_agents:
+        projects = scope.get('projects')
+        allow = projects.get('allow') if isinstance(projects, dict) else None
+        if not isinstance(scope.get('source'), dict) or scope['source'].get('kind') != 'cfactory' or not isinstance(projects, dict) or set(projects) != {'allow'} or \
+                not isinstance(allow, list) or not 1 <= len(allow) <= 50:
+            raise ValueError('invalid projects')
+        for project in allow:
+            if not isinstance(project, dict) or set(project) != {'id'} or not isinstance(project['id'], str) or \
+                    not re.fullmatch(r'repo:\d+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', project['id']) or project['id'] in allowed:
+                raise ValueError('invalid projects')
+            allowed.add(project['id'])
     for agent in scope_agents or []:
-        if not isinstance(agent, dict):
+        if not isinstance(agent, dict) or set(agent) != {'name', 'key_file', 'scope', 'projects'}:
             raise ValueError('invalid agent entry')
         name = agent.get('name')
         if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9-]{1,32}', name) or name in agent_names:
             raise ValueError('invalid agent name')
         if agent.get('key_file') != f'/run/rfactory/keys/agent-{name}':
             raise ValueError('invalid agent key_file')
+        projects = agent.get('projects')
+        if agent.get('scope') != 'read' or not isinstance(projects, list) or not projects or \
+                any(not isinstance(p, str) or p not in allowed for p in projects) or len(set(projects)) != len(projects):
+            raise ValueError('invalid agent scope or projects')
         agent_names.append(name)
     lines = (pathlib.Path(cfg) / 'roles.env').read_text().splitlines()
     if len(lines) != 3 or any(not line.startswith(name + '=') for line, name in zip(lines, ('ALLOWED', 'APPROVERS', 'ADMINS'))):
@@ -102,6 +118,17 @@ for name in "${agent_names[@]}"; do
   agent_key_names+=("agent-$name")
   agent_key_args+=("--from-file=agent-$name=$cfg/$f")
 done
+python3 - "$cfg" "${agent_names[@]}" <<'PY' || { echo "invalid agent key file" >&2; exit 2; }
+import pathlib
+import re
+import sys
+try:
+    keys = [(pathlib.Path(sys.argv[1]) / 'agent-keys' / name).read_text().strip() for name in sys.argv[2:]]
+    valid = all(re.fullmatch(r'rfk_[A-Za-z0-9]{32,}', key) for key in keys) and len(set(keys)) == len(keys)
+except (OSError, UnicodeError):
+    valid = False
+sys.exit(0 if valid else 1)
+PY
 
 names=(rfactory-config rfactory-keys rfactory-stt-path oauth2-proxy-rfactory rfactory-runner-client)
 keys=(

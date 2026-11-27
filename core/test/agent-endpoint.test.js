@@ -88,6 +88,7 @@ test('bad envelopes and SDK errors never echo input', async () => {
       assert.equal(res.body.includes(secret), false, res.body);
       if (body === secret || Array.isArray(body) || body?.method === secret || body?.extra || body?.id === secret || body?.params === undefined || typeof body?.params?.name === 'number' || typeof body?.params?.arguments === 'string') {
         assert.equal(res.status, 400);
+        assert.match(res.headers['content-type'], /^application\/json/);
         assert.deepEqual(JSON.parse(res.body), { jsonrpc: '2.0', error: { code: -32600, message: 'bad-request' }, id: null });
       }
       if (body !== secret && body?.params?.name === secret) assert.equal(res.body.includes('bad-request'), true);
@@ -104,6 +105,7 @@ test('bad envelopes and SDK errors never echo input', async () => {
     const supported = await rpc(url, key, list, { 'Mcp-Protocol-Version': SUPPORTED_PROTOCOL_VERSIONS[0] });
     assert.equal(supported.status, 200);
     assert.equal(supported.body.includes('whoami'), true);
+    assert.equal((await rpc(url, key, list, { Accept: 'APPLICATION/JSON, TEXT/EVENT-STREAM' })).status, 200);
   } finally { await endpoint.close(); }
 });
 

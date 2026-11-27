@@ -55,18 +55,19 @@ function createAgentEndpoint({ agents, tools, log = (line) => console.error(line
       req.once('end', () => resolve(true));
       req.once('error', () => resolve(false));
     });
-    if (!complete) { if (!res.headersSent) res.writeHead(400).end(BAD); return; }
+    if (!complete) { if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD); return; }
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
     catch { res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD); return; }
     if (!valid(body)) { res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD); return; }
     // The SDK answers these three headers itself, in its own words (and echoes the version): refuse them first.
     const { accept = '', 'content-type': type = '', 'mcp-protocol-version': version } = req.headers;
-    if (!accept.includes('application/json') || !accept.includes('text/event-stream') || !/^application\/json\s*(;|$)/i.test(type)
+    if (!accept.toLowerCase().includes('application/json') || !accept.toLowerCase().includes('text/event-stream') || !/^application\/json\s*(;|$)/i.test(type)
       || (version !== undefined && !SUPPORTED_PROTOCOL_VERSIONS.includes(version))) {
       res.writeHead(400, { 'Content-Type': 'application/json' }).end(BAD);
       return;
     }
+    req.headers.accept = accept.toLowerCase();
 
     const mcp = new Server({ name: 'rfactory-agents', version: '1' }, { capabilities: { tools: {} } });
     mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }));

@@ -29,6 +29,13 @@ function setup(overrides = {}) {
 }
 const result = async (tools, name, args = {}, identity = agent) => (await tools.call(identity, name, args)).result;
 const error = async (tools, name, args = {}) => (await tools.call(agent, name, args)).error;
+function noBy(value) {
+  if (Array.isArray(value)) return value.forEach(noBy);
+  if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) {
+    assert.ok(!key.endsWith('_by'), key);
+    noBy(child);
+  }
+}
 
 test('seven read tools only; descriptions and schemas refuse extras', async () => {
   const { tools } = setup();
@@ -72,9 +79,12 @@ test('approvals and record filter each item by project, including running entrie
   assert.equal(approvals.shares.running, null);
   assert.deepEqual(approvals.investigations.running, { id: 'one', project_id: 'repo:1' });
   assert.equal(approvals.can_approve, false);
+  noBy(approvals);
   assert.deepEqual(seen, []);
   actions.startCall();
-  assert.deepEqual((await result(tools, 'record', { project: 'repo:1' })).lines, [{ id: 'one', project_id: 'repo:1' }]);
+  const saved = await result(tools, 'record', { project: 'repo:1' });
+  assert.deepEqual(saved.lines, [{ id: 'one', project_id: 'repo:1' }]);
+  noBy(saved);
 });
 
 test('named fields, stage text, arbitrary objects and unknown record kinds are discarded', async () => {
@@ -94,15 +104,34 @@ test('named fields, stage text, arbitrary objects and unknown record kinds are d
 });
 
 test('all seven answers redact loaded and patterned secrets', async () => {
-  const { tools, reads } = setup({ record: { readDay: async () => [{ line: 1, entry: { id: KEY, detail: OTHER_KEY, project_id: 'repo:1' } }] },
+  const { tools, reads } = setup({ commit: SECRET,
+    record: { readDay: async () => [{ line: 1, entry: { id: KEY, detail: OTHER_KEY, project_id: 'repo:1' } }] },
     actions: { list: () => ({ pending: [{ id: KEY, detail: SECRET, project_id: 'repo:1' }], history: [] }) } });
+  reads.listProjects = async () => [{ id: 'repo:1', name: SECRET, slug: 'one', repositories: [] }];
   reads.reviewCard = async () => reviewCard({ card_key: 'X-1', description: OTHER_KEY });
   const args = { project: 'repo:1' };
   for (const name of tools.list().map((item) => item.name)) {
-    const answer = await result(tools, name, ['standup', 'review', 'approvals', 'record'].includes(name) ? args : {});
+    const answer = await result(tools, name, ['standup', 'review', 'approvals', 'record'].includes(name) ? args : {}, { ...agent, name: KEY });
     const text = JSON.stringify(answer);
     for (const secret of [KEY, OTHER_KEY, SECRET]) assert.ok(!text.includes(secret), name);
   }
+  const card = await result(tools, 'review', { ...args, card_key: 'X-1' });
+  for (const secret of [KEY, OTHER_KEY, SECRET]) assert.ok(!JSON.stringify(card).includes(secret));
+});
+
+test('record keeps named fields for lookup, share and investigation', async () => {
+  const report = { findings: KEY, refs: [{ file: 'src/a.js', line: 4, approved_by: KEY }], tests: [{ command: SECRET, passed: 1, approved_by: KEY }], sha: 'abc', approved_by: KEY };
+  const entries = [
+    { kind: 'lookup', question_id: KEY, reads: [{ tool: 'get_card', ok: true, approved_by: KEY }], project_id: 'repo:1', proposed_by: KEY },
+    { kind: 'share', id: KEY, title: SECRET, project_id: 'repo:1', approved_by: KEY },
+    { kind: 'investigation', id: KEY, report, project_id: 'repo:1', approved_by: KEY },
+  ];
+  const { tools } = setup({ record: { readDay: async () => entries.map((entry, i) => ({ line: i + 1, entry })) } });
+  const answer = await result(tools, 'record', { project: 'repo:1' });
+  assert.deepEqual(answer.lines.map((line) => line.kind), ['lookup', 'share', 'investigation']);
+  assert.deepEqual(answer.lines[2].report, { findings: '[redacted]', refs: [{ file: 'src/a.js', line: 4 }], tests: [{ command: '[redacted]', passed: 1 }], sha: 'abc' });
+  noBy(answer);
+  for (const secret of [KEY, SECRET]) assert.ok(!JSON.stringify(answer).includes(secret));
 });
 
 test('record day bounds, filtering before pagination, and cursor', async () => {

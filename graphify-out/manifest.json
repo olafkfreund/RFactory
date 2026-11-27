@@ -156,9 +156,9 @@
     "semantic_hash": "e66632c1c801a7287fc155e9c1089d8c"
   },
   "core/src/scope.js": {
-    "mtime": 1795785614.4130244,
-    "seen": 1795786378.8534205,
-    "ast_hash": "5643c6382aecc2829698ec17a8f751f5",
+    "mtime": 1795786886.6590402,
+    "seen": 1795787145.9772232,
+    "ast_hash": "cef0bb6ccfc8027c0fe5dbfce6847f22",
     "semantic_hash": ""
   },
   "core/src/share/board.js": {
@@ -306,9 +306,9 @@
     "semantic_hash": "f4d3808ed1f9824f4674abe3a2c5a141"
   },
   "core/test/scope.test.js": {
-    "mtime": 1795785614.4147677,
-    "seen": 1795786378.8534977,
-    "ast_hash": "e51082dcaa997499f49e92986892749c",
+    "mtime": 1795786977.5982168,
+    "seen": 1795787145.9772985,
+    "ast_hash": "1729ed00f5dde25f69bd4e4283e81e95",
     "semantic_hash": ""
   },
   "core/test/speech.test.js": {
@@ -1476,15 +1476,15 @@
     "semantic_hash": ""
   },
   "deploy/k8s/bootstrap-secrets.sh": {
-    "mtime": 1795785614.416014,
-    "seen": 1795786378.8535278,
-    "ast_hash": "62e435f74f9a92d8dca14063475f439e",
+    "mtime": 1795787047.2571173,
+    "seen": 1795787145.9773276,
+    "ast_hash": "b1be97fb12972d0bf213198a67b144ab",
     "semantic_hash": ""
   },
   "deploy/k8s/bootstrap-secrets.test.sh": {
-    "mtime": 1795785614.416349,
-    "seen": 1795786378.8535306,
-    "ast_hash": "17c46851e36eb6c91e90889d6e180be0",
+    "mtime": 1795787070.770499,
+    "seen": 1795787145.9773297,
+    "ast_hash": "b19a7fec06c9366ca6fe1c092f342aa4",
     "semantic_hash": ""
   },
   "web/investigations.js": {
@@ -2958,21 +2958,21 @@
     "semantic_hash": ""
   },
   "core/src/agent-endpoint.js": {
-    "mtime": 1795785772.170544,
-    "seen": 1795786378.8533812,
-    "ast_hash": "5a7621ed5f9b502831ae07a870f5a63d",
+    "mtime": 1795787002.60454,
+    "seen": 1795787145.977184,
+    "ast_hash": "694aaf760ddcb2da751b284427f0ef57",
     "semantic_hash": ""
   },
   "core/test/agent-endpoint.test.js": {
-    "mtime": 1795785776.2845964,
-    "seen": 1795786378.853442,
-    "ast_hash": "c2e20c8f2786c9c6c24403334f8958de",
+    "mtime": 1795786977.5982168,
+    "seen": 1795787145.9772449,
+    "ast_hash": "e0aee18c391aba306ad30383803046a9",
     "semantic_hash": ""
   },
   "web/agent-tools.js": {
-    "mtime": 1795786057.699231,
-    "seen": 1795786378.8537114,
-    "ast_hash": "d2772c0c46b740bb9237fa0ab729bde4",
+    "mtime": 1795786907.704531,
+    "seen": 1795787145.9775012,
+    "ast_hash": "88e97d4cf7d9fff6e892a8dc1a91ca5f",
     "semantic_hash": ""
   },
   "web/reads.js": {
@@ -2982,9 +2982,9 @@
     "semantic_hash": ""
   },
   "web/test/agent-tools.test.js": {
-    "mtime": 1795786142.4953485,
-    "seen": 1795786378.8538828,
-    "ast_hash": "eb2e33de5d0924b1b25258bf2635691d",
+    "mtime": 1795787096.5957549,
+    "seen": 1795787145.9776876,
+    "ast_hash": "2a0ed376ed6dab558edbe9bab609b66e",
     "semantic_hash": ""
   },
   "web/test/agents.test.js": {
@@ -3000,9 +3000,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-27-27-mcp-server.md": {
-    "mtime": 1795785779.1676333,
-    "seen": 1795786378.854335,
-    "ast_hash": "ead3d23379763c61f6cd17d88faa840e",
+    "mtime": 1795786886.6590402,
+    "seen": 1795787145.9781427,
+    "ast_hash": "0ba359300144d54f84d4dd04aab72d82",
     "semantic_hash": ""
   },
   "spec/2026-11-27-27-mcp-server.md": {

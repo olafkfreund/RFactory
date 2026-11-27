@@ -341,6 +341,7 @@ test('agents: C1 rules, switch and output', () => {
     for (const projects of [[], 'repo:2', ['repo:9'], ['repo:2', 'repo:2']]) fails([entry({ projects })], 'invalid-agents');
     fails([entry({ key_file: 'relative' })], 'invalid-agents');
     fails([entry({ key_file: keyPath('loose', agentKey, 0o644) })], 'agent-key-file-mode');
+    fails([entry({ key_file: path.join(dir, 'missing-agent-key') })], 'agent-key-file-mode');
     fails([entry({ key_file: dir })], 'agent-key-file-mode');
     fails([entry({ key_file: keyPath('short', 'rfk_' + 'a'.repeat(31)) })], 'invalid-agent-key');
     fails([entry({ key_file: keyPath('cf', key) })], 'invalid-agent-key');

@@ -64,7 +64,9 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     }
     if (new Set(list.map((a) => a.name)).size !== list.length) throw new Error('invalid-agents');
     agents = list.map((a) => {
-      const file = fs.statSync(a.key_file);
+      let file;
+      try { file = fs.statSync(a.key_file); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('agent-key-file-mode'); throw error; }
       if (!file.isFile() || (file.mode & 0o777) !== 0o600) throw new Error('agent-key-file-mode');
       const agentKey = fs.readFileSync(a.key_file, 'utf8').trim();
       if (!/^rfk_[A-Za-z0-9]{32,}$/.test(agentKey)) throw new Error('invalid-agent-key');
