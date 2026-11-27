@@ -720,6 +720,7 @@ test('notes panel: hidden on 404, member sees notes and no buttons, approver see
     releaseOld();
     await oldLoad;
     assert.equal(byId.notes.hidden, false);
+    assert.ok(list.textContent.includes('Approved by approver@example.test')); // the newer answer's set survives
 
     // renderAction shows close evidence above description when a.evidence is set
     for (const id of ['actions-pending', 'actions-history']) byId[id] = new Node('ul');

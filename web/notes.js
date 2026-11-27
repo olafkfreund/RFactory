@@ -186,7 +186,9 @@ function createNotesManager({ record, redactor, roles, actions, clock = globalTh
     }
     release();
     if (result?.contradicted) {
-      found.close_evidence = { ...result.evidence, evidence_hash: result.evidence_hash, read_at: iso() };
+      // looked up again: an edit during the wait replaced the note object
+      const current = set.notes.find((n) => n.id === found.id);
+      if (current) current.close_evidence = { ...result.evidence, evidence_hash: result.evidence_hash, read_at: iso() };
       emit(set);
       return reply(409, result.text, { contradicted: true });
     }

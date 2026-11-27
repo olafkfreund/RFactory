@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
+const { toMarkdown, notesHash } = require('@rfactory/core/src/notes.js');
 const { createNotesManager } = require('../notes.js');
 
 const KEY = 'cfk_abcdefghijklmnopqrstuvwx';
@@ -52,6 +53,12 @@ async function ended(f, { project = null, extra = [] } = {}) {
   f.manager.endCall();
   return sets(f, project?.id)[0];
 }
+// The hash approve() would accept now, also while list() offers none (running call, waiting proposal).
+const realHash = (f, id) => {
+  const set = sets(f).find((s) => s.id === id);
+  const text = toMarkdown(set, { approver: OWNER, redactor: makeRedactor([KEY]) });
+  return notesHash({ text, setId: set.id, projectId: set.project?.id });
+};
 const approveFor = async (f, set, email = OWNER, projectId) => {
   const view = f.manager.list(email, projectId).sets.find((s) => s.id === set.id);
   return f.manager.approve(set.id, email, view.hash, projectId);
@@ -88,8 +95,9 @@ test('approve refuses a stale hash, a second try, a running call and a waiting p
   f.manager.startCall(1, { writable: true });
   say(f, { kind: 'action', text: 'Do it.', owner: 'Sam' });
   const id = sets(f)[0].id;
-  assert.equal((await f.manager.approve(id, OWNER, 'x')).status, 409);
+  assert.deepEqual(await f.manager.approve(id, OWNER, realHash(f, id)), { status: 409, text: 'The call is still running.' });
   f.manager.endCall();
+  assert.equal(realHash(f, id), sets(f)[0].hash);
   assert.equal((await f.manager.approve(id, OWNER, 'stale')).status, 409);
   assert.equal((await f.manager.approve(id, 'other@example.com', 'x')).status, 403);
   assert.equal((await approveFor(f, { id })).status, 200);
@@ -106,10 +114,10 @@ test('approve is refused while a proposal is submitting or pending', async () =>
   const pending = f.manager.propose(set.id, set.notes[0].id, OWNER, { what: 'card' });
   f.manager.endCall();
   assert.equal(sets(f)[0].markdown, undefined);
-  assert.equal((await f.manager.approve(set.id, OWNER, 'x')).status, 409);
+  assert.deepEqual(await f.manager.approve(set.id, OWNER, realHash(f, set.id)), { status: 409, text: 'A card proposal is still waiting.' });
   gate.resolve(); await pending;
   assert.equal(sets(f)[0].markdown, undefined);
-  assert.equal((await f.manager.approve(set.id, OWNER, 'x')).status, 409);
+  assert.deepEqual(await f.manager.approve(set.id, OWNER, realHash(f, set.id)), { status: 409, text: 'A card proposal is still waiting.' });
   f.fake.emit({ type: 'action-updated', action: { id: 'p1', state: 'done', card: { card_key: 'FCT-10' } }, generation: 1 });
   assert.equal((await approveFor(f, set)).status, 200);
 });
@@ -146,11 +154,42 @@ test('an approval that starts during a discard or expiry write is refused', asyn
   assert.equal((await f.manager.approve(set.id, OWNER, hash)).status, 404);
   gate.resolve(); await discarding;
 
-  const g = setup({ append: (entry) => (entry.state === 'expired' ? gate.promise : undefined) });
+  const expiring = deferred(); // a fresh gate: the one above is already resolved
+  const g = setup({ append: (entry) => (entry.state === 'expired' ? expiring.promise : undefined) });
   const second = await ended(g);
   const secondHash = sets(g)[0].hash;
   await g.clock.advance(DAY);
+  assert.deepEqual(g.lines, []); // the expiry write is still waiting
   assert.equal((await g.manager.approve(second.id, OWNER, secondHash)).status, 404);
+  expiring.resolve(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(g.lines.map((l) => l.state), ['expired']);
+});
+
+test('the 24-hour timer waits one second for a set that is being approved', async () => {
+  const gate = deferred();
+  const f = setup({ append: (entry) => (entry.state === 'approved' ? gate.promise : undefined) });
+  const set = await ended(f);
+  const approving = f.manager.approve(set.id, OWNER, sets(f)[0].hash);
+  await f.clock.advance(DAY);
+  assert.deepEqual(f.clock.timers.map((timer) => timer.at - f.clock.t), [1000]);
+  gate.resolve();
+  assert.equal((await approving).status, 200);
+  await f.clock.advance(1000);
+  assert.deepEqual(f.clock.timers, []);
+  assert.deepEqual(f.lines.map((l) => l.state), ['approved']);
+});
+
+test('an edit while a close is being proposed keeps the close evidence', async () => {
+  const gate = deferred();
+  const f = setup({ submit: async () => { await gate.promise; return { status: 409, text: 'no', contradicted: true, evidence: { verdict: 'contradicted', stages: [] }, evidence_hash: 'eh' }; } });
+  f.manager.startCall(1, { writable: true });
+  say(f, { kind: 'discussed', text: 'Old.', cards: ['FCT-9'] });
+  const set = sets(f)[0];
+  const proposing = f.manager.propose(set.id, set.notes[0].id, OWNER, { what: 'close' });
+  assert.equal((await f.manager.edit(set.id, set.notes[0].id, OWNER, { kind: 'discussed', text: 'New.' })).status, 200);
+  gate.resolve();
+  assert.equal((await proposing).contradicted, true);
+  assert.deepEqual([sets(f)[0].notes[0].text, sets(f)[0].notes[0].close_evidence.evidence_hash], ['New.', 'eh']);
 });
 
 test('expiry at 24 hours writes expired and deletes the set', async () => {

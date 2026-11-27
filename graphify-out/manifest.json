@@ -828,9 +828,9 @@
     "semantic_hash": ""
   },
   "web/public/app.js": {
-    "mtime": 1795785614.5346093,
-    "seen": 1795786165.3265417,
-    "ast_hash": "774f2ea4d979e7bd04b43d5c96cc8c86",
+    "mtime": 1795786788.3286297,
+    "seen": 1795786808.820019,
+    "ast_hash": "553a78b51b5baeeb00fa7dd8bf50c865",
     "semantic_hash": ""
   },
   "web/public/desktop.js": {
@@ -870,15 +870,15 @@
     "semantic_hash": ""
   },
   "web/test/actions.test.js": {
-    "mtime": 1795785614.5399096,
-    "seen": 1795786165.3266811,
-    "ast_hash": "2b8504a8ecd11b224b7abf4fce322bfd",
+    "mtime": 1795786788.327564,
+    "seen": 1795786808.8201618,
+    "ast_hash": "6eb661415ca1d9655dca474730e38495",
     "semantic_hash": ""
   },
   "web/test/app.test.js": {
-    "mtime": 1795785614.5399096,
-    "seen": 1795786165.3266828,
-    "ast_hash": "2d3d8f2aae54cb38c533715ae34079d2",
+    "mtime": 1795786788.3280487,
+    "seen": 1795786808.8201642,
+    "ast_hash": "b94bcc74fccd17135390b0b2c18aaf2d",
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
@@ -912,9 +912,9 @@
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795786116.2800033,
-    "seen": 1795786165.326702,
-    "ast_hash": "3012e788fc298426b9a3812deb4cb72e",
+    "mtime": 1795786788.3288872,
+    "seen": 1795786808.8201835,
+    "ast_hash": "da8cbd977bffda41c1f792a64007e0a5",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -2886,15 +2886,15 @@
     "semantic_hash": ""
   },
   "web/notes.js": {
-    "mtime": 1795785936.970653,
-    "seen": 1795786165.3265371,
-    "ast_hash": "fd39232da5f3523bbbd42917ef08394b",
+    "mtime": 1795786788.3271706,
+    "seen": 1795786808.820014,
+    "ast_hash": "d77ac2eda4d3a4ffd677b25db3b15629",
     "semantic_hash": ""
   },
   "web/test/notes.test.js": {
-    "mtime": 1795785898.391563,
-    "seen": 1795786165.326698,
-    "ast_hash": "7c96b018acd1403c79c7211fbfa8e714",
+    "mtime": 1795786788.3270175,
+    "seen": 1795786808.8201795,
+    "ast_hash": "f97e16c2b2e942b13914343449fe162c",
     "semantic_hash": ""
   },
   "core/src/brains/claude-note-system-prompt.txt": {
@@ -2910,9 +2910,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-27-58-standup-notes.md": {
-    "mtime": 1795785614.5315268,
-    "seen": 1795786165.3270872,
-    "ast_hash": "64875df4bab05b1a0a111b2c88a28207",
+    "mtime": 1795786788.3292406,
+    "seen": 1795786808.8205822,
+    "ast_hash": "729488bd043f9ea166e72e6d035ade7e",
     "semantic_hash": ""
   },
   "spec/2026-11-27-58-standup-notes.md": {

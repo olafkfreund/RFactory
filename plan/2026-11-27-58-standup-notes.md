@@ -356,3 +356,4 @@ The owner approved this plan with the recommended answers: "approve all with rec
 ## Deviations
 
 - **Step 5 (Codex):** a quiet `create_card` that fails is spoken as "The new card failed." without the writer's detail. The plan said no other sentence changes; the detail can repeat the title, which is note text (choice 1). The page still gets the detail in the action item.
+- **Step 5 (Codex), found in review:** the detail is left out for every quiet entry that fails, not only one without a card key (`web/actions.js`, the `failed` sentence). The plan limits the quiet result to "an entry with `quiet` and no `card_key`". The behaviour is kept: the notes manager passes `quiet` only for `create_card`, which has no card key, so no other entry is affected today.

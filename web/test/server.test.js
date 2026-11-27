@@ -891,11 +891,28 @@ test('notes routes in a deployment with projects need an allowed project and pas
   assert.deepEqual(notes.calls.at(-1), ['list', ME, ALPHA]);
   assert.equal((await get(`/api/notes/s1/approve?project=${BETA}`, { body: { hash: 'h' } })).status, 200);
   assert.deepEqual(notes.calls.at(-1), ['approve', 's1', ME, 'h', BETA]);
-  // another project's set id is the manager's 404
-  const real = require('../notes.js').createNotesManager({ record: { append: async () => {} }, redactor: makeRedactor([]), roles: rolesFor(ME, ME), actions: null });
-  const own = await startActions(t, { notes: real, scope: scope52 });
-  assert.equal((await own(`/api/notes/nope/approve?project=${ALPHA}`, { body: { hash: 'h' } })).status, 404);
-  assert.equal((await own(`/api/notes/nope/download?project=${ALPHA}`, { method: 'GET' })).status, 404);
+});
+
+test('notes routes with the real manager: another project\'s set is 404; a member reads and cannot change', async (t) => {
+  const real = require('../notes.js').createNotesManager({ record: { append: async () => {} }, redactor: makeRedactor([]), roles: rolesFor(`${ME},other@example.com`, ME), actions: null });
+  real.startCall(1, { project: { id: BETA, name: 'Beta' } });
+  real.note({ kind: 'decision', text: 'Synthetic decision.' }, { snapshotKeys: new Set(), speaker: 'Someone', generation: 1 });
+  real.endCall();
+  const get = await startActions(t, { notes: real, scope: scope52 });
+  const listed = async (project, email) => (await get(`/api/notes?project=${project}`, { method: 'GET', email })).json();
+  const [set] = (await listed(BETA, ME)).sets;
+  assert.deepEqual((await listed(ALPHA, ME)).sets, []);
+  assert.equal((await get(`/api/notes/${set.id}/approve?project=${ALPHA}`, { body: { hash: set.hash } })).status, 404);
+  assert.equal((await get(`/api/notes/${set.id}/discard?project=${ALPHA}`, { body: null })).status, 404);
+  assert.equal((await get(`/api/notes/${set.id}/download?project=${ALPHA}`, { method: 'GET' })).status, 404);
+  // a member sees the set without the approval text and is refused every change
+  const member = await listed(BETA, 'other@example.com');
+  assert.deepEqual([member.can_approve, member.sets.length, member.sets[0].markdown], [false, 1, undefined]);
+  for (const tail of ['approve', 'discard', `${set.notes[0].id}/remove`, `${set.notes[0].id}/edit`]) {
+    assert.equal((await get(`/api/notes/${set.id}/${tail}?project=${BETA}`, { body: { hash: set.hash, kind: 'decision', text: 'x' }, email: 'other@example.com' })).status, 403, tail);
+  }
+  assert.equal((await get(`/api/notes/${set.id}/approve?project=${BETA}`, { body: { hash: set.hash } })).status, 200);
+  assert.equal((await get(`/api/notes/${set.id}/download?project=${BETA}`, { method: 'GET', email: 'other@example.com' })).status, 200);
 });
 
 test('composeWrites with only notes on builds the record and the notes manager, no writer', async () => {

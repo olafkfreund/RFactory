@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
 const { createActionManager } = require('../actions.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
+const { hashPayload } = require('@rfactory/core/src/actions/allowlist.js');
 
 const KEY = 'cfk_abcdefghijklmnopqrstuvwx';
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -286,10 +287,13 @@ test('submit shares the five pending action limit', async () => {
 test('close evidence is hashed, recorded and exposed on action views', async () => {
   const f = setup(); await f.manager.recover(); f.manager.startCall(1);
   f.card.stage_runs = { plan: { status: 'done' } };
-  const plain = await submit(f);
   const withEvidence = await submit(f, move, { evidence: true });
   assert.equal(withEvidence.status, 202);
-  assert.notEqual(withEvidence.action.hash, plain.action.hash);
+  const { hash, ...hashed } = withEvidence.action;
+  const { evidence, ...withoutEvidence } = hashed;
+  assert.equal(hashPayload(hashed), hash);
+  assert.notEqual(hashPayload(withoutEvidence), hash); // the same action without its evidence
+  assert.ok(evidence);
   assert.equal(withEvidence.action.evidence.verdict, 'no contradiction found');
   assert.deepEqual(f.entries.at(-1).evidence, withEvidence.action.evidence);
   assert.deepEqual(f.manager.list().pending.at(-1).evidence, withEvidence.action.evidence);

@@ -580,6 +580,7 @@ function handleNotes(doc, event) {
   const s = event.set;
   if (!s || typeof s.id !== 'string') return;
   const store = notesStoreOf(doc);
+  ++store.seq; // a poll that started before this event must not overwrite it
   const idx = store.sets.findIndex((x) => x.id === s.id);
   if (idx >= 0) store.sets[idx] = s;
   else store.sets = [s, ...store.sets.filter((x) => x.ended_at)];
