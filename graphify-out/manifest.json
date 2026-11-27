@@ -180,9 +180,9 @@
     "semantic_hash": ""
   },
   "core/src/sources/github.js": {
-    "mtime": 1795785857.9446416,
-    "seen": 1795786628.1661325,
-    "ast_hash": "21a03882ced08ae7e51a5a15d60c8eca",
+    "mtime": 1795787242.4316385,
+    "seen": 1795787418.5679579,
+    "ast_hash": "ef445389331864f08d437f81660193f4",
     "semantic_hash": ""
   },
   "core/test/actions.test.js": {
@@ -240,9 +240,9 @@
     "semantic_hash": ""
   },
   "core/test/fake-github-mcp.js": {
-    "mtime": 1795785928.383543,
-    "seen": 1795786628.16616,
-    "ast_hash": "32951757727720c59270c23d0a17aa1a",
+    "mtime": 1795787242.4326384,
+    "seen": 1795787418.567991,
+    "ast_hash": "1ed0edf64e6aed8e09fef965f5e20e1a",
     "semantic_hash": ""
   },
   "core/test/fixtures/cfactory-cards.json": {
@@ -912,9 +912,9 @@
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795786620.4785898,
-    "seen": 1795786628.1665478,
-    "ast_hash": "77d4f45c6be67778b6195f50ba49cfbd",
+    "mtime": 1795787291.504272,
+    "seen": 1795787418.5684485,
+    "ast_hash": "3a766217c5c44dfb8efeddbbf04a85ff",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -2964,9 +2964,9 @@
     "semantic_hash": ""
   },
   "core/test/github-web.test.js": {
-    "mtime": 1795785962.7069824,
-    "seen": 1795786628.1661725,
-    "ast_hash": "8745ad6b2824e7f43bf20d50e935446f",
+    "mtime": 1795787255.0728016,
+    "seen": 1795787418.5680044,
+    "ast_hash": "8f60539af75daa0539d8ad00e427642b",
     "semantic_hash": ""
   },
   "plan/2026-11-26-2-web-github-standup.md": {

@@ -23,7 +23,7 @@ async function connect({ bin, token, logSafe = () => {}, signal, probeMs = 5000 
   });
   transport.stderr.on('data', (d) => logSafe(String(d)));
   const client = new Client({ name: 'rfactory-core', version: '0' });
-  const stop = () => { void transport.close(); };
+  const stop = () => { void transport.close().catch(() => {}); };
   signal?.addEventListener('abort', stop, { once: true });
   try {
     if (signal?.aborted) throw signal.reason;

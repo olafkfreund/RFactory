@@ -937,9 +937,12 @@ test('main() starts a GitHub scope with the fake MCP binary; a failing start-up 
   } finally { await new Promise((r) => server.close(r)); }
   let written = '';
   process.stderr.write = (chunk, ...rest) => { written += chunk; return stderr.call(process.stderr, chunk, ...rest); };
-  process.env.GITHUB_MCP_SERVER_BIN = fakeBin({ version: '0.0.1' });
+  const failingPidFile = path.join(dir, 'failing-child.pid');
+  process.env.GITHUB_MCP_SERVER_BIN = fakeBin({ tools: [], stderrToken: true, pidFile: failingPidFile });
   const failure = await require('../server.js').main().then(() => null, (e) => e);
   process.stderr.write = stderr;
   assert.ok(failure, 'start-up must reject');
+  assert.match(String(failure.message), /missing tool/);
+  assert.equal(fs.existsSync(failingPidFile), true, 'start-up reached the child');
   assert.ok(!String(failure.message).includes(token) && !written.includes(token));
 });

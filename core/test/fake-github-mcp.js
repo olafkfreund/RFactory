@@ -12,9 +12,13 @@ async function run(config) {
     return console.log(`GitHub MCP Server\nVersion: ${config.version || '1.14.0'}`);
   }
   process.stderr.write('fake-stderr\n');
+  if (config.stderrToken) process.stderr.write(`${process.env.GITHUB_PERSONAL_ACCESS_TOKEN}\n`);
   if (config.hang === 'handshake') return new Promise(() => { setInterval(() => {}, 1000); });
   const server = new Server({ name: 'fake', version: '0' }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: config.tools }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    if (config.hang === 'listTools') return new Promise(() => {});
+    return { tools: config.tools };
+  });
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (config.hang === req.params.name) return new Promise(() => {});
     const a = req.params.arguments || {};

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createGithubSource } = require('../src/sources/github-web.js');
 const { connect } = require('../src/sources/github.js');
+const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const recorded = require('./fixtures/github-tools-1.14.0.json');
 
 const scope = { source: { owner: 'o', repo: 'r' }, mapping: { board: { 'In Progress': 'in_progress' } } };
@@ -70,7 +71,7 @@ async function gone(pidFile) {
   assert.fail(`child ${pid} is still running`);
 }
 
-for (const hang of ['handshake', 'list_issues']) {
+for (const hang of ['handshake', 'listTools', 'list_issues']) {
   test(`${hang} timeout stops child; next snapshot succeeds`, async () => {
     const pidFile = path.join(dir, `${hang}.pid`);
     const bad = createGithubSource({ scope, bin: fakeBin({ hang, pidFile }), token: 'dummy-token', timeoutMs: 400 });
@@ -80,6 +81,36 @@ for (const hang of ['handshake', 'list_issues']) {
     assert.deepEqual((await good.snapshot()).items, []);
   });
 }
+
+test('already aborted signal starts no child', async () => {
+  const pidFile = path.join(dir, 'pre-aborted.pid');
+  const controller = new AbortController();
+  controller.abort(new Error('already aborted'));
+  await assert.rejects(connect({ bin: fakeBin({ pidFile }), token: 'dummy-token', signal: controller.signal }), /already aborted/);
+  assert.equal(fs.existsSync(pidFile), false);
+});
+
+test('abort swallows a rejecting transport close', async () => {
+  const pidFile = path.join(dir, 'rejecting-close.pid');
+  const controller = new AbortController();
+  const gh = await connect({ bin: fakeBin({ pidFile }), token: 'dummy-token', signal: controller.signal });
+  const close = StdioClientTransport.prototype.close;
+  let rejected = false;
+  StdioClientTransport.prototype.close = async function () {
+    await close.call(this);
+    rejected = true;
+    throw new Error('close failed');
+  };
+  try {
+    controller.abort();
+    await gone(pidFile);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(rejected, true);
+  } finally {
+    StdioClientTransport.prototype.close = close;
+    await gh.close().catch(() => {});
+  }
+});
 
 test('version probe timeout leaves no child; next snapshot succeeds', async () => {
   const pidFile = path.join(dir, 'version.pid');
