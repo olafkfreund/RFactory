@@ -115,5 +115,6 @@ The old images stay imported (pinned against kubelet GC) on the nodes.
 
 There is no pre-merge run of the new guest: the first sandboxed start of the
 call Chrome in the KubeVirt guest is the live check in step 5 (Codex review,
-high). The control Chrome already runs as `rfchrome` with the sandbox on in
-this guest and no guest Nix file disables user namespaces; rollback is one revert.
+high). The control Chrome is configured the same way (`rfchrome`, sandbox on) in
+this guest, though its comment says that is unverified in a VM run; no guest Nix
+file disables user namespaces. Rollback is one revert.
