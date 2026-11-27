@@ -10,6 +10,7 @@ const { makeRedactor } = require('../core/src/redact');
 const { buildRendererSource } = require('./avatar/renderer.js');
 const { installSttBridge } = require('./stt-bridge');
 const { SpeechGate } = require(path.join(__dirname, 'node_modules/@vibeconferencing/calls/hearing/speech-gate.js'));
+const { CALL_EVENTS } = require(path.join(__dirname, 'node_modules/@vibeconferencing/calls/core/call-provider.js'));
 const portraits = require('./avatars/manifest.json').portraits;
 
 const MAX_IN = 4 * 1024 * 1024;
@@ -53,6 +54,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
   let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
+  let holdChat = false, chatSent = false, captionsKnown = false;
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, joinWaitResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
@@ -347,14 +349,26 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     send({ type: 'spoke', seq: msg.seq, result });
   }
 
+  // #56, Meet captions mode: report captions on/off; the chat line invites questions, so it waits for the first "on"
+  function captions(on) {
+    if (closing) return;
+    captionsKnown = true;
+    send({ type: 'captions', on });
+    if (!on || chatSent) return;
+    chatSent = true; // latched before the send: captions-state {on:true} and captions-ready arrive back to back
+    call.chat.send(chatLine).catch((e) => { if (!closing) log(`chat line failed: ${e.message}`); });
+  }
+
   async function afterJoin() {
-    try { await call.chat.send(chatLine); } catch (e) {
-      log(`chat line failed: ${e.message}`);
-      if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
-        noticeTimer = null;
-        if (closing) return;
-        try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
-      }, 10000);
+    if (!holdChat) {
+      try { await call.chat.send(chatLine); } catch (e) {
+        log(`chat line failed: ${e.message}`);
+        if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
+          noticeTimer = null;
+          if (closing) return;
+          try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
+        }, 10000);
+      }
     }
     if (stopping) return;
     if (env.RFACTORY_AVATAR) startAvatar();
@@ -420,6 +434,32 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     sendState('error', failureCode(prev.e)); exitCode = 1;
   }
 
+  // Meet guest pre-join (#68): the library knows neither "Continue as guest" nor the "Enter your name" field,
+  // so click the first and fill an empty name; the library still clicks join itself (no race with its 60 s join loop)
+  function guestHelper(page, signal) {
+    let timer, stopped = false;
+    const stop = () => { stopped = true; if (timer) d.clock.clearTimeout(timer); signal.removeEventListener('abort', stop); };
+    signal.addEventListener('abort', stop, { once: true });
+    async function poll() {
+      if (stopped || signal.aborted) return;
+      page ||= host.context.pages()[0];
+      if (page) {
+        try {
+          const guest = page.getByRole('button', { name: /continue as guest/i }).first();
+          if (await guest.isVisible() && !stopped) await guest.click({ timeout: 1000 });
+        } catch { /* Meet may replace the control between checks */ }
+        try {
+          const name = page.locator('input[aria-label*="name" i], input[placeholder*="name" i], input[autocomplete="name"]').first();
+          if (await name.isVisible() && await name.isEnabled() && !stopped && await name.inputValue() === '' && !stopped)
+            await name.fill(BOT_NAME, { timeout: 1000 });
+        } catch { /* as above */ }
+      }
+      if (!stopped) timer = d.clock.setTimeout(poll, 500);
+    }
+    poll();
+    return stop;
+  }
+
   async function start(link) {
     const deadline = d.clock.now() + 300000;
     let prev = null;
@@ -431,15 +471,18 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         if (closing) return;
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
         if (closing) return;
-        if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
-        if (closing) return;
-        const remaining = deadline - d.clock.now();
-        if (remaining <= 0 && prev) { abandon(prev); return; }
-        if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
-        call = await join(link, {
-          name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
-          onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
-        });
+        const stopGuestHelper = link.startsWith('https://meet.google.com/') ? guestHelper(host.context.pages()[0], ac.signal) : () => {};
+        try {
+          if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
+          if (closing) return;
+          const remaining = deadline - d.clock.now();
+          if (remaining <= 0 && prev) { abandon(prev); return; }
+          if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
+          call = await join(link, {
+            name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
+            onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
+          });
+        } finally { stopGuestHelper(); }
         if (closing) return;
         break;
       } catch (e) {
@@ -463,6 +506,16 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       }
     }
     sendState('in-call');
+    holdChat = !audio && call.platform === 'meet';
+    if (holdChat) {
+      // shortcut: private field of an alpha lib; if it goes or the events are renamed, the first caption still reports "on"
+      if (typeof call._inner?.on === 'function') {
+        call._inner.on(CALL_EVENTS.captionsReady, () => captions(true));
+        call._inner.on(CALL_EVENTS.captionsState, (s) => { if (typeof s?.on === 'boolean') captions(s.on); });
+      }
+      // registered before the 'heard' forwarder, so "captions on" reaches the manager before the caption itself
+      call.once('caption', () => { if (!captionsKnown) captions(true); }); // an explicit state from the library wins
+    }
     if (!audio) call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
     call.on('state', (s) => { if (TERMINAL.includes(s)) { sendState(s); stop(`state ${s}`, s === 'error' ? 1 : 0); } });
     if (audio && !closing) {
