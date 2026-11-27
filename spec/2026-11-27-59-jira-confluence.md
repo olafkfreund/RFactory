@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 59
 intent: intent/2026-11-27-59-jira-confluence.md
 ---
@@ -553,3 +553,7 @@ changes. The plan adds one line under that row pointing here.
    (one refused change to a throw-away issue) is possible, but a refusal
    could also come from the account's project rights, so it proves
    little; do it only if the owner asks.
+
+## Approval (2026-11-27)
+
+The owner approved this spec with the recommended answers: "approve all with recommendations". Every open question above is decided as its recommendation says; question 1 (the Jira site) still needs the owner to name one before the slice can be called done. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
