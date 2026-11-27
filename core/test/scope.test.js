@@ -196,6 +196,24 @@ test('investigations_enabled needs both switches and writes; the env alone canno
   } finally { f.cleanup(); }
 });
 
+test('notes_enabled needs the env and a Claude brain; the env alone cannot turn notes on', () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(f.load([], { RFACTORY_NOTES: 'off' }), f.scope); // absent means off
+    assert.throws(() => f.load([], { RFACTORY_NOTES: 'on' }), /notes-enabled-env/);
+    f.scope.notes_enabled = true;
+    assert.throws(() => f.load(), /notes-enabled/);
+    assert.throws(() => f.load([], { RFACTORY_NOTES: 'off' }), /notes-enabled/);
+    assert.deepEqual(f.load([], { RFACTORY_NOTES: 'on' }), f.scope); // no writes needed
+    f.scope.brain.kind = 'openai-compat';
+    assert.throws(() => f.load([], { RFACTORY_NOTES: 'on' }), /notes-need-claude-brain/);
+    f.scope.notes_enabled = false;
+    assert.throws(() => f.load([], { RFACTORY_NOTES: 'on' }), /notes-enabled-env/);
+    f.scope.notes_enabled = 'yes';
+    assert.throws(() => f.load(), /notes-enabled/);
+  } finally { f.cleanup(); }
+});
+
 test('listen and language are validated', () => {
   const f = fixture();
   try {

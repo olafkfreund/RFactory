@@ -12,7 +12,7 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 case " $* " in
   *' get deploy rfactory '*)
     [[ ${FAKE_NO_DEPLOY:-0} != 1 ]] || exit 1
-    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
+    case " $* " in *RFACTORY_WRITES*) printf '%s' "${FAKE_WRITES:-on}" ;; *RFACTORY_INVESTIGATIONS*) printf '%s' "${FAKE_INVESTIGATIONS:-}" ;; *RFACTORY_NOTES*) printf '%s' "${FAKE_NOTES:-}" ;; *) printf '%s' "${FAKE_SHARES:-on}" ;; esac ;;
   *' get secret '*'jsonpath='*) echo 2026-01-02 ;;
   *' get secret '*) if [[ ${FAKE_EXISTING:-0} == 1 ]]; then echo secret/existing; fi ;;
   *' create secret generic '*)
@@ -80,6 +80,9 @@ fixture; FAKE_SHARES=off refused
 fixture; FAKE_INVESTIGATIONS=on refused
 fixture; FAKE_INVESTIGATIONS=maybe refused
 fixture; printf '{"writes_enabled":true,"shares_enabled":true,"investigations_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
+fixture; FAKE_NOTES=on refused
+fixture; FAKE_NOTES=maybe refused
+fixture; printf '{"writes_enabled":true,"shares_enabled":true,"notes_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"; refused
 fixture; FAKE_NO_DEPLOY=1 refused
 fixture; refused --writes off
 
@@ -99,6 +102,10 @@ FAKE_INVESTIGATIONS=on run --dry-run
 
 fixture
 FAKE_INVESTIGATIONS=off run --dry-run
+
+fixture
+printf '{"writes_enabled":true,"shares_enabled":true,"notes_enabled":true}' >"$RFACTORY_CONFIG/scope.cluster.json"
+FAKE_NOTES=on run --dry-run
 
 fixture
 run --no-restart
