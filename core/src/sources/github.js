@@ -1,5 +1,6 @@
 'use strict';
-const { execFileSync } = require('node:child_process');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const RECORDED = new Set(require('../../test/fixtures/github-tools-1.14.0.json').map((t) => t.name));
@@ -8,9 +9,12 @@ const VERSION = '1.14.0';
 const CAP = 1000;
 const PER_PAGE = 100;
 
-async function connect({ bin, token, logSafe = () => {} }) {
+async function connect({ bin, token, logSafe = () => {}, signal, probeMs = 5000 }) {
   if (!bin) throw new Error('GITHUB_MCP_SERVER_BIN is required');
-  if (!execFileSync(bin, ['--version'], { encoding: 'utf8' }).includes(`Version: ${VERSION}`)) throw new Error(`github-mcp-server version is not ${VERSION}`);
+  if (signal?.aborted) throw signal.reason;
+  const { stdout } = await promisify(execFile)(bin, ['--version'], { encoding: 'utf8', timeout: probeMs, signal });
+  if (!stdout.includes(`Version: ${VERSION}`)) throw new Error(`github-mcp-server version is not ${VERSION}`);
+  if (signal?.aborted) throw signal.reason;
   const transport = new StdioClientTransport({
     command: bin,
     args: ['stdio', '--read-only', '--toolsets', 'issues,pull_requests,repos,actions,projects'],
@@ -19,8 +23,11 @@ async function connect({ bin, token, logSafe = () => {} }) {
   });
   transport.stderr.on('data', (d) => logSafe(String(d)));
   const client = new Client({ name: 'rfactory-core', version: '0' });
-  await client.connect(transport);
+  const stop = () => { void transport.close(); };
+  signal?.addEventListener('abort', stop, { once: true });
   try {
+    if (signal?.aborted) throw signal.reason;
+    await client.connect(transport);
     const { tools } = await client.listTools();
     const names = new Set(tools.map((t) => t.name));
     for (const t of tools) {
@@ -29,7 +36,8 @@ async function connect({ bin, token, logSafe = () => {} }) {
     }
     for (const n of READ_TOOLS) if (!names.has(n)) throw new Error(`missing tool: ${n}`);
   } catch (e) {
-    await client.close();
+    signal?.removeEventListener('abort', stop);
+    await client.close().catch(() => {});
     throw e;
   }
 
@@ -114,7 +122,10 @@ async function connect({ bin, token, logSafe = () => {} }) {
     };
   }
 
-  return { fetchScope, getItem, itemActivity, close: () => client.close() };
+  return { fetchScope, getItem, itemActivity, close: async () => {
+    signal?.removeEventListener('abort', stop);
+    await client.close();
+  } };
 }
 
 module.exports = { connect, RECORDED, READ_TOOLS };

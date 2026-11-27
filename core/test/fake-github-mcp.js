@@ -6,11 +6,17 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 async function run(config) {
-  if (process.argv.includes('--version')) return console.log(`GitHub MCP Server\nVersion: ${config.version || '1.14.0'}`);
+  if (config.pidFile) require('node:fs').writeFileSync(config.pidFile, String(process.pid));
+  if (process.argv.includes('--version')) {
+    if (config.hang === 'version') return new Promise(() => { setInterval(() => {}, 1000); });
+    return console.log(`GitHub MCP Server\nVersion: ${config.version || '1.14.0'}`);
+  }
   process.stderr.write('fake-stderr\n');
+  if (config.hang === 'handshake') return new Promise(() => { setInterval(() => {}, 1000); });
   const server = new Server({ name: 'fake', version: '0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: config.tools }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (config.hang === req.params.name) return new Promise(() => {});
     const a = req.params.arguments || {};
     const e = config.results[req.params.name + (a.method ? `:${a.method}` : '')];
     if (e === undefined) return { isError: true, content: [{ type: 'text', text: 'no canned result' }] };
