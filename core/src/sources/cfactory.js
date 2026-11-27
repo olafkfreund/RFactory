@@ -270,6 +270,32 @@ function createCfactorySource({ mcpUrl, key, repositoryId, redactor, client, cli
         return projects;
       } catch { throw new Error('project-resolve-failed'); }
     },
+    // one tenant-wide read for the e2e inventory; any odd reply fails whole, never a partial list
+    async inventory() {
+      const fail = () => new Error('inventory-read-failed');
+      const isStr = (v) => typeof v === 'string';
+      const nullOr = (check) => (v) => v === null || check(v);
+      const rows = (list, ok, idOf) => Array.isArray(list) && list.every((r) => r && typeof r === 'object' && ok(r))
+        && (!idOf || new Set(list.map(idOf)).size === list.length);
+      try {
+        const [repoReply, connReply, cardReply] = await Promise.all([
+          call('cfactory_list_git_repositories'), call('cfactory_list_git_connections'), call('cfactory_list_cards')]);
+        if ([repoReply, connReply, cardReply].some((r) => r.error)) throw fail();
+        const { repositories, default_repository_id } = repoReply;
+        const { connections } = connReply;
+        const allCards = cardReply.cards;
+        if (!rows(repositories, (r) => Number.isInteger(r.id) && Number.isInteger(r.connection_id)
+              && isStr(r.project) && r.project !== '' && nullOr(isStr)(r.aifactory_project_id), (r) => r.id)
+            || !Number.isInteger(default_repository_id) || !repositories.some((r) => r.id === default_repository_id)
+            || !rows(connections, (r) => Number.isInteger(r.id) && isStr(r.provider), (r) => r.id)
+            || !rows(allCards, (r) => isStr(r.card_key) && r.card_key !== '' && isStr(r.status)
+              && nullOr(Number.isInteger)(r.repository_id) && nullOr(isStr)(r.issue_ref) && nullOr(isStr)(r.correlation_key)
+              && nullOr((s) => typeof s === 'object' && !Array.isArray(s))(r.stage_runs))) throw fail();
+        const projects = await this.listProjects();
+        // deleted cards are already off the board
+        return { repositories, default_repository_id, connections, projects, cards: allCards.filter((c) => c.deleted_at == null) };
+      } catch { throw fail(); }
+    },
     async resolveProject(ref) {
       try {
         const reply = await call('cfactory_resolve_project', undefined, { ref });

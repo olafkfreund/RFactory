@@ -148,7 +148,20 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     return describe(project, await source.listRepositories());
   }
 
+  const WORDS = { done: 'done', in_progress: 'in progress', blocked: 'blocked', left: 'left', unknown: 'unknown' };
+  async function githubStandup(view) {
+    let raw;
+    try { raw = await view.snapshot(); }
+    catch (error) { return [502, { error: sourceCode(error) }]; }
+    const counts = summarise(raw.items);
+    const summary = `Repository: ${Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ')}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
+    // titles, states and evidence are copied from GitHub: the whole reply is redacted
+    return [200, redactor.toModel({ items: raw.items, counts, unknown: raw.items.filter((i) => i.state === 'unknown'),
+      fetched_at: raw.fetched_at, newest_update: raw.newest_update, truncated: raw.truncated, summary, summary_error: null, destination: 'the server' })];
+  }
+
   async function standup(view) {
+    if (view.kind === 'github') return githubStandup(view);
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
@@ -175,6 +188,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .then((body) => json(res, 200, body), readFailed(res));
       return;
     }
+    if (source.kind === 'github' && req.method === 'GET' && /^\/api\/review(\/|$)/.test(url)) return json(res, 404, { error: 'not-found' });
     if (req.method === 'GET' && url === '/api/review') {
       readView(query).then((view) => view.standupData()).then(({ cards, conflicting, freshness, fetched_at }) =>
         json(res, 200, { ...reviewProject(cards, freshness), conflicting, fetched_at }))
@@ -190,7 +204,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed, ...(source.kind === 'github' ? { source: 'github' } : {}) });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -410,6 +424,15 @@ async function composeLookups({ scope, key, redactor, token, tokens = {}, create
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
 }
 
+// The GitHub scope reads one repository and does nothing else: every CFactory feature is refused, not skipped.
+async function composeStandalone({ scope, token, env, createSource = require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
+  if (scope.shares_enabled || scope.lookups_enabled || env.RFACTORY_CALLS === '1' || env.RFACTORY_DESKTOP === '1') throw new Error('unsupported-scope');
+  if (!token) throw new Error('github-token-missing');
+  const source = createSource({ scope, bin: env.GITHUB_MCP_SERVER_BIN, token });
+  await source.start();
+  return source;
+}
+
 async function main() {
   refuseKeyEnv(process.env);
   const roles = require('@rfactory/core/src/roles.js').loadRoles(process.env);
@@ -420,6 +443,11 @@ async function main() {
   const secrets = [];
   const extras = {};
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
+  if (scope.source.kind === 'github') {
+    const source = await composeStandalone({ scope, token: extras.githubToken, env: process.env });
+    return createApp({ source, scope, redactor: makeRedactor(secrets), roles, commit: process.env.RFACTORY_COMMIT || '' })
+      .listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  }
   if (scope.source.kind !== 'cfactory' || scope.brain.kind !== 'claude-cli') throw new Error('unsupported-scope');
   const redactor = makeRedactor(secrets);
   const source = createCfactorySource({ mcpUrl: scope.source.mcp_url, key: secrets[0], repositoryId: scope.source.repository_id, redactor });
@@ -460,7 +488,7 @@ async function main() {
       ...(lookup ? { ...lookup, scope, record } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
-  createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit: process.env.RFACTORY_COMMIT || '' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
@@ -473,4 +501,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };

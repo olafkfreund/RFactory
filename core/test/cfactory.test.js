@@ -453,3 +453,78 @@ test('set freshness is the worst state: unavailable beats stale and current', as
     assert.equal((await src(client).forRepositories([1, 2]).standupData()).freshness.state, 'unavailable');
   }
 });
+
+// inventory(): the four reads, answered by tool name, and one bad row per validation rule
+const invReplies = () => ({
+  cfactory_list_git_repositories: {
+    repositories: [
+      { id: 1, connection_id: 1, project: 'o/a', aifactory_project_id: null },
+      { id: 2, connection_id: 1, project: 'o/b', aifactory_project_id: 'p1' }],
+    default_repository_id: 1,
+  },
+  cfactory_list_git_connections: { connections: [{ id: 1, provider: 'github' }] },
+  cfactory_list_projects: { projects: [{ id: 'p1', name: 'P', slug: 'p', repository_ids: [2], repo_paths: ['o/b'], created_at: null }] },
+  cfactory_list_cards: { cards: [
+    { card_key: 'FCT-1', status: 'backlog', repository_id: 2, issue_ref: null, correlation_key: null, stage_runs: null, deleted_at: null },
+    { card_key: 'FCT-2', status: 'done', repository_id: null, issue_ref: 'o/b#1', correlation_key: 'k', stage_runs: { build: {} } }] },
+});
+const invClient = (replies) => ({
+  calls: [],
+  async callTool(req) {
+    this.calls.push(req.name);
+    const value = replies[req.name];
+    if (value instanceof Error) throw value;
+    return reply(value);
+  },
+});
+// a copy of the valid replies with one edit applied
+const invWith = (edit) => { const r = invReplies(); edit(r); return r; };
+
+test('inventory reads the four tools and returns the tenant shape', async () => {
+  const client = invClient(invReplies());
+  const inv = await src(client).inventory();
+  assert.deepEqual([...client.calls].sort(), ['cfactory_list_cards', 'cfactory_list_git_connections', 'cfactory_list_git_repositories', 'cfactory_list_projects']);
+  assert.deepEqual(Object.keys(inv), ['repositories', 'default_repository_id', 'connections', 'projects', 'cards']);
+  assert.equal(inv.repositories.length, 2);
+  assert.equal(inv.default_repository_id, 1);
+  assert.deepEqual(inv.connections, [{ id: 1, provider: 'github' }]);
+  assert.deepEqual(inv.projects.map((p) => p.id), ['p1']);
+  assert.deepEqual(inv.cards.map((c) => c.card_key), ['FCT-1', 'FCT-2']);
+});
+
+test('inventory drops deleted cards', async () => {
+  const replies = invWith((r) => { r.cfactory_list_cards.cards[0].deleted_at = '2026-11-01T00:00:00Z'; });
+  assert.deepEqual((await src(invClient(replies)).inventory()).cards.map((c) => c.card_key), ['FCT-2']);
+});
+
+test('inventory fails closed on any bad read or row', async () => {
+  const R = 'cfactory_list_git_repositories', C = 'cfactory_list_git_connections', K = 'cfactory_list_cards';
+  const cases = {
+    'call throws': (r) => { r[C] = new Error('down'); },
+    'reply has error': (r) => { r[K] = { error: 'forbidden' }; },
+    'project list bad': (r) => { r.cfactory_list_projects = { error: 'x' }; },
+    'repositories not an array': (r) => { r[R].repositories = 'x'; },
+    'repo id not integer': (r) => { r[R].repositories[0].id = '1'; },
+    'repo connection_id not integer': (r) => { r[R].repositories[0].connection_id = null; },
+    'repo project empty': (r) => { r[R].repositories[0].project = ''; },
+    'repo aifactory_project_id a number': (r) => { r[R].repositories[1].aifactory_project_id = 5; },
+    'repo ids duplicate': (r) => { r[R].repositories[1].id = 1; },
+    'default not integer': (r) => { r[R].default_repository_id = '1'; },
+    'default not among ids': (r) => { r[R].default_repository_id = 9; },
+    'connections not an array': (r) => { r[C].connections = {}; },
+    'connection id not integer': (r) => { r[C].connections[0].id = 'a'; },
+    'connection provider not string': (r) => { r[C].connections[0].provider = null; },
+    'connection ids duplicate': (r) => { r[C].connections.push({ id: 1, provider: 'gitlab' }); },
+    'cards not an array': (r) => { r[K].cards = null; },
+    'card_key empty': (r) => { r[K].cards[0].card_key = ''; },
+    'status not string': (r) => { r[K].cards[0].status = 1; },
+    'card repository_id a string': (r) => { r[K].cards[0].repository_id = '2'; },
+    'issue_ref a number': (r) => { r[K].cards[1].issue_ref = 7; },
+    'correlation_key a number': (r) => { r[K].cards[1].correlation_key = 7; },
+    'stage_runs an array': (r) => { r[K].cards[1].stage_runs = []; },
+    'stage_runs a string': (r) => { r[K].cards[1].stage_runs = 'x'; },
+  };
+  for (const [name, edit] of Object.entries(cases)) {
+    await assert.rejects(src(invClient(invWith(edit))).inventory(), /^Error: inventory-read-failed$/, name);
+  }
+});

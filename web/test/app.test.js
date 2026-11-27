@@ -459,7 +459,7 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
   const { doc, byId } = shim();
-  for (const id of ['run', 'status', 'stale', 'summary-card', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
+  for (const id of ['run', 'status', 'stale', 'summary-card', 'call', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
     'share', 'share-list', 'investigation', 'investigation-list']) byId[id] = new Node('x');
   byId['call-leave'].disabled = true;
@@ -582,4 +582,26 @@ test('decisions carry the project, a share Stop its id, and a link slug is encod
   assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
   const broken = await projectPage(t, '/p/%E0%A4%A');
   assert.equal(broken.byId['project-info'].textContent, "This project isn't available in Meet");
+});
+
+// slice web-github (#2): the page in GitHub mode asks only for the standup
+test('GitHub mode: no call panel, no streams, only /api/config-driven standup requests', async (t) => {
+  const p = await projectPage(t, '/', { config: { source: 'github', projects: false },
+    routes: { '/api/standup': [200, { ...base, items: [], unknown: [], summary: 'Repository: 0 done.' }] } });
+  assert.equal(p.byId.call.hidden, true);
+  assert.deepEqual(p.requests, [['POST', '/api/standup']]);
+  await p.click('run');
+  assert.deepEqual(p.requests, [['POST', '/api/standup'], ['POST', '/api/standup']]);
+  assert.equal(p.streams.length, 0);
+});
+
+test('GitHub reply renders the five lists, hides the CFactory sections and shows the summary', () => {
+  const { doc, byId } = shim();
+  for (const id of ['stale', 'summary-card']) byId[id] = new Node('x');
+  const items = [card({ id: 'o/r#1', title: 'one', state: 'done' }), card({ id: 'o/r#2', title: 'two', state: 'in_progress' }),
+    card({ id: 'o/r#3', state: 'blocked' }), card({ id: 'o/r#4', state: 'left' }), card({ id: 'o/r#5', state: 'unknown' })];
+  render(doc, { ...base, items, unknown: [items[4]], counts: {}, truncated: false, summary: 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.', summary_error: null, destination: 'the server' });
+  for (const s of ['done', 'in_progress', 'blocked', 'left', 'unknown']) assert.ok(byId[s].all().some((n) => n.tag === 'li' && n.textContent !== 'None'), s);
+  for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(byId[s].hidden, true, s);
+  assert.equal(byId.summary.textContent, 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
 });
