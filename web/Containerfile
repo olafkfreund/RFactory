@@ -3,10 +3,11 @@
 FROM docker.io/library/node:22-bookworm-slim
 
 # Google Chrome (Meet refuses Chromium; Phase 0), Xvfb for the headed bot, espeak-ng (TTS fallback),
-# python3-venv for Piper. Chrome is pinned: CHROME_VERSION is the version the first 1b build installed.
+# python3-venv for Piper. `apt-get upgrade` takes Debian's security fixes the base image lacks (Trivy gate). Chrome is pinned: CHROME_VERSION is the version the first 1b build installed.
 ARG CHROME_VERSION=157.0.8103.78-1
 RUN set -eux; \
     apt-get update; \
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends xvfb xauth fonts-liberation fonts-noto-color-emoji \
       ca-certificates curl gnupg espeak-ng python3-venv; \
     mkdir -p /etc/apt/keyrings; \

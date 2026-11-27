@@ -65,12 +65,13 @@ test('dial: a write while no connection is up is dropped, not thrown', async () 
 
 test('call worker: the call Chrome launch gets the proxy, only for that launch', async () => {
   const proxy = { server: 'http://10.42.0.9:3128', username: 'rf', password: 'tok' };
-  const seen = [];
+  const seen = [], chowns = [];
   const original = (dir, o) => { seen.push(o); return Promise.resolve({ route: async () => {} }); };
   const chromium = { launchPersistentContext: original };
   let hostOpts;
   const worker = createCallWorker({ nonce: 'n', proxy, send: () => {}, env: {}, deps: {
     chromium,
+    chown: (...args) => { chowns.push(args); },
     playwrightHost: async (o) => { hostOpts = o; await chromium.launchPersistentContext('/d', { args: o.args }); return { context: { addInitScript: async () => {} }, close: async () => {} }; },
     join: async () => { throw new Error('no call'); },
     run: async ({ deps }) => { await deps.playwrightHost({ userDataDir: '/d' }); },
@@ -78,8 +79,27 @@ test('call worker: the call Chrome launch gets the proxy, only for that launch',
   await until(() => seen.length === 1);
   assert.deepEqual(seen[0].proxy, proxy);
   assert.ok(hostOpts.args.includes('--no-sandbox'));
+  assert.deepEqual(chowns, []);
   await until(() => chromium.launchPersistentContext === original); // restored once the launch settles
   assert.ok(worker);
+});
+
+test('call worker: CALL_UID owns the profile before sandboxed Chrome launches', async () => {
+  const chowns = [], launches = [];
+  let releaseChown;
+  const pendingChown = new Promise((resolve) => { releaseChown = resolve; });
+  let hostOpts;
+  createCallWorker({ nonce: 'n', send: () => {}, env: { CALL_UID: '991', CALL_GID: '991' }, deps: {
+    chown: (...args) => { chowns.push(args); return pendingChown; },
+    playwrightHost: async (o) => { hostOpts = o; launches.push(o); return { context: { addInitScript: async () => {} }, close: async () => {} }; },
+    run: async ({ deps }) => { await deps.playwrightHost({ userDataDir: '/d' }); },
+  } });
+  await until(() => chowns.length === 1);
+  assert.deepEqual(launches, []);
+  releaseChown();
+  await until(() => launches.length === 1);
+  assert.deepEqual(chowns, [['/d', 991, 991]]);
+  assert.ok(!hostOpts.args.includes('--no-sandbox'));
 });
 
 test('control: Chrome does not start without a proxy when one is required, and then launches with it', async () => {

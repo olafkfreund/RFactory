@@ -818,6 +818,7 @@ function handleCall(doc, event, now = Date.now()) {
   } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
   else if (event.type === 'hearing') {
     const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
+      'captions-off': `Hearing: captions are not on yet; Factory cannot hear${event.notConfigured ? ' (own transcription not configured)' : ''}`,
       own: 'Hearing: own transcription', 'no-audio': 'Hearing: own transcription (no audio received)',
       'notice-failed': 'Hearing: own transcription (call notice failed)' };
     if (states[event.state] && doc.getElementById('call-hearing')) set('call-hearing', states[event.state]);

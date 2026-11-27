@@ -219,12 +219,14 @@ test('call page renders each hearing state as text', () => {
   const nodes = Object.fromEntries(['call-hearing', 'call-state-text', 'call-join', 'call-leave', 'call-listen'].map((id) => [id, { textContent: '', disabled: false }]));
   const doc = { getElementById: (id) => nodes[id] };
   for (const [state, expected] of [
-    ['captions', 'Hearing: captions'], ['own', 'Hearing: own transcription'],
+    ['captions', 'Hearing: captions'], ['captions-off', 'Hearing: captions are not on yet; Factory cannot hear'], ['own', 'Hearing: own transcription'],
     ['no-audio', 'Hearing: own transcription (no audio received)'],
     ['notice-failed', 'Hearing: own transcription (call notice failed)'],
   ]) { handleCall(doc, { type: 'hearing', state }); assert.equal(nodes['call-hearing'].textContent, expected); }
   handleCall(doc, { type: 'hearing', state: 'captions', notConfigured: true });
   assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (own transcription not configured)');
+  handleCall(doc, { type: 'hearing', state: 'captions-off', notConfigured: true });
+  assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions are not on yet; Factory cannot hear (own transcription not configured)');
 });
 
 test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
