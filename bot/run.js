@@ -420,6 +420,32 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     sendState('error', failureCode(prev.e)); exitCode = 1;
   }
 
+  // Meet guest pre-join (#68): the library knows neither "Continue as guest" nor the "Enter your name" field,
+  // so click the first and fill an empty name; the library still clicks join itself (no race with its 60 s join loop)
+  function guestHelper(page, signal) {
+    let timer, stopped = false;
+    const stop = () => { stopped = true; if (timer) d.clock.clearTimeout(timer); signal.removeEventListener('abort', stop); };
+    signal.addEventListener('abort', stop, { once: true });
+    async function poll() {
+      if (stopped || signal.aborted) return;
+      page ||= host.context.pages()[0];
+      if (page) {
+        try {
+          const guest = page.getByRole('button', { name: /continue as guest/i }).first();
+          if (await guest.isVisible() && !stopped) await guest.click({ timeout: 1000 });
+        } catch { /* Meet may replace the control between checks */ }
+        try {
+          const name = page.locator('input[aria-label*="name" i], input[placeholder*="name" i], input[autocomplete="name"]').first();
+          if (await name.isVisible() && await name.isEnabled() && !stopped && await name.inputValue() === '' && !stopped)
+            await name.fill(BOT_NAME, { timeout: 1000 });
+        } catch { /* as above */ }
+      }
+      if (!stopped) timer = d.clock.setTimeout(poll, 500);
+    }
+    poll();
+    return stop;
+  }
+
   async function start(link) {
     const deadline = d.clock.now() + 300000;
     let prev = null;
@@ -431,15 +457,18 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
         if (closing) return;
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
         if (closing) return;
-        if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
-        if (closing) return;
-        const remaining = deadline - d.clock.now();
-        if (remaining <= 0 && prev) { abandon(prev); return; }
-        if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
-        call = await join(link, {
-          name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
-          onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
-        });
+        const stopGuestHelper = link.startsWith('https://meet.google.com/') ? guestHelper(host.context.pages()[0], ac.signal) : () => {};
+        try {
+          if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
+          if (closing) return;
+          const remaining = deadline - d.clock.now();
+          if (remaining <= 0 && prev) { abandon(prev); return; }
+          if (remaining <= 0) throw Object.assign(new Error('join deadline expired'), { name: 'JoinError', code: 'timeout' });
+          call = await join(link, {
+            name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
+            onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
+          });
+        } finally { stopGuestHelper(); }
         if (closing) return;
         break;
       } catch (e) {

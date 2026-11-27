@@ -69,6 +69,59 @@ async function joined(over) {
   return s;
 }
 
+test('Meet guest helper clicks "Continue as guest", fills an empty name, never clicks join, stops when join settles', async () => {
+  const actions = [], pages = [];
+  let releaseJoin, guestVisible = true, nameValue = '';
+  const page = {
+    getByRole: (_role, { name }) => ({ first: () => ({
+      isVisible: async () => name.test('Continue as guest') && guestVisible,
+      click: async (opts) => { assert.deepStrictEqual(opts, { timeout: 1000 }); actions.push('guest'); guestVisible = false; },
+    }) }),
+    locator: (sel) => ({ first: () => {
+      assert.match(sel, /aria-label\*="name" i/);
+      return {
+        isVisible: async () => !guestVisible,
+        isEnabled: async () => true,
+        inputValue: async () => nameValue,
+        fill: async (v, opts) => { assert.deepStrictEqual(opts, { timeout: 1000 }); nameValue = v; actions.push(`fill:${v}`); },
+      };
+    } }),
+  };
+  const s = setup({ pages, join: () => new Promise((resolve) => { releaseJoin = resolve; }) });
+  const advance = async () => {
+    const timer = s.timers.filter((t) => t.ms === 500 && !t.cleared).at(-1);
+    assert.ok(timer, 'guest helper is polling');
+    timer.cleared = true; timer.fn(); await tick();
+  };
+  s.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  try {
+    assert.deepStrictEqual(actions, []);              // no page yet: keeps polling
+    pages.push(page);
+    await advance();
+    // variant B, then (same poll) variant A's empty name is filled
+    assert.deepStrictEqual(actions, ['guest', 'fill:Factory (AI)']);
+    await advance(); await advance();
+    assert.deepStrictEqual(actions, ['guest', 'fill:Factory (AI)']); // a filled name is left alone; join is the library's
+    nameValue = 'Someone typed'; await advance();
+    assert.deepStrictEqual(actions.length, 2);         // only an empty field is filled
+    releaseJoin(s.call); await tick();
+    assert.ok(s.timers.filter((t) => t.ms === 500).at(-1).cleared);
+  } finally { releaseJoin?.(s.call); s.stdin.end(); await s.done; }
+});
+
+test('the guest helper does not run for a Teams link, and a throwing page never breaks the join', async () => {
+  const page = { getByRole: () => { throw new Error('boom'); }, locator: () => { throw new Error('boom'); } };
+  const t = setup({ pages: [page] });
+  t.stdin.write('https://meet.google.com/abc-defg-hij\n'); await tick();
+  assert.deepStrictEqual(t.states().at(-1), 'in-call');
+  t.stdin.end(); await t.done;
+  let polled = false;
+  const s = setup({ pages: [{ getByRole: () => { polled = true; }, locator: () => { polled = true; } }] });
+  s.stdin.write('https://teams.microsoft.com/l/meetup-join/x\n'); await tick();
+  assert.strictEqual(polled, false);
+  s.stdin.end(); await s.done;
+});
+
 test('joining and lobby via onState, then in-call; options as planned', async () => {
   const s = await joined();
   assert.deepStrictEqual(s.states(), ['joining', 'lobby', 'in-call']);
