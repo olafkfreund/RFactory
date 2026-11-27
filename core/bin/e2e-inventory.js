@@ -27,7 +27,7 @@ function hashOf(record) {
   return createHash('sha256').update(JSON.stringify(canon(facts(record)))).digest('hex');
 }
 
-function build({ cfactory, github, scopes, factories, holds }) {
+function build({ cfactory, github, scopes, factories, holds, approved }) {
   const invalid = (name) => { throw new Error(name); };
   if (!plain(factories)) invalid('invalid-factories');
   for (const [id, rows] of Object.entries(factories)) {
@@ -121,9 +121,10 @@ function build({ cfactory, github, scopes, factories, holds }) {
           (list === 'holds' ? typeof line.reason !== 'string' || !line.reason.trim() :
             typeof line.by !== 'string' || !line.by.trim() || !linkPattern.test(line.link)) ||
           (list === 'releases' && !['named', 'unpaired', 'owner', 'not-checked'].includes(line.kind))) invalid('invalid-holds');
-      const matches = targets(line);
+      const matches = (approved?.sets ?? sets).filter((set) => line.repository_id !== undefined
+        ? set.entry?.id === line.repository_id : set.key === line.github.toLowerCase());
       const token = `${matches[0]?.key}:${line.kind ?? ''}`;
-      if (matches.length !== 1 || seen.has(token)) invalid('invalid-holds');
+      if (matches.length !== 1 || seen.has(token) || (list === 'archive' && !matches[0].github)) invalid('invalid-holds');
       seen.add(token);
     }
   }
@@ -153,7 +154,6 @@ function build({ cfactory, github, scopes, factories, holds }) {
   }
   for (const set of sets) {
     const archive = holds.archive.some((line) => targets(line)[0] === set);
-    if (archive && !set.github) invalid('invalid-holds');
     set.state = set.reasons.length ? 'held' : archive ? 'archive' : 'remove';
     set.actions = set.state === 'held' ? [] : [
       ...set.cards.map((card) => `delete card ${card.card_key}`),
@@ -231,7 +231,7 @@ function compareAfter(approved, fresh) {
 }
 
 const fail = (message) => new Error(message);
-const E2E_NAME = /^e2e-\d{8}-P1-\d+$/;
+const E2E_NAME = /^e2e-\d{8}-P1-\d+$/i;
 const FIXED = new Set(['github-read-failed', 'scope-read-failed', 'key-read-failed', 'holds-read-failed',
   'factories-read-failed', 'list-read-failed', 'list-hash-mismatch', 'out-exists', 'inventory-read-failed',
   'inventory-ambiguous', 'invalid-holds', 'invalid-factories']);
@@ -248,6 +248,7 @@ function readGithub(spawn) {
     let done = false;
     const end = (fn) => { if (!done) { done = true; clearTimeout(timer); fn(); } };
     const timer = setTimeout(() => end(() => { try { child.kill(); } catch {} bad(); }), 60000);
+    child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { text += chunk; });
     child.on('error', () => end(bad));
     child.on('close', (code) => end(() => {
@@ -349,7 +350,7 @@ function readJson(file, message) {
 }
 
 // every input value goes in a code span, so Markdown in a name cannot change the list
-const code = (value) => `\`${String(value ?? '-').replace(/[`|]/g, '?')}\``;
+const code = (value) => `\`${String(value ?? '-').replace(/[`|\r\n]/g, '?')}\``;
 const codes = (values) => values.length ? values.map(code).join(', ') : code('-');
 function render(record) {
   const lines = [`# e2e-* inventory`, '', `hash: ${code(record.hash)}`, `taken_at: ${code(record.taken_at)}`, '',
@@ -417,7 +418,8 @@ async function main(argv, env, write, { spawn = nodeSpawn, sourceFactory = creat
     } catch { throw fail('inventory-read-failed'); }
     const github = await readGithub(spawn);
     // redaction before the hash, so the file on disk verifies
-    const record = redactor.logSafe(build({ cfactory, github, scopes: { cluster: scopes.cluster, p620: scopes.p620 }, factories, holds }));
+    const record = redactor.logSafe(build({ cfactory, github, scopes: { cluster: scopes.cluster, p620: scopes.p620 }, factories, holds,
+      approved: args['--after'] ? approved : null }));
     record.taken_at = new Date().toISOString();
     record.hash = hashOf(record);
     if (approved) {

@@ -2958,15 +2958,15 @@
     "semantic_hash": ""
   },
   "core/bin/e2e-inventory.js": {
-    "mtime": 1795786511.5258372,
-    "seen": 1795786748.2574162,
-    "ast_hash": "24841d5ab92f16c1d92a21ce33732797",
+    "mtime": 1795787813.6180055,
+    "seen": 1795787918.5564878,
+    "ast_hash": "dfac9eeb7b6b4d91ecf9e85f110085a5",
     "semantic_hash": ""
   },
   "core/test/e2e-inventory.test.js": {
-    "mtime": 1795786569.715893,
-    "seen": 1795786748.2575,
-    "ast_hash": "23a5f791046bbec9e28ca1756a625dfa",
+    "mtime": 1795787854.964984,
+    "seen": 1795787918.5565777,
+    "ast_hash": "a02ac3883b2bd7c3e5c8fc2de7ed2f21",
     "semantic_hash": ""
   },
   "intent/2026-11-27-60-e2e-repo-cleanup.md": {
@@ -2976,9 +2976,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-27-60-e2e-repo-cleanup.md": {
-    "mtime": 1795786610.2484434,
-    "seen": 1795786748.258284,
-    "ast_hash": "ccf06d908faaa92f2de51066809f3f78",
+    "mtime": 1795787867.9217052,
+    "seen": 1795787918.5574791,
+    "ast_hash": "f51e62d4c897370eefc1e752597bdc7c",
     "semantic_hash": ""
   },
   "spec/2026-11-27-60-e2e-repo-cleanup.md": {

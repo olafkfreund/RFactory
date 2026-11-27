@@ -1,7 +1,7 @@
 # Graph Report - RFactory-t60  (2026-11-27)
 
 ## Corpus Check
-- 328 files · ~501,875 words
+- 328 files · ~502,279 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 21 file(s) not represented in the graph (top: (none) 10, .nix 6, .css 4)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `38cc6248`
+- Built from commit: `bb5656e0`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 

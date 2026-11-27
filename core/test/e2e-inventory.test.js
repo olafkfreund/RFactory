@@ -154,6 +154,12 @@ test('hash ignores ordering and timestamp; compare names each changed fact', () 
   base.holds.releases.push(release('named', 10), { kind: 'named', github: path(11), by: 'owner', link: comment });
   base.scopes.cluster.push('scope-b', 'scope-a');
   base.scopes.p620.push('scope-d', 'scope-c');
+  base.cfactory.connections.push({ id: 2, provider: 'github', label: 'spare' });
+  base.github.repos.forEach((r) => {
+    r.branches.push({ name: 'dev', sha: 'b' });
+    r.issues.push({ number: 2, pull: true, state: 'closed', updated_at: '2026-11-27' });
+    r.hooks.push({ id: 2, host: 'other.example' });
+  });
   const first = build(base);
   const shuffled = clone(base);
   for (const list of [shuffled.cfactory.repositories, shuffled.cfactory.projects, shuffled.cfactory.connections,
@@ -164,6 +170,7 @@ test('hash ignores ordering and timestamp; compare names each changed fact', () 
   const again = build(shuffled);
   assert.equal(first.hash, again.hash);
   assert.equal(hashOf({ ...first, taken_at: 'another time' }), first.hash);
+  const comparisonBase = build(fixture());
   const changes = [
     [(f) => { f.cfactory.cards[0].repository_id = 11; }, 'E2E-10'],
     [(f) => { f.github.repos[0].pushed_at = 'tomorrow'; }, path(10).toLowerCase()],
@@ -176,8 +183,8 @@ test('hash ignores ordering and timestamp; compare names each changed fact', () 
   for (const [change, name] of changes) {
     const f = fixture(); change(f);
     const now = build(f);
-    assert.notEqual(now.hash, first.hash);
-    assert.ok(compare(first, now).some((line) => line.includes(name)), name);
+    assert.notEqual(now.hash, comparisonBase.hash);
+    assert.ok(compare(comparisonBase, now).some((line) => line.includes(name)), name);
   }
 });
 
@@ -264,7 +271,10 @@ function ghFake(f, over = {}) {
     setImmediate(() => {
       if (reply instanceof Error) return child.emit('error', reply);
       child.stdout.once('end', () => child.emit('close', reply?.exit ?? 0));
-      child.stdout.end(reply?.exit ? '' : typeof reply === 'string' ? reply : JSON.stringify(reply));
+      if (reply?.chunks) {
+        for (const chunk of reply.chunks) child.stdout.write(chunk);
+        child.stdout.end();
+      } else child.stdout.end(reply?.exit ? '' : typeof reply === 'string' ? reply : JSON.stringify(reply));
     });
     return child;
   };
@@ -348,6 +358,32 @@ test('main: the key is redacted from the output and the file still verifies', as
   assert.equal(again.code, 0);
 });
 
+test('main: case-insensitive e2e names are read and Markdown values stay on one line', async () => {
+  const f = world();
+  const t = setup(f);
+  const name = 'olafkfreund/E2E-20261127-p1-10';
+  const listing = f.github.known.map((fullName) => ghRow(fullName === path(10) ? name : fullName));
+  const branch = `/repos/${name}/branches?per_page=100`;
+  const r = await go(t, base(t), { f, over: {
+    '/user/repos?affiliation=owner&per_page=100': [listing],
+    [branch]: [[{ name: 'line\nbreak', commit: { sha: SHA } }]],
+  } });
+  assert.equal(r.code, 0);
+  assert.ok(r.gh.calls.some((call) => call.args[5] === branch));
+  const row = r.lines[0].split('\n').find((line) => line.includes('`olafkfreund/e2e-20261127-p1-10`'));
+  assert.ok(row?.includes('line?break'));
+});
+
+test('main: UTF-8 split between stdout chunks stays intact', async () => {
+  const t = setup();
+  const endpoint = `/repos/${path(10)}/branches?per_page=100`;
+  const json = Buffer.from(JSON.stringify([[{ name: 'café', commit: { sha: SHA } }]]));
+  const split = json.indexOf(Buffer.from('é')) + 1;
+  const r = await go(t, base(t), { over: { [endpoint]: { chunks: [json.subarray(0, split), json.subarray(split)] } } });
+  assert.equal(r.code, 0);
+  assert.ok(r.lines[0].includes('café'));
+});
+
 test('main: each failure returns 4 with one fixed error line and no --out file', async () => {
   const user = '/user';
   const repos = '/user/repos?affiliation=owner&per_page=100';
@@ -418,6 +454,21 @@ test('main --check --after: 0 when the remove sets are gone, 1 when one is still
   const after = ['--check', t.file('list.json'), '--holds', t.file('holds.json'), '--factories', t.file('factories.json'), '--after'];
   assert.deepEqual(await go(t, after, { f: world([]) }).then((r) => [r.code, r.lines]), [0, []]);
   assert.equal((await go(t, after, { f: world([12]) })).code, 1);
+});
+
+test('main --check --after: approved hold, release and archive targets may leave the fresh inventory', async () => {
+  const before = world();
+  before.holds.holds.push({ repository_id: 10, reason: 'campaign' });
+  before.holds.releases.push(release('named', 10));
+  before.holds.archive.push({ repository_id: 11, by: 'owner', link: comment });
+  const t = setup(before);
+  assert.equal((await go(t, base(t), { f: before })).code, 0);
+  const after = world([]);
+  after.github.known.push(path(11));
+  const rows = after.github.known.map((name) => ({ ...ghRow(name), archived: name === path(11) }));
+  const args = ['--check', t.file('list.json'), '--holds', t.file('holds.json'), '--factories', t.file('factories.json'), '--after'];
+  const result = await go(t, args, { f: after, over: { '/user/repos?affiliation=owner&per_page=100': [rows] } });
+  assert.deepEqual([result.code, result.lines], [0, []]);
 });
 
 test('main: bad arguments return 2', async () => {
