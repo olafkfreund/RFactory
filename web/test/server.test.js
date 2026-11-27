@@ -756,10 +756,11 @@ test('project lookups: the endpoint serves each turn its own repositories', asyn
   assert.deepEqual(await found(undefined), ['FCT-2']);
 });
 
-test('project approvals: approve, reject and stop need the project that may change things', async (t) => {
+const entriesOf = () => [{ id: 'x', project_id: ALPHA }, { id: 'y', project_id: BETA }, { id: 'old' }]; // an older entry has no project_id: it is the default repository's (ALPHA)
+test('project approvals: approve, reject and stop act on an entry of the requested project only', async (t) => {
   const done = [];
   const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
-  const manager = { list: () => ({}), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const manager = { list: () => ({ pending: entriesOf(), running: null, active: [], history: [] }), approve: act('approve'), reject: act('reject'), stop: act('stop') };
   const roles = rolesFor(ME, ME);
   const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
   const base = await a.get('/api/config');
@@ -775,22 +776,42 @@ test('project approvals: approve, reject and stop need the project that may chan
     });
     return r;
   };
-  const routes = ['actions/x/approve', 'actions/x/reject', 'shares/x/approve', 'shares/x/reject', 'shares/stop',
-    'investigations/x/approve', 'investigations/x/reject', 'investigations/stop'];
-  for (const route of routes) {
+  const routes = (id) => [`actions/${id}/approve`, `actions/${id}/reject`, `shares/${id}/approve`, `shares/${id}/reject`, 'shares/stop',
+    `investigations/${id}/approve`, `investigations/${id}/reject`, 'investigations/stop'];
+  for (const route of routes('x')) {
     assert.deepEqual(await send(`/api/${route}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }], route);
     assert.deepEqual(await send(`/api/${route}?project=${HIDDEN}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }]);
-    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }),
-      [403, { error: 'project-read-only', text: "Changes aren't available for this project yet." }]);
+    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }), [409, { error: 'not-this-project' }], route); // ALPHA's entry
   }
+  for (const route of routes('old')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'old' }), [409, { error: 'not-this-project' }], route);
   assert.deepEqual(done, []);
-  for (const route of routes) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
-  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x']]);
+  for (const route of routes('x')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
+  for (const route of routes('old')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'old' }))[0], 200, route);
+  for (const route of routes('y')) assert.equal((await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'y' }))[0], 200, route);
+  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x'], [ME, 'old'], [ME, 'old'], [ME, 'y'], [ME, 'y']]);
   await a.begin(ALPHA);
   a.w.fail = 'listProjects';
   assert.equal((await send(`/api/shares/stop?project=${ALPHA}`, { id: 'x' }))[0], 200); // the running call answers for itself
-  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'x' }))[0], 502);
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'y' }))[0], 502);
   await a.stop();
+});
+
+test('project approval lists show a project its own entries, in all three lists', async (t) => {
+  const mk = (project_id, id) => ({ id, ...(project_id ? { project_id } : {}) });
+  const rows = () => [mk(ALPHA, 'a'), mk(BETA, 'b'), mk(undefined, 'old'), { ...mk(BETA, 'log'), repository_id: 3 }];
+  const manager = { list: () => ({ pending: rows(), running: mk(BETA, 'b'), active: rows(), history: rows() }) };
+  const a = await projectApp(t, { roles: rolesFor(ME, ME), actions: manager, shares: manager, investigations: manager });
+  const ids = (list) => [list.pending, list.active, list.history].map((l) => l.map((e) => e.id));
+  for (const kind of ['actions', 'shares', 'investigations']) {
+    const alpha = (await a.reply(`/api/${kind}?project=${ALPHA}`))[1];
+    assert.deepEqual(ids(alpha), [['a', 'old'], ['a', 'old'], ['a', 'old']], kind);
+    assert.equal(alpha.running, null);
+    const beta = (await a.reply(`/api/${kind}?project=${BETA}`))[1];
+    assert.deepEqual(ids(beta), [['b', 'log'], ['b', 'log'], ['b', 'log']], kind);
+    assert.equal(beta.running.id, 'b');
+    assert.equal(beta.can_approve, true);
+  }
+  assert.equal((await a.reply(`/api/actions?project=${HIDDEN}`))[0], 403);
 });
 
 test('project lookups: GitHub only with the default repository, and a project turn never falls back to it', async (t) => {

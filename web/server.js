@@ -33,14 +33,7 @@ const HEADERS = {
 };
 const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
 
-// #52: the approval lists of a project without the default repository
-const EMPTY_LISTS = {
-  actions: { pending: [], history: [] },
-  shares: { pending: [], running: null, history: [] },
-  investigations: { pending: [], running: null, active: [], history: [] },
-};
 const refusal = (status, code) => Object.assign(new Error(code), { refusal: status });
-const CLOSED = "Changes aren't available for this project yet.";
 
 // #52: a project's repositories, joined by id; CFactory's two lists are sorted independently, so never zip them
 function repositoriesOf(project, repos) {
@@ -52,6 +45,19 @@ function repositoriesOf(project, repos) {
   });
   if (!joined.length) throw new Error('project-resolve-failed');
   return joined;
+}
+
+// #52: resolves a project afresh on every call (nothing is cached); the allowlist is checked before CFactory is asked
+function createBinder({ source, scope }) {
+  const allowed = new Set(scope.projects.allow.map((p) => p.id));
+  async function bind(id) {
+    if (!allowed.has(id)) throw refusal(403, 'project-not-allowed');
+    const project = (await source.listProjects()).find((p) => p.id === id);
+    if (!project) throw refusal(404, 'project-unknown');
+    return { projectId: project.id, name: project.name, repositories: repositoriesOf(project, await source.listRepositories()) };
+  }
+  const viewOf = (binding) => source.forRepositories(binding.repositories.map((r) => r.id), { name: binding.name });
+  return { bind, viewOf };
 }
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
@@ -100,29 +106,29 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
 
-  // nothing is cached: every start and read resolves the project again, and the allowlist is checked before CFactory is asked
-  async function bind(id) {
-    if (!allowed.has(id)) throw refusal(403, 'project-not-allowed');
-    const project = (await source.listProjects()).find((p) => p.id === id);
-    if (!project) throw refusal(404, 'project-unknown');
-    const repositories = repositoriesOf(project, await source.listRepositories());
-    return { projectId: project.id, name: project.name, repositories,
-      writable: repositories.some((r) => r.id === scope.source.repository_id) };
-  }
-  const viewOf = (binding) => source.forRepositories(binding.repositories.map((r) => r.id), { name: binding.name });
+  const { bind, viewOf } = allowed ? createBinder({ source, scope }) : {};
   const readView = async (query) => allowed ? viewOf(await bind(query.get('project'))) : source;
   const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
   const describe = (project, repos) => ({ id: project.id, name: project.name, slug: project.slug, repositories: repositoriesOf(project, repos) });
 
-  // #52: approve, reject and stop come from a project that may change things. The running call's frozen binding
+  // #52: an entry belongs to a project by its recorded project_id; an older entry has none and belongs to the project holding the default repository
+  const belongs = (entry, binding) => entry.project_id === undefined
+    ? binding.repositories.some((r) => r.id === scope.source.repository_id) : entry.project_id === binding.projectId;
+  const mine = (list, binding) => ({ ...list, ...Object.fromEntries(['pending', 'history', 'active'].filter((k) => k in list)
+    .map((k) => [k, list[k].filter((e) => belongs(e, binding))])), ...('running' in list ? { running: list.running && belongs(list.running, binding) ? list.running : null } : {}) });
+
+  // #52: approve, reject and stop act on an entry of the requested project only. The running call's frozen binding
   // answers for its own project, so a Stop does not depend on CFactory; any other is resolved afresh.
-  function decide(res, query, act) {
+  function decide(res, query, manager, entryId, act) {
     if (!allowed) return act();
     const id = query.get('project');
-    const running = call?.project?.id === id ? call.projectCall : null;
-    return Promise.resolve(running || bind(id)).then(({ writable }) => (writable ? act()
-      : json(res, 403, { error: 'project-read-only', text: CLOSED }))).catch(readFailed(res));
+    const running = call?.project?.id === id ? call.projectCall?.binding : null;
+    return Promise.resolve(running || bind(id)).then((binding) => {
+      const list = manager.list();
+      const entry = [...list.pending, ...(list.active || []), ...(list.running ? [list.running] : [])].find((e) => e.id === entryId);
+      return entry && !belongs(entry, binding) ? json(res, 409, { error: 'not-this-project' }) : act();
+    }).catch(readFailed(res));
   }
 
   async function listProjects() {
@@ -198,20 +204,19 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .finally(() => { busy = false; });
       return;
     }
-    // #52: a project sees the entries only when it holds the default repository, which every entry belongs to
-    const sendList = (kind, manager) => {
-      const reply = (writable) => json(res, 200, { ...(writable ? manager.list() : EMPTY_LISTS[kind]), can_approve: roles.has(email, 'approver') });
-      if (!allowed) return reply(true);
-      bind(query.get('project')).then((binding) => reply(binding.writable)).catch(readFailed(res));
+    const sendList = (manager) => {
+      const reply = (list) => json(res, 200, { ...list, can_approve: roles.has(email, 'approver') });
+      if (!allowed) return reply(manager.list());
+      bind(query.get('project')).then((binding) => reply(mine(manager.list(), binding))).catch(readFailed(res));
     };
-    if (actions && req.method === 'GET' && url === '/api/actions') return sendList('actions', actions);
+    if (actions && req.method === 'GET' && url === '/api/actions') return sendList(actions);
     const act = actions && req.method === 'POST' && /^\/api\/actions\/([\w-]{1,64})\/(approve|reject)$/.exec(url);
     if (act) {
       if (req.headers['x-rfactory-action'] !== '1') { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       let origin;
       try { origin = new URL(req.headers.origin).host; } catch { origin = null; }
       if (!origin || origin !== req.headers.host) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
-      readJson(req).then((body) => decide(res, query, () => {
+      readJson(req).then((body) => decide(res, query, actions, act[1], () => {
         if (!body || typeof body.hash !== 'string') return json(res, 400, { error: 'bad-request' });
         return actions[act[2]](act[1], email, body.hash).then(({ status, text, action }) => json(res, status, { text, ...(action ? { action } : {}) }),
           () => json(res, 500, { error: 'internal' }));
@@ -221,14 +226,14 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     // shares (#12) and investigations (#18) have the same routes and checks
     const approvals = { shares, investigations };
     const listed = req.method === 'GET' && /^\/api\/(shares|investigations)$/.exec(url);
-    if (listed && approvals[listed[1]]) return sendList(listed[1], approvals[listed[1]]);
+    if (listed && approvals[listed[1]]) return sendList(approvals[listed[1]]);
     const decision = req.method === 'POST' && /^\/api\/(shares|investigations)\/(?:([\w-]{1,64})\/(approve|reject)|(stop))$/.exec(url);
     if (decision && approvals[decision[1]]) {
       const [, kind, id, verb, stop] = decision;
       const manager = approvals[kind];
       if (!sameOrigin(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
       const reply = ({ status, text, share }) => json(res, status, { text, ...(share ? { share } : {}) });
-      readJson(req).then((body) => decide(res, query, () => {
+      readJson(req).then((body) => decide(res, query, manager, stop ? String(body?.id ?? '') : id, () => {
         // Stop carries the id it was shown for; a share needs it only with projects, so no id there matches nothing
         if (stop) {
           return manager.stop(email, decision[1] === 'shares' ? (allowed ? String(body?.id ?? '') : undefined) : body?.id)
@@ -332,7 +337,7 @@ function refuseKeyEnv(env) {
 
 // The record exists when writes, shares, investigations or lookups are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
-async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
+async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind }) {
   let actions = null, shares = null, investigations = null;
   if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled) return { actions, shares, investigations };
   const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
@@ -345,10 +350,10 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir }) {
   if (scope.writes_enabled) {
     const { createCfactoryWriter } = require('@rfactory/core/src/sinks/cfactory-write.js');
     const writer = createCfactoryWriter({ mcpUrl: scope.source.mcp_url, writeKeyFile: scope.source.write_key_file, redactor });
-    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true });
+    actions = require('./actions.js').createActionManager({ readSource: source, writer, brain, record, redactor, scope, roles, enabled: true, rebind });
     await actions.recover();
     if (scope.investigations_enabled) {
-      investigations = require('./investigations.js').createInvestigationManager({ readSource: source, writer, brain, shares, record, redactor, scope, roles, enabled: true });
+      investigations = require('./investigations.js').createInvestigationManager({ readSource: source, writer, brain, shares, record, redactor, scope, roles, enabled: true, rebind });
       await investigations.recover();
     }
   }
@@ -397,7 +402,8 @@ async function main() {
   await source.start();
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
-  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR });
+  const { actions, shares, investigations, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
+    rebind: scope.projects ? createBinder({ source, scope }).bind : undefined });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
