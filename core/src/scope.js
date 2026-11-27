@@ -81,7 +81,17 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       githubToken = fs.readFileSync(read.token_file, 'utf8').trim();
       if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
     }
-  } else if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
+  } else {
+    if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
+    if (Object.hasOwn(scope.source, 'token_file')) {
+      const tokenFile = scope.source.token_file;
+      if (typeof tokenFile !== 'string' || !path.isAbsolute(tokenFile)) throw new Error('invalid-scope');
+      const file = fs.statSync(tokenFile);
+      if (!file.isFile() || (file.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
+      githubToken = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
+    }
+  }
   if (scope.brain?.kind === 'claude-cli' &&
       (typeof scope.brain.home !== 'string' || !path.isAbsolute(scope.brain.home) ||
        !/^(?:[a-fA-F0-9]{64})?$/.test(scope.brain.approved_hash) ||

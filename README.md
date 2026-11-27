@@ -49,6 +49,32 @@ In a call the bot speaks a two- or three-sentence headline built from the counts
 
 Card descriptions, criteria, stage detail and comments appear only in the review. They never reach the AI, the call or the shared board. Stage results can come from another card with the same correlation key until olafkfreund/CFactory#583 is fixed; test cases, branches, pull requests, plan findings and pending approvals aren't in the card data yet.
 
+## Without the Factories
+
+RFactory can show a read-only standup of one GitHub repository with no Factory running. Put this in a scope file (the `brain` block is required but unused here):
+
+```json
+{
+  "name": "my-repo",
+  "source": {
+    "kind": "github",
+    "owner": "my-org",
+    "repo": "my-repo",
+    "token_file": "/run/secrets/github-token",
+    "project": { "owner": "my-org", "number": 1 }
+  },
+  "mapping": { "board": { "In Progress": "in_progress", "Blocked": "blocked", "Done": "done" } },
+  "brain": { "kind": "claude-cli", "home": "/var/lib/rfactory/claude", "approved_hash": "", "destination": "third-party" },
+  "writes_enabled": false
+}
+```
+
+Start `node web/server.js` with `RFACTORY_SCOPE_FILE` (that file), `RFACTORY_ALLOWED_EMAILS`, `GITHUB_MCP_SERVER_BIN` (the path to `github-mcp-server` 1.14.0) and `PORT`. The server listens on `127.0.0.1` and trusts the `X-Forwarded-Email` header, so it must sit behind the identity proxy (`deploy/oauth2-proxy.yaml`).
+
+The token is a fine-grained, read-only token for that one repository. It sits in a file with mode `0600`, and only the `github-mcp-server` child sees it.
+
+In this mode calls, the desktop, shares, lookups, changes and the review panel are off. The server refuses to start if calls, the desktop, shares, lookups or changes are switched on; the review panel has no switch and answers 404.
+
 ## How the bot hears
 
 During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
