@@ -296,6 +296,53 @@ test('github_read: 600-mode token is read after the CFactory key, into extras an
   } finally { f.cleanup(); }
 });
 
+test('GitHub token_file loads into secrets and extras after checking the file', () => {
+  const f = fixture();
+  const file = path.join(path.dirname(f.keyFile), 'scope.json');
+  const tokenFile = path.join(path.dirname(f.keyFile), 'github-token');
+  const token = 'synthetic-read-token';
+  const load = (secrets = [], extras = {}) => {
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    return loadScope(file, {}, secrets, extras);
+  };
+  try {
+    f.scope.source = { kind: 'github', owner: 'o', repo: 'r', token_file: tokenFile };
+    fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+    const secrets = [], extras = {};
+    assert.deepEqual(load(secrets, extras), f.scope);
+    assert.deepEqual(secrets, [token]);
+    assert.deepEqual(extras, { githubToken: token });
+
+    f.scope.source.token_file = 'relative/token';
+    assert.throws(() => load(), /invalid-scope/);
+    f.scope.source.token_file = tokenFile;
+    fs.chmodSync(tokenFile, 0o640);
+    const readFileSync = fs.readFileSync;
+    try {
+      fs.readFileSync = (name, ...args) => {
+        if (name === tokenFile) throw new Error('token read before mode check');
+        return readFileSync(name, ...args);
+      };
+      assert.throws(() => load(), /github-token-file-mode/);
+    } finally { fs.readFileSync = readFileSync; }
+    f.scope.source.token_file = path.dirname(tokenFile);
+    assert.throws(() => load(), /github-token-file-mode/);
+    f.scope.source.token_file = tokenFile;
+    fs.chmodSync(tokenFile, 0o600);
+    for (const bad of ['1234567', 'token with space']) {
+      fs.writeFileSync(tokenFile, bad);
+      assert.throws(() => load(), /invalid-github-token/);
+    }
+    delete f.scope.source.token_file;
+    const absentSecrets = [], absentExtras = {};
+    assert.deepEqual(load(absentSecrets, absentExtras), f.scope);
+    assert.deepEqual([absentSecrets, absentExtras], [[], {}]);
+    f.scope.writes_enabled = true;
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    assert.throws(() => loadScope(file, { RFACTORY_WRITES: 'on' }), /invalid-scope/);
+  } finally { f.cleanup(); }
+});
+
 test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
   const f = fixture();
   try {
@@ -318,4 +365,133 @@ test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
     f.scope.source = { kind: 'github', owner: 'o', repo: 'r' };
     assert.throws(() => f.load(), /invalid-projects/); // projects need a CFactory source
   } finally { f.cleanup(); }
+});
+
+test('agents: C1 rules, switch and output', () => {
+  const f = fixture();
+  try {
+    const dir = path.dirname(f.keyFile);
+    const agentKey = 'rfk_' + 'a'.repeat(32);
+    const keyPath = (n, text = agentKey, mode = 0o600) => {
+      const p = path.join(dir, `agent-${n}`);
+      fs.writeFileSync(p, `${text}\n`, { mode });
+      fs.chmodSync(p, mode);
+      return p;
+    };
+    const env = { RFACTORY_AGENTS: 'on' };
+    f.scope.projects = { allow: [{ id: 'repo:2' }, { id: 'repo:3' }] };
+    const entry = (over = {}) => ({ name: 'claude-code', scope: 'read', key_file: keyPath('claude-code'), projects: ['repo:2'], ...over });
+    const fails = (agents, code, e = env) => { f.scope.agents = agents; assert.throws(() => f.load([], e), new RegExp(`^Error: ${code}$`), JSON.stringify(agents)); };
+
+    f.scope.agents = [entry()];
+    const secrets = []; const extras = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    const scope = loadScope(path.join(dir, 'scope.json'), env, secrets, extras);
+    assert.deepEqual(scope.agents[0].projects, ['repo:2']);
+    assert.deepEqual(extras.agents, [{ name: 'claude-code', scope: 'read', projects: ['repo:2'], key: agentKey }]);
+    assert.deepEqual(secrets, [key, agentKey]);
+    assert.ok(!('key' in scope.agents[0]));
+
+    const second = keyPath('b', 'rfk_' + 'b'.repeat(32));
+    assert.equal(f.load([], env).source.repository_id, 2);
+    f.scope.agents = [entry(), entry({ name: 'b', key_file: second, projects: ['repo:3'] })];
+    assert.equal(f.load([], env).agents.length, 2);
+
+    for (const bad of [null, [], 'x', {}, Array.from({ length: 11 }, (_, i) => entry({ name: `a${i}` }))]) fails(bad, 'invalid-agents');
+    fails([entry({ extra: 1 })], 'invalid-agents');
+    fails([{ name: 'x', scope: 'read', key_file: keyPath('x'), projects: ['repo:2'], extra: 1 }].map(({ extra, ...o }) => { delete o.projects; return o; }), 'invalid-agents');
+    for (const name of ['', 'A', 'a_b', 'a'.repeat(33), 5]) fails([entry({ name })], 'invalid-agents');
+    fails([entry(), entry()], 'invalid-agents');
+    fails([entry({ scope: 'write' })], 'invalid-agents');
+    for (const projects of [[], 'repo:2', ['repo:9'], ['repo:2', 'repo:2']]) fails([entry({ projects })], 'invalid-agents');
+    fails([entry({ key_file: 'relative' })], 'invalid-agents');
+    fails([entry({ key_file: keyPath('loose', agentKey, 0o644) })], 'agent-key-file-mode');
+    fails([entry({ key_file: path.join(dir, 'missing-agent-key') })], 'agent-key-file-mode');
+    fails([entry({ key_file: dir })], 'agent-key-file-mode');
+    fails([entry({ key_file: keyPath('short', 'rfk_' + 'a'.repeat(31)) })], 'invalid-agent-key');
+    fails([entry({ key_file: keyPath('cf', key) })], 'invalid-agent-key');
+    fails([entry(), entry({ name: 'dup', key_file: keyPath('dup') })], 'invalid-agent-key');
+    fails([entry()], 'agents-enabled', {});
+    fails([entry()], 'agents-enabled', { RFACTORY_AGENTS: 'off' });
+
+    delete f.scope.agents;
+    assert.throws(() => f.load([], { RFACTORY_AGENTS: 'on' }), /agents-enabled-env/);
+    assert.ok(f.load([], { RFACTORY_AGENTS: 'off' }));
+    assert.ok(f.load([], {}));
+    delete f.scope.projects;
+    f.scope.agents = [entry()];
+    assert.throws(() => f.load([], env), /invalid-agents/); // agents need projects
+  } finally { f.cleanup(); }
+});
+
+test('projects.allow github_read: per-repository bindings, tokens after the key', () => {
+  const f = fixture();
+  try {
+    const dir = path.dirname(f.keyFile);
+    const tf = (n, text = `token-value-${n}`, mode = 0o600) => {
+      const file = path.join(dir, `gh-${n}`);
+      fs.writeFileSync(file, text, { mode });
+      fs.chmodSync(file, mode);
+      return file;
+    };
+    const bind = (n, extra = {}) => ({ repository_id: n, owner: 'olaf', repo: `r${n}`, token_file: tf(n), ...extra });
+    const id = '5d78d4b9-35f9-4445-92c1-78f3ff60a494';
+    f.scope.lookups_enabled = true;
+    f.scope.projects = { allow: [{ id, github_read: [bind(1), bind(3)] }, { id: 'repo:21', github_read: [bind(21)] }, { id: 'repo:9' }] };
+    const secrets = [], extras = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    loadScope(path.join(dir, 'scope.json'), {}, secrets, extras);
+    assert.deepEqual(secrets, [key, 'token-value-1', 'token-value-3', 'token-value-21']);
+    assert.deepEqual(extras, { githubTokens: { 1: 'token-value-1', 3: 'token-value-3', 21: 'token-value-21' } });
+    f.scope.projects.allow = [{ github_read: [{ owner: 'olaf', repo: 'r1', repository_id: 1, token_file: tf(1) }], id }];
+    assert.deepEqual(f.load(), f.scope);
+
+    const bad = [
+      [{ id, github_read: [bind(1)] }, { id: 'repo:5', github_read: [bind(1)] }], // repository twice
+      [{ id, github_read: [bind(1), bind(1)] }],
+      [{ id, github_read: [bind(2)] }], // the default repository, whose source.github_read is set
+      [{ id: 'repo:4', github_read: [bind(5)] }], // repo:<n> entry for another repository
+      [{ id, github_read: [] }], [{ id, github_read: Array.from({ length: 21 }, (_, i) => bind(100 + i)) }],
+      [{ id, github_read: [bind(1, { extra: 1 })] }], [{ id, github_read: [bind(1, { repository_id: '1' })] }],
+      [{ id, github_read: [bind(1, { owner: 'a/b' })] }], [{ id, github_read: [bind(1, { repo: '..' })] }],
+      [{ id, github_read: [bind(1, { token_file: 'relative' })] }], [{ id, github_read: [{ repository_id: 1, owner: 'o', repo: 'r' }] }],
+    ];
+    f.scope.source.github_read = { owner: 'o', repo: 'r', token_file: tf('d') };
+    for (const allow of bad) {
+      f.scope.projects = { allow };
+      assert.throws(() => f.load(), /invalid-projects/, JSON.stringify(allow));
+    }
+    delete f.scope.source.github_read;
+    f.scope.projects = { allow: [{ id, github_read: [bind(2)] }] };
+    assert.deepEqual(f.load(), f.scope); // without source.github_read the default repository may be bound here
+
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: tf(1, 'token-value-1', 0o644) }] }] };
+    assert.throws(() => f.load(), /github-token-file-mode/);
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: tf(1, 'short') }] }] };
+    assert.throws(() => f.load(), /invalid-github-token/);
+    // lookups off: a missing token file still loads, and no token is read
+    f.scope.lookups_enabled = false;
+    f.scope.projects = { allow: [{ id, github_read: [{ ...bind(1), token_file: path.join(dir, 'missing') }] }] };
+    const s2 = [], e2 = {};
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify(f.scope));
+    loadScope(path.join(dir, 'scope.json'), {}, s2, e2);
+    assert.deepEqual([s2, e2], [[key], {}]);
+  } finally { f.cleanup(); }
+});
+
+test('the README "Without the Factories" scope file loads', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');
+  const block = /## Without the Factories[\s\S]*?```json\n([\s\S]*?)\n```/.exec(readme)[1];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-readme-scope-'));
+  try {
+    const tokenFile = path.join(dir, 'github-token');
+    fs.writeFileSync(tokenFile, 'synthetic-readme-token\n', { mode: 0o600 });
+    const scope = JSON.parse(block);
+    scope.source.token_file = tokenFile;
+    const file = path.join(dir, 'scope.json');
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const extras = {};
+    assert.deepEqual(loadScope(file, {}, [], extras), scope);
+    assert.equal(extras.githubToken, 'synthetic-readme-token');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

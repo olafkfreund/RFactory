@@ -754,14 +754,18 @@ test('project lookups: the endpoint serves each turn its own repositories', asyn
     await client.close();
     return JSON.parse(result.content[0].text).result.map((c) => c.card_key);
   };
-  assert.deepEqual(await found(made.lookupsFor([1, 3])), ['FCT-1', 'FCT-3']);
+  assert.deepEqual(await found(made.lookupsFor({ projectId: 'project-a', name: 'Project A',
+    repositories: [{ id: 1, path: 'o/r1' }, { id: 3, path: 'o/r3' }] }).lookups), ['FCT-1', 'FCT-3']);
   assert.deepEqual(await found(undefined), ['FCT-2']);
 });
 
-test('project approvals: approve, reject and stop need the project that may change things', async (t) => {
+const entriesOf = () => [{ id: 'x', project_id: ALPHA }, { id: 'y', project_id: BETA }, { id: 'old' }]; // an older entry has no project_id: it is the default repository's (ALPHA)
+test('project approvals: approve, reject and stop act on an entry of the requested project only', async (t) => {
   const done = [];
   const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
-  const manager = { list: () => ({}), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const manager = { list: (includeExpired) => ({ pending: [...entriesOf(), ...(includeExpired ? [{ id: 'stale', project_id: ALPHA }] : [])],
+    running: { id: 'log', project_id: BETA, repository_id: 3 }, active: [], history: [] }),
+  approve: act('approve'), reject: act('reject'), stop: act('stop') };
   const roles = rolesFor(ME, ME);
   const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
   const base = await a.get('/api/config');
@@ -777,22 +781,48 @@ test('project approvals: approve, reject and stop need the project that may chan
     });
     return r;
   };
-  const routes = ['actions/x/approve', 'actions/x/reject', 'shares/x/approve', 'shares/x/reject', 'shares/stop',
-    'investigations/x/approve', 'investigations/x/reject', 'investigations/stop'];
-  for (const route of routes) {
+  const routes = (id) => [`actions/${id}/approve`, `actions/${id}/reject`, `shares/${id}/approve`, `shares/${id}/reject`, 'shares/stop',
+    `investigations/${id}/approve`, `investigations/${id}/reject`, 'investigations/stop'];
+  for (const route of routes('x')) {
     assert.deepEqual(await send(`/api/${route}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }], route);
     assert.deepEqual(await send(`/api/${route}?project=${HIDDEN}`, { hash: 'h', id: 'x' }), [403, { error: 'project-not-allowed' }]);
-    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }),
-      [403, { error: 'project-read-only', text: "Changes aren't available for this project yet." }]);
+    assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }), [409, { error: 'not-this-project' }], route); // ALPHA's entry
   }
+  for (const route of routes('old')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'old' }), [409, { error: 'not-this-project' }], route);
+  for (const route of routes('stale')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'stale' }),
+    [409, { error: 'not-this-project' }], route);
   assert.deepEqual(done, []);
-  for (const route of routes) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
-  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x']]);
+  for (const route of routes('x')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
+  for (const route of routes('old')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'old' }))[0], 200, route);
+  for (const route of routes('y')) assert.equal((await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'y' }))[0], 200, route);
+  assert.deepEqual(done.filter((d) => d[0] === 'stop').map((d) => d.slice(1)), [[ME, 'x'], [ME, 'x'], [ME, 'old'], [ME, 'old'], [ME, 'y'], [ME, 'y']]);
+  // a running log share, opened by BETA's investigation: stopped from BETA's page only
+  assert.deepEqual(await send(`/api/shares/stop?project=${ALPHA}`, { id: 'log' }), [409, { error: 'not-this-project' }]);
+  assert.equal(done.length, 24); // nothing reached the manager
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'log' }))[0], 200);
   await a.begin(ALPHA);
   a.w.fail = 'listProjects';
   assert.equal((await send(`/api/shares/stop?project=${ALPHA}`, { id: 'x' }))[0], 200); // the running call answers for itself
-  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'x' }))[0], 502);
+  assert.equal((await send(`/api/shares/stop?project=${BETA}`, { id: 'y' }))[0], 502);
   await a.stop();
+});
+
+test('project approval lists show a project its own entries, in all three lists', async (t) => {
+  const mk = (project_id, id) => ({ id, ...(project_id ? { project_id } : {}) });
+  const rows = () => [mk(ALPHA, 'a'), mk(BETA, 'b'), mk(undefined, 'old'), { ...mk(BETA, 'log'), repository_id: 3 }];
+  const manager = { list: () => ({ pending: rows(), running: mk(BETA, 'b'), active: rows(), history: rows() }) };
+  const a = await projectApp(t, { roles: rolesFor(ME, ME), actions: manager, shares: manager, investigations: manager });
+  const ids = (list) => [list.pending, list.active, list.history].map((l) => l.map((e) => e.id));
+  for (const kind of ['actions', 'shares', 'investigations']) {
+    const alpha = (await a.reply(`/api/${kind}?project=${ALPHA}`))[1];
+    assert.deepEqual(ids(alpha), [['a', 'old'], ['a', 'old'], ['a', 'old']], kind);
+    assert.equal(alpha.running, null);
+    const beta = (await a.reply(`/api/${kind}?project=${BETA}`))[1];
+    assert.deepEqual(ids(beta), [['b', 'log'], ['b', 'log'], ['b', 'log']], kind);
+    assert.equal(beta.running.id, 'b');
+    assert.equal(beta.can_approve, true);
+  }
+  assert.equal((await a.reply(`/api/actions?project=${HIDDEN}`))[0], 403);
 });
 
 test('project lookups: GitHub only with the default repository, and a project turn never falls back to it', async (t) => {
@@ -804,9 +834,14 @@ test('project lookups: GitHub only with the default repository, and a project tu
     key: 'k', redactor: makeRedactor([]), token: 'token-value', createSource });
   t.after(() => made.endpoint.close());
   const ctx = (extra) => ({ project: { ...made.project, ...extra }, tools: ['find_cards', 'get_issue'] });
-  assert.deepEqual(made.lookupsFor([1, 2]).tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
-  assert.match(made.lookupsFor([2]).tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
-  assert.deepEqual(made.lookupsFor([3]).tools(ctx()).map((x) => x.name), ['find_cards']);
+  const bound = (ids) => ({ projectId: 'project-a', name: 'Project A', repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
+  const both = made.lookupsFor(bound([1, 2]));
+  assert.deepEqual(both.githubs.map((g) => g.repositoryId), [2]);
+  assert.deepEqual(both.lookups.tools(ctx()).map((x) => x.name), ['find_cards', 'get_issue']);
+  assert.match(made.lookupsFor(bound([2])).lookups.tools(ctx()).at(-1).description, /GitHub repository o\/r2/);
+  const other = made.lookupsFor(bound([3]));
+  assert.deepEqual(other.githubs, []);
+  assert.deepEqual(other.lookups.tools(ctx()).map((x) => x.name), ['find_cards']);
   const sdk = (name) => require(require.resolve(`@modelcontextprotocol/sdk/${name}`, { paths: [path.dirname(require.resolve('@rfactory/core/src/scope.js'))] }));
   const { Client } = sdk('client/index.js');
   const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
@@ -932,4 +967,186 @@ test('composeWrites with only notes on builds the record and the notes manager, 
     const off = await composeWrites({ scope: { ...scope, notes_enabled: false }, source, brain, redactor: makeRedactor([]), roles: rolesFor(ME, ME), dir });
     assert.equal(off.notes ?? null, null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('project GitHub bindings match each repository, ignore mismatches and duplicate names, and never fall back', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const bindings = (github_read) => ({ allow: [{ id: 'a', github_read }] });
+  const scope = { lookups_enabled: true, source: { repository_id: 9, mcp_url: 'x' }, projects: bindings([
+    { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'Owner', repo: 'Two' }]) };
+  const createSource = () => ({ start: async () => {}, forRepositories: (ids) => ({ ids }) });
+  const made = await composeLookups({ scope, key: 'k', redactor: makeRedactor([]), tokens: { 1: 'token-one', 2: 'token-two' }, createSource });
+  t.after(() => made.endpoint.close());
+  const binding = { projectId: 'a', repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'OWNER/TWO' }] };
+  const fetcher = globalThis.fetch, requested = [];
+  globalThis.fetch = async (url, init) => {
+    requested.push([String(url), init.headers.Authorization]);
+    const pathname = new URL(url).pathname;
+    const data = pathname.endsWith('/commits/main') ? { sha: 'a'.repeat(40) } : pathname.endsWith('/issues/7')
+      ? { title: 'issue seven', state: 'open' } : { default_branch: 'main' };
+    return new Response(JSON.stringify(data));
+  };
+  try {
+    const selected = made.lookupsFor(binding);
+    assert.deepEqual(selected.githubs.map((g) => g.repositoryId), [1, 2]);
+    assert.equal(selected.lookups.tools({ project: { github: null, githubs: selected.githubs }, tools: ['get_issue'] }).length, 1);
+    const controller = new AbortController();
+    const ctx = { project: { bound: true, github: null, githubs: selected.githubs }, tools: ['get_issue'],
+      signal: controller.signal, reads: [] };
+    for (const repo of ['owner/one', 'owner/two']) await selected.lookups.call(ctx, 'get_issue', { number: 7, repo });
+    assert.deepEqual(ctx.reads.map((r) => r.repo), ['Owner/One', 'Owner/Two']);
+    assert.deepEqual(requested.map(([, auth]) => auth),
+      ['Bearer token-one', 'Bearer token-one', 'Bearer token-one', 'Bearer token-two', 'Bearer token-two', 'Bearer token-two']);
+    assert.ok(requested.slice(0, 3).every(([url]) => url.includes('/Owner/One')));
+    assert.ok(requested.slice(3).every(([url]) => url.includes('/Owner/Two')));
+  } finally { globalThis.fetch = fetcher; }
+  const errors = []; const original = console.error;
+  console.error = (line) => errors.push(line);
+  try {
+    const unmatched = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'other/repo' }] });
+    assert.deepEqual(unmatched.githubs, []);
+    assert.deepEqual(unmatched.lookups.tools({ project: { github: null, githubs: [] }, tools: ['get_issue', 'find_cards'] }).map((x) => x.name), ['find_cards']);
+    const duplicate = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] });
+    assert.deepEqual(duplicate.githubs.map((g) => g.repositoryId), [1]); // only the matching binding survives
+    const misconfigured = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => misconfigured.endpoint.close());
+    assert.deepEqual(misconfigured.lookupsFor(binding).githubs.map((g) => g.repositoryId), [1]);
+    const sameName = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => sameName.endpoint.close());
+    assert.deepEqual(sameName.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] }).githubs, []);
+  } finally { console.error = original; }
+  assert.ok(errors.length >= 3);
+  assert.ok(errors.every((line) => /^rfactory-web: github-binding-unmatched [12]$/.test(line)));
+});
+
+// slice web-github (#2): a GitHub source gives the older reply, redacted, and nothing else
+const SECRET = 'planted-secret-value-123';
+const ghItems = [
+  { id: 'o/r#1', kind: 'issue', title: 'one', state: 'done', evidence: [], updated_at: '2026-01-01' },
+  { id: 'o/r#2', kind: 'issue', title: 'two', state: 'in_progress', evidence: [], updated_at: '2026-01-03' },
+  { id: 'o/r#3', kind: 'issue', title: 'three', state: 'blocked', evidence: [] },
+  { id: 'o/r#4', kind: 'issue', title: 'four', state: 'blocked', evidence: [] },
+  { id: 'o/r#5', kind: 'issue', title: 'five', state: 'left', evidence: [] },
+  { id: 'o/r#6', kind: 'issue', title: 'six', state: 'unknown', evidence: [] },
+];
+const ghSource = (over = {}) => {
+  const calls = [];
+  return { calls, kind: 'github', snapshot: async (...args) => { calls.push(args);
+    return { items: ghItems, fetched_at: 'F', newest_update: '2026-01-03', truncated: false, ...over }; } };
+};
+const GH_KEYS = ['counts', 'destination', 'fetched_at', 'items', 'newest_update', 'summary', 'summary_error', 'truncated', 'unknown'];
+
+test('GitHub standup: the older layout, the fixed sentence, no arguments taken from the request', async (t) => {
+  const gh = ghSource();
+  const get = await start(t, { source: gh, redactor: makeRedactor([]) });
+  const r = await get('/api/standup', { method: 'POST' });
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.deepEqual(Object.keys(body).sort(), GH_KEYS);
+  assert.deepEqual(body.unknown.map((i) => i.id), ['o/r#6']);
+  assert.equal(body.summary, 'Repository: 1 done, 1 in progress, 2 blocked, 1 left, 1 unknown.');
+  assert.deepEqual([body.fetched_at, body.truncated, body.summary_error, body.destination], ['F', false, null, 'the server']);
+  const other = await get('/api/standup?project=x&repo=o/other', { method: 'POST', body: JSON.stringify({ repo: 'o/other', project: 'y' }) });
+  assert.deepEqual(await other.json(), body);
+  assert.deepEqual(gh.calls, [[], []]);
+  const cut = await start(t, { source: ghSource({ truncated: true }), redactor: makeRedactor([]) });
+  assert.equal((await (await cut('/api/standup', { method: 'POST' })).json()).summary,
+    'Repository: 1 done, 1 in progress, 2 blocked, 1 left, 1 unknown. The repository has more items than were read.');
+});
+
+test('GitHub standup: planted secrets are redacted; source errors give only codes', async (t) => {
+  const leaky = { ...ghSource(), snapshot: async () => ({ items: [{ ...ghItems[0], title: `t ${SECRET}`, evidence: [`e ${SECRET}`] }, ghItems[5]],
+    fetched_at: 'F', newest_update: null, truncated: false }) };
+  const get = await start(t, { source: leaky, redactor: makeRedactor([SECRET]) });
+  const text = await (await get('/api/standup', { method: 'POST' })).text();
+  assert.ok(!text.includes(SECRET));
+  assert.match(text, /t \[redacted\]/);
+  assert.match(text, /e \[redacted\]/);
+  for (const [message, code] of [['source-timeout', 'source-timeout'], [`boom ${SECRET}`, 'source-error']]) {
+    const bad = await start(t, { source: { kind: 'github', snapshot: async () => { throw new Error(message); } }, redactor: makeRedactor([SECRET]) });
+    const r = await bad('/api/standup', { method: 'POST' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: code });
+  }
+});
+
+test('GitHub app: review, call, approval routes are 404 and the source is never touched; config says github', async (t) => {
+  const boom = () => { throw new Error('touched'); };
+  const gh = { kind: 'github', snapshot: boom, standupData: boom, reviewData: boom };
+  const get = await start(t, { source: gh, redactor: makeRedactor([]) });
+  for (const p of ['/api/review', '/api/review/KEY-1', '/api/review/%00']) assert.equal((await get(p)).status, 404, p);
+  assert.equal((await get('/api/review', {}, 'x@example.com')).status, 403);
+  assert.equal((await get('/api/review', {}, null)).status, 401);
+  for (const p of ['/api/actions', '/api/shares', '/api/investigations']) assert.equal((await get(p)).status, 404, p);
+  assert.equal((await get('/api/call', { method: 'POST', body: '{}' })).status, 404);
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: '', projects: false, source: 'github' });
+  const cf = await start(t, { source, brain: fakeBrain });
+  assert.ok(!('source' in await (await cf('/api/config')).json()));
+});
+
+test('composeStandalone refuses each CFactory switch and a missing token, and returns the started source', async () => {
+  const { composeStandalone } = require('../server.js');
+  const made = [];
+  const createSource = (o) => { made.push(o); return { started: false, async start() { this.started = true; } }; };
+  const ok = { scope: {}, token: 'tok-12345678', env: { GITHUB_MCP_SERVER_BIN: '/bin/x' }, createSource };
+  for (const bad of [{ scope: { shares_enabled: true } }, { scope: { lookups_enabled: true } },
+    { env: { RFACTORY_CALLS: '1' } }, { env: { RFACTORY_DESKTOP: '1' } }]) {
+    await assert.rejects(composeStandalone({ ...ok, ...bad }), /^Error: unsupported-scope$/);
+  }
+  await assert.rejects(composeStandalone({ ...ok, token: '' }), /^Error: github-token-missing$/);
+  assert.equal(made.length, 0);
+  const source = await composeStandalone(ok);
+  assert.equal(source.started, true);
+  assert.deepEqual([made[0].bin, made[0].token], ['/bin/x', 'tok-12345678']);
+});
+
+test('main() starts a GitHub scope with the fake MCP binary; a failing start-up leaks no token', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-github-'));
+  const saved = { ...process.env };
+  const stderr = process.stderr.write;
+  t.after(() => {
+    process.stderr.write = stderr;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const token = 'synthetic-web-token-9876';
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+  const scopeFile = path.join(dir, 'scope.json');
+  fs.writeFileSync(scopeFile, JSON.stringify({ name: 'gh', source: { kind: 'github', owner: 'o', repo: 'r', token_file: tokenFile },
+    brain: { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' }, writes_enabled: false }));
+  const recorded = require('../../core/test/fixtures/github-tools-1.14.0.json');
+  let n = 0;
+  const fakeBin = (config) => {
+    const bin = path.join(dir, `fake-${n++}.js`);
+    fs.writeFileSync(bin, `#!${process.execPath}\nrequire(${JSON.stringify(path.join(__dirname, '../../core/test/fake-github-mcp.js'))}).run(${JSON.stringify({ tools: recorded, results: { list_issues: { issues: [] }, list_pull_requests: [] }, ...config })});\n`, { mode: 0o755 });
+    return bin;
+  };
+  Object.assign(process.env, { RFACTORY_SCOPE_FILE: scopeFile, RFACTORY_ALLOWED_EMAILS: ME, PORT: '0', GITHUB_MCP_SERVER_BIN: fakeBin({}) });
+  for (const k of ['RFACTORY_APPROVERS', 'RFACTORY_ADMINS', 'RFACTORY_CALLS', 'RFACTORY_DESKTOP']) delete process.env[k];
+  const server = await require('../server.js').main();
+  try {
+    await new Promise((r) => (server.listening ? r() : server.once('listening', r)));
+    const url = `http://127.0.0.1:${server.address().port}/api/standup`;
+    const r = await fetch(url, { method: 'POST', headers: { 'X-Forwarded-Email': ME } });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(body.fetched_at && body.truncated === false);
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'X-Forwarded-Email': 'x@example.com' } })).status, 403);
+  } finally { await new Promise((r) => server.close(r)); }
+  let written = '';
+  process.stderr.write = (chunk, ...rest) => { written += chunk; return stderr.call(process.stderr, chunk, ...rest); };
+  const failingPidFile = path.join(dir, 'failing-child.pid');
+  process.env.GITHUB_MCP_SERVER_BIN = fakeBin({ tools: [], stderrToken: true, pidFile: failingPidFile });
+  const failure = await require('../server.js').main().then(() => null, (e) => e);
+  process.stderr.write = stderr;
+  assert.ok(failure, 'start-up must reject');
+  assert.match(String(failure.message), /missing tool/);
+  assert.equal(fs.existsSync(failingPidFile), true, 'start-up reached the child');
+  assert.ok(!String(failure.message).includes(token) && !written.includes(token));
 });

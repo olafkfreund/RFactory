@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   render, handleCall, renderFooter, loadShares, loadInvestigations,
-  renderNotes, loadNotes, renderReview, loadReview, renderReviewCard, loadReviewCard, openPage,
+  renderNotes, loadNotes, renderReview, loadReview, loadActions, renderReviewCard, loadReviewCard, openPage,
 } = require('../public/app.js');
 
 class Node {
@@ -408,6 +408,44 @@ test('lookup limits and sources: links go to CFactory or the bound repository on
   assert.equal(byId['call-limits'].textContent, 'lookup budget used');
 });
 
+test('#52: source links per repository; a repo outside githubs gets none; no githubs keeps the bound repository', () => {
+  const { doc, byId } = shim();
+  byId['call-log'] = new Node('ul');
+  byId['call-limits'] = new Node('p');
+  const limits = { type: 'limits', budget_usd: 2, spent_usd: 0, answer_seconds: 90, lookups_per_question: 8, exhausted: false, github: null };
+  const hrefs = () => byId['call-log'].all().filter((n) => n.tag === 'a').map((n) => n.attrs.href);
+  const sources = [{ kind: 'issue', ref: 3, repo: 'o/a' }, { kind: 'issue', ref: 4, repo: 'o/b' }, { kind: 'issue', ref: 5, repo: 'x/evil' }, { kind: 'pr', ref: 6 }];
+  handleCall(doc, { ...limits, githubs: ['o/a', 'o/b'] });
+  handleCall(doc, { type: 'answer', text: 'x', sources });
+  assert.deepEqual(hrefs(), ['https://github.com/o/a/issues/3', 'https://github.com/o/b/issues/4']);
+  const legacy = shim();
+  legacy.byId['call-log'] = new Node('ul');
+  handleCall(legacy.doc, { ...limits, github: 'o/a' }); // no projects block: no githubs
+  handleCall(legacy.doc, { type: 'answer', text: 'x', sources: [{ kind: 'issue', ref: 3 }] });
+  assert.deepEqual(legacy.byId['call-log'].all().filter((n) => n.tag === 'a').map((n) => n.attrs.href), ['https://github.com/o/a/issues/3']);
+});
+
+test('#52: an action item shows its repository; a 409 not-this-project says so', async () => {
+  const { doc, byId } = shim();
+  for (const id of ['actions-pending', 'actions-history']) byId[id] = new Node('ul');
+  byId['actions-count'] = new Node('span'); byId.actions = new Node('section'); byId.history = new Node('section');
+  byId['actions-status'] = new Node('p');
+  const action = { id: 'a9', hash: 'h', state: 'pending', action: 'create_card', args: {}, proposed_by: 'x', expires_at: new Date(Date.now() + 600000).toISOString(), repository_path: 'o/<b>' };
+  const other = { ...action, id: 'a10', repository_path: undefined };
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ pending: [action, other], history: [], can_approve: true }) });
+  try { await loadActions(doc); } finally { global.fetch = realFetch; }
+  const text = byId['actions-pending'].textContent;
+  assert.ok(text.includes('Repository: o/<b>'));
+  assert.equal(text.split('Repository:').length, 2);
+  global.fetch = async () => ({ ok: false, status: 409, json: async () => ({ error: 'not-this-project' }) });
+  try {
+    byId['actions-pending'].all().find((n) => n.tag === 'button' && n.textContent === 'Approve').listeners.click();
+    await settle();
+  } finally { global.fetch = realFetch; }
+  assert.equal(byId['actions-status'].textContent, "This belongs to another project's call.");
+});
+
 test('a redacted or comma-holding file source never gets a wrong link', async () => {
   const { sourceUrl } = require('../public/app.js');
   assert.equal(sourceUrl('o/r', { kind: 'file', ref: 'cfg/[redacted].env' }), null);
@@ -421,7 +459,7 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
   const { doc, byId } = shim();
-  for (const id of ['run', 'status', 'stale', 'summary-card', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
+  for (const id of ['run', 'status', 'stale', 'summary-card', 'call', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
     'share', 'share-list', 'investigation', 'investigation-list', 'notes', 'notes-list', 'notes-status']) byId[id] = new Node('x');
   byId['call-leave'].disabled = true;
@@ -527,15 +565,19 @@ test('without a projects block the page asks and streams as before', async (t) =
 });
 
 test('decisions carry the project, a share Stop its id, and a link slug is encoded', async (t) => {
-  const p = await projectPage(t, '/p/alpha');
+  const denied = [409, { error: 'not-this-project' }];
+  const p = await projectPage(t, '/p/alpha', { routes: {
+    '/api/shares/stop?project=id-a': denied, '/api/investigations/stop?project=id-a': denied } });
   const click = async (list, label) => { await p.byId[list].all().find((n) => n.tag === 'button' && n.textContent === label).listeners.click(); await settle(); };
   for (const id of ['actions-status', 'share-status', 'investigation-status']) p.byId[id] = new Node('p');
   handleCall(p.doc, { type: 'share-updated', share: { id: 's1', state: 'running' } });
   await click('share-list', 'Stop');
   assert.deepEqual(p.requests.at(-1), ['POST', '/api/shares/stop?project=id-a', { id: 's1' }]);
+  assert.equal(p.byId['share-status'].textContent, "This belongs to another project's call.");
   handleCall(p.doc, { type: 'investigation-updated', investigation: { id: 'i1', state: 'running' } });
   await click('investigation-list', 'Stop');
   assert.deepEqual(p.requests.at(-1), ['POST', '/api/investigations/stop?project=id-a', { id: 'i1' }]);
+  assert.equal(p.byId['investigation-status'].textContent, "This belongs to another project's call.");
   const odd = await projectPage(t, '/p/a&slug=b');
   assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
   const broken = await projectPage(t, '/p/%E0%A4%A');
@@ -760,3 +802,24 @@ test('notes panel: hidden on 404, member sees notes and no buttons, approver see
   }
 });
 
+// slice web-github (#2): the page in GitHub mode asks only for the standup
+test('GitHub mode: no call panel, no streams, only /api/config-driven standup requests', async (t) => {
+  const p = await projectPage(t, '/', { config: { source: 'github', projects: false },
+    routes: { '/api/standup': [200, { ...base, items: [], unknown: [], summary: 'Repository: 0 done.' }] } });
+  assert.equal(p.byId.call.hidden, true);
+  assert.deepEqual(p.requests, [['POST', '/api/standup']]);
+  await p.click('run');
+  assert.deepEqual(p.requests, [['POST', '/api/standup'], ['POST', '/api/standup']]);
+  assert.equal(p.streams.length, 0);
+});
+
+test('GitHub reply renders the five lists, hides the CFactory sections and shows the summary', () => {
+  const { doc, byId } = shim();
+  for (const id of ['stale', 'summary-card']) byId[id] = new Node('x');
+  const items = [card({ id: 'o/r#1', title: 'one', state: 'done' }), card({ id: 'o/r#2', title: 'two', state: 'in_progress' }),
+    card({ id: 'o/r#3', state: 'blocked' }), card({ id: 'o/r#4', state: 'left' }), card({ id: 'o/r#5', state: 'unknown' })];
+  render(doc, { ...base, items, unknown: [items[4]], counts: {}, truncated: false, summary: 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.', summary_error: null, destination: 'the server' });
+  for (const s of ['done', 'in_progress', 'blocked', 'left', 'unknown']) assert.ok(byId[s].all().some((n) => n.tag === 'li' && n.textContent !== 'None'), s);
+  for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(byId[s].hidden, true, s);
+  assert.equal(byId.summary.textContent, 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
+});

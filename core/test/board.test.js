@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { makeRedactor } = require('../src/redact.js');
 const { projectBoard } = require('../src/share/board.js');
 const { createCfactorySource } = require('../src/sources/cfactory.js');
+const { encode } = require('../../desktop/runner/protocol.js');
 
 const repos = { default_repository_id: 1, repositories: [
   { id: 1, project: 'owner/default', is_default: true },
@@ -28,6 +29,30 @@ test('boardView reads cards and repositories within one budget and projects only
   assert.deepEqual(result.cards.map((item) => item.key), ['OWN', 'FALLBACK']);
   assert.deepEqual(calls.map((call) => call.name).sort(), ['cfactory_list_cards', 'cfactory_list_git_repositories']);
   assert.ok(calls.every((call) => Object.keys(call.args).length === 0));
+});
+
+test('project board includes both repositories, excludes deleted and mismatched cards, and fits the guest frame', async () => {
+  const cards = [
+    card('A', 'ready', { repository_id: 1, title: 'First', issue_ref: 'owner/default#1' }),
+    card('B', 'ready', { title: 'ø'.repeat(120), issue_ref: 'owner/board#2' }),
+    card('SECRET', 'ready', { title: 'password: private', issue_ref: 'owner/board#4' }),
+    card('DELETED', 'ready', { deleted_at: 'now' }),
+    card('MISMATCH', 'ready', { issue_ref: 'owner/default#3' }),
+  ];
+  const client = { async callTool({ name }) { return { content: [{ text: JSON.stringify(name === 'cfactory_list_cards' ? { cards } : repos) }] }; } };
+  const source = createCfactorySource({ client, repositoryId: 1, redactor });
+  const result = await source.forRepositories([1, 2], { name: 'Both' }).boardView();
+  assert.equal(result.project, 'Both');
+  assert.deepEqual(result.cards.map((item) => [item.key, item.title.slice(0, 10)]),
+    [['A', '[default] '], ['B', '[board] øø'], ['SECRET', '[board] [t']]);
+  assert.equal(result.cards[2].title, '[board] [title hidden]');
+  assert.ok(result.cards.every((item) => Array.from(item.title).length <= 120));
+  assert.equal(Array.from(result.cards[1].title).length, 120);
+  const frame = encode({ type: 'view-open', share_id: 'share', nonce: 'nonce', view: 'board', data: result });
+  assert.equal(frame.readUInt32BE(0), frame.length - 4);
+  const one = await source.forRepositories([2]).boardView();
+  assert.equal(JSON.stringify(one), JSON.stringify(projectBoard(cards.filter((item) => ['B', 'SECRET'].includes(item.card_key)), repos, 2,
+    'owner/board', redactor, one.at)));
 });
 
 test('projection includes only approved fields and valid types', () => {
