@@ -6,7 +6,7 @@ During a call, RFactory uses exactly one hearing source: the meeting platform's 
 
 One source is chosen when a call starts and stays fixed for that call:
 
-- **Captions (`platform`)**: the bot reads the platform's live captions (`call.on('caption')`) and forwards them to the call manager. The page shows `Hearing: captions`. Any `audio` messages from the child process are ignored by the manager. On Teams in a desktop VM, the guest agent injects `TEAMS_CAPTIONS` only when `RFACTORY_LISTEN` is not `'audio'`.
+- **Captions (`platform`)**: the bot reads the platform's live captions (`call.on('caption')`) and forwards them to the call manager. The page shows `Hearing: captions`; on Meet it shows `Hearing: captions are not on yet; Factory cannot hear` until captions are confirmed, then `Hearing: captions`. Any `audio` messages from the child process are ignored by the manager. On Teams in a desktop VM, the guest agent injects `TEAMS_CAPTIONS` only when `RFACTORY_LISTEN` is not `'audio'`.
 - **Own transcription (`audio`)**: the bot does not subscribe to platform captions, and the call manager ignores any caption `heard` lines. Instead:
   1. The bot installs the page-to-Node audio bridge (`bot/stt-bridge.js`) and starts `@vibeconferencing/calls`'s `sttTap` on the call's media page, receiving 16 kHz mono 16-bit PCM chunks from up to 4 concurrent audio streams.
   2. Before feeding audio to `SpeechGate`, the bot cuts out any samples whose capture time falls inside a bot speech playback window (opened immediately before `call.speak()` and closed 800 ms after playback ends, cancels, or fails). Because echo is removed per sample before the gate, the gate's loudness estimate is not skewed by the bot's own voice.
@@ -14,6 +14,29 @@ One source is chosen when a call starts and stays fixed for that call:
   4. The call manager reassembles segments (up to 25 s / 800,000 bytes / 26 pieces per segment, at most 2 incomplete segments, and at most 2 transcriptions in flight per call) and sends each segment as a 16 kHz mono WAV to `rfactory-stt` with a 10 s timeout.
   5. **Settled turns**: the manager keeps segments in capture order (`seg`) and waits until 1.0 s has passed since the last segment's `end` with no new segment started and all in-flight segments for that turn completed. It then passes the joined turn to `hearing.heard({ ..., final: true, source: 'audio', settled: true })`, which dispatches immediately without waiting for the caption quiet timer.
   6. **Speaker naming and `no-audio`**: in `audio` mode, the bot polls `getParticipants()` every 10 s and emits `{ type: 'roster', count, name? }` (`name` is included only when `count === 1`). When `count === 1`, settled turns use that participant's display name; otherwise they use `Participant`. Once `count >= 1`, if no PCM audio arrives within 20 s, the bot emits `no-audio` and the page shows `Hearing: own transcription (no audio received)` until audio arrives (`Hearing: own transcription`).
+
+## When the bot starts to hear (Meet captions)
+
+On Google Meet in captions mode the bot tells the call manager when captions come on. Until then the page shows `Hearing: captions are not on yet; Factory cannot hear`.
+
+- The spoken greeting and the chat line (the join notice) come only when captions are confirmed on. If captions never come on, the bot stays silent and posts no chat line, so that call has no source link in chat. Only the page says so.
+- Teams and `audio` mode are unchanged: the greeting and the notice come at once.
+
+The call log gets four lines, on Meet captions calls only. Times are milliseconds since `in-call`; no caption text, speaker or block id is logged.
+
+| Log line | When |
+| --- | --- |
+| `captions on ms=<n>` / `captions off ms=<n>` | each `captions` line from the bot |
+| `first caption ms=<n>` | the first `heard` line of the call |
+| `captions heard ms=<n> lines=<count>` | 5 s after a `heard` line, if no such line is already due; `count` is the number of `heard` lines since the last one |
+
+To place a missed question at time T, use the last `captions on`/`off` line before T:
+
+- the last line is `captions off`, or there is none: captions were not on;
+- `captions on`, but no `captions heard` within about 5 s after T: no caption was received;
+- `captions heard` near T and no `question` event: a caption did not wake the bot.
+
+Limits: a `captions heard` line does not say whose caption it was. With one speaker in a quiet call it is theirs; in a busy call the result is inconclusive. Stop drops a summary line that is still pending.
 
 ## `listen` values and the per-platform `auto` rule
 
@@ -34,7 +57,7 @@ Own transcription is considered configured (`sttConfigured: true`) when the web 
 When it is not configured (`sttConfigured: false`):
 
 - `auto` resolves to `platform` on every platform, so a missing STT configuration falls back to captions rather than leaving a call deaf.
-- Before joining and during a captions call, the page displays `Hearing: captions (own transcription not configured)`.
+- Before joining and during a captions call, the page displays `Hearing: captions (own transcription not configured)`; on Meet, until captions are confirmed, it is `Hearing: captions are not on yet; Factory cannot hear (own transcription not configured)`.
 - Selecting `audio` explicitly (in the scope file or in the page's **Listen** selector) refuses to start the call with `stt-not-configured` (HTTP 400, shown on the page as `Failed: stt-not-configured`).
 
 ## Language
@@ -57,7 +80,7 @@ The scope field `language` (default `'en'`) takes a BCP-47 language tag (such as
   - The 128-bit (`32` hex character) `<secret>` is mounted from a Kubernetes Secret only into `rfactory-stt` and the web server. Requests to `/inference` or a wrong secret return 404.
   - Its `NetworkPolicy` allows ingress on port 8080 only from the web server's pods and denies all egress.
 - **In-call join notice**:
-  - On joining, the bot posts a notice to the call chat (`bot/run.js`). In `audio` mode, the message states that RFactory transcribes the call on its own servers:
+  - The notice is posted at once in `audio` mode and on Teams; on Meet captions it waits for captions to come on. The bot posts it to the call chat (`bot/run.js`). In `audio` mode, the message states that RFactory transcribes the call on its own servers:
     `Factory (AI) is listening and transcribes this call on RFactory's own servers; say 'Hey Factory' and a question. Source (AGPL-3.0): https://github.com/olafkfreund/RFactory` (with `/tree/<commit>` when `RFACTORY_COMMIT` is set).
   - If sending the chat message fails in `audio` mode, the bot retries once after 10 s. If the retry also fails, the bot emits `{ type: 'hearing', state: 'notice-failed' }` and the page displays `Hearing: own transcription (call notice failed)`.
 

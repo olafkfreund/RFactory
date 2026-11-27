@@ -142,6 +142,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     c.generation++;
     c.queue.length = 0;
     clock.clearTimeout(c.limitTimer);
+    clock.clearTimeout(c.captionTimer);
     for (const resolve of c.waiters.values()) resolve('cancelled');
     c.waiters.clear();
     c.stopping = (async () => {
@@ -488,6 +489,23 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       }).finally(() => { logFor(c, `stt ms=${now() - started} bytes=${part.bytes}`); c.requests.delete(controller); segment.done = true; settle(c); });
   }
 
+  // #56: the greeting, once per call; in Meet captions mode it waits for the bot's "captions on"
+  function greet(c) {
+    if (c.greeted) return;
+    c.greeted = true;
+    queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`);
+  }
+  // #56: times and counts only, never caption text
+  function captionSeen(c) {
+    if (!c.firstCaption) { c.firstCaption = true; logFor(c, `first caption ms=${now() - c.inCallAt}`); }
+    c.captionLines++;
+    c.captionTimer ||= clock.setTimeout(() => {
+      c.captionTimer = null;
+      logFor(c, `captions heard ms=${now() - c.inCallAt} lines=${c.captionLines}`);
+      c.captionLines = 0;
+    }, 5000);
+  }
+
   function incoming(c, line) {
     if (call !== c || c.stopping) return;
     let msg;
@@ -496,10 +514,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`); }
+      if (msg.state === 'in-call') { c.inCall = true; c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
+      if (c.holdGreeting && c.inCall) captionSeen(c);
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
+    } else if (msg.type === 'captions' && c.holdGreeting && c.inCall && typeof msg.on === 'boolean') {
+      logFor(c, `captions ${msg.on ? 'on' : 'off'} ms=${now() - c.inCallAt}`);
+      emit({ type: 'hearing', state: msg.on ? 'captions' : 'captions-off', ...(!sttConfigured ? { notConfigured: true } : {}) });
+      if (msg.on) greet(c);
     } else if (msg.type === 'audio') audio(c, msg);
     else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
       if (c.turn) armQuiet(c);
@@ -556,7 +579,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false,
+      holdGreeting: selected === 'platform' && platform === 'meet', greeted: false, inCallAt: 0, firstCaption: false, captionLines: 0, captionTimer: null, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
     call = c;
     child.on('error', (error) => { logFor(c, `child failed: ${error.message}`); stopCall(c, 'child error'); });
     child.on('close', () => {
@@ -598,7 +622,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop, ...target })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
       if (binding) emit({ type: 'project', id: binding.projectId, name: binding.name, repositories: binding.repositories });
       emit({ type: 'voice', voice: c.voice });
-      emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',
+      emit({ type: 'hearing', state: selected === 'audio' ? 'own' : c.holdGreeting ? 'captions-off' : 'captions',
         ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
       emit({ type: 'state', state: 'joining' });
       if (lookupsOn) emitLimits(c);
