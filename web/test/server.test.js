@@ -763,7 +763,9 @@ const entriesOf = () => [{ id: 'x', project_id: ALPHA }, { id: 'y', project_id: 
 test('project approvals: approve, reject and stop act on an entry of the requested project only', async (t) => {
   const done = [];
   const act = (name) => async (...args) => { done.push([name, ...args]); return { status: 200, text: 'ok' }; };
-  const manager = { list: () => ({ pending: entriesOf(), running: { id: 'log', project_id: BETA, repository_id: 3 }, active: [], history: [] }), approve: act('approve'), reject: act('reject'), stop: act('stop') };
+  const manager = { list: (includeExpired) => ({ pending: [...entriesOf(), ...(includeExpired ? [{ id: 'stale', project_id: ALPHA }] : [])],
+    running: { id: 'log', project_id: BETA, repository_id: 3 }, active: [], history: [] }),
+  approve: act('approve'), reject: act('reject'), stop: act('stop') };
   const roles = rolesFor(ME, ME);
   const a = await projectApp(t, { roles, actions: manager, shares: manager, investigations: manager });
   const base = await a.get('/api/config');
@@ -787,6 +789,8 @@ test('project approvals: approve, reject and stop act on an entry of the request
     assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'x' }), [409, { error: 'not-this-project' }], route); // ALPHA's entry
   }
   for (const route of routes('old')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'old' }), [409, { error: 'not-this-project' }], route);
+  for (const route of routes('stale')) assert.deepEqual(await send(`/api/${route}?project=${BETA}`, { hash: 'h', id: 'stale' }),
+    [409, { error: 'not-this-project' }], route);
   assert.deepEqual(done, []);
   for (const route of routes('x')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'x' }))[0], 200, route);
   for (const route of routes('old')) assert.equal((await send(`/api/${route}?project=${ALPHA}`, { hash: 'h', id: 'old' }))[0], 200, route);
@@ -889,6 +893,11 @@ test('project GitHub bindings match each repository, ignore mismatches and dupli
     assert.deepEqual(unmatched.lookups.tools({ project: { github: null, githubs: [] }, tools: ['get_issue', 'find_cards'] }).map((x) => x.name), ['find_cards']);
     const duplicate = made.lookupsFor({ ...binding, repositories: [{ id: 1, path: 'owner/one' }, { id: 2, path: 'owner/one' }] });
     assert.deepEqual(duplicate.githubs.map((g) => g.repositoryId), [1]); // only the matching binding survives
+    const misconfigured = await composeLookups({ scope: { ...scope, projects: bindings([
+      { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
+    key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });
+    t.after(() => misconfigured.endpoint.close());
+    assert.deepEqual(misconfigured.lookupsFor(binding).githubs.map((g) => g.repositoryId), [1]);
     const sameName = await composeLookups({ scope: { ...scope, projects: bindings([
       { repository_id: 1, owner: 'Owner', repo: 'One' }, { repository_id: 2, owner: 'owner', repo: 'one' }]) },
     key: 'k', redactor: makeRedactor([]), tokens: { 1: 'one', 2: 'two' }, createSource });

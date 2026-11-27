@@ -69,6 +69,13 @@ test('proposal expires at ten minutes; a running share stops at thirty minutes',
   assert.equal(f.entries.at(-1).reason, 'lifetime');
 });
 
+test('expired pending shares remain available for project ownership checks', async () => {
+  const f = setup(); const p = await ready(f);
+  f.clock.t = Date.parse(p.expires_at);
+  assert.deepEqual(f.manager.list().pending, []);
+  assert.equal(f.manager.list(true).pending[0].id, p.id);
+});
+
 test('concurrent approvals claim one share before awaiting work', async () => {
   const gate = deferred(); const f = setup({ board: () => gate.promise }); const p = await ready(f);
   const first = approve(f, p), second = approve(f, p);

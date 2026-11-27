@@ -156,9 +156,9 @@
     "semantic_hash": "e66632c1c801a7287fc155e9c1089d8c"
   },
   "core/src/scope.js": {
-    "mtime": 1795785614.4611514,
-    "seen": 1795786561.2341287,
-    "ast_hash": "89a88cee2175306133fb3c1164563949",
+    "mtime": 1795787248.290714,
+    "seen": 1795787354.4275448,
+    "ast_hash": "48e41399a79ffad2fb24543a76df922a",
     "semantic_hash": ""
   },
   "core/src/share/board.js": {
@@ -306,9 +306,9 @@
     "semantic_hash": "f4d3808ed1f9824f4674abe3a2c5a141"
   },
   "core/test/scope.test.js": {
-    "mtime": 1795785614.462865,
-    "seen": 1795786561.2342072,
-    "ast_hash": "a41e0a53ae5076c6b2373bf6fadf7fcc",
+    "mtime": 1795787266.802953,
+    "seen": 1795787354.4276187,
+    "ast_hash": "c9887578961580bdce91fdf04a0418dd",
     "semantic_hash": ""
   },
   "core/test/speech.test.js": {
@@ -792,9 +792,9 @@
     "semantic_hash": ""
   },
   "web/actions.js": {
-    "mtime": 1795785614.4841018,
-    "seen": 1795786561.2344291,
-    "ast_hash": "b230b8da1772efd6e609b46e51372943",
+    "mtime": 1795787286.2722044,
+    "seen": 1795787354.4278233,
+    "ast_hash": "da6d15db2cf46ffa2c3b2836b7a1a74f",
     "semantic_hash": ""
   },
   "web/call.js": {
@@ -846,9 +846,9 @@
     "semantic_hash": "36944221dfef764c977a20fac5d25214"
   },
   "web/server.js": {
-    "mtime": 1795786224.1224205,
-    "seen": 1795786561.2345877,
-    "ast_hash": "e8f18f8c92251ac64d4763df2506ee39",
+    "mtime": 1795787286.2712045,
+    "seen": 1795787354.4279814,
+    "ast_hash": "52b05de097c0388fc14c8554c5169c69",
     "semantic_hash": ""
   },
   "web/share-desktop.js": {
@@ -858,9 +858,9 @@
     "semantic_hash": ""
   },
   "web/shares.js": {
-    "mtime": 1795785614.4885263,
-    "seen": 1795786561.2345924,
-    "ast_hash": "38dc3b7ad79a60dd1910386024c30477",
+    "mtime": 1795787286.2722044,
+    "seen": 1795787354.4279864,
+    "ast_hash": "3534400bf06334dcda032804f77042d0",
     "semantic_hash": ""
   },
   "web/test/actions-record.test.js": {
@@ -870,15 +870,15 @@
     "semantic_hash": ""
   },
   "web/test/actions.test.js": {
-    "mtime": 1795785614.489323,
-    "seen": 1795786561.2345996,
-    "ast_hash": "0ba546a090d31bd3ea54dc50315572d5",
+    "mtime": 1795787301.7194037,
+    "seen": 1795787354.427993,
+    "ast_hash": "949452af8542ced18f78cfb3211ca474",
     "semantic_hash": ""
   },
   "web/test/app.test.js": {
-    "mtime": 1795786349.2738695,
-    "seen": 1795786561.2346017,
-    "ast_hash": "36a10936341697d96eeba2d60579cfaf",
+    "mtime": 1795787341.72492,
+    "seen": 1795787354.4279952,
+    "ast_hash": "5a5bdea9c6df931160e68c2dd0dd2a11",
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
@@ -912,9 +912,9 @@
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795786548.5856557,
-    "seen": 1795786561.234622,
-    "ast_hash": "4a4e2c4200216b6f656627f730c9c8a8",
+    "mtime": 1795787301.7184038,
+    "seen": 1795787354.4280148,
+    "ast_hash": "a650b1ac499bcd842e82ba385dbd2be0",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -924,9 +924,9 @@
     "semantic_hash": ""
   },
   "web/test/shares.test.js": {
-    "mtime": 1795785614.489824,
-    "seen": 1795786561.2346265,
-    "ast_hash": "47686488b16d73fac4d21b677df5b1cd",
+    "mtime": 1795787301.7194037,
+    "seen": 1795787354.4280195,
+    "ast_hash": "659d55a7be405e97e5d818824c05bcb1",
     "semantic_hash": ""
   },
   "web/test/source-guard.test.js": {
@@ -1590,9 +1590,9 @@
     "semantic_hash": ""
   },
   "core/src/lookups.js": {
-    "mtime": 1795785919.241426,
-    "seen": 1795786561.234118,
-    "ast_hash": "b60dc88851b77634ccea5df38087a680",
+    "mtime": 1795787248.290714,
+    "seen": 1795787354.4275346,
+    "ast_hash": "f17c98d2c116a3db31455ddd4b714fc3",
     "semantic_hash": ""
   },
   "core/src/sources/github-read.js": {
@@ -1608,9 +1608,9 @@
     "semantic_hash": ""
   },
   "core/test/lookups.test.js": {
-    "mtime": 1795786127.3061485,
-    "seen": 1795786561.2341971,
-    "ast_hash": "ecf9e3a4d2680afa71c8776ff7e1c8e6",
+    "mtime": 1795787266.802953,
+    "seen": 1795787354.4276097,
+    "ast_hash": "d8cd957b43da0e722fd585d948166c29",
     "semantic_hash": ""
   },
   "core/src/brains/claude-lookup-system-prompt.txt": {

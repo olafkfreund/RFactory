@@ -321,6 +321,8 @@ test('projects.allow github_read: per-repository bindings, tokens after the key'
     loadScope(path.join(dir, 'scope.json'), {}, secrets, extras);
     assert.deepEqual(secrets, [key, 'token-value-1', 'token-value-3', 'token-value-21']);
     assert.deepEqual(extras, { githubTokens: { 1: 'token-value-1', 3: 'token-value-3', 21: 'token-value-21' } });
+    f.scope.projects.allow = [{ github_read: [{ owner: 'olaf', repo: 'r1', repository_id: 1, token_file: tf(1) }], id }];
+    assert.deepEqual(f.load(), f.scope);
 
     const bad = [
       [{ id, github_read: [bind(1)] }, { id: 'repo:5', github_read: [bind(1)] }], // repository twice

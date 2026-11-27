@@ -125,7 +125,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     const id = query.get('project');
     const running = call?.project?.id === id ? call.projectCall?.binding : null;
     return Promise.resolve(running || bind(id)).then((binding) => {
-      const list = manager.list();
+      const list = manager.list(true);
       const entry = [...list.pending, ...(list.active || []), ...(list.running ? [list.running] : [])].find((e) => e.id === entryId);
       return entry && !belongs(entry, binding) ? json(res, 409, { error: 'not-this-project' }) : act();
     }).catch(readFailed(res));
@@ -387,7 +387,9 @@ async function composeLookups({ scope, key, redactor, token, tokens = {}, create
         ?? (r.id === scope.source.repository_id && token ? scope.source.github_read : null);
       return { repository: r, config };
     });
-    const names = candidates.map(({ config }) => config && `${config.owner}/${config.repo}`.toLowerCase());
+    const names = candidates.map(({ config, repository }) => config &&
+      `${config.owner}/${config.repo}`.toLowerCase() === repository.path.toLowerCase()
+      ? `${config.owner}/${config.repo}`.toLowerCase() : null);
     for (const [i, { repository, config }] of candidates.entries()) {
       if (!config) continue;
       const name = names[i];

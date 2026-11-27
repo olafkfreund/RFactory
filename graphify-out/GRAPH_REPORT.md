@@ -1,17 +1,17 @@
 # Graph Report - RFactory-t52  (2026-11-27)
 
 ## Corpus Check
-- 324 files · ~496,278 words
+- 324 files · ~496,572 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 21 file(s) not represented in the graph (top: (none) 10, .nix 6, .css 4)
 
 ## Summary
 - 3659 nodes · 6546 edges · 232 communities (195 shown, 37 thin omitted)
-- Extraction: 86% EXTRACTED · 14% INFERRED · 0% AMBIGUOUS · INFERRED: 900 edges (avg confidence: 0.9)
+- Extraction: 86% EXTRACTED · 14% INFERRED · 0% AMBIGUOUS · INFERRED: 899 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ac4dc76c`
+- Built from commit: `434956f2`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -1071,8 +1071,8 @@ _Questions this graph is uniquely positioned to answer:_
 - **Should `verify lib.sh` be split into smaller, more focused modules?**
   _Cohesion score 0.07080200501253132 - nodes in this community are weakly interconnected._
 - **Why does `Steps` connect `web server.js` to `public app.js`, `guard.test.js`, `ref_node_child_process`, `test/board.test.js`, `proxy.js`, `Plan: project-aware calls, slice A (project-aware reads)`, `repo`, `createShareManager`, `web/call.js`, `createInvestigationManager`, `core/test/actions.test.js`, `lookups.test.js`?**
-  _High betweenness centrality (0.069) - this node is a cross-community bridge._
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
 - **Should `rfb.js` be split into smaller, more focused modules?**
   _Cohesion score 0.06033182503770739 - nodes in this community are weakly interconnected._
 - **Why does `Websock` connect `Plan: A face for the bot that talks when it speaks` to `._updateConnectionState`, `rfb.js`, `logging.js`, `RFB`?**
-  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._

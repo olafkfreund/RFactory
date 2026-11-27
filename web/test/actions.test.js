@@ -111,6 +111,15 @@ test('project proposals expire across calls; recovery keeps target fields', asyn
     detail: 'The result could not be confirmed.' });
 });
 
+test('expired pending actions remain available for project ownership checks', async () => {
+  const f = setup({ rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+  const action = await proposal(f);
+  f.clock.t = Date.parse(action.expires_at);
+  assert.deepEqual(f.manager.list().pending, []);
+  assert.equal(f.manager.list(true).pending[0].id, action.id);
+});
+
 test('one-repository project refuses a foreign create target instead of rewriting it', async () => {
   const only = { ...binding, repositories: binding.repositories.slice(0, 1) };
   const f = setup({ propose: async () => ({ action: 'create_card', args: { title: 'New', repository_id: 2 } }),

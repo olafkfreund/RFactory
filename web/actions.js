@@ -194,8 +194,8 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     return reply(200, 'Action rejected.');
   }
 
-  function list() {
-    return { pending: [...pending.values()].filter(live).map((entry) => safe({ ...entry.payload, hash: entry.hash, state: entry.state,
+  function list(includeExpired = false) {
+    return { pending: [...pending.values()].filter((entry) => includeExpired || live(entry)).map((entry) => safe({ ...entry.payload, hash: entry.hash, state: entry.state,
       description: description(entry.payload, entry.payload.effects, entry.binding) })), history: history.map(safe) };
   }
 

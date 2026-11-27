@@ -265,8 +265,8 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     return reply(200, 'Stopped sharing.');
   }
 
-  function list() {
-    return { pending: pending && pending.state === 'proposed' && now() < Date.parse(pending.payload.expires_at)
+  function list(includeExpired = false) {
+    return { pending: pending && pending.state === 'proposed' && (includeExpired || now() < Date.parse(pending.payload.expires_at))
       ? [safe({ ...pending.payload, hash: pending.hash, state: pending.state,
         approval_text: `Share the live CFactory board of ${pending.payload.project}, refreshed every 30 seconds.` })] : [],
     running: active ? safe({ ...active.payload, state: active.state }) : null, history: history.map(safe) };

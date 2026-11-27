@@ -296,9 +296,18 @@ test('two GitHub bindings require a known repo, use separate readers and commit 
 });
 
 test('get_card numbers include the repository only with multiple bound repositories', async () => {
-  const bindings = [{ owner: 'owner', repo: 'one' }, { owner: 'owner', repo: 'two' }];
+  const bindings = [{ owner: 'Owner', repo: 'One' }, { owner: 'Owner', repo: 'Two' }];
   const c = ctx(); c.project = { bound: true, github: null, githubs: bindings };
-  const result = await lookup(source({ ...card, issue_ref: 'owner/two#7', pr_ref: 'owner/one#8' })).call(c, 'get_card', { card_key: 'PROJ-1' });
+  const github = new Map([['owner/one', { getIssue: async () => ({ title: 'issue', state: 'open' }) }],
+    ['owner/two', { getIssue: async () => ({ title: 'issue', state: 'open' }) }]]);
+  const l = lookup(source({ ...card, issue_ref: 'Owner/Two#7', pr_ref: 'Owner/One#8' }), github);
+  c.tools = [...FACTORY, ...GITHUB];
+  const result = await l.call(c, 'get_card', { card_key: 'PROJ-1' });
   assert.deepEqual(result.result.issue, { number: 7, state: undefined, repo: 'owner/two' });
   assert.deepEqual(result.result.pr, { number: 8, state: undefined, repo: 'owner/one' });
+  assert.equal((await l.call(c, 'get_issue', { number: result.result.issue.number, repo: result.result.issue.repo })).result.title.text, 'issue');
+  assert.equal((await l.call(c, 'get_issue', { number: result.result.pr.number, repo: result.result.pr.repo })).result.title.text, 'issue');
+  const single = ctx(bindings[0]); single.project.bound = true;
+  assert.equal(Object.hasOwn((await lookup(source({ ...card, issue_ref: 'Owner/One#7' }), {}).call(single, 'get_card',
+    { card_key: 'PROJ-1' })).result.issue, 'repo'), false);
 });

@@ -122,7 +122,7 @@ function createLookups({ source, github, redactor }) {
             const numbered = (key, ref, state) => {
               const match = bindings.find((b) => ref && String(ref).toLowerCase().startsWith(`${b.owner}/${b.repo}#`.toLowerCase()));
               return ctx.project.bound && ref && !match ? {} : { [key]: ref ? { number: Number(ref.match(/#(\d+)$/)?.[1]), state,
-                ...(bindings.length > 1 ? { repo: `${match.owner}/${match.repo}` } : {}) } : null };
+                ...(bindings.length > 1 ? { repo: `${match.owner}/${match.repo}`.toLowerCase() } : {}) } : null };
             };
             result = { card_key: card.card_key, title: wrap(card.title), state: evidence.state,
               plan: wrap(card.plan || card.description), acceptance: wrap(card.acceptance || card.acceptance_criteria),

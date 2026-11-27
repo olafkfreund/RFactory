@@ -415,9 +415,9 @@ test('#52: source links per repository; a repo outside githubs gets none; no git
   const limits = { type: 'limits', budget_usd: 2, spent_usd: 0, answer_seconds: 90, lookups_per_question: 8, exhausted: false, github: null };
   const hrefs = () => byId['call-log'].all().filter((n) => n.tag === 'a').map((n) => n.attrs.href);
   const sources = [{ kind: 'issue', ref: 3, repo: 'o/a' }, { kind: 'issue', ref: 4, repo: 'o/b' }, { kind: 'issue', ref: 5, repo: 'x/evil' }, { kind: 'pr', ref: 6 }];
-  handleCall(doc, { ...limits, github: 'o/a', githubs: ['o/a', 'o/b'] });
+  handleCall(doc, { ...limits, githubs: ['o/a', 'o/b'] });
   handleCall(doc, { type: 'answer', text: 'x', sources });
-  assert.deepEqual(hrefs(), ['https://github.com/o/a/issues/3', 'https://github.com/o/b/issues/4', 'https://github.com/o/a/pull/6']);
+  assert.deepEqual(hrefs(), ['https://github.com/o/a/issues/3', 'https://github.com/o/b/issues/4']);
   const legacy = shim();
   legacy.byId['call-log'] = new Node('ul');
   handleCall(legacy.doc, { ...limits, github: 'o/a' }); // no projects block: no githubs
@@ -565,15 +565,19 @@ test('without a projects block the page asks and streams as before', async (t) =
 });
 
 test('decisions carry the project, a share Stop its id, and a link slug is encoded', async (t) => {
-  const p = await projectPage(t, '/p/alpha');
+  const denied = [409, { error: 'not-this-project' }];
+  const p = await projectPage(t, '/p/alpha', { routes: {
+    '/api/shares/stop?project=id-a': denied, '/api/investigations/stop?project=id-a': denied } });
   const click = async (list, label) => { await p.byId[list].all().find((n) => n.tag === 'button' && n.textContent === label).listeners.click(); await settle(); };
   for (const id of ['actions-status', 'share-status', 'investigation-status']) p.byId[id] = new Node('p');
   handleCall(p.doc, { type: 'share-updated', share: { id: 's1', state: 'running' } });
   await click('share-list', 'Stop');
   assert.deepEqual(p.requests.at(-1), ['POST', '/api/shares/stop?project=id-a', { id: 's1' }]);
+  assert.equal(p.byId['share-status'].textContent, "This belongs to another project's call.");
   handleCall(p.doc, { type: 'investigation-updated', investigation: { id: 'i1', state: 'running' } });
   await click('investigation-list', 'Stop');
   assert.deepEqual(p.requests.at(-1), ['POST', '/api/investigations/stop?project=id-a', { id: 'i1' }]);
+  assert.equal(p.byId['investigation-status'].textContent, "This belongs to another project's call.");
   const odd = await projectPage(t, '/p/a&slug=b');
   assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
   const broken = await projectPage(t, '/p/%E0%A4%A');

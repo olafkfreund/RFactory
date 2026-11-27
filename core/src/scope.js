@@ -44,7 +44,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
   if (Object.hasOwn(scope, 'projects')) {
     if (scope.source?.kind !== 'cfactory') throw new Error('invalid-projects'); // projects come from CFactory
-    const onlyKey = (o, key) => !!o && Object.keys(o).join() === key;
+    const onlyKey = (o, key) => !!o && Object.keys(o).sort().join() === key.split(',').sort().join();
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
         !allow.every((p) => (onlyKey(p, 'id') || onlyKey(p, 'id,github_read')) && typeof p.id === 'string' &&
