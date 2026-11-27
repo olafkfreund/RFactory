@@ -816,3 +816,128 @@ test('project lookups: GitHub only with the default repository, and a project tu
   assert.equal((await client.callTool({ name: 'find_cards', arguments: { text: 'x' } })).isError, true);
   await client.close();
 });
+
+// slice web-github (#2): a GitHub source gives the older reply, redacted, and nothing else
+const SECRET = 'planted-secret-value-123';
+const ghItems = [
+  { id: 'o/r#1', kind: 'issue', title: 'one', state: 'done', evidence: [], updated_at: '2026-01-01' },
+  { id: 'o/r#2', kind: 'issue', title: 'two', state: 'in_progress', evidence: [], updated_at: '2026-01-03' },
+  { id: 'o/r#3', kind: 'issue', title: 'three', state: 'blocked', evidence: [] },
+  { id: 'o/r#4', kind: 'issue', title: 'four', state: 'blocked', evidence: [] },
+  { id: 'o/r#5', kind: 'issue', title: 'five', state: 'left', evidence: [] },
+  { id: 'o/r#6', kind: 'issue', title: 'six', state: 'unknown', evidence: [] },
+];
+const ghSource = (over = {}) => {
+  const calls = [];
+  return { calls, kind: 'github', snapshot: async (...args) => { calls.push(args);
+    return { items: ghItems, fetched_at: 'F', newest_update: '2026-01-03', truncated: false, ...over }; } };
+};
+const GH_KEYS = ['counts', 'destination', 'fetched_at', 'items', 'newest_update', 'summary', 'summary_error', 'truncated', 'unknown'];
+
+test('GitHub standup: the older layout, the fixed sentence, no arguments taken from the request', async (t) => {
+  const gh = ghSource();
+  const get = await start(t, { source: gh, redactor: makeRedactor([]) });
+  const r = await get('/api/standup', { method: 'POST' });
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.deepEqual(Object.keys(body).sort(), GH_KEYS);
+  assert.deepEqual(body.unknown.map((i) => i.id), ['o/r#6']);
+  assert.equal(body.summary, 'Repository: 1 done, 1 in progress, 2 blocked, 1 left, 1 unknown.');
+  assert.deepEqual([body.fetched_at, body.truncated, body.summary_error, body.destination], ['F', false, null, 'the server']);
+  const other = await get('/api/standup?project=x&repo=o/other', { method: 'POST', body: JSON.stringify({ repo: 'o/other', project: 'y' }) });
+  assert.deepEqual(await other.json(), body);
+  assert.deepEqual(gh.calls, [[], []]);
+  const cut = await start(t, { source: ghSource({ truncated: true }), redactor: makeRedactor([]) });
+  assert.equal((await (await cut('/api/standup', { method: 'POST' })).json()).summary,
+    'Repository: 1 done, 1 in progress, 2 blocked, 1 left, 1 unknown. The repository has more items than were read.');
+});
+
+test('GitHub standup: planted secrets are redacted; source errors give only codes', async (t) => {
+  const leaky = { ...ghSource(), snapshot: async () => ({ items: [{ ...ghItems[0], title: `t ${SECRET}`, evidence: [`e ${SECRET}`] }, ghItems[5]],
+    fetched_at: 'F', newest_update: null, truncated: false }) };
+  const get = await start(t, { source: leaky, redactor: makeRedactor([SECRET]) });
+  const text = await (await get('/api/standup', { method: 'POST' })).text();
+  assert.ok(!text.includes(SECRET));
+  assert.match(text, /t \[redacted\]/);
+  assert.match(text, /e \[redacted\]/);
+  for (const [message, code] of [['source-timeout', 'source-timeout'], [`boom ${SECRET}`, 'source-error']]) {
+    const bad = await start(t, { source: { kind: 'github', snapshot: async () => { throw new Error(message); } }, redactor: makeRedactor([SECRET]) });
+    const r = await bad('/api/standup', { method: 'POST' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: code });
+  }
+});
+
+test('GitHub app: review, call, approval routes are 404 and the source is never touched; config says github', async (t) => {
+  const boom = () => { throw new Error('touched'); };
+  const gh = { kind: 'github', snapshot: boom, standupData: boom, reviewData: boom };
+  const get = await start(t, { source: gh, redactor: makeRedactor([]) });
+  for (const p of ['/api/review', '/api/review/KEY-1', '/api/review/%00']) assert.equal((await get(p)).status, 404, p);
+  assert.equal((await get('/api/review', {}, 'x@example.com')).status, 403);
+  assert.equal((await get('/api/review', {}, null)).status, 401);
+  for (const p of ['/api/actions', '/api/shares', '/api/investigations']) assert.equal((await get(p)).status, 404, p);
+  assert.equal((await get('/api/call', { method: 'POST', body: '{}' })).status, 404);
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: '', projects: false, source: 'github' });
+  const cf = await start(t, { source, brain: fakeBrain });
+  assert.ok(!('source' in await (await cf('/api/config')).json()));
+});
+
+test('composeStandalone refuses each CFactory switch and a missing token, and returns the started source', async () => {
+  const { composeStandalone } = require('../server.js');
+  const made = [];
+  const createSource = (o) => { made.push(o); return { started: false, async start() { this.started = true; } }; };
+  const ok = { scope: {}, token: 'tok-12345678', env: { GITHUB_MCP_SERVER_BIN: '/bin/x' }, createSource };
+  for (const bad of [{ scope: { shares_enabled: true } }, { scope: { lookups_enabled: true } },
+    { env: { RFACTORY_CALLS: '1' } }, { env: { RFACTORY_DESKTOP: '1' } }]) {
+    await assert.rejects(composeStandalone({ ...ok, ...bad }), /^Error: unsupported-scope$/);
+  }
+  await assert.rejects(composeStandalone({ ...ok, token: '' }), /^Error: github-token-missing$/);
+  assert.equal(made.length, 0);
+  const source = await composeStandalone(ok);
+  assert.equal(source.started, true);
+  assert.deepEqual([made[0].bin, made[0].token], ['/bin/x', 'tok-12345678']);
+});
+
+test('main() starts a GitHub scope with the fake MCP binary; a failing start-up leaks no token', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-github-'));
+  const saved = { ...process.env };
+  const stderr = process.stderr.write;
+  t.after(() => {
+    process.stderr.write = stderr;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const token = 'synthetic-web-token-9876';
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+  const scopeFile = path.join(dir, 'scope.json');
+  fs.writeFileSync(scopeFile, JSON.stringify({ name: 'gh', source: { kind: 'github', owner: 'o', repo: 'r', token_file: tokenFile },
+    brain: { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' }, writes_enabled: false }));
+  const recorded = require('../../core/test/fixtures/github-tools-1.14.0.json');
+  let n = 0;
+  const fakeBin = (config) => {
+    const bin = path.join(dir, `fake-${n++}.js`);
+    fs.writeFileSync(bin, `#!${process.execPath}\nrequire(${JSON.stringify(path.join(__dirname, '../../core/test/fake-github-mcp.js'))}).run(${JSON.stringify({ tools: recorded, results: { list_issues: { issues: [] }, list_pull_requests: [] }, ...config })});\n`, { mode: 0o755 });
+    return bin;
+  };
+  Object.assign(process.env, { RFACTORY_SCOPE_FILE: scopeFile, RFACTORY_ALLOWED_EMAILS: ME, PORT: '0', GITHUB_MCP_SERVER_BIN: fakeBin({}) });
+  for (const k of ['RFACTORY_APPROVERS', 'RFACTORY_ADMINS', 'RFACTORY_CALLS', 'RFACTORY_DESKTOP']) delete process.env[k];
+  const server = await require('../server.js').main();
+  try {
+    await new Promise((r) => (server.listening ? r() : server.once('listening', r)));
+    const url = `http://127.0.0.1:${server.address().port}/api/standup`;
+    const r = await fetch(url, { method: 'POST', headers: { 'X-Forwarded-Email': ME } });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(body.fetched_at && body.truncated === false);
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'X-Forwarded-Email': 'x@example.com' } })).status, 403);
+  } finally { await new Promise((r) => server.close(r)); }
+  let written = '';
+  process.stderr.write = (chunk, ...rest) => { written += chunk; return stderr.call(process.stderr, chunk, ...rest); };
+  process.env.GITHUB_MCP_SERVER_BIN = fakeBin({ version: '0.0.1' });
+  const failure = await require('../server.js').main().then(() => null, (e) => e);
+  process.stderr.write = stderr;
+  assert.ok(failure, 'start-up must reject');
+  assert.ok(!String(failure.message).includes(token) && !written.includes(token));
+});

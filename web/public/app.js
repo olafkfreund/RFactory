@@ -156,6 +156,7 @@ function render(doc, data, now = Date.now()) {
 
 // #52: one project per page load (the picker navigates), so nothing on the page ever has to be reset
 const projectIds = new WeakMap();
+const githubMode = new WeakSet(); // a GitHub source: no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
 const UNAVAILABLE = "This project isn't available in Meet";
 
@@ -170,7 +171,7 @@ async function run(doc) {
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
   } catch { status.textContent = 'Failed: network'; }
-  loadReview(doc);
+  if (!githubMode.has(doc)) loadReview(doc);
   button.disabled = false;
 }
 
@@ -726,7 +727,14 @@ function loadPanels(doc) {
 
 // /p/<slug> names the page's project; the picker lists the others. Without projects (/api/config), the page of before.
 async function openPage(doc, location, config) {
-  if ((await config)?.projects !== true) { wireCall(doc); return loadPanels(doc); }
+  const loaded = await config;
+  if (loaded?.source === 'github') {
+    githubMode.add(doc);
+    doc.getElementById('call').hidden = true;
+    doc.getElementById('run').addEventListener('click', () => run(doc));
+    return run(doc);
+  }
+  if (loaded?.projects !== true) { wireCall(doc); return loadPanels(doc); }
   let list = [];
   try {
     const r = await fetch('/api/projects');
