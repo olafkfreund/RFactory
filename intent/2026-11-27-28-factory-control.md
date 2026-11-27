@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 28
 author: olafkfreund
 parent: intent/2026-11-23-28-factory-review-control.md
@@ -67,7 +67,7 @@ Not in this slice:
   - `core/src/brains/claude-action-system-prompt.txt`: the proposal prompt;
   - `web/actions.js`, `web/call.js`, the page (`web/public/`): the proposal, its approval, the two stop reports;
   - the action record.
-- **CFactory:** #584 (run id, revision, `cfactory_stop_card_stage`, holding later stages, resume) and #585 (description in create and update, safe issue sync). Both are CFactory work under their own PRs, and this slice depends on both.
+- **CFactory:** #584 (run id, revision, `cfactory_stop_card_stage`, holding later stages, resume) and #585 (description in create and update, safe issue sync). Both are CFactory work under their own PRs, and this slice depends on both. They are done first (decision 1).
 - **PFactory, AIFactory, TFactory:** reached only through CFactory. A stop must reach the exact upstream run; that is part of #584.
 - **Related:** #22 (grant), #51 (lookups, later changes), #52 slice B (writes per project), #26 and #27 (CLI and MCP server, which will reuse the action logic).
 - **Hosts:** the cluster deployment of RFactory and CFactory. No build or deploy without the owner's OK.
@@ -96,18 +96,21 @@ All constraints of the parent intent hold unchanged (`intent/2026-11-23-28-facto
   - A proposal stays bound to the call, the project and the repository it was made for. An approval from a stale page or another project's page, and a late result from an earlier call, never act on or speak into the current call.
   - Naming another repository for a change is #52 slice B.
 - **Limits stay:** at most 10 work-starting actions per call and 5 waiting for approval. A stop does not count against the 10 (parent decision 9).
-- **New action logic goes in `core/`,** so #26 and #27 can reuse it (parent constraint; see open question 2).
+- **New action logic goes in `core/`,** so #26 and #27 can reuse it (parent constraint; see decision 2).
 - **No silent fallback.** Without #584 or #585 in the CFactory that RFactory talks to, the matching request is refused with a clear sentence. RFactory never imitates a stop by moving a card.
 - **Deploy** by the usual route, with the owner's OK, announced on the agent bus first. The live check runs in the test Meet.
 
 ## Open questions
 
-1. **Order with CFactory.** Stop needs #584 and description needs #585. Both are open.
-   - **(a) Recommended:** do #584 and #585 in CFactory first, then write this slice's spec against what they really return.
-   - **(b)** Build RFactory's side now against the contract in the slice-1 spec (section 9), turned off until CFactory has the tools. Risk: the contract changes and the work is redone.
-   - **(c)** Split: ship description as soon as #585 lands, stop when #584 lands.
-2. **How much action logic moves to `core/`.** Checks and effects are already in `core/src/actions/`. The proposal, approval and record manager lives in `web/actions.js`. Recommended: put the new stop and description logic in `core/` and leave moving the manager to #26 or #27, when a second user exists.
-3. **Who writes the description.** The brain drafts it from what was said. Recommended: yes, shown in full for approval, limited in length (the spec sets the number), and an update replaces the description as a whole. The alternative: the description may only be typed on the page.
-4. **After the call ends.** A stop approved just before the call ends may be confirmed "stopped" later. Recommended: the page and the record show the final state; nothing is spoken after the call.
+None.
+
+## Decisions (2026-11-27)
+
+The owner said: "use recommendations and approve all five intents". Each question had a recommendation, and it is the answer.
+
+1. **Order with CFactory:** #584 and #585 are done in CFactory first. This slice's spec is written after that, against what they really return. RFactory's side is not built ahead behind a switch, and description and stop are not shipped apart.
+2. **Action logic in `core/`:** the new stop and description logic goes in `core/`. Moving the proposal, approval and record manager out of `web/actions.js` is left to #26 or #27, when a second user exists.
+3. **Who writes the description:** the brain drafts it from what was said. It is shown in full for approval and limited in length (the spec sets the number). An update replaces the description as a whole.
+4. **After the call ends:** when a stop is confirmed "stopped" after the call has ended, the page and the record show the final state. Nothing is spoken after the call.
 
 Already decided in the parent intent, and not reopened here: this slice is stop, resume and description only (decisions 6, 9, 10, 16); a finished stage is not run again (decision 10); code and plan changes and comments are out (decisions 11, 15).
