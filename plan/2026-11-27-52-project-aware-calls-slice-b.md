@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 52
 spec: spec/2026-11-26-52-project-aware-calls.md
 coders:
@@ -324,3 +324,7 @@ After each: Argo CD Synced and Healthy, the digest matches, and the smoke check 
 2. **The repository on a shared board.** Recommended: the `[short-name]` title prefix, with no guest change. The alternative is a `repo` field on each card, which needs the guest protocol, the viewer and a VM image rebuild.
 3. **GitHub reads live.** They aren't deployed today, for any repository. Recommended: ship the code and its tests now; turn them on in a separate task, when the owner has made one read-only fine-grained token per repository and factory-gitops mounts them.
 4. **A project that should stay read-only.** The spec has no per-project write switch: after slice B, every allowed project can be written to, behind the approver. Recommended: keep it so. If the e2e project should stay read-only, say so before approval, and `allow` entries get an optional `writes: false`.
+
+## Approval (2026-11-27)
+
+The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (including the recovery note: no per-repository recovery view, because those reads are by card and run) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
