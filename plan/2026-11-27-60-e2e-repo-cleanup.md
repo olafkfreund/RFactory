@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 spec: spec/2026-11-27-60-e2e-repo-cleanup.md
 coders:
@@ -48,7 +48,7 @@ Scope of this slice: `core/bin/e2e-inventory.js`, `core/test/e2e-inventory.test.
 | Reason | When | Released by |
 | ------ | ---- | ----------- |
 | `named` | the holds file names it | a release line (10 to 13: whoever moved the cards; the two private repositories: the campaign's session; 21: the owner after the #52 result) |
-| `unpaired` | a repository with no entry, or an entry with no repository | a release line (open question 1) |
+| `unpaired` | a repository with no entry, or an entry with no repository | a release line (decision 1) |
 | `owner` | under `Freundcloud` | a release line (the owner) |
 | `not-checked` | the set has no project, or a factory is not marked checked for its project | a release line (the owner, in writing) |
 | `scope` | its project id is in a scope file | never: the data must change |
@@ -279,7 +279,7 @@ Trap: **a merge to `main` rebuilds and redeploys both images** (`.github/workflo
    `node core/bin/e2e-inventory.js --holds ~/.config/rfactory/e2e-holds.json --out ~/.config/rfactory/e2e-list.json > "$SCRATCH/e2e-list.md"; echo "exit=$?"`
    The Markdown file exists even when the run fails; it is used only after exit 0.
 3. Expected: exit 0; 27 `olafkfreund` and 5 `Freundcloud` repositories; 25 entries (ids 3 to 27); 25 projects; 19 cards; 0 webhooks; **no set in state `remove` and no action on any set**; every set held for `not-checked`; in addition repository 21 for `named` and `scope`, 10 to 13 for `named` (and `running-work` where the card is not in `backlog`), the two private repositories for `named` and `unpaired`, the five `Freundcloud` ones for `owner`; `kept` lists entries 1 and 2, the project, connection 1 and both repositories with `exists: true`. Different counts are reported as they are, not corrected.
-4. Read the Markdown for anything that is not a name, id, state or date. Then post it as one comment on issue #60 with the hash, the holds file's content, and the line "Nothing has been deleted. Gate 1 is closed." The JSON goes with it as open question 2 decides. Ask the owner to check the kept items by name and id.
+4. Read the Markdown for anything that is not a name, id, state or date. Then post it as one comment on issue #60 with the hash, the holds file's content, and the line "Nothing has been deleted. Gate 1 is closed." The JSON goes with it as decision 2 says. Ask the owner to check the kept items by name and id.
 
 Traps: the run makes 6 CFactory reads (`start()` lists the repositories once more, `cfactory.js:157-160`) and about 100 GitHub `GET` requests on the owner's token. It changes nothing, so no bus announcement is needed. The cluster is not touched and no Secret is read. A posted comment cannot be unpublished, so step 4's read comes before the post.
 
@@ -304,8 +304,14 @@ No CI runs these tests (no workflow under `.github/workflows` does), so the loca
 
 ## Open questions
 
-1. **Who may release an `unpaired` hold?** The spec names the campaign's session for the two private repositories only. Recommendation: the campaign's session for any repository without an entry, and the owner for an entry without a repository. No release is possible in this slice anyway.
-2. **How does the JSON travel with the comment?** The spec says "attached", and `gh` cannot attach a file. Recommendation: put it in a `<details>` block in the same comment; if the comment would pass 60 000 characters, post the Markdown and the hash only and keep the file at `~/.config/rfactory/e2e-list.json`, saying so in the comment. The exact file is only needed at gate 2, and `--check` verifies it against the hash the owner approved.
-3. **Every `e2e` card may carry a correlation key, because the campaign created them.** Then every set with a card is held for `running-work`, which nobody can release. Recommendation: keep the spec's rule for this slice, let the live run show it, and if it is so, bring a spec change to the owner before the second plan.
-4. **`core/bin/e2e-inventory.js` ships in the `rfactory-web` image**, where it cannot run (no `gh`). The spec names this path. Recommendation: accept it; it is read-only and unused there.
-5. **Merge now or wait?** The live run works from the branch. Recommendation: merge with the next RFactory release window, so this slice does not cause a deploy of its own.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this plan with its recommendations. This approves the read-only inventory slice only. Gate 2 (the owner's "OK" and the list's hash on issue #60) and every removal stay separate owner actions; nothing here approves a deletion list.
+
+1. **An `unpaired` hold** is released by the campaign's session for any repository without an entry, and by the owner for an entry without a repository. No release is possible in this slice anyway.
+2. **The JSON goes in a `<details>` block in the same comment.** If the comment would pass 60 000 characters, post the Markdown and the hash only and keep the file at `~/.config/rfactory/e2e-list.json`, saying so in the comment.
+3. **The spec's rule is kept for this slice.** The live run shows whether every set with a card is held for `running-work`; if so, a spec change goes to the owner before the second plan.
+4. **`core/bin/e2e-inventory.js` ships in the `rfactory-web` image** as the spec names it. It is read-only and unused there.
+5. **Merge with the next RFactory release window,** so this slice causes no deploy of its own. The merge still needs the owner's OK and a bus announcement (see the trap in the merge step).
