@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 intent: intent/2026-11-27-60-e2e-repo-cleanup.md
 ---
@@ -223,3 +223,7 @@ The script reads the local `scope.cluster.json`, the file `bootstrap-secrets.sh`
 5. **Where is the teardown request raised?** Recommendation: on `Factory#3882`. Confirm it in the gate 1 answer.
 6. **May the inventory script stay in the repository after the cleanup?** Recommendation: yes, while the campaign has no teardown. Remove it once the pile cannot come back.
 7. **May the full list, with the two private repositories' names, go on the public issue #60?** Recommendation: yes. The intent already names them in part, and they are slated for removal.
+
+## Approval (2026-11-27)
+
+The owner approved this spec with the recommended answers: "approve all with recommendations". Every open question above is decided as its recommendation says; nothing is deleted, gate 1 (the campaign's "finished") is closed today, and removal needs the owner's OK on the exact list hash. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
