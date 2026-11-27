@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 58
 spec: spec/2026-11-27-58-standup-notes.md
 coders:
@@ -348,3 +348,7 @@ Repo traps for every step:
 - **Remove it:** revert the PR and redeploy the web image. There is no stored state to migrate.
 - **The record:** lines with `kind: 'notes'` stay in the 90-day record. Older code ignores them (`web/actions-record.js:61`).
 - **Cards** created or moved through a note proposal are ordinary #10 actions. They stay; undo one on the board.
+
+## Approval (2026-11-27)
+
+The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question and every choice in "Choices made in this plan" above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
