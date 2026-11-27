@@ -319,3 +319,4 @@ The owner approved this plan with its recommendations. This approves the read-on
 ## Deviations
 
 1. Step 2 (Codex, i60 manager): `compare` matches items by `card_key`, `number`, `id`, then `name` (the plan lists `name` before `id`), and adds a `changed record` line when the hashes differ and nothing else was reported: two kept projects sharing a name otherwise gave no line and `--check` exited 0. Sorting is code-unit order, not `localeCompare`, so the hash does not depend on the Node build's ICU.
+2. Step 3 (coder, i60 manager): the plan's `full_name` pattern `^[\w.-]+\/[\w.-]+$` accepts `../evil`, which the step's own test requires to fail. `readGithub` also rejects a `full_name` with a part made only of dots, applies both checks to every listed row (not only before building an endpoint), and requires `full_name === owner.login + '/' + name` for an `e2e` row. All three only add `github-read-failed` exits.

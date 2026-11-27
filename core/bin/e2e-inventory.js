@@ -2,6 +2,11 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn: nodeSpawn } = require('node:child_process');
+const { makeRedactor } = require('../src/redact.js');
+const { createCfactorySource } = require('../src/sources/cfactory.js');
 
 const names = ['aifactory', 'pfactory', 'tfactory'];
 const pattern = /^(olafkfreund|freundcloud)\/e2e-\d{8}-P1-\d+$/i;
@@ -225,4 +230,217 @@ function compareAfter(approved, fresh) {
   return changes;
 }
 
-module.exports = { build, hashOf, compare, compareAfter };
+const fail = (message) => new Error(message);
+const E2E_NAME = /^e2e-\d{8}-P1-\d+$/;
+const FIXED = new Set(['github-read-failed', 'scope-read-failed', 'key-read-failed', 'holds-read-failed',
+  'factories-read-failed', 'list-read-failed', 'list-hash-mismatch', 'out-exists', 'inventory-read-failed',
+  'inventory-ambiguous', 'invalid-holds', 'invalid-factories']);
+const USAGE = 'usage: e2e-inventory --holds <file> --out <file> [--factories <file>] | ' +
+  'e2e-inventory --check <list.json> --holds <file> [--factories <file>] [--after]';
+
+// every gh call is a GET with fixed arguments and no shell; stderr is dropped so no raw error text can leak
+function readGithub(spawn) {
+  const get = (endpoint) => new Promise((resolve, reject) => {
+    const bad = () => reject(fail('github-read-failed'));
+    let child;
+    try { child = spawn('gh', ['api', '--method', 'GET', '--paginate', '--slurp', endpoint], { stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return bad(); }
+    let text = '';
+    let done = false;
+    const end = (fn) => { if (!done) { done = true; clearTimeout(timer); fn(); } };
+    const timer = setTimeout(() => end(() => { try { child.kill(); } catch {} bad(); }), 60000);
+    child.stdout.on('data', (chunk) => { text += chunk; });
+    child.on('error', () => end(bad));
+    child.on('close', (code) => end(() => {
+      if (code !== 0) return bad();
+      try {
+        const pages = JSON.parse(text);
+        if (Array.isArray(pages)) resolve(pages); else bad();
+      } catch { bad(); }
+    }));
+  });
+  const list = async (endpoint) => {
+    const pages = await get(endpoint);
+    if (!pages.every(Array.isArray)) throw fail('github-read-failed');
+    return pages.flat();
+  };
+  // shortcut: with --slurp a silently missing last page cannot be told from a short result; we rely on gh exiting non-zero
+  // when a page request fails. Upgrade to reading the Link header (gh api -i) if a repository ever nears 100 branches or issues.
+  return (async () => {
+    const user = await get('/user');
+    if (user.length !== 1 || user[0]?.login !== 'olafkfreund') throw fail('github-read-failed');
+    const seen = new Map();
+    for (const row of [...await list('/user/repos?affiliation=owner&per_page=100'), ...await list('/orgs/Freundcloud/repos?type=all&per_page=100')]) {
+      if (!plain(row) || !plain(row.owner) || ![row.node_id, row.full_name, row.name, row.owner.login, row.visibility].every((v) => typeof v === 'string')
+          || !/^[\w.-]+\/[\w.-]+$/.test(row.full_name) || row.full_name.split('/').some((part) => /^\.+$/.test(part))) throw fail('github-read-failed');
+      if (!seen.has(row.full_name)) seen.set(row.full_name, row);
+    }
+    const repos = [];
+    for (const row of seen.values()) {
+      if (!E2E_NAME.test(row.name) || !['olafkfreund', 'freundcloud'].includes(row.owner.login.toLowerCase())) continue;
+      if (row.full_name !== `${row.owner.login}/${row.name}`) throw fail('github-read-failed');
+      const base = `/repos/${row.full_name}`;
+      const branches = (await list(`${base}/branches?per_page=100`)).map((b) => {
+        if (!plain(b) || typeof b.name !== 'string' || typeof b.commit?.sha !== 'string') throw fail('github-read-failed');
+        return { name: b.name, sha: b.commit.sha };
+      });
+      const issues = (await list(`${base}/issues?state=all&per_page=100`)).map((i) => {
+        if (!plain(i) || !Number.isInteger(i.number) || typeof i.state !== 'string') throw fail('github-read-failed');
+        return { number: i.number, pull: Object.hasOwn(i, 'pull_request'), state: i.state, updated_at: i.updated_at ?? null };
+      });
+      const hooks = (await list(`${base}/hooks?per_page=100`)).map((h) => {
+        if (!plain(h) || !Number.isInteger(h.id)) throw fail('github-read-failed');
+        let host = 'invalid';
+        try { host = new URL(h.config.url).host; } catch {}
+        return { id: h.id, host };
+      });
+      repos.push({ node_id: row.node_id, full_name: row.full_name, visibility: row.visibility, archived: row.archived === true,
+        pushed_at: row.pushed_at ?? null, updated_at: row.updated_at ?? null, branches, issues, hooks });
+    }
+    return { repos, known: [...seen.keys()] };
+  })();
+}
+
+// not loadScope: that checks write flags against the environment and reads the GitHub token file
+function readScopes(dir) {
+  const idPattern = /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  const read = (name) => {
+    try {
+      const scope = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      if (!plain(scope)) throw new Error('shape');
+      if (!Object.hasOwn(scope, 'projects')) return { scope, ids: [] };
+      const allow = scope.projects?.allow;
+      if (!plain(scope.projects) || Object.keys(scope.projects).join() !== 'allow' || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
+          !allow.every((p) => plain(p) && Object.keys(p).join() === 'id' && typeof p.id === 'string' && idPattern.test(p.id)) ||
+          new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('shape');
+      return { scope, ids: allow.map((p) => p.id) };
+    } catch { throw fail('scope-read-failed'); }
+  };
+  const cluster = read('scope.cluster.json');
+  const local = read('scope.json');
+  return { cluster: cluster.ids, p620: local.ids, scope: local.scope };
+}
+
+// the checks of core/src/scope.js, minus everything about writes; the write key file is never opened
+function readKey(scope) {
+  try {
+    const source = scope.source;
+    if (source?.kind !== 'cfactory' || typeof source.mcp_url !== 'string' || !URL.canParse(source.mcp_url) ||
+        !Number.isInteger(source.repository_id) || typeof source.key_file !== 'string' || !path.isAbsolute(source.key_file)) throw new Error('shape');
+    const url = new URL(source.mcp_url);
+    if (url.protocol !== 'https:' && (url.protocol !== 'http:' || url.hostname !== '127.0.0.1')) throw new Error('shape');
+    if (typeof source.write_key_file === 'string') {
+      let writeReal;
+      try { writeReal = fs.realpathSync(source.write_key_file); } catch {} // a path that does not exist cannot be the read key
+      if (writeReal !== undefined && writeReal === fs.realpathSync(source.key_file)) throw new Error('same-key');
+    }
+    const fd = fs.openSync(source.key_file, 'r');
+    let key;
+    try {
+      if (fs.fstatSync(fd).mode & 0o077) throw new Error('mode');
+      key = fs.readFileSync(fd, 'utf8').trim();
+    } finally { fs.closeSync(fd); }
+    if (!/^(acw|cfk)_[A-Za-z0-9]{16,}$/.test(key)) throw new Error('shape');
+    return { key, mcpUrl: source.mcp_url, repositoryId: source.repository_id };
+  } catch { throw fail('key-read-failed'); }
+}
+
+function readJson(file, message) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw fail(message); }
+}
+
+// every input value goes in a code span, so Markdown in a name cannot change the list
+const code = (value) => `\`${String(value ?? '-').replace(/[`|]/g, '?')}\``;
+const codes = (values) => values.length ? values.map(code).join(', ') : code('-');
+function render(record) {
+  const lines = [`# e2e-* inventory`, '', `hash: ${code(record.hash)}`, `taken_at: ${code(record.taken_at)}`, '',
+    '| set | state | reasons | actions | entry | project | cards | branches | issues and pull requests | webhooks | factories |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'];
+  for (const set of record.sets) {
+    lines.push(`| ${[code(set.key), code(set.state), codes(set.reasons), codes(set.actions), code(set.entry?.id), code(set.project?.id),
+      codes(set.cards.map((c) => `${c.card_key} ${c.status}`)),
+      codes((set.github?.branches ?? []).map((b) => `${b.name} ${b.sha}`)),
+      codes((set.github?.issues ?? []).map((i) => `${i.pull ? 'pull' : 'issue'} ${i.number} ${i.state}`)),
+      codes((set.github?.hooks ?? []).map((h) => `${h.id} ${h.host}`)),
+      codes(Object.entries(set.factories).map(([name, f]) => `${name} checked=${f.checked} running=${f.running}`))].join(' | ')} |`);
+  }
+  lines.push('', '## Releases and archive lines', '');
+  const lineOf = (kind, l) => `- ${code(kind)} ${code(l.repository_id ?? l.github)} by ${code(l.by)} ${code(l.link)}`;
+  const recorded = [...record.holds.releases.map((l) => lineOf(l.kind, l)), ...record.holds.archive.map((l) => lineOf('archive', l))];
+  lines.push(...(recorded.length ? recorded : ['- none']));
+  lines.push('', '## Holds', '', ...(record.holds.holds.length ? record.holds.holds.map((l) => `- ${code(l.repository_id ?? l.github)} ${code(l.reason)}`) : ['- none']));
+  lines.push('', '## Kept', '',
+    `- entries: ${codes(record.kept.entries.map((e) => `${e.id} ${e.project}`))}`,
+    `- projects: ${codes(record.kept.projects.map((p) => `${p.id} ${p.name}`))}`,
+    `- connections: ${codes(record.kept.connections.map((c) => `${c.id} ${c.provider}`))}`,
+    `- repositories: ${codes(record.kept.github.map((g) => `${g.full_name} exists=${g.exists}`))}`,
+    `- cards: ${codes(record.kept.cards)}`);
+  lines.push('', 'After removal CFactory keeps soft-deleted card rows, their comments, card keys and audit records. ' +
+    'The cluster Secret was not read (the local scope.cluster.json was). AIFactory is checked by hand.');
+  return lines.join('\n');
+}
+
+function parseArgs(argv) {
+  const flags = { '--holds': 1, '--out': 1, '--factories': 1, '--check': 1, '--after': 0 };
+  const got = {};
+  for (let i = 0; i < argv.length; i++) {
+    const name = argv[i];
+    if (!Object.hasOwn(flags, name) || Object.hasOwn(got, name)) return null;
+    if (flags[name]) {
+      if (typeof argv[i + 1] !== 'string' || argv[i + 1].startsWith('--')) return null;
+      got[name] = argv[++i];
+    } else got[name] = true;
+  }
+  const check = Object.hasOwn(got, '--check');
+  if (!got['--holds'] || (check ? Object.hasOwn(got, '--out') : !got['--out'] || got['--after'])) return null;
+  return got;
+}
+
+async function main(argv, env, write, { spawn = nodeSpawn, sourceFactory = createCfactorySource } = {}) {
+  let redactor = makeRedactor([]);
+  const out = (s) => write(redactor.logSafe(s));
+  const args = parseArgs(argv);
+  if (!args) { out(USAGE); return 2; }
+  let source;
+  try {
+    const holds = readJson(args['--holds'], 'holds-read-failed');
+    const factories = args['--factories'] ? readJson(args['--factories'], 'factories-read-failed') : {};
+    const approved = args['--check'] ? readJson(args['--check'], 'list-read-failed') : null;
+    if (approved && !(plain(approved) && approved.version === 1 && typeof approved.hash === 'string' && hashOf(approved) === approved.hash)) throw fail('list-hash-mismatch');
+    const scopes = readScopes(env.RFACTORY_CONFIG || `${env.HOME}/.config/rfactory`);
+    const { key, mcpUrl, repositoryId } = readKey(scopes.scope);
+    redactor = makeRedactor([key]);
+    let cfactory;
+    try {
+      source = sourceFactory({ mcpUrl, key, repositoryId, redactor });
+      await source.start();
+      cfactory = await source.inventory();
+    } catch { throw fail('inventory-read-failed'); }
+    const github = await readGithub(spawn);
+    // redaction before the hash, so the file on disk verifies
+    const record = redactor.logSafe(build({ cfactory, github, scopes: { cluster: scopes.cluster, p620: scopes.p620 }, factories, holds }));
+    record.taken_at = new Date().toISOString();
+    record.hash = hashOf(record);
+    if (approved) {
+      const changes = args['--after'] ? compareAfter(approved, record) : compare(approved, record);
+      for (const line of changes) out(line);
+      return changes.length ? 1 : 0;
+    }
+    const markdown = render(record);
+    try { fs.writeFileSync(args['--out'], `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 }); } catch (e) {
+      throw fail(e?.code === 'EEXIST' ? 'out-exists' : 'internal');
+    }
+    out(markdown);
+    return 0;
+  } catch (e) {
+    out(`error: ${FIXED.has(e?.message) ? e.message : 'internal'}`);
+    return 4;
+  } finally {
+    try { await source?.close(); } catch {}
+  }
+}
+
+if (require.main === module) {
+  main(process.argv.slice(2), process.env, (s) => process.stdout.write(`${s}\n`)).then((code) => { process.exitCode = code; });
+}
+
+module.exports = { main, build, hashOf, compare, compareAfter };
