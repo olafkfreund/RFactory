@@ -315,3 +315,7 @@ The owner approved this plan with its recommendations. This approves the read-on
 3. **The spec's rule is kept for this slice.** The live run shows whether every set with a card is held for `running-work`; if so, a spec change goes to the owner before the second plan.
 4. **`core/bin/e2e-inventory.js` ships in the `rfactory-web` image** as the spec names it. It is read-only and unused there.
 5. **Merge with the next RFactory release window,** so this slice causes no deploy of its own. The merge still needs the owner's OK and a bus announcement (see the trap in the merge step).
+
+## Deviations
+
+1. Step 2 (Codex, i60 manager): `compare` matches items by `card_key`, `number`, `id`, then `name` (the plan lists `name` before `id`), and adds a `changed record` line when the hashes differ and nothing else was reported: two kept projects sharing a name otherwise gave no line and `--check` exited 0. Sorting is code-unit order, not `localeCompare`, so the hash does not depend on the Node build's ICU.
