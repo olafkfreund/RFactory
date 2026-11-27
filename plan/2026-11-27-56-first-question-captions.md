@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 56
 spec: spec/2026-11-27-56-first-question-captions.md
 coders:
@@ -231,3 +231,7 @@ All pass. A scratch-copy trial of the step 1 and step 2 code broke exactly the f
 - **Then the guest:** as plan/2026-11-26-65-factory-rename-followups.md's Rollback (check out the commit before this PR, import both guest images, pin, merge, refresh `rfactory-desktops`).
 - **Never the guest alone:** an old bot under the new manager never greets on Meet.
 - **No data migration:** nothing is stored.
+
+## Approval (2026-11-27)
+
+The owner approved this plan with the recommended answers: "approve all with recommendations and start implementing". Every open question (the live check runs the branch locally before merge; the narrower first-caption fallback is kept) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
