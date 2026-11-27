@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   render, handleCall, renderFooter, loadShares, loadInvestigations,
-  renderReview, loadReview, renderReviewCard, loadReviewCard, openPage,
+  renderNotes, loadNotes, renderReview, loadReview, renderReviewCard, loadReviewCard, openPage,
 } = require('../public/app.js');
 
 class Node {
@@ -423,7 +423,7 @@ async function projectPage(t, path, { config = { projects: true }, routes = {}, 
   const { doc, byId } = shim();
   for (const id of ['run', 'status', 'stale', 'summary-card', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
-    'share', 'share-list', 'investigation', 'investigation-list']) byId[id] = new Node('x');
+    'share', 'share-list', 'investigation', 'investigation-list', 'notes', 'notes-list', 'notes-status']) byId[id] = new Node('x');
   byId['call-leave'].disabled = true;
   const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], status };
   const answers = { '/api/projects': [200, [ALPHA, BETA]], '/api/projects/resolve?slug=alpha': [200, ALPHA], ...routes };
@@ -452,7 +452,7 @@ test('a project page shows its repositories, scopes every read and starts with t
   assert.equal(p.byId['call-projects'].hidden, false);
   assert.equal(p.byId['call-project'].value, 'alpha');
   assert.deepEqual(p.byId['call-project'].children.map((o) => [o.value, o.textContent]), [['', 'Choose a project'], ['alpha', 'Alpha'], ['beta', 'Beta <b>']]);
-  for (const url of ['standup', 'review', 'actions', 'shares', 'investigations']) assert.ok(p.urls().includes(`/api/${url}?project=id-a`), url);
+  for (const url of ['standup', 'review', 'actions', 'shares', 'investigations', 'notes']) assert.ok(p.urls().includes(`/api/${url}?project=id-a`), url);
   await loadReviewCard(p.doc, 'AF-1');
   assert.equal(p.urls().at(-1), '/api/review/AF-1?project=id-a');
   assert.equal(p.streams.length, 0); // no call: no stream
@@ -518,7 +518,7 @@ test('without a projects block the page asks and streams as before', async (t) =
     assert.ok(!other.urls().some((url) => url.startsWith('/api/projects')));
   }
   const p = await projectPage(t, '/', { config: { projects: false } });
-  for (const url of ['/api/standup', '/api/review', '/api/actions', '/api/shares', '/api/investigations']) assert.ok(p.urls().includes(url), url);
+  for (const url of ['/api/standup', '/api/review', '/api/actions', '/api/shares', '/api/investigations', '/api/notes']) assert.ok(p.urls().includes(url), url);
   assert.ok(!p.urls().some((url) => url.includes('project=') || url === '/api/call/status'));
   assert.deepEqual(p.streams.map((s) => s.url), ['/api/call/events']);
   assert.notEqual(p.byId['call-projects'].hidden, false);
@@ -541,3 +541,221 @@ test('decisions carry the project, a share Stop its id, and a link slug is encod
   const broken = await projectPage(t, '/p/%E0%A4%A');
   assert.equal(broken.byId['project-info'].textContent, "This project isn't available in Meet");
 });
+
+function notesShim() {
+  const { doc, byId } = shim();
+  byId['notes-list'] = new Node('ul');
+  byId['notes-status'] = new Node('p');
+  byId.notes = new Node('section');
+  byId.notes.hidden = true;
+  return { doc, byId };
+}
+
+test('notes panel: hidden on 404, member sees notes and no buttons, approver sees edit/remove/propose/approve/discard/download, hostile text stays text, evidence in actions', async () => {
+  const { doc, byId } = notesShim();
+  const list = byId['notes-list'];
+  const labels = () => list.all().filter((n) => n.tag === 'button').map((n) => n.textContent);
+  const hostile = '<img src=x onerror=alert(1)>';
+  const realFetch = global.fetch;
+
+  try {
+    // 404 leaves panel hidden
+    global.fetch = async () => ({ ok: false, status: 404, json: async () => ({ error: 'not-found' }) });
+    await loadNotes(doc);
+    assert.equal(byId.notes.hidden, true);
+
+    const runningSet = {
+      id: 'set-1',
+      generation: 1,
+      project: { id: 'p1', name: 'Alpha' },
+      writable: true,
+      intake: true,
+      started_at: '2026-11-27T09:00:00Z',
+      ended_at: null,
+      state: 'open',
+      notes: [
+        { id: 'n1', kind: 'decision', text: `Ship Friday ${hostile}`, cards: ['FCT-1', 'FCT-2'], unknown_cards: ['FCT-99'], redacted: true },
+        { id: 'n2', kind: 'action', text: 'Fix login test', owner: 'Ana', due: 'Tuesday', cards: [], unknown_cards: [], redacted: false },
+        { id: 'n3', kind: 'blocker', text: 'Key expired', cards: ['FCT-3'], unknown_cards: [], redacted: false },
+      ],
+      proposals: [],
+    };
+
+    // Member sees notes and no buttons; unknown cards and redacted notes are marked; <img onerror> lands as text
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ sets: [runningSet], can_approve: false }) });
+    await loadNotes(doc);
+    assert.equal(byId.notes.hidden, false);
+    assert.deepEqual(labels(), []);
+    assert.ok(list.textContent.includes(hostile));
+    assert.ok(!list.all().some((n) => ['img', 'script'].includes(n.tag)));
+    assert.ok(list.textContent.includes('cards: FCT-1, FCT-2'));
+    assert.ok(list.textContent.includes('not on the board: FCT-99'));
+    assert.ok(list.textContent.includes('redacted'));
+    assert.ok(list.textContent.includes('owner: Ana'));
+    assert.ok(list.textContent.includes('due: Tuesday'));
+
+    // Approver during writable call sees Edit, Remove, Save (in inline form) and propose buttons only where Decisions allow
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ sets: [runningSet], can_approve: true }) });
+    await loadNotes(doc);
+    // n1 (decision, 2 cards): Edit, Remove, Save
+    // n2 (action, 0 cards, no card created yet): Edit, Remove, Propose card, Save
+    // n3 (blocker, 1 known card): Edit, Remove, Propose close, Save
+    assert.deepEqual(labels(), ['Edit', 'Remove', 'Save', 'Edit', 'Remove', 'Propose card', 'Save', 'Edit', 'Remove', 'Propose close', 'Save']);
+    assert.ok(!list.textContent.includes('Destination: this RFactory page.'));
+
+    // Non-writable call: no propose buttons
+    handleCall(doc, { type: 'notes', set: { ...runningSet, writable: false } });
+    assert.deepEqual(labels(), ['Edit', 'Remove', 'Save', 'Edit', 'Remove', 'Save', 'Edit', 'Remove', 'Save']);
+
+    // Once card proposal finishes with card_key on n2, Propose owner appears; contradicted close on n3 shows line and Propose close anyway
+    const withProposalsAndContradiction = {
+      ...runningSet,
+      notes: [
+        runningSet.notes[0],
+        runningSet.notes[1],
+        {
+          ...runningSet.notes[2],
+          close_evidence: {
+            card_key: 'FCT-3',
+            status: 'in_progress',
+            stages: [{ stage: 'code', status: 'failed' }],
+            verdict: 'contradicted',
+            evidence_hash: 'ehash-1',
+          },
+        },
+      ],
+      proposals: [
+        { id: 'p1', note_id: 'n2', what: 'card', action: 'create_card', card_key: 'FCT-10', title: 'Fix login test', state: 'done' },
+      ],
+    };
+    handleCall(doc, { type: 'notes', set: withProposalsAndContradiction });
+    assert.ok(list.textContent.includes('create_card FCT-10: done'));
+    assert.ok(list.textContent.includes('code: failed'));
+    assert.ok(list.textContent.includes('the stage results contradict this'));
+    assert.deepEqual(labels(), [
+      'Edit', 'Remove', 'Save',
+      'Edit', 'Remove', 'Propose card', 'Propose owner', 'Save',
+      'Edit', 'Remove', 'Propose close anyway', 'Save',
+    ]);
+
+    // Clicking "Propose close anyway" sends confirm: evidence_hash
+    const posted = [];
+    global.fetch = async (url, options) => {
+      if (options?.method === 'POST') {
+        posted.push([url, options.headers, JSON.parse(options.body)]);
+        return { ok: false, status: 409, json: async () => ({ text: 'The stage results contradict this.' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ sets: [withProposalsAndContradiction], can_approve: true }) };
+    };
+    const anywayBtn = list.all().find((n) => n.tag === 'button' && n.textContent === 'Propose close anyway');
+    await anywayBtn.listeners.click();
+    assert.deepEqual(posted[0], [
+      '/api/notes/set-1/n3/propose',
+      { 'Content-Type': 'application/json', 'X-RFactory-Action': '1' },
+      { what: 'close', confirm: 'ehash-1' },
+    ]);
+    assert.equal(byId['notes-status'].textContent, 'The stage results contradict this.');
+
+    // Edit form sends no owner or due when kind is not an action item
+    const forms = list.all().filter((n) => n.attrs.class === 'call-form' || n.className === 'call-form');
+    const decisionSave = forms[0].all().find((n) => n.tag === 'button' && n.textContent === 'Save');
+    await decisionSave.listeners.click();
+    assert.deepEqual(posted[1][0], '/api/notes/set-1/n1/edit');
+    assert.deepEqual(Object.keys(posted[1][2]), ['kind', 'text']);
+
+    // Ended open set without markdown says "Waiting for a card action to finish." and offers Discard
+    const endedWaiting = { ...runningSet, ended_at: '2026-11-27T09:30:00Z' };
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ sets: [endedWaiting], can_approve: true }) });
+    await loadNotes(doc);
+    assert.ok(list.textContent.includes('Waiting for a card action to finish.'));
+    assert.ok(labels().includes('Discard'));
+    assert.ok(!labels().includes('Approve'));
+    assert.ok(!labels().some((l) => l.startsWith('Propose')));
+
+    // Ended open set with markdown shows <pre>, destination lines, Approve and Discard
+    const endedReady = {
+      ...endedWaiting,
+      markdown: '# Standup notes: 2026-11-27\n\nApproved by: approver@example.test',
+      hash: 'mhash-1',
+    };
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ sets: [endedReady], can_approve: true }) });
+    await loadNotes(doc);
+    assert.ok(list.all().some((n) => n.tag === 'pre' && n.textContent.includes('# Standup notes: 2026-11-27')));
+    assert.ok(list.textContent.includes('Destination: this RFactory page. Every signed-in member of this deployment can read and download these notes until 24 hours after the call.'));
+    assert.ok(list.textContent.includes('A downloaded file leaves RFactory.'));
+    assert.ok(labels().includes('Approve') && labels().includes('Discard'));
+
+    // Approve sends hash
+    global.fetch = async (url, options) => {
+      if (options?.method === 'POST') {
+        posted.push([url, JSON.parse(options.body)]);
+        return { ok: true, status: 200, json: async () => ({ text: 'Notes approved.' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({
+        sets: [{ ...endedWaiting, state: 'approved', approved_by: 'approver@example.test' }],
+        can_approve: true,
+      }) };
+    };
+    await list.all().find((n) => n.tag === 'button' && n.textContent === 'Approve').listeners.click();
+    assert.deepEqual(posted.at(-1), ['/api/notes/set-1/approve', { hash: 'mhash-1' }]);
+    assert.equal(byId['notes-status'].textContent, 'Notes approved.');
+
+    // Approved set shows "Approved by …", Download link and Discard (no Edit/Remove/Approve)
+    assert.ok(list.textContent.includes('Approved by approver@example.test'));
+    const download = list.all().find((n) => n.tag === 'a' && n.textContent === 'Download');
+    assert.equal(download.attrs.href, '/api/notes/set-1/download');
+    assert.deepEqual(labels(), ['Discard']);
+
+    // An older loadNotes response is dropped
+    let releaseOld;
+    global.fetch = async () => {
+      if (!releaseOld) {
+        await new Promise((r) => { releaseOld = r; });
+        return { ok: true, status: 200, json: async () => ({ sets: [], can_approve: false }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ sets: [{ ...endedWaiting, state: 'approved', approved_by: 'approver@example.test' }], can_approve: true }) };
+    };
+    const oldLoad = loadNotes(doc);
+    await loadNotes(doc);
+    releaseOld();
+    await oldLoad;
+    assert.equal(byId.notes.hidden, false);
+
+    // renderAction shows close evidence above description when a.evidence is set
+    for (const id of ['actions-pending', 'actions-history']) byId[id] = new Node('ul');
+    byId['actions-count'] = new Node('span');
+    byId.actions = new Node('section');
+    byId.history = new Node('section');
+    handleCall(doc, {
+      type: 'action-pending',
+      action: {
+        id: 'a-close',
+        action: 'move_card',
+        args: { card_key: 'FCT-3', status: 'done' },
+        card_key: 'FCT-3',
+        effects: { text: 'moves card to done' },
+        proposed_by: 'approver@example.test',
+        proposed_at: '2026-11-27T09:10:00Z',
+        expires_at: new Date(Date.now() + 600000).toISOString(),
+        state: 'pending',
+        hash: 'ahash',
+        description: 'Move FCT-3 to done',
+        evidence: {
+          verdict: 'contradicted',
+          stages: [{ stage: 'code', status: 'failed' }],
+          note: 'Stage results can come from another card with the same correlation key until CFactory#583 is fixed.',
+          pull_request: 'not checked',
+        },
+      },
+    });
+    const actText = byId['actions-pending'].textContent;
+    assert.ok(actText.indexOf('contradicted') < actText.indexOf('Move FCT-3 to done'));
+    assert.ok(actText.includes('code: failed'));
+    assert.ok(actText.includes('Source: CFactory card, read 2026-11-27T09:10:00Z'));
+    assert.ok(actText.includes('CFactory#583'));
+    assert.ok(actText.includes('Pull request: not checked.'));
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
