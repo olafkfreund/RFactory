@@ -1,9 +1,9 @@
 ---
-status: draft
+status: approved
 issue: 58
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
-related: intent/2026-11-17-10-phase-3-actions-and-share.md, intent/2026-11-23-28-factory-review-control.md, intent/2026-11-26-52-project-aware-calls.md, intent/2026-11-26-51-in-call-agents.md, #22 (draft intent on its own branch), #59
+related: intent/2026-11-17-10-phase-3-actions-and-share.md, intent/2026-11-23-28-factory-review-control.md, #28 slice 2 (intent on its own branch), intent/2026-11-26-52-project-aware-calls.md, intent/2026-11-26-51-in-call-agents.md, #22 (draft intent on its own branch), #59
 ---
 
 # Intent: standup notes: record what is agreed, turn it into cards, publish the notes
@@ -40,7 +40,7 @@ For a call, on the RFactory page, for the call's project (#52):
 - **Notes are taken during the call**, in four kinds: decisions, action items (with an owner and a due date when stated), blockers, and the cards discussed.
   - Each note is short and in the bot's words. It is never a verbatim transcript.
   - A card is named only when it exists in the project's board. A note that names an unknown card says so.
-  - How a note gets in (said to the bot, or picked up from the whole conversation) is open question 1.
+  - How a note gets in (said to the bot, or picked up from the whole conversation) is decision 1: said to the bot first.
 - **The notes are shown live on the page** to signed-in members, as they are taken.
 - **The bot confirms at the end.** When asked ("Factory, what did you note?") or when the call is closed, it says a short headline: how many decisions, action items and blockers, and that the list is on the page. It does not read the list aloud (#8 decision 3).
 - **An approver reviews the notes on the page.** They can correct or remove a note. What is published is what they saw.
@@ -48,14 +48,14 @@ For a call, on the RFactory page, for the call's project (#52):
   - An action item can become a proposed new card.
   - "FCT-12 is done" can become a proposal to move that card to done. The proposal shows the evidence beside it: the card's stage states, and its pull request state where the project has a GitHub read binding (#51). A claim the evidence contradicts is shown as contradicted.
   - Each proposal goes through #10's path unchanged: checked against the allowlist, described by the server, approved by an approver on the page, bound to the exact arguments, run once, recorded.
-- **The notes are published only after an approver approves the exact text and the exact destination.** The target is open question 3. The published file names the date, the project and the approver, and holds the four lists and the cards created or closed from them.
+- **The notes are published only after an approver approves the exact text and the exact destination.** The target is decision 3. The published file names the date, the project and the approver, and holds the four lists and the cards created or closed from them.
 - **Everything is recorded:** notes approved, published or discarded, by whom, and where to. The record holds the target and a hash, not the note text.
   - One exception, as today: text an approver turns into a card proposal (a title, acceptance criteria) is kept in #10's 90-day record with the proposal (`web/actions.js:73-84`).
 
 **Not in this task:**
 
 - Jira and Confluence (#59).
-- New card actions, a stop, or a description field: those are #28's control slice (open question 6).
+- New card actions, a stop, or a description field: those are #28's control slice (decision 6).
 - A recording or a full transcript, in any form.
 
 ## Affected users and systems
@@ -95,45 +95,43 @@ New for this task:
 
 - **No verbatim speech is kept or published.** Notes hold decisions and actions in short form. The speech they came from is discarded as today.
 - **People in the call are told.** If the bot notes more than what is addressed to it, it says so when it joins, and the page shows it.
-- **More speech to the brain needs its own yes.** #8 decision 6 covers only what is said to the bot. If notes come from the whole conversation (open question 1b), that speech is redacted before it is sent, as addressed speech is today (`web/call.js:393`), and goes only to the destination approved for the project (#51).
+- **More speech to the brain needs its own yes.** #8 decision 6 covers only what is said to the bot. If notes come from the whole conversation (decision 1, the later slice), that speech is redacted before it is sent, as addressed speech is today (`web/call.js:393`), and goes only to the destination approved for the project (#51).
 - **A publication approval is bound and used once.** It covers the final redacted text, the project, the repository and the exact destination. The approval screen shows who can read that destination, which may be more people than can open the RFactory page. An uncertain result is reported and never retried.
 - **Evidence for a close is fresh and belongs to the card.** It is read when the proposal is made and names its source and age. If it changes before the approval, the proposal is no longer valid. Stage results that may belong to another card (CFactory#583) are marked so.
-- **Notes outlive the call only to be reviewed.** Unapproved notes are deleted after a fixed, short time (open question 4). This is a change to #8 decision 7 and #28's retention constraint, and needs the owner's explicit yes.
+- **Notes outlive the call only to be reviewed.** Notes are deleted 24 hours after the call (decision 4). This changes #8 decision 7 and #28's retention constraint; the owner approved it with decision 4.
 - **A published file is permanent.** A file in a repository stays in its history. The approval screen says so.
 - **A close is never proposed as verified when it was not.** If the evidence could not be read, the proposal says "not checked", not "verified".
 - **Off until turned on.** Without the new setting, a call behaves exactly as today.
 
 ## Open questions
 
-1. **How does a note get in?** This decides the size and the privacy of the whole task.
-   - **(a) Only what is said to the bot:** "Factory, note that we ship Friday", "Factory, action for Ana: fix the login test by Tuesday". It keeps #8 decision 1, sends no new speech to the brain, and is the smallest change. People must remember to say it.
-   - **(b) The whole conversation:** the bot listens to everything and extracts the notes. This is what "takes notes of what is agreed" reads like. It reverses #8 decision 1 for listening, sends all speech to the brain, needs a spoken notice, and mis-heard captions become wrong notes.
-   - **Recommended:** two slices. (a) first, with the page, the review and the publishing. (b) as its own slice, after the #57 live test shows how good the captions are with 5-10 people.
-2. **Who may see the live notes?** Recommended: signed-in members on the page only. Not the shared view (#12), which guests see; a shared notes view would be its own approval.
-3. **Where are the notes published?**
-   - **(a)** On the RFactory page only, with a Markdown download. No new write path. Nothing to file in CFactory.
-   - **(b)** A pull request to the project's repository, `standups/YYYY-MM-DD.md`, opened by a new CFactory tool, so RFactory keeps one write key and no GitHub write access. Never a push to `main`.
-   - **(c)** A comment on each discussed card. Needs a new CFactory comment tool.
-   - **Recommended:** (a) in the first slice and (b) as the owner's "in the repo", once the CFactory tool exists. (c) later, if wanted. Confluence stays in #59.
-4. **How long may notes live after the call?**
-   - Unapproved notes. Recommended: 24 hours, then deleted, and never restored into a later call.
-   - Approved notes that stay on the page (question 3a). Recommended: the same 24 hours to download them, then only the record line. The alternative: keep them for the record's 90 days, which makes RFactory a notes archive.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved the intent with the recommendations ("use recommendations and approve"). The recommended answer to each question is the decision.
+
+1. **How a note gets in: two slices.**
+   - **First slice:** only what is said to the bot ("Factory, note that we ship Friday", "Factory, action for Ana: fix the login test by Tuesday"), with the page, the review and the publishing. #8 decisions 1 and 6 stay as they are, and no new speech goes to the brain.
+   - **Later slice, with its own spec:** notes from the whole conversation, after the #57 live test shows how good the captions are with 5-10 people. It changes #8 decisions 1 and 6 for listening and needs the spoken notice.
+2. **Live notes** are shown to signed-in members on the page only. Not in the shared view (#12); a shared notes view would be its own approval.
+3. **Publishing target.**
+   - **First slice:** the RFactory page, with a Markdown download. No new write path.
+   - **Then:** a pull request to the project's repository, `standups/YYYY-MM-DD.md`, opened by a new CFactory tool under its own issue. RFactory keeps one write key and gets no GitHub write access. Never a push to `main`.
+   - A comment on each discussed card comes later, if wanted. Confluence stays in #59.
+4. **Lifetime after the call.**
+   - Unapproved notes: 24 hours, then deleted, never restored into a later call.
+   - Approved notes on the page: the same 24 hours to download them, then only the record line.
    - Notes published elsewhere: RFactory keeps only the record line.
-5. **When are note-derived proposals made and approved?** Today a proposal can be made only during a call (`web/actions.js:49`), dies when the call ends (`:188`, #10's constraint), and five may wait.
-   - **(a)** During the call only. Nothing in #10 changes. The approver picks a note on the page and asks for its proposal, one at a time, so the limit of five holds. Notes not handled before the call ends stay notes.
-   - **(b)** Also after the call, inside the review window of question 4. This is an exception to #10's "expires at the end of the call" and needs the owner's explicit yes. The proposal is then started by a signed-in approver on the page, not by speech.
-   - **Recommended:** (a) first. (b) if the #57 live test shows that standups end before the approver gets through the list.
-6. **Where is the boundary with #28's control slice?** Both use the same action path.
-   - **Recommended:** #28 owns the allowlist and the action manager: new actions (stop, resume), new fields (a description on create), and their effects. #58 owns the notes, the review and the publishing, and adds no action and no field. If notes need an owner on a new card, #58 uses `create_card` followed by a proposed `update_card` for the assignee, or waits for #28 to add the field.
-   - To decide: should #28's slice add `assignee` (and a description) to `create_card`, so one approval creates a complete card?
-7. **What does "verify" mean for a close?** Recommended: the server shows the evidence and the approver decides. A contradicted claim ("said done, tests failed") stays a note and gets no close proposal unless the approver asks for one. The alternative: refuse every close the evidence does not confirm.
-8. **Due dates.** CFactory cards have no due date field. Recommended: the due date stays in the note and the published file, and goes into the card's acceptance criteria text only if the approver adds it. The alternative: a CFactory field, under its own issue.
-9. **Names in the published file.** Owners are people's names, as captions give them. Recommended: names as heard, editable by the approver before publishing; with own transcription, only names that were said.
-10. **Which repository, in a project with several?**
-    - For cards: today only the deployment's configured repository can be written. Recommended: keep that in the first slice; a project without it gets notes and no card proposals.
-    - For the file: recommended, the approver picks one of the call's frozen repositories on the approval screen. No default is assumed.
-11. **Does publishing to the repository need #22's pairing?** Approved #51 puts branch writes from a call behind #22's grant (`intent/2026-11-26-51-in-call-agents.md:53-58`). A grant ends with the call, while notes are often published after it.
-    - **(a)** A narrow exception: one fixed-shape notes file, its exact text and destination approved on the page, the pull request opened by CFactory, no grant needed. This needs the owner's explicit yes, and the #22 intent should name it.
-    - **(b)** Repository publishing waits for #22 and is possible only during an elevated call.
-    - **Recommended:** (a). Until it is decided, only the page target (question 3a) ships.
-12. **Who approves the publication?** Recommended: any approver, as for #10. The alternative: the approver plus the person who started the call.
+5. **Note-derived proposals are made and approved during the call only.** Nothing in #10 changes: the approver picks a note on the page and asks for its proposal, one at a time, and the limit of five waiting holds. Notes not handled before the call ends stay notes. Proposals after the call are reconsidered if the #57 live test shows that standups end before the approver gets through the list; that would be an exception to #10 and a new decision.
+6. **Boundary with #28's control slice.** #28 owns the allowlist and the action manager: new actions, new fields and their effects. #58 owns the notes, the review and the publishing, and adds no action and no field.
+   - #28's slice 2 adds a description to create and update. #58 uses it once it exists, and does not wait for it.
+   - **An owner on a new card:** #58 uses `create_card`, then a proposed `update_card` for the assignee. `create_card` gets no `assignee` field from #58. (No recommendation was given; lead's default, owner may revisit.)
+7. **"Verify" for a close:** the server shows the evidence and the approver decides. A contradicted claim ("said done, tests failed") stays a note and gets no close proposal unless the approver asks for one.
+8. **Due dates** stay in the note and the published file. They go into a card's acceptance criteria text only if the approver adds them. No CFactory field.
+9. **Names in the published file:** as heard, editable by the approver before publishing. With own transcription, only names that were said.
+10. **Which repository.**
+    - Cards: only the deployment's configured repository, as today. A project without it gets notes and no card proposals.
+    - The file: the approver picks one of the call's frozen repositories on the approval screen. No default is assumed.
+11. **Publishing to the repository does not need #22's pairing.** It is a narrow exception to #51's rule for branch writes: one fixed-shape notes file, its exact text and destination approved on the page, the pull request opened by CFactory. The #22 intent should name this exception. Until the CFactory tool exists, only the page target ships.
+12. **Any approver may approve the publication,** as for #10.
