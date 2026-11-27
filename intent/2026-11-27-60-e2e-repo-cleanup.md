@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 author: olafkfreund
 ---
@@ -88,3 +88,7 @@ When this is done:
 4. **If AIFactory, PFactory or TFactory cannot be inspected, does the cleanup wait?** Recommendation: yes, wait. Orphaned projects there are harder to find later than now.
 5. **When may repository 21 go: once the cross-project result is posted on #52, or only when #52 closes?** Slice B of #52 may want a second project again. Recommendation: keep it until the result is posted on #52 and the owner says slice B does not need it.
 6. **Should the campaign clean up after itself?** Recommendation: yes. That is a change in the campaign's repository, owned by its agent. This task only raises it there.
+
+## Approval (2026-11-27)
+
+The owner approved this intent with the recommended answers: "approve all with recommendations and start implementing". Every open question (deletion still needs the campaign's confirmation and the owner's OK on the exact list) above is decided as its recommendation says. Where an item has no recommendation, the smallest safe option stated beside it applies, and the owner may revisit it.
