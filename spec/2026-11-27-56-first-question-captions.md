@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 56
 intent: intent/2026-11-27-56-first-question-captions.md
 ---
@@ -131,3 +131,10 @@ PR #69 edits `start()` in `bot/run.js` around the join. This work is rebased on 
   3. The log shows `captions on`, `first caption` and `captions heard` with plausible times.
 
   The result, with the `captions on ms=` value, goes on the PR. If step 2 fails, the log says which step lost the question, and that goes on #56 instead of a second run.
+
+## Decisions (2026-11-27)
+
+The owner approved the spec with the recommended answers.
+
+1. **No captions means no chat line,** so that call has no source link in chat; accepted, following intent decision 3.
+2. **This lands after PR #69 merges,** rebased on it.
