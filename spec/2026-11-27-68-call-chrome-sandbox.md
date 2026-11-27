@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 68
 intent: intent/2026-11-27-68-call-chrome-sandbox.md
 ---
