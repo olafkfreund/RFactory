@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 2
 spec: spec/2026-11-17-2-standalone-mode.md
 coders:
@@ -126,7 +126,7 @@ standup of one GitHub repo.
 None of these changes a shared rule the spec lists (the gateway for
 brains, the write rule, destination approval, the model input boundary,
 fail-closed brains, the precedence rules). If the owner reads V2
-otherwise, the spec is updated first (open question 6).
+otherwise, the spec is updated first (decision 6).
 
 ## Steps
 
@@ -360,23 +360,17 @@ change, and nothing is stored, so the rollback is complete.
 - Pull request titles as links (the page links issue URLs only,
   `web/public/app.js:5`), and the page's "card" and "board" wording.
 
-## Open questions for the owner
+## Open questions
 
-1. **Is this the right next slice?** The other candidate is voice with a
-   GitHub source (S2), which is larger and needs this slice's `main()`
-   branch anyway.
-2. **Token file or environment variable?** The plan uses `token_file`.
-   The smaller option is the CLI's `token_env`, with no change to
-   `loadScope` (step 2 goes away), at the cost of a token in the web
-   process's environment.
-3. **Ship `github-mcp-server` in the web image now?** The plan leaves it
-   out, so this slice runs from a checkout only. Adding it means a pinned
-   1.14.0 in `web/Containerfile` and an image build.
-4. **The live check's token.** The spec asks for a fine-grained,
-   read-only token. S1's run used the agenix GitHub token instead (its
-   D12). Which one for step 7? It isn't known whether a fine-grained token
-   for the fixture repo can also read its project board.
-5. **Closing #2.** After this slice, should S2 to S7 each become their
-   own issue, so #2 can close?
-6. **Does V2 need a spec update first?** The plan reads the gateway rule
-   as a rule about brains, so a page with no brain doesn't change it.
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this plan with its recommendations. "(default)" marks an answer where no recommendation was given: lead's default, owner may revisit.
+
+1. **This is the next slice** (no recommendation was given; lead's default, owner may revisit). Voice with a GitHub source (S2) follows.
+2. **Token file.** The plan's `token_file` stands, with the step 2 checks in `loadScope`.
+3. **`github-mcp-server` is not shipped in the web image in this slice.** It runs from a checkout only.
+4. **Step 7 uses the spec's fine-grained, read-only token for the fixture repo** (no recommendation was given; lead's default, owner may revisit). If it cannot read the project board, that is recorded on #2 and the check stops there. The agenix token is not used without the owner's separate OK. Step 7 still needs the owner's OK first.
+5. **S2 to S7 each become their own issue** after this slice, so #2 can close (no recommendation was given; lead's default, owner may revisit).
+6. **V2 needs no spec update first.** The plan reads the gateway rule as a rule about brains, so a page with no brain does not change it.
