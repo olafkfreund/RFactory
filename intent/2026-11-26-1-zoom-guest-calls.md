@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 1
 author: olafkfreund
 parent: intent/2026-11-17-1-meeting-agent.md
@@ -93,13 +93,17 @@ Not in this slice:
 
 ## Open questions
 
-1. **Is Zoom the right next slice?** Issue #1 has no comments, so this follows the order in the umbrella intent and the note in #16's intent ("Zoom and Slack huddles (#1 Phase 2, next)"). The alternatives are Slack first, or Phase 4.
-2. **Who hosts the test meeting?** The host's account must let a guest join from a browser without signing in, admit from the waiting room, and have captions available. A free account's 40 minutes is enough. Required sign-in, end-to-end encryption or Zoom's CAPTCHA can still stop a guest.
-3. **Hearing while #67 is open.**
-   - **(a) Recommended:** the feasibility test uses Zoom's captions first, with captions turned on by the host. Own transcription is a second, separate check. The spec picks Zoom's default from the two results.
-   - **(b)** Wait for #67 before any Zoom work.
-4. **If Zoom does not let a guest post in chat,** how are people told the bot is listening? Today the bot retries the notice, then flags the failure in the web UI and keeps transcribing (`bot/run.js:350`). Options: the spoken greeting is enough; or the bot does not use own transcription in a call where the notice failed.
-5. **Which Zoom links must work?** Recommended: the ordinary invite link, with its passcode. Left out unless you need them: personal-room links, Zoom for Government and vanity addresses.
-6. **Is a feasibility test first acceptable,** with a stop if Zoom refuses the guest bot, or do you want the full slice planned in one go?
-7. **If share or the avatar does not work in Zoom,** is "joins, hears, speaks, leaves" enough to call Zoom supported, with a follow-up issue for the rest?
-8. **Issue housekeeping:** #1's title still says "Phase 0". Should Zoom, Slack and Phase 4 each get their own issue, as 1a, 1b and 3 did, so #1 can stay the umbrella?
+None.
+
+## Decisions (2026-11-27)
+
+The owner approved this intent with its recommendations. "(default)" marks an answer where no recommendation was given: lead's default, owner may revisit.
+
+1. **Zoom is the next slice** (default; it follows the umbrella order and #16's note). Slack and Phase 4 come later.
+2. **The owner hosts the test meeting** with their own account, set to allow browser guests, waiting-room admission and captions (default). The live test itself still needs the owner's OK and an agent-bus note first (see Constraints).
+3. **(a)** The feasibility test uses Zoom's captions first, turned on by the host. Own transcription is a second, separate check. The spec picks Zoom's default from the two results. Zoom work does not wait for #67.
+4. **If a guest cannot post in chat, the spoken greeting is the notice** (default, smallest option). The bot also flags the failed notice in the web UI, as it does today. The spec may tighten this if the live test shows the greeting is missed.
+5. **The ordinary invite link with its passcode** is what must work. Personal-room links, Zoom for Government and vanity addresses are left out.
+6. **A feasibility test first is accepted** (default), with a stop and a return to the owner if Zoom refuses the guest bot.
+7. **"Joins, hears, speaks, leaves" is enough to call Zoom supported** (default), with a follow-up issue for share and the avatar.
+8. **Zoom, Slack and Phase 4 each get their own issue, and #1 stays the umbrella** (default). Retitling #1 and creating the issues are separate steps for the lead.
