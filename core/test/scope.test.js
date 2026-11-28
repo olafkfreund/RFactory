@@ -566,3 +566,21 @@ test('the README "Without the Factories" scope file loads', () => {
     assert.equal(extras.githubToken, 'synthetic-readme-token');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the README Jira scope file loads', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');
+  const blocks = [...readme.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => JSON.parse(m[1]));
+  const scope = blocks.find((b) => b.source?.kind === 'jira');
+  assert.ok(scope, 'expected a Jira JSON block in README.md');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-readme-jira-scope-'));
+  try {
+    const tokenFile = path.join(dir, 'jira-token');
+    fs.writeFileSync(tokenFile, 'synthetic-jira-readme-token\n', { mode: 0o600 });
+    scope.source.token_file = tokenFile;
+    const file = path.join(dir, 'scope.json');
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const extras = {};
+    assert.deepEqual(loadScope(file, {}, [], extras), scope);
+    assert.equal(extras.jiraToken, 'synthetic-jira-readme-token');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

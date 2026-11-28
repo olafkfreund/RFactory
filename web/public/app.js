@@ -47,7 +47,7 @@ function renderItem(doc, item) {
   const li = el(doc, 'li', undefined, 'card');
   li.appendChild(el(doc, 'span', item.id, 'card-key'));
   const title = item.title || '(no title)';
-  if (typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
+  if (sourceKinds.get(doc) !== 'jira' && typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
     const a = el(doc, 'a', title, 'card-title');
     a.setAttribute('href', item.url);
     li.appendChild(a);
@@ -141,22 +141,25 @@ function render(doc, data, now = Date.now()) {
     fill(doc, s, data.items.filter((i) => i.state === s));
   }
   fill(doc, 'unknown', data.unknown);
+  const jira = sourceKinds.get(doc) === 'jira';
   const newest = data.newest_update
-    ? `newest card update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`
-    : 'no card updates';
+    ? `newest ${jira ? 'issue' : 'card'} update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`
+    : (jira ? 'no issue updates' : 'no card updates');
   const stale = data.newest_update && now - Date.parse(data.newest_update) > STALE_DAYS * 86400000;
   doc.getElementById('age').textContent = `As of ${clock(data.fetched_at)} (${ago(data.fetched_at, now)}) · ${newest}`;
   const pill = doc.getElementById('stale');
   if (pill) pill.hidden = !stale;
-  doc.getElementById('summary').textContent = data.summary || (data.summary_error ? `No summary (${data.summary_error}). The board above is still current.` : '');
-  doc.getElementById('destination').textContent = `Summary by ${data.destination}; card keys, states and counts are checked against the board.`;
+  doc.getElementById('summary').textContent = data.summary || (data.summary_error ? `No summary (${data.summary_error}). The ${jira ? 'list' : 'board'} above is still current.` : '');
+  doc.getElementById('destination').textContent = jira
+    ? 'Summary by the server; counts are taken from Jira.'
+    : `Summary by ${data.destination}; card keys, states and counts are checked against the board.`;
   const card = doc.getElementById('summary-card');
   if (card) card.hidden = false;
 }
 
 // #52: one project per page load (the picker navigates), so nothing on the page ever has to be reset
 const projectIds = new WeakMap();
-const githubMode = new WeakSet(); // a GitHub source: no review, no call, no approval lists
+const sourceKinds = new WeakMap(); // standalone source kind per document ('github' | 'jira'): no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
 const UNAVAILABLE = "This project isn't available in Meet";
 
@@ -171,7 +174,7 @@ async function run(doc) {
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
   } catch { status.textContent = 'Failed: network'; }
-  if (!githubMode.has(doc)) loadReview(doc);
+  if (!sourceKinds.has(doc)) loadReview(doc);
   button.disabled = false;
 }
 
@@ -936,8 +939,8 @@ function loadPanels(doc) {
 // /p/<slug> names the page's project; the picker lists the others. Without projects (/api/config), the page of before.
 async function openPage(doc, location, config) {
   const loaded = await config;
-  if (loaded?.source === 'github') {
-    githubMode.add(doc);
+  if (loaded?.source === 'github' || loaded?.source === 'jira') {
+    sourceKinds.set(doc, loaded.source);
     doc.getElementById('call').hidden = true;
     doc.getElementById('run').addEventListener('click', () => run(doc));
     return run(doc);
