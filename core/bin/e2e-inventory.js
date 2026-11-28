@@ -86,6 +86,10 @@ function build({ cfactory, github, scopes, factories, holds, approved }) {
   const keptCards = [];
   for (const card of cards) {
     const entry = entryById.get(card.repository_id);
+    if (card.card_key.startsWith('FCT-') && !entry) {
+      const fallback = card.repository_id === null && entryById.get(cfactory.default_repository_id);
+      if (!fallback || keyOf(fallback.project)) invalid('inventory-ambiguous');
+    }
     const key = keyOf(entry?.project ?? (card.repository_id === null
       ? card.issue_ref?.match(/^([\w.-]+\/[\w.-]+)(?:#|\/|$)/)?.[1] : null));
     if (key && setsByKey.has(key)) setsByKey.get(key).cards.push(cardProjection(card));
@@ -103,8 +107,9 @@ function build({ cfactory, github, scopes, factories, holds, approved }) {
   if ([1, 2].some((id) => !keptEntries.some((e) => e.id === id)) ||
       !keptProjects.some((p) => p.id === '5d78d4b9-35f9-4445-92c1-78f3ff60a494') ||
       !kept.connections.some((c) => c.id === 1) || kept.github.some((g) => !g.exists) ||
-      sets.some((set) => [1, 2].includes(set.entry?.id) || set.project?.id === '5d78d4b9-35f9-4445-92c1-78f3ff60a494' ||
-        set.cards.some((card) => card.card_key.startsWith('FCT-')))) invalid('inventory-ambiguous');
+      sets.some((set) => [1, 2].includes(set.entry?.id) || set.project?.id === '5d78d4b9-35f9-4445-92c1-78f3ff60a494')) {
+    invalid('inventory-ambiguous');
+  }
 
   if (!plain(holds) || Object.keys(holds).some((key) => !['holds', 'releases', 'archive'].includes(key)) ||
       !['holds', 'releases', 'archive'].every((key) => Array.isArray(holds[key]))) invalid('invalid-holds');
@@ -135,6 +140,13 @@ function build({ cfactory, github, scopes, factories, holds, approved }) {
   const scopeIds = new Set([...scopes.cluster, ...scopes.p620]);
   for (const set of sets) {
     const reasons = [];
+    const protectedCards = set.cards.filter((card) => card.card_key.startsWith('FCT-'));
+    if (protectedCards.length) {
+      const id = set.entry?.id;
+      if (!Number.isInteger(id) || protectedCards.some((card) => card.repository_id !== id) ||
+          !holds.holds.some((line) => line.repository_id === id)) invalid('inventory-ambiguous');
+      reasons.push('protected-card');
+    }
     if (holds.holds.some((line) => targets(line)[0] === set)) reasons.push('named');
     if (!set.github || !set.entry || connectionById.get(set.entry.connection_id)?.provider !== 'github') reasons.push('unpaired');
     if (set.key.startsWith('freundcloud/')) reasons.push('owner');
