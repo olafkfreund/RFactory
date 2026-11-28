@@ -8,6 +8,7 @@
 # and the Claude login home in $RFACTORY_CLAUDE_HOME (default ~/.local/share/rfactory/claude-home).
 # Desktop VMs (#3) only when RFACTORY_DESKTOP=1: also RFACTORY_RUNNER_URL and the runner's mTLS client files in
 # $RFACTORY_CONFIG/desktop-runner/ (client.crt, client.key, ca.crt; mode 600, mounted read-only, never printed);
+# RFACTORY_ZOOM_CALLS=1 enables Zoom with a desktop runner after its verified probes and matching policy are deployed.
 # RFACTORY_BRAIN_RECORD is passed on only when set. With RFACTORY_DESKTOP unset the pod is as before.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -111,6 +112,7 @@ up() {
       -e RFACTORY_RUNNER_CA=/run/rfactory/desktop-runner/ca.crt
       -v "$d/client.crt:/run/rfactory/desktop-runner/client.crt:ro,Z" -v "$d/client.key:/run/rfactory/desktop-runner/client.key:ro,Z"
       -v "$d/ca.crt:/run/rfactory/desktop-runner/ca.crt:ro,Z")
+    [ "${RFACTORY_ZOOM_CALLS:-}" != 1 ] || desktop+=(-e RFACTORY_ZOOM_CALLS=1)
     # verify only: the record lives in a host directory mounted at the same path, so the scripts can read it
     [ -z "${RFACTORY_BRAIN_RECORD:-}" ] || desktop+=(-e RFACTORY_BRAIN_RECORD="$RFACTORY_BRAIN_RECORD"
       -v "$(dirname "$RFACTORY_BRAIN_RECORD"):$(dirname "$RFACTORY_BRAIN_RECORD"):U,Z")
@@ -132,8 +134,13 @@ up() {
       -e RFACTORY_STT_SECRET_FILE=/run/rfactory/stt-path -v "$cfg/stt-path:/run/rfactory/stt-path:ro,Z")
   fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
+  call_storage=()
+  if [[ " ${write[*]} ${share[*]} ${note[*]} " != *" -v rfactory-actions:"* ]]; then
+    podman volume exists rfactory-actions || podman volume create rfactory-actions >/dev/null
+    call_storage=(-v rfactory-actions:/var/lib/rfactory/actions:U)
+  fi
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${share[@]}" "${investigate[@]}" "${note[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
+    "${write[@]}" "${share[@]}" "${investigate[@]}" "${note[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" "${call_storage[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \
@@ -152,6 +159,7 @@ up() {
     "$proxy_image" \
     --alpha-config=/etc/oauth2-proxy/config.yaml \
     --redirect-url=http://127.0.0.1:4180/oauth2/callback \
+    --skip-jwt-bearer-tokens=true \
     --email-domain='*' --cookie-secure=false --reverse-proxy=false --skip-provider-button=true >/dev/null
   echo "rfactory pod up: http://127.0.0.1:4180"
 }

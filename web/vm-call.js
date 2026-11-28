@@ -72,4 +72,4 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
   };
 }
 
-module.exports = { createVmSpawn };
+module.exports = { createVmSpawn, platformOf };

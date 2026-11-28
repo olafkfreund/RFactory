@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
 const { createReads, refusal, describe, CARD_KEY } = require('./reads.js');
+const { createVmSpawn, platformOf } = require('./vm-call.js');
 
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {
@@ -13,6 +14,8 @@ const STATIC = {
   '/tokens.css': ['tokens.css', 'text/css; charset=utf-8'],
   '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
   '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
+};
+const LIVE_STATIC = {
   '/live.html': ['live.html', 'text/html; charset=utf-8'],
   '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };
@@ -29,7 +32,11 @@ const HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 };
-const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
+function sourceCode(error) {
+  if (error?.message === 'source-timeout') return 'source-timeout';
+  if (error?.message === 'jira-http-401' || error?.message === 'jira-http-403') return 'source-auth';
+  return 'source-error';
+}
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
@@ -38,6 +45,9 @@ function validLink(link) {
   try { u = new URL(link); } catch { return false; }
   if (u.protocol !== 'https:' || u.port || u.username || u.password || u.hash || link !== u.href) return false;
   if (u.host === 'meet.google.com') return !u.search && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname);
+  if (u.host === 'zoom.us' || /^[a-z0-9-]+\.zoom\.us$/.test(u.host)) {
+    return /^\/(?:j|wc\/join)\/\d{9,11}\/?$/.test(u.pathname) && /^(?:\?pwd=[^&]+)?$/.test(u.search);
+  }
   return (u.host === 'teams.microsoft.com' && /^\/l\/meetup-join\/[^/]+(\/[^/]*)*$/.test(u.pathname))
     || (u.host === 'teams.live.com' && /^\/meet\/[0-9A-Za-z]+\/?$/.test(u.pathname))
     || (u.host === 'teams.microsoft.com' && /^\/meet\/[0-9]+\/?$/.test(u.pathname)); // the newer work link, with ?p=<passcode>
@@ -46,6 +56,11 @@ function validLink(link) {
 function sameOrigin(req) {
   if (req.headers['x-rfactory-action'] !== '1') return false;
   try { return new URL(req.headers.origin).host === req.headers.host; } catch { return false; }
+}
+
+function sameOriginStrict(req) {
+  const site = req.headers['sec-fetch-site'];
+  return sameOrigin(req) && (site === undefined || site === 'same-origin');
 }
 
 // verify only (RFACTORY_BRAIN_RECORD): one JSON line per brain input, redacted as it is sent; a failed write never breaks the brain
@@ -70,9 +85,11 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
+function createApp({ source, redactor, roles, call = null, schedule = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, zoomEnabled = false, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
-  const reads = createReads({ scope });
+  const jira = source.kind === 'jira';
+  const files = jira ? STATIC : { ...STATIC, ...LIVE_STATIC, ...(desktop ? DESKTOP_STATIC : {}) };
+  const reads = createReads({ scope: jira ? null : scope });
   const { allowed } = reads; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
@@ -111,19 +128,27 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
   }
 
   const WORDS = { done: 'done', in_progress: 'in progress', blocked: 'blocked', left: 'left', unknown: 'unknown' };
-  async function githubStandup(view) {
+  async function standaloneStandup(view) {
     let raw;
     try { raw = await view.snapshot(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
     const counts = summarise(raw.items);
-    const summary = `Repository: ${Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ')}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
-    // titles, states and evidence are copied from GitHub: the whole reply is redacted
+    const tally = Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ');
+    let summary;
+    if (view.kind === 'jira') {
+      summary = `Jira project ${scope.source.project}: ${tally}.`;
+      if (raw.truncated) summary += ' The project has more issues than were read.';
+      else if (raw.items.length === 0) summary += ' No issues matched the search for non-Done issues or issues updated in the last 14 days. If you expected matches, check that the Jira account can see the project.';
+    } else {
+      summary = `Repository: ${tally}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
+    }
+    // Titles, states and evidence come from the source.
     return [200, redactor.toModel({ items: raw.items, counts, unknown: raw.items.filter((i) => i.state === 'unknown'),
       fetched_at: raw.fetched_at, newest_update: raw.newest_update, truncated: raw.truncated, summary, summary_error: null, destination: 'the server' })];
   }
 
   async function standup(view) {
-    if (view.kind === 'github') return githubStandup(view);
+    if (view.kind === 'github' || view.kind === 'jira') return standaloneStandup(view);
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
@@ -135,6 +160,8 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const [url, ...search] = req.url.split('?');
+    if (jira && !((req.method === 'GET' && (Object.hasOwn(STATIC, url) || url === '/api/config')) ||
+        (req.method === 'POST' && url === '/api/standup'))) return json(res, 404, { error: 'not-found' });
     const query = new URLSearchParams(search.join('?'));
     if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
     if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
@@ -157,8 +184,8 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed, ...(source.kind === 'github' ? { source: 'github' } : {}) });
-    const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(jira ? {} : call?.config || {}), projects: !!allowed,
+      ...(jira || source.kind === 'github' ? { source: source.kind } : {}) });
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
       return send(res, 200, type, fs.readFileSync(path.join(PUBLIC, file)));
@@ -267,6 +294,51 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       return;
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
+    if (call && schedule && req.method === 'GET' && url === '/api/call/grant') {
+      const status = !allowed || call.project?.id === query.get('project') ? call.grantStatus(email)
+        : { grant: null, pending: false, can_verify: false, scheduled: false, display_ready: false };
+      return json(res, 200, { ...status, can_approve: roles.has(email, 'approver'), generation: call.generation });
+    }
+    const pairing = call && schedule && req.method === 'POST' && /^\/api\/call\/grant\/(request|verify|revoke)$/.exec(url);
+    if (pairing) {
+      if (!roles.has(email, 'approver') || !sameOriginStrict(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      readJson(req).then(async (body) => {
+        if (!body || body.generation !== call.generation) return json(res, 409, { error: 'stale-generation' });
+        if (allowed && call.project?.id !== query.get('project')) return json(res, 409, { error: 'not-this-project' });
+        const verb = pairing[1];
+        const { status, error, grant, revoked } = await (verb === 'request' ? call.requestPairing(email, body.scope)
+          : verb === 'verify' ? call.verifyPairing(email, body.code) : call.revokeGrant(email, body.grant_id));
+        return json(res, status, { ...(error ? { error } : { ok: true }), ...(grant ? { grant } : {}), ...(revoked ? { revoked } : {}) });
+      }).catch(() => json(res, 500, { error: 'internal' }));
+      return;
+    }
+    const schedules = schedule && /^\/api\/call\/schedules(?:\/([\w-]{1,64}))?$/.exec(url);
+    if (schedules) {
+      const id = schedules[1];
+      const projectId = allowed ? query.get('project') : null;
+      const canApprove = roles.has(email, 'approver');
+      if (req.method === 'GET' && !id) {
+        if (allowed && !allowed.has(projectId)) return json(res, 403, { error: 'project-not-allowed' });
+        return json(res, 200, { slots: schedule.list({ projectId }), can_approve: canApprove });
+      }
+      if ((req.method === 'POST' && !id) || (req.method === 'DELETE' && id)) {
+        if (!canApprove || !sameOriginStrict(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+        if (allowed && !allowed.has(projectId)) { req.resume(); return json(res, 403, { error: 'project-not-allowed' }); }
+        const failed = () => json(res, 500, { error: 'record-failed' });
+        if (id) {
+          req.resume();
+          try {
+            return schedule.remove(id, allowed ? { projectId } : undefined) ? json(res, 200, { ok: true })
+              : json(res, 404, { error: 'not-found' });
+          } catch { return failed(); }
+        }
+        readJson(req).then((body) => {
+          const slot = schedule.add({ link: body?.link, starts_at: body?.starts_at, ends_at: body?.ends_at, projectId, createdBy: email });
+          return slot ? json(res, 201, { slot }) : json(res, 400, { error: 'invalid-slot' });
+        }).catch(failed);
+        return;
+      }
+    }
     if (allowed && call && req.method === 'GET' && url === '/api/call/status') {
       return json(res, 200, { running: call.running, starting: slot.starting, generation: call.generation, project: call.project });
     }
@@ -276,6 +348,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
+          if (!zoomEnabled && platformOf(body.link) === 'zoom') return json(res, 503, { error: 'zoom-unavailable' });
           if (slot.starting || call.running) return json(res, 409, { error: 'busy' });
           let started;
           if (allowed) {
@@ -329,7 +402,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     json(res, 404, { error: 'not-found' });
   });
   if (desktop && !live) live = { isMember: desktop.isMember, openVnc: desktop.openVnc };
-  if (live) require('./live-view.js').attachLiveView(server, { roles, ...live }); // live: { isMember, openVnc }
+  if (!jira && live) require('./live-view.js').attachLiveView(server, { roles, ...live }); // live: { isMember, openVnc }
   return server;
 }
 
@@ -337,12 +410,19 @@ function refuseKeyEnv(env) {
   if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k) || /^RFACTORY_AGENT.*KEY/.test(k))) throw new Error('key-in-environment');
 }
 
-// The record exists when writes, shares, investigations, lookups, notes or agents are on; only writes build a writer and its managers
+function refuseJiraEnv(env) {
+  if (Object.keys(env).some((k) => /jira|atlassian/i.test(k) && /token|key|secret|password/i.test(k))) {
+    throw new Error('key-in-environment');
+  }
+}
+
+// The record exists when calls, writes, shares, investigations, lookups, notes or agents are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
-async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind }) {
+const ACTIONS_DIR = '/var/lib/rfactory/actions';
+async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind, callsEnabled = process.env.RFACTORY_CALLS === '1' }) {
   let actions = null, shares = null, investigations = null, notes = null;
-  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.notes_enabled && !scope.agents?.length) return { actions, shares, investigations };
-  const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
+  if (!callsEnabled && !scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.notes_enabled && !scope.agents?.length) return { actions, shares, investigations };
+  const record = require('./actions-record.js').createRecord({ dir: dir || ACTIONS_DIR, redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
   if (scope.shares_enabled) {
@@ -429,9 +509,14 @@ async function composeAgents({ scope, agents, key, redactor, call, slot, actions
   return { endpoint, url, source, close: async () => { await endpoint.close(); await source.close?.(); } };
 }
 
-// The GitHub scope reads one repository and does nothing else: every CFactory feature is refused, not skipped.
-async function composeStandalone({ scope, token, env, createSource = require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
+async function composeStandalone({ scope, token, env, createSource = scope.source?.kind === 'jira'
+  ? require('@rfactory/core/src/sources/jira.js').createJiraSource
+  : require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
   if (scope.shares_enabled || scope.lookups_enabled || env.RFACTORY_CALLS === '1' || env.RFACTORY_DESKTOP === '1') throw new Error('unsupported-scope');
+  if (scope.source?.kind === 'jira') {
+    if (!token) throw new Error('jira-token-missing');
+    return createSource({ scope, token });
+  }
   if (!token) throw new Error('github-token-missing');
   const source = createSource({ scope, bin: env.GITHUB_MCP_SERVER_BIN, token });
   await source.start();
@@ -449,8 +534,10 @@ async function main() {
   const extras = {};
   const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
-  if (scope.source.kind === 'github') {
-    const source = await composeStandalone({ scope, token: extras.githubToken, env: process.env });
+  const jira = scope.source.kind === 'jira';
+  if (jira) refuseJiraEnv(process.env);
+  if (jira || scope.source.kind === 'github') {
+    const source = await composeStandalone({ scope, token: jira ? extras.jiraToken : extras.githubToken, env: process.env });
     return createApp({ source, scope, redactor: makeRedactor(secrets), roles, commit: process.env.RFACTORY_COMMIT || '' })
       .listen(Number(process.env.PORT) || 8080, '127.0.0.1');
   }
@@ -461,7 +548,8 @@ async function main() {
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
   const reads = createReads({ scope });
-  const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
+  const dir = process.env.RFACTORY_ACTIONS_DIR || ACTIONS_DIR;
+  const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir,
     rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
@@ -473,6 +561,7 @@ async function main() {
   }
   let desktop = null;
   let call = null;
+  let schedule = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
@@ -487,19 +576,21 @@ async function main() {
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
   if (process.env.RFACTORY_CALLS === '1') {
+    schedule = require('./schedule.js').createScheduleRegistry({ dir, validLink, projectMode: !!reads.allowed });
+    const grants = require('./grants.js').createGrantManager({ record, redactor, roles, schedule });
     const { createTts } = require('./tts.js');
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, notes, desktop,
-      ...(lookup ? { ...lookup, scope, record } : {}),
-      ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
+      record, grants, ...(lookup ? { ...lookup, scope } : {}),
+      ...(runner ? { runner, spawn: createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   const commit = process.env.RFACTORY_COMMIT || '';
   const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
   console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
-  return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
-    commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+  return createApp({ source, scope, redactor, roles, call, schedule, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+    commit, slot, zoomEnabled: Boolean(runner) && process.env.RFACTORY_ZOOM_CALLS === '1' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 // The stored preview login goes through the runner's own login route; a 200 {ok:false} (the guest's fill failed) is a failure too.
@@ -511,4 +602,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, refuseJiraEnv, main, recordBrain };

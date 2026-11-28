@@ -33,10 +33,12 @@ function run(env, { writeKey = false, runnerFiles = false, mode = 0o600 } = {}) 
   return { status: r.status, out: r.stdout + r.stderr, web: lines.find((l) => l.includes('--name rfactory-web')) || '' };
 }
 
-test('pod.sh forwards approvers with writes off', () => {
+test('pod.sh forwards approvers and mounts storage for calls with writes off', () => {
   const r = run({ RFACTORY_WRITES: 'off', RFACTORY_APPROVERS: 'a@example.com' });
   assert.equal(r.status, 0);
   assert.match(r.web, /-e RFACTORY_APPROVERS=a@example\.com/);
+  assert.match(r.web, /-e RFACTORY_CALLS=1/);
+  assert.equal(r.web.match(/-v rfactory-actions:\/var\/lib\/rfactory\/actions:U/g)?.length, 1);
 });
 
 test('pod.sh forwards approvers and admins without a write key', () => {
@@ -77,6 +79,15 @@ test('pod.sh with RFACTORY_DESKTOP refuses missing or loose runner files and a m
   assert.notEqual(run({ ...env, RFACTORY_DESKTOP: 'yes' }, { runnerFiles: true }).status, 0); // the web enables desktop only with 1
 });
 
+test('pod.sh forwards Zoom opt-in only with desktop VM calls', () => {
+  const desktop = { RFACTORY_DESKTOP: '1', RFACTORY_RUNNER_URL: 'https://x:1' };
+  const zoom = { RFACTORY_ZOOM_CALLS: '1' };
+  const options = { runnerFiles: true };
+  assert.doesNotMatch(run(desktop, options).web, /RFACTORY_ZOOM_CALLS/);
+  assert.doesNotMatch(run(zoom, options).web, /RFACTORY_ZOOM_CALLS/);
+  assert.match(run({ ...desktop, ...zoom }, options).web, /-e RFACTORY_ZOOM_CALLS=1/);
+});
+
 test('pod.sh forwards RFACTORY_SHARES and mounts the record when writes are off; refuses other values', () => {
   const off = run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'on' });
   assert.equal(off.status, 0);
@@ -112,7 +123,7 @@ test('pod.sh forwards RFACTORY_NOTES, mounts the record when writes and shares a
   assert.equal(withWrites.web.split('rfactory-actions:/var/lib/rfactory/actions').length - 1, 1); // mounted once, by writes
   const explicitOff = run({ RFACTORY_WRITES: 'off', RFACTORY_NOTES: 'off' });
   assert.match(explicitOff.web, /-e RFACTORY_NOTES=off/);
-  assert.doesNotMatch(explicitOff.web, /rfactory-actions/);
+  assert.equal(explicitOff.web.match(/-v rfactory-actions:\/var\/lib\/rfactory\/actions:U/g)?.length, 1);
   assert.doesNotMatch(run({ RFACTORY_WRITES: 'off' }).web, /RFACTORY_NOTES/);
   assert.equal(run({ RFACTORY_WRITES: 'off', RFACTORY_NOTES: 'yes' }).status, 2);
 });

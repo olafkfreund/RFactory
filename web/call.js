@@ -1,9 +1,11 @@
 'use strict';
 
 const { spawn: nodeSpawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const { createHearing, SELF_NAMES } = require('../core/src/call/hearing.js');
 const { resolveListen } = require('../core/src/scope.js');
+const { platformOf } = require('./vm-call.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts, checkFactsDetailed } = require('@rfactory/core/src/facts.js');
@@ -12,6 +14,7 @@ const { summarise } = require('@rfactory/core/src/items.js');
 const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
 const { createStt } = require('./stt.js');
+const { hashLink } = require('./schedule.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
@@ -46,7 +49,7 @@ function sourcesOf(reads) {
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, notes = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
-  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null }) {
+  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null, grants = null }) {
   const lookupsOn = !!(lookups && scope?.lookups_enabled);
   const budget = scope?.lookup_budget_usd ?? 2;
   let sttConfigured = !!stt;
@@ -109,17 +112,87 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     queueSpeech(c, result ? [...event.counts, redactor.logSafeWindow(event.summary)].join(' ') : text);
   });
   if (notes) notes.subscribe((event) => { if (!foreign(event)) emit(outgoing(event)); });
-  const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
+  const safeCallText = (message) => redactor.logSafe(call ? call.maskLink(String(message)) : String(message));
+  const log = (message) => emit({ type: 'log', message: safeCallText(message) });
   let call = null;
   const logFor = (c, message) => { if (call === c) log(message); };
   const stopCall = (c, reason) => (call === c ? stop(reason) : Promise.resolve());
+  const isLive = (c) => !!c && call === c && c.inCall === true && !c.stopping;
+  const pairingUnavailable = () => ({ status: 409, error: 'not-in-call' });
+  grants?.subscribe((event, sessionId) => {
+    const c = call;
+    if (c?.sessionId !== sessionId) return;
+    if (event.type === 'pairing-clear') {
+      c.delivery?.finish(false);
+      c.displayedCodeId = null;
+      send(c, { type: 'pairing-clear' });
+      emit(outgoing({ type: 'grant-updated', state: 'code-cleared', generation: callCount }));
+      return;
+    }
+    if (isLive(c)) {
+      if (event.state === 'granted') queueSpeech(c, `This call is elevated, scope ${event.scope}.`);
+      if (['revoked', 'expired'].includes(event.state)) queueSpeech(c, 'Elevated access has ended.');
+    }
+    emit(outgoing({ ...event, generation: callCount }));
+  });
+
+  async function requestPairing(email, scope) {
+    const c = call;
+    if (!grants || !isLive(c)) return pairingUnavailable();
+    if (!c.displayReady) return { status: 409, error: 'display-unavailable' };
+    if (c.delivery) return { status: 409, error: 'busy' };
+    const { status, error, code, codeId } = await grants.requestCode(email, { ...pairingContext(c), scope });
+    if (!code) return { status, error };
+    if (!isLive(c) || !grants.isPending(codeId)) return pairingUnavailable();
+    const displayed = c.displayReady && await new Promise((resolve) => {
+      const timer = clock.setTimeout(() => c.delivery.finish(false), 5000);
+      c.delivery = { codeId, finish(ok) {
+        clock.clearTimeout(timer);
+        c.delivery = null;
+        if (ok) c.displayedCodeId = codeId;
+        resolve(ok);
+      } };
+      if (!send(c, { type: 'pairing-code', code, code_id: codeId })) c.delivery.finish(false);
+    });
+    if (!isLive(c)) return pairingUnavailable();
+    if (!displayed || !c.displayReady || !grants.isPending(codeId)) {
+      grants.discardCode(codeId);
+      return { status: 409, error: 'display-unavailable' };
+    }
+    emit(outgoing({ type: 'grant-updated', state: 'code-issued', generation: callCount }));
+    return { status };
+  }
+
+  function pairingContext({ sessionId, linkHash, projectId, inCall }) {
+    return { sessionId, linkHash, projectId, inCall };
+  }
+  function verifyPairing(email, code) {
+    const c = call;
+    if (!grants || !isLive(c)) return pairingUnavailable();
+    if (c.delivery) return { status: 409, error: 'busy' };
+    const presence = c.presence;
+    return grants.verifyCode(email, { ...pairingContext(c), isLive: () => isLive(c) && c.presence === presence, code });
+  }
+  function revokeGrant(email, grantId) {
+    return grants && isLive(call) ? grants.revoke(email, { grantId }) : pairingUnavailable();
+  }
+  function grantStatus(email) {
+    const c = call;
+    if (!grants || !isLive(c)) return { grant: null, pending: false, can_verify: false, scheduled: false, display_ready: false };
+    const status = grants.status(pairingContext(c), email);
+    return { ...status, display_ready: c.displayReady,
+      ...(!c.displayedCodeId ? { pending: false, can_verify: false } : {}) };
+  }
 
   function send(c, message) {
     if (call !== c || c.exited) return false;
     const line = JSON.stringify(message);
     if (Buffer.byteLength(line) > MAX_OUT) { log('dropped oversize outgoing line'); return false; }
     try { c.child.stdin.write(`${line}\n`); return true; }
-    catch (error) { log(`child write failed: ${error.message}`); return false; }
+    catch (error) {
+      log(message.type.startsWith('pairing-') ? 'pairing delivery failed' : `child write failed: ${error.message}`);
+      return false;
+    }
   }
 
   function killGroup(c, signal) {
@@ -133,7 +206,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const c = call;
     if (!c) return;
     if (c.stopping) return c.stopping;
+    c.inCall = false;
     c.closed = true;
+    grants?.endCall(c.sessionId, reason);
     c.lookupTurn?.controller.abort();
     clock.clearTimeout(c.turn?.timer);
     if (c.listen === 'audio') log(`stt pending=${c.requests.size} dropped=${c.dropped}`);
@@ -538,9 +613,25 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     catch { log('dropped malformed child line'); return; }
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
-      emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
+      const wasInCall = c.inCall;
+      c.inCall = msg.state === 'in-call';
+      if (wasInCall && !c.inCall) {
+        c.presence++;
+        grants?.endCall(c.sessionId, msg.state);
+      }
+      emit({ type: 'state', state: msg.state, ...(msg.code ? { code: safeCallText(msg.code) } : {}) });
+      if (c.inCall) { c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
+    } else if (msg.type === 'pairing-display' && typeof msg.ready === 'boolean') {
+      if (c.displayReady === msg.ready) return;
+      c.displayReady = msg.ready;
+      if (!msg.ready) {
+        c.delivery?.finish(false);
+        grants?.discardCode(c.displayedCodeId);
+      }
+      emit(outgoing({ type: 'grant-updated', state: 'display-changed', generation: callCount }));
+    } else if (msg.type === 'pairing-result' && c.delivery && msg.code_id === c.delivery.codeId) {
+      c.delivery.finish(msg.displayed === true);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       if (c.holdGreeting && c.inCall) captionSeen(c);
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
@@ -552,9 +643,11 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
       if (c.turn) armQuiet(c);
     }
-    else if (msg.type === 'hearing' && c.listen === 'audio' && ['own', 'no-audio', 'notice-failed'].includes(msg.state))
-      { if (msg.state === 'notice-failed') c.noticeFailed = true;
-        emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state, dropped: c.dropped }); }
+    else if (msg.type === 'hearing' && (msg.state === 'notice-failed' || (c.listen === 'audio' && ['own', 'no-audio'].includes(msg.state)))) {
+      if (msg.state === 'notice-failed') c.noticeFailed = true;
+      emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state,
+        ...(c.listen === 'audio' ? { dropped: c.dropped } : { listen: c.listen }) });
+    }
     else if (msg.type === 'roster' && c.listen === 'audio' && Number.isInteger(msg.count) && msg.count >= 0) {
       c.roster = { count: msg.count, ...(msg.count === 1 && typeof msg.name === 'string' ? { name: msg.name } : {}) };
       emit({ type: 'roster', ...c.roster });
@@ -576,7 +669,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
 
   async function start(link, { listen: override, binding = null, view = null } = {}) {
     if (call) throw new Error('busy');
-    const platform = link.startsWith('https://meet.google.com/') ? 'meet' : 'teams';
+    const platform = platformOf(link) ?? 'teams';
     const selected = resolveListen({ listen: override === undefined ? listen : override, platform, sttConfigured });
     const whisperLanguage = toWhisperLanguage(language);
     if (!whisperLanguage) throw new Error('unsupported-language');
@@ -596,6 +689,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const target = binding ? { binding, view } : undefined;
     const own = binding && lookupsOn ? lookupsFor(binding) : null;
     const c = { binding, view: binding ? view : source,
+      sessionId: randomUUID(), linkHash: hashLink(link), projectId: binding ? binding.projectId : null,
+      maskLink: (text) => link.startsWith('https://') ? text.replaceAll(link, '[redacted]') : text,
       project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
         githubs: own?.githubs ?? [], bound: true } : project,
       lookups: own?.lookups ?? null,
@@ -604,7 +699,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false,
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, presence: 0,
+      displayReady: false, delivery: null, displayedCodeId: null,
       holdGreeting: selected === 'platform' && platform === 'meet', greeted: false, inCallAt: 0, firstCaption: false, captionLines: 0, captionTimer: null, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
     call = c;
     child.on('error', (error) => { logFor(c, `child failed: ${error.message}`); stopCall(c, 'child error'); });
@@ -662,6 +758,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   }
 
   return { get running() { return !!call; }, get generation() { return callCount; },
+    requestPairing, verifyPairing, revokeGrant, grantStatus,
     get project() { return call?.binding ? { id: call.binding.projectId, name: call.binding.name } : null; },
     get projectCall() { return call?.projectCall ?? null; }, config: { listen, sttConfigured }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values(), ...investigationEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };

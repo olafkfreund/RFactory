@@ -5,7 +5,10 @@ FROM docker.io/library/node:22-bookworm-slim
 # Google Chrome (Meet refuses Chromium; Phase 0), Xvfb for the headed bot, espeak-ng (TTS fallback),
 # python3-venv for Piper. `apt-get upgrade` takes Debian's security fixes the base image lacks (Trivy gate). Chrome is pinned: CHROME_VERSION is the version the first 1b build installed.
 ARG CHROME_VERSION=157.0.8103.78-1
+# Bump APT_REFRESH when the Trivy gate finds a fixed Debian CVE: the CD layer cache otherwise keeps the old upgrade layer.
+ARG APT_REFRESH=2026-11-28
 RUN set -eux; \
+    echo "apt refresh $APT_REFRESH"; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends xvfb xauth fonts-liberation fonts-noto-color-emoji \
@@ -54,7 +57,7 @@ COPY --chown=node:node core/bin core/bin
 # #2's GitHub adapter loads its recorded read-only tool inventory from this fixture (#2 plan step 4)
 COPY --chown=node:node core/test/fixtures/github-tools-1.14.0.json core/test/fixtures/
 COPY --chown=node:node bot/run.js bot/stt-bridge.js bot/
-COPY --chown=node:node web/server.js web/call.js web/stt.js web/tts.js web/actions.js web/actions-record.js web/reads.js web/agent-tools.js web/shares.js web/share-desktop.js web/investigations.js web/notes.js web/live-view.js web/desktop-routes.js web/vm-call.js web/
+COPY --chown=node:node web/server.js web/call.js web/stt.js web/tts.js web/actions.js web/actions-record.js web/grants.js web/schedule.js web/reads.js web/agent-tools.js web/shares.js web/share-desktop.js web/investigations.js web/notes.js web/live-view.js web/desktop-routes.js web/vm-call.js web/
 COPY --chown=node:node desktop/runner/vnc.js desktop/runner/client.js desktop/runner/protocol.js desktop/runner/
 COPY --chown=node:node web/public web/public
 # #13: the avatar renderer and portraits; the licence texts and notices (AGPL §13)

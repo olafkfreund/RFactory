@@ -75,7 +75,7 @@
       <p id="call-busy" class="status-line" role="status" aria-live="polite"></p>
     </div>
     <div class="call-form">
-      <input id="call-link" class="call-input" type="text" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" aria-label="Meet link">
+      <input id="call-link" class="call-input" type="text" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" aria-label="Call link">
       <label for="call-listen">Listen</label>
       <select id="call-listen"><option value="auto">Auto</option><option value="platform">Captions</option><option value="audio">Own transcription</option></select>
       <button id="call-join" class="btn" type="button">Join</button>
@@ -86,6 +86,34 @@
     <p id="call-hearing" class="fine" role="status" aria-live="polite"></p>
     <p id="call-limits" class="fine" role="status" aria-live="polite" hidden></p>
     <p id="call-error" class="status-line" role="status" aria-live="polite"></p>
+    <section id="call-elevation" hidden>
+      <h3>Elevated access</h3>
+      <p id="grant-status" class="fine" role="status"></p>
+      <div id="grant-request" class="call-form" hidden>
+        <label for="grant-scope">Scope</label>
+        <select id="grant-scope"><option value="read">Read</option><option value="tests">Tests</option><option value="branch-write">Branch write</option></select>
+        <button id="grant-request-button" class="btn" type="button">Request code</button>
+      </div>
+      <form id="grant-verify" class="call-form" hidden>
+        <label for="grant-code">Code from the bot's camera tile</label>
+        <input id="grant-code" class="call-input" type="password" autocomplete="off" minlength="6" maxlength="12" required>
+        <button id="grant-verify-button" class="btn" type="submit">Verify</button>
+      </form>
+      <button id="grant-revoke" class="btn" type="button" hidden>Revoke</button>
+      <p id="grant-error" class="status-line" role="status"></p>
+    </section>
+    <section id="call-schedule" hidden>
+      <h3>Meeting schedule</h3>
+      <ul id="schedule-slots"></ul>
+      <form id="schedule-add" class="call-form" hidden>
+        <label for="schedule-link">Meeting link</label>
+        <input id="schedule-link" class="call-input" type="url" autocomplete="off" maxlength="2048" required>
+        <label for="schedule-start">Start</label><input id="schedule-start" type="datetime-local" required>
+        <label for="schedule-end">End</label><input id="schedule-end" type="datetime-local" required>
+        <button class="btn" type="submit">Add meeting</button>
+      </form>
+      <p id="schedule-status" class="status-line" role="status"></p>
+    </section>
     <ul id="call-log" class="call-log"></ul>
   </section>
 

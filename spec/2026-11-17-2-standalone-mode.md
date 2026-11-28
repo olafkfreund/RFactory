@@ -72,6 +72,8 @@ commits.
 | Local git *(provisional, S5)* | adapter runs `git` with a fixed argv and no shell | Each item is a branch other than the default branch. The default branch is the remote `HEAD`. A branch merged into it → done. A branch with commits in the last `active_days` (scope setting, default 7) → in_progress. Otherwise → left. The standup says "no tracker data" and labels activity as *inferred*. | none. RFactory clones the repo itself. |
 | Factory (#1) | CFactory `/mcp`, read key | as in #1 | CFactory `read` key |
 
+The Jira row is built by #59 with the direct REST API; see `spec/2026-11-27-59-jira-confluence.md`. S4 keeps Linear and the "repo plus tracker" scope.
+
 - **Precedence**, applied in order, first match wins, for every tracker
   source:
   1. A board status that the scope maps explicitly.

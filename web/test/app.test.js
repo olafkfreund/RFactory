@@ -457,18 +457,24 @@ const ALPHA = { id: 'id-a', name: 'Alpha', slug: 'alpha', repositories: [{ id: 1
 const BETA = { id: 'id-b', name: 'Beta <b>', slug: 'beta', repositories: [{ id: 3, path: 'o/b' }] };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
+async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null }, elevation = false } = {}) {
   const { doc, byId } = shim();
   for (const id of ['run', 'status', 'stale', 'summary-card', 'call', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
     'share', 'share-list', 'investigation', 'investigation-list', 'notes', 'notes-list', 'notes-status']) byId[id] = new Node('x');
   byId['call-leave'].disabled = true;
-  const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], status };
+  if (elevation) {
+    for (const id of ['call-elevation', 'grant-status', 'grant-error', 'grant-request', 'grant-request-button', 'grant-scope', 'grant-verify',
+      'grant-verify-button', 'grant-code', 'grant-revoke', 'call-schedule', 'schedule-slots', 'schedule-add', 'schedule-link',
+      'schedule-start', 'schedule-end', 'schedule-status']) byId[id] = new Node('x');
+  }
+  const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], headers: [], status };
   const answers = { '/api/projects': [200, [ALPHA, BETA]], '/api/projects/resolve?slug=alpha': [200, ALPHA], ...routes };
   const real = { fetch: global.fetch, EventSource: global.EventSource, setInterval: global.setInterval };
   t.after(() => Object.assign(global, real));
   global.fetch = async (url, options = {}) => {
     page.requests.push([options.method || 'GET', url, ...(options.body ? [JSON.parse(options.body)] : [])]);
+    page.headers.push(options.headers);
     const [code, body] = answers[url] || (url === '/api/call/status' ? [200, page.status]
       : url === '/api/call' ? answers.call || [202, { ok: true }] : [403, { error: 'project-not-allowed' }]);
     return { ok: code < 300, status: code, json: async () => body };
@@ -483,6 +489,101 @@ async function projectPage(t, path, { config = { projects: true }, routes = {}, 
   page.poll = async () => { await page.timers[0](); await settle(); };
   return page;
 }
+
+test('elevation controls get generation from grant status, scope mutations and clear submitted secrets', async (t) => {
+  for (const projects of [false, true]) {
+    const path = projects ? '/p/alpha' : '/';
+    const suffix = projects ? '?project=id-a' : '';
+    const grants = '/api/call/grant';
+    const schedules = '/api/call/schedules';
+    const state = { grant: null, pending: false, scheduled: true, can_approve: true, can_verify: false, display_ready: true, generation: 42 };
+    const schedule = { slots: [{ id: 'meeting', label: '<img> Meeting', starts_at: 2000000000000, ends_at: 2000000036000 }], can_approve: true };
+    const routes = {
+      [grants + suffix]: [200, state],
+      [`${grants}/request${suffix}`]: [200, {}],
+      [`${grants}/verify${suffix}`]: [200, {}],
+      [`${grants}/revoke${suffix}`]: [200, {}],
+      [schedules + suffix]: [200, schedule],
+      [`${schedules}/meeting${suffix}`]: [200, {}],
+    };
+    const p = await projectPage(t, path, { config: { projects }, routes, elevation: true,
+      status: { running: true, generation: 3, project: ALPHA } });
+    const get = (id) => p.byId[id];
+    const submit = (id) => get(id).listeners.submit({ preventDefault() {} });
+    const mutation = (verb, url, body) => {
+      const index = p.requests.findIndex(([method, requested]) => method === verb && requested === url + suffix);
+      assert.notEqual(index, -1, url);
+      assert.equal(p.headers[index]['x-rfactory-action'], '1');
+      assert.deepEqual(p.requests[index], [verb, url + suffix, ...(body ? [body] : [])]);
+    };
+    assert.equal(get('grant-request').hidden, false);
+    assert.equal(get('grant-verify').hidden, true);
+    get('grant-scope').value = 'tests';
+    state.pending = true;
+    state.can_verify = true;
+    await p.click('grant-request-button');
+    mutation('POST', `${grants}/request`, { scope: 'tests', generation: 42 });
+    assert.equal(get('grant-verify').hidden, false);
+    const code = 'A2CD34';
+    get('grant-code').value = code;
+    const submitting = submit('grant-verify');
+    assert.equal(get('grant-code').value, '');
+    await submitting;
+    mutation('POST', `${grants}/verify`, { code, generation: 42 });
+    state.pending = false;
+    state.can_verify = false;
+    state.grant = { grant_id: 'grant-1', granted_by: '<script>owner', scope: 'tests', expires_at: 2000000000000 };
+    p.streams[0].send({ type: 'grant-updated', state: 'granted' });
+    await settle();
+    assert.match(get('grant-status').textContent, /Elevated.*tests.*<script>owner.*expires/);
+    assert.equal(get('grant-revoke').hidden, false);
+    await p.click('grant-revoke');
+    mutation('POST', `${grants}/revoke`, { grant_id: 'grant-1', generation: 42 });
+    assert.equal(get('schedule-slots').all().some((node) => node.tag === 'img'), false);
+    await get('schedule-slots').all().find((node) => node.tag === 'button').listeners.click();
+    mutation('DELETE', `${schedules}/meeting`);
+    const link = 'https://teams.microsoft.com/meet/123?p=fixture';
+    get('schedule-link').value = link;
+    get('schedule-start').value = '2033-05-18T10:00';
+    get('schedule-end').value = '2033-05-18T10:30';
+    await submit('schedule-add');
+    mutation('POST', schedules, { link, starts_at: new Date('2033-05-18T10:00').getTime(), ends_at: new Date('2033-05-18T10:30').getTime() });
+    assert.equal(get('schedule-link').value, '');
+    if (!projects) assert.ok(!p.urls().includes('/api/call/status'));
+  }
+});
+
+test('pairing eligibility refreshes during a live call and Verify is restricted to its requester', async (t) => {
+  const url = '/api/call/grant';
+  const state = { grant: null, pending: false, scheduled: false, can_approve: true, can_verify: false, display_ready: true, generation: 1 };
+  const p = await projectPage(t, '/', { config: { projects: false }, routes: { [url]: [200, state] }, elevation: true });
+  const stream = p.streams[0];
+  const request = p.byId['grant-request'];
+  const verify = p.byId['grant-verify'];
+  stream.send({ type: 'state', state: 'in-call' });
+  await settle();
+  assert.equal(request.hidden, true);
+  state.scheduled = true;
+  await p.poll();
+  assert.equal(request.hidden, false);
+  state.pending = true;
+  await p.poll();
+  assert.equal(verify.hidden, true);
+  state.can_verify = true;
+  await p.poll();
+  assert.equal(verify.hidden, false);
+  state.display_ready = false;
+  state.pending = state.can_verify = false;
+  await p.poll();
+  assert.equal(request.hidden, true);
+  assert.equal(verify.hidden, true);
+  assert.match(p.byId['grant-status'].textContent, /camera tile is unavailable/);
+  stream.send({ type: 'state', state: 'stopped' });
+  await settle();
+  const requests = p.requests.length;
+  await p.poll();
+  assert.equal(p.requests.length, requests);
+});
 
 test('a project page shows its repositories, scopes every read and starts with the stable id', async (t) => {
   const p = await projectPage(t, '/p/alpha');
@@ -516,7 +617,7 @@ test('a project page shows its repositories, scopes every read and starts with t
 
 test('another project\'s call shows busy and opens no stream, until it is over', async (t) => {
   const p = await projectPage(t, '/p/alpha', { status: { running: true, generation: 2, project: { id: 'id-b', name: 'Beta <b>' } } });
-  assert.equal(p.byId['call-busy'].textContent, 'Meet is busy with a call for Beta <b>');
+  assert.equal(p.byId['call-busy'].textContent, 'A call is already running for Beta <b>');
   assert.equal(p.byId['call-join'].disabled, true);
   assert.equal(p.streams.length, 0);
   p.status = { running: false, generation: 2, project: null };
@@ -530,7 +631,7 @@ test('another project\'s call shows busy and opens no stream, until it is over',
 test('unknown, ambiguous and not-allowed links, and a refused start, show the project as unavailable', async (t) => {
   for (const answer of [[404, { error: 'project-unknown' }], [403, { error: 'project-not-allowed' }], [502, { error: 'project-resolve-failed' }]]) {
     const p = await projectPage(t, '/p/nope', { routes: { '/api/projects/resolve?slug=nope': answer } });
-    assert.equal(p.byId['project-info'].textContent, "This project isn't available in Meet");
+    assert.equal(p.byId['project-info'].textContent, "This project isn't available for calls");
     assert.equal(p.byId['call-join'].disabled, true);
     assert.equal(p.byId.run.disabled, true);
     assert.deepEqual(p.urls(), ['/api/projects', '/api/projects/resolve?slug=nope', '/api/call/status']);
@@ -538,7 +639,7 @@ test('unknown, ambiguous and not-allowed links, and a refused start, show the pr
   const p = await projectPage(t, '/p/alpha', { routes: { call: [404, { error: 'project-unknown' }] } });
   p.byId['call-link'].value = 'x';
   await p.click('call-join');
-  assert.equal(p.byId['call-error'].textContent, "This project isn't available in Meet");
+  assert.equal(p.byId['call-error'].textContent, "This project isn't available for calls");
 });
 
 test('the front page only offers the picker, which opens the project\'s own page', async (t) => {
@@ -581,7 +682,7 @@ test('decisions carry the project, a share Stop its id, and a link slug is encod
   const odd = await projectPage(t, '/p/a&slug=b');
   assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
   const broken = await projectPage(t, '/p/%E0%A4%A');
-  assert.equal(broken.byId['project-info'].textContent, "This project isn't available in Meet");
+  assert.equal(broken.byId['project-info'].textContent, "This project isn't available for calls");
 });
 
 function notesShim() {
@@ -822,4 +923,78 @@ test('GitHub reply renders the five lists, hides the CFactory sections and shows
   for (const s of ['done', 'in_progress', 'blocked', 'left', 'unknown']) assert.ok(byId[s].all().some((n) => n.tag === 'li' && n.textContent !== 'None'), s);
   for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(byId[s].hidden, true, s);
   assert.equal(byId.summary.textContent, 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
+});
+
+// slice #59: the page in Jira mode
+test('Jira mode: no call panel, no streams, only /api/config-driven standup requests', async (t) => {
+  const p = await projectPage(t, '/', {
+    config: { source: 'jira', projects: false },
+    routes: { '/api/standup': [200, { ...base, items: [], unknown: [], summary: 'Jira project ABC: 0 done, 0 in progress, 0 blocked, 0 left, 0 unknown.', destination: 'the server' }] },
+  });
+  assert.equal(p.byId.call.hidden, true);
+  assert.deepEqual(p.requests, [['POST', '/api/standup']]);
+  await p.click('run');
+  assert.deepEqual(p.requests, [['POST', '/api/standup'], ['POST', '/api/standup']]);
+  assert.equal(p.streams.length, 0);
+});
+
+test('Jira reply in Jira mode renders the five lists, Jira texts, no links, and hostile text as textContent', async (t) => {
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  const reply = (over) => ({
+    fetched_at: '2026-11-28T11:59:30Z',
+    newest_update: '2026-11-27T12:00:00Z',
+    items: [
+      { id: 'ABC-1', title: '<img src=x onerror=1>', url: 'https://github.com/o/r/issues/1', state: 'done', source_state: 'Done', evidence: [] },
+      { id: 'ABC-2', title: 'two', url: '', state: 'in_progress', source_state: 'In Progress', evidence: [] },
+      { id: 'ABC-3', title: 'three', url: '', state: 'blocked', source_state: 'Waiting', evidence: [] },
+      { id: 'ABC-4', title: 'four', url: '', state: 'left', source_state: 'To Do', evidence: [] },
+      { id: 'ABC-5', title: 'five', url: '', state: 'unknown', source_state: '<b>x</b>', evidence: [] },
+    ],
+    unknown: [{ id: 'ABC-5', title: 'five', url: '', state: 'unknown', source_state: '<b>x</b>', evidence: [] }],
+    counts: {},
+    truncated: false,
+    summary: 'Jira project ABC: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.',
+    summary_error: null,
+    destination: 'the server',
+    ...over,
+  });
+
+  const jiraPage = await projectPage(t, '/', {
+    config: { source: 'jira', projects: false },
+    routes: { '/api/standup': [200, reply()] },
+  });
+  render(jiraPage.doc, reply(), now);
+  for (const s of ['done', 'in_progress', 'blocked', 'left', 'unknown']) {
+    assert.ok(jiraPage.byId[s].all().some((n) => n.tag === 'li' && n.textContent !== 'None'), s);
+  }
+  for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(jiraPage.byId[s].hidden, true, s);
+  assert.match(jiraPage.byId.age.textContent, /^As of .+ \(just now\) · newest issue update .+, 1 day ago$/);
+  assert.equal(jiraPage.byId.summary.textContent, 'Jira project ABC: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
+  assert.equal(jiraPage.byId.destination.textContent, 'Summary by the server; counts are taken from Jira.');
+
+  // No <a> even when the URL matches ISSUE_URL. The browser test checks HTML parsing.
+  assert.equal(jiraPage.byId.done.all().filter((n) => n.tag === 'a').length, 0);
+  assert.ok(jiraPage.byId.done.textContent.includes('<img src=x onerror=1>'));
+  assert.ok(jiraPage.byId.unknown.textContent.includes('<b>x</b>'));
+
+  // Without newest_update and with summary_error
+  render(jiraPage.doc, reply({ newest_update: null, summary: null, summary_error: 'bad' }), now);
+  assert.match(jiraPage.byId.age.textContent, /^As of .+ \(just now\) · no issue updates$/);
+  assert.equal(jiraPage.byId.summary.textContent, 'No summary (bad). The list above is still current.');
+
+  // Same reply in GitHub mode and with no mode keeps today's texts
+  const ghPage = await projectPage(t, '/', {
+    config: { source: 'github', projects: false },
+    routes: { '/api/standup': [200, reply()] },
+  });
+  const noMode = shim();
+  for (const id of ['stale', 'summary-card']) noMode.byId[id] = new Node('x');
+  for (const [doc, byId] of [[ghPage.doc, ghPage.byId], [noMode.doc, noMode.byId]]) {
+    render(doc, reply(), now);
+    assert.match(byId.age.textContent, /^As of .+ \(just now\) · newest card update .+, 1 day ago$/);
+    assert.equal(byId.destination.textContent, 'Summary by the server; card keys, states and counts are checked against the board.');
+    render(doc, reply({ newest_update: null, summary: null, summary_error: 'bad' }), now);
+    assert.match(byId.age.textContent, /^As of .+ \(just now\) · no card updates$/);
+    assert.equal(byId.summary.textContent, 'No summary (bad). The board above is still current.');
+  }
 });

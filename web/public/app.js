@@ -47,7 +47,7 @@ function renderItem(doc, item) {
   const li = el(doc, 'li', undefined, 'card');
   li.appendChild(el(doc, 'span', item.id, 'card-key'));
   const title = item.title || '(no title)';
-  if (typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
+  if (sourceKinds.get(doc) !== 'jira' && typeof item.url === 'string' && ISSUE_URL.test(item.url)) {
     const a = el(doc, 'a', title, 'card-title');
     a.setAttribute('href', item.url);
     li.appendChild(a);
@@ -141,24 +141,27 @@ function render(doc, data, now = Date.now()) {
     fill(doc, s, data.items.filter((i) => i.state === s));
   }
   fill(doc, 'unknown', data.unknown);
+  const jira = sourceKinds.get(doc) === 'jira';
   const newest = data.newest_update
-    ? `newest card update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`
-    : 'no card updates';
+    ? `newest ${jira ? 'issue' : 'card'} update ${day(data.newest_update)}, ${ago(data.newest_update, now)}`
+    : (jira ? 'no issue updates' : 'no card updates');
   const stale = data.newest_update && now - Date.parse(data.newest_update) > STALE_DAYS * 86400000;
   doc.getElementById('age').textContent = `As of ${clock(data.fetched_at)} (${ago(data.fetched_at, now)}) · ${newest}`;
   const pill = doc.getElementById('stale');
   if (pill) pill.hidden = !stale;
-  doc.getElementById('summary').textContent = data.summary || (data.summary_error ? `No summary (${data.summary_error}). The board above is still current.` : '');
-  doc.getElementById('destination').textContent = `Summary by ${data.destination}; card keys, states and counts are checked against the board.`;
+  doc.getElementById('summary').textContent = data.summary || (data.summary_error ? `No summary (${data.summary_error}). The ${jira ? 'list' : 'board'} above is still current.` : '');
+  doc.getElementById('destination').textContent = jira
+    ? 'Summary by the server; counts are taken from Jira.'
+    : `Summary by ${data.destination}; card keys, states and counts are checked against the board.`;
   const card = doc.getElementById('summary-card');
   if (card) card.hidden = false;
 }
 
 // #52: one project per page load (the picker navigates), so nothing on the page ever has to be reset
 const projectIds = new WeakMap();
-const githubMode = new WeakSet(); // a GitHub source: no review, no call, no approval lists
+const sourceKinds = new WeakMap(); // standalone source kind per document ('github' | 'jira'): no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
-const UNAVAILABLE = "This project isn't available in Meet";
+const UNAVAILABLE = "This project isn't available for calls";
 
 async function run(doc) {
   const status = doc.getElementById('status');
@@ -171,7 +174,7 @@ async function run(doc) {
     if (!response.ok) status.textContent = `Failed: ${data.error}`;
     else { render(doc, data); status.textContent = ''; }
   } catch { status.textContent = 'Failed: network'; }
-  if (!githubMode.has(doc)) loadReview(doc);
+  if (!sourceKinds.has(doc)) loadReview(doc);
   button.disabled = false;
 }
 
@@ -811,6 +814,117 @@ function renderLimits(doc, event) {
   line.hidden = false;
 }
 
+const grantRefresh = new WeakMap();
+const localTime = (timestamp) => new Date(timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+
+function wireElevation(doc) {
+  const get = (id) => doc.getElementById(id);
+  if (!get('call-elevation')) return;
+  let grantState, revision = 0, mutatingGrant = false, inCall = false;
+  async function refreshGrant(callState) {
+    if (callState) inCall = callState === 'in-call';
+    const request = ++revision;
+    let state;
+    try {
+      const response = await fetch(scoped(doc, '/api/call/grant'));
+      if (response.ok) state = await response.json();
+    } catch { /* The controls stay unavailable until status is known. */ }
+    if (request !== revision) return;
+    grantState = state;
+    get('call-elevation').hidden = !state;
+    if (!state) return;
+    const { grant, scheduled, pending, can_approve, can_verify, display_ready } = state;
+    get('grant-status').textContent = grant
+      ? `Elevated · ${grant.scope} · approved by ${grant.granted_by} · expires ${localTime(grant.expires_at)}`
+      : pending && can_verify ? 'A code is displayed on the bot’s camera tile.'
+        : scheduled ? (display_ready ? 'Scheduled call · elevated access is inactive.' : 'The bot’s camera tile is unavailable for pairing.')
+          : 'Pairing is available during a scheduled call.';
+    get('grant-request').hidden = !can_approve || !scheduled || !display_ready || !!grant;
+    get('grant-request-button').textContent = pending ? 'Request new code' : 'Request code';
+    get('grant-verify').hidden = !can_verify || !scheduled || !display_ready || !!grant;
+    if (get('grant-verify').hidden) get('grant-code').value = '';
+    get('grant-revoke').hidden = !can_approve || !grant;
+  }
+
+  async function loadSchedule() {
+    const response = await fetch(scoped(doc, '/api/call/schedules'));
+    if (!response.ok) return;
+    const { slots, can_approve } = await response.json();
+    get('call-schedule').hidden = false;
+    get('schedule-add').hidden = !can_approve;
+    const list = get('schedule-slots');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!slots.length) list.appendChild(el(doc, 'li', 'No upcoming meetings.', 'none'));
+    for (const slot of slots) {
+      const row = el(doc, 'li', undefined, 'card');
+      row.appendChild(el(doc, 'span', `${slot.label} · ${localTime(slot.starts_at)} – ${localTime(slot.ends_at)}`));
+      if (can_approve) {
+        const remove = el(doc, 'button', 'Delete', 'btn');
+        remove.type = 'button';
+        remove.addEventListener('click', () => changeSchedule('DELETE', `/${encodeURIComponent(slot.id)}`));
+        row.appendChild(remove);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  async function mutate(url, method, payload) {
+    const response = await fetch(scoped(doc, url), { method,
+      headers: { 'Content-Type': 'application/json', 'x-rfactory-action': '1' },
+      ...(payload ? { body: JSON.stringify(payload) } : {}) });
+    return response.ok ? '' : (await response.json()).error || 'request-failed';
+  }
+
+  async function changeSchedule(method, tail, payload) {
+    let message;
+    try {
+      const error = await mutate(`/api/call/schedules${tail}`, method, payload);
+      message = error ? `Failed: ${error}` : method === 'POST' ? 'Meeting added.' : 'Meeting removed.';
+      await Promise.all([loadSchedule(), refreshGrant()]);
+    } catch { message = 'Could not update the meeting schedule.'; }
+    get('schedule-status').textContent = message;
+  }
+
+  async function changeGrant(verb, payload) {
+    if (!grantState?.can_approve || mutatingGrant) return;
+    mutatingGrant = true;
+    const buttons = ['grant-request-button', 'grant-verify-button', 'grant-revoke'].map(get);
+    for (const button of buttons) button.disabled = true;
+    get('grant-error').textContent = '';
+    try {
+      const error = await mutate(`/api/call/grant/${verb}`, 'POST', { ...payload, generation: grantState.generation });
+      if (error) get('grant-error').textContent = error === 'invalid-code' ? 'That code did not match.' : `Failed: ${error}`;
+    } catch { get('grant-error').textContent = 'Could not update elevated access.'; }
+    await refreshGrant();
+    mutatingGrant = false;
+    for (const button of buttons) button.disabled = false;
+  }
+
+  get('grant-request-button').addEventListener('click', () => changeGrant('request', { scope: get('grant-scope').value }));
+  get('grant-verify').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const input = get('grant-code');
+    const code = input.value;
+    input.value = '';
+    if (grantState?.can_verify) return changeGrant('verify', { code });
+  });
+  get('grant-revoke').addEventListener('click', () => {
+    if (grantState?.grant) return changeGrant('revoke', { grant_id: grantState.grant.grant_id });
+  });
+  get('schedule-add').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const input = get('schedule-link');
+    const link = input.value.trim();
+    input.value = '';
+    return changeSchedule('POST', '', { link, starts_at: new Date(get('schedule-start').value).getTime(),
+      ends_at: new Date(get('schedule-end').value).getTime() });
+  });
+  grantRefresh.set(doc, refreshGrant);
+  setInterval(() => { if (inCall) return refreshGrant(); }, 5000);
+  refreshGrant();
+  loadSchedule().catch(() => {});
+}
+
 // One call event at a time; every string lands via textContent.
 function handleCall(doc, event, now = Date.now()) {
   const set = (id, text) => { doc.getElementById(id).textContent = text; };
@@ -819,6 +933,7 @@ function handleCall(doc, event, now = Date.now()) {
   if (event.type === 'investigation-updated') return handleInvestigation(doc, event);
   if (event.type === 'notes') return handleNotes(doc, event);
   if (event.type === 'limits') return renderLimits(doc, event);
+  if (event.type === 'grant-updated') return grantRefresh.get(doc)?.();
   if (event.type === 'state') {
     set('call-state-text', event.code ? `${event.state} (${event.code})` : event.state);
     const live = ['joining', 'lobby', 'in-call'].includes(event.state);
@@ -826,12 +941,13 @@ function handleCall(doc, event, now = Date.now()) {
     doc.getElementById('call-leave').disabled = !live;
     if (doc.getElementById('call-listen')) doc.getElementById('call-listen').disabled = live;
     if (event.state === 'stopped') loadNotes(doc);
+    grantRefresh.get(doc)?.(event.state);
   } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
   else if (event.type === 'hearing') {
     const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
       'captions-off': `Hearing: captions are not on yet; Factory cannot hear${event.notConfigured ? ' (own transcription not configured)' : ''}`,
       own: 'Hearing: own transcription', 'no-audio': 'Hearing: own transcription (no audio received)',
-      'notice-failed': 'Hearing: own transcription (call notice failed)' };
+      'notice-failed': `Hearing: ${event.listen === 'platform' ? 'captions' : 'own transcription'} (call notice failed)` };
     if (states[event.state] && doc.getElementById('call-hearing')) set('call-hearing', states[event.state]);
   }
   else if (event.type === 'voice') set('call-voice', `voice: ${event.voice}`);
@@ -856,6 +972,7 @@ function handleCall(doc, event, now = Date.now()) {
 }
 
 function wireCall(doc) {
+  wireElevation(doc);
   const error = doc.getElementById('call-error');
   doc.getElementById('call-join').addEventListener('click', async () => {
     error.textContent = '';
@@ -872,6 +989,7 @@ function wireCall(doc) {
 
 // #52: the call on a project's page. /api/call/status says whose call runs; the event stream is opened for this project's only.
 function wireProjectCall(doc, project) {
+  if (project) wireElevation(doc);
   const get = (id) => doc.getElementById(id);
   const error = get('call-error');
   let stream = null;
@@ -886,7 +1004,7 @@ function wireProjectCall(doc, project) {
     } catch { return; }
     const mine = !!project && status.running && status.project?.id === project.id;
     const busy = status.running && !mine;
-    get('call-busy').textContent = busy ? `Meet is busy with a call for ${status.project?.name || 'another project'}` : '';
+    get('call-busy').textContent = busy ? `A call is already running for ${status.project?.name || 'another project'}` : '';
     if (mine) {
       generation = status.generation;
       if (!stream) open();
@@ -901,7 +1019,11 @@ function wireProjectCall(doc, project) {
     stream.onmessage = (m) => {
       try {
         const event = JSON.parse(m.data);
-        if (['ended', 'busy', 'idle'].includes(event.type)) { close(); refresh(); } // or the browser would reconnect for ever
+        if (['ended', 'busy', 'idle'].includes(event.type)) {
+          grantRefresh.get(doc)?.(event.type);
+          close();
+          refresh();
+        } // or the browser would reconnect for ever
         else handleCall(doc, event);
       } catch { /* drop a malformed event */ }
     };
@@ -936,8 +1058,8 @@ function loadPanels(doc) {
 // /p/<slug> names the page's project; the picker lists the others. Without projects (/api/config), the page of before.
 async function openPage(doc, location, config) {
   const loaded = await config;
-  if (loaded?.source === 'github') {
-    githubMode.add(doc);
+  if (loaded?.source === 'github' || loaded?.source === 'jira') {
+    sourceKinds.set(doc, loaded.source);
     doc.getElementById('call').hidden = true;
     doc.getElementById('run').addEventListener('click', () => run(doc));
     return run(doc);

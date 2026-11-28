@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const { chromium } = require('playwright-core');
 const { createApp } = require('../server.js');
 const { loadRoles } = require('@rfactory/core/src/roles.js');
+const { makeRedactor } = require('@rfactory/core/src/redact.js');
 
 const executablePath = process.env.CHROMIUM_BIN || spawnSync('which', ['chromium'], { encoding: 'utf8' }).stdout.trim();
 const contrast = (a, b) => {
@@ -95,4 +96,28 @@ test('shell pages load shared styles, fit at 390px, and restore keyboard-selecte
   await blockedPage.getByRole('button', { name: 'Dark', exact: true }).click();
   assert.equal(await blockedPage.locator('html').evaluate((el) => el.classList.contains('dark')), true);
   assert.equal(await blockedPage.getByRole('button', { name: 'Dark', exact: true }).getAttribute('aria-pressed'), 'true');
+});
+
+test('Jira renders markup in issue titles and statuses as text in the browser', { skip: !executablePath }, async (t) => {
+  const title = '<img alt="issue title">';
+  const status = '<b>issue status</b>';
+  const items = [{ id: 'ABC-1', state: 'unknown', title, source_state: status }];
+  const server = createApp({
+    roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com' }),
+    source: { kind: 'jira', snapshot: async () => ({ items, fetched_at: new Date().toISOString(), newest_update: null, truncated: false }) },
+    scope: { source: { project: 'ABC' } },
+    redactor: makeRedactor([]),
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const browser = await chromium.launch({ executablePath, args: ['--no-sandbox'] });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ extraHTTPHeaders: { 'X-Forwarded-Email': 'owner@example.com' } });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await page.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  await page.goto(origin);
+  const row = page.locator('#unknown li.card');
+  assert.equal(await row.locator('.card-title').textContent(), title);
+  assert.equal(await row.locator('.evidence').textContent(), `state shown as: ${status}`);
+  assert.equal(await row.locator('img, b').count(), 0);
 });

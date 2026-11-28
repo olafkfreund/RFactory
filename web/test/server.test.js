@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const http = require('node:http');
+const { once } = require('node:events');
 const { createApp, makeLogin } = require('../server.js');
 const { handleCall } = require('../public/app.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
@@ -26,7 +28,8 @@ async function start(t, opts) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
-  return (p, init = {}, email = ME) => fetch(base + p, { ...init, headers: email ? { 'X-Forwarded-Email': email } : {} });
+  const request = (p, init = {}, email = ME) => fetch(base + p, { ...init, headers: { ...init.headers, ...(email ? { 'X-Forwarded-Email': email } : {}) } });
+  return Object.assign(request, { base });
 }
 
 test('401 without identity, 403 for others, 200 for the owner (case-insensitive)', async (t) => {
@@ -223,6 +226,8 @@ test('call page renders each hearing state as text', () => {
     ['no-audio', 'Hearing: own transcription (no audio received)'],
     ['notice-failed', 'Hearing: own transcription (call notice failed)'],
   ]) { handleCall(doc, { type: 'hearing', state }); assert.equal(nodes['call-hearing'].textContent, expected); }
+  handleCall(doc, { type: 'hearing', state: 'notice-failed', listen: 'platform' });
+  assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (call notice failed)');
   handleCall(doc, { type: 'hearing', state: 'captions', notConfigured: true });
   assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (own transcription not configured)');
   handleCall(doc, { type: 'hearing', state: 'captions-off', notConfigured: true });
@@ -255,6 +260,37 @@ test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
   assert.equal((await get('/api/call', { method: 'DELETE' })).status, 200);
   assert.deepEqual(call.stopped, ['requested']);
+});
+
+test('call routes refuse valid Zoom invites before starting a call when Zoom is disabled', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  for (const link of ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/wc/join/123456789?pwd=dummy']) {
+    const response = await post(get, { link });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'zoom-unavailable' });
+  }
+  assert.deepEqual(call.started, []);
+});
+
+test('call routes accept only ordinary Zoom invite links when Zoom is enabled', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call, zoomEnabled: true });
+  const links = ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/j/1234567890/?pwd=dummy%2Bpass',
+    'https://zoom.us/wc/join/12345678901?pwd=dummy', 'https://us02web.zoom.us/wc/join/123456789'];
+  for (const link of links) {
+    assert.equal((await post(get, { link })).status, 202, link);
+    await get('/api/call', { method: 'DELETE' });
+  }
+  for (const link of ['http://zoom.us/j/123456789', 'https://zoom.us/my/personal', 'https://zoomgov.com/j/123456789',
+    'https://x.y.zoom.us/j/123456789', 'https://zoom.us.example.com/j/123456789', 'https://zoom.us/j/12345678',
+    'https://zoom.us/wc/join/123456789012', 'https://zoom.us:444/j/123456789', 'https://zoom.us:443/j/123456789',
+    'https://guest:pass@zoom.us/j/123456789', 'https://zoom.us/j/123456789#fragment',
+    'https://zoom.us/j/123456789?pwd=dummy&other=1', 'https://zoom.us/j/123456789?pwd=x&pwd=y',
+    'https://zoom.us/j/123456789?pwd=', 'https://zoom.us/j/123456789?%70wd=dummy', 'https://zoom.us/j/123456789?other=1']) {
+    assert.equal((await post(get, { link })).status, 400, link);
+  }
+  assert.deepEqual(call.started, links);
 });
 
 test('call events stream as SSE and unsubscribe on close', async (t) => {
@@ -565,20 +601,21 @@ const LINK = 'https://meet.google.com/abc-defg-hij';
 const posting = (body) => ({ method: 'POST', body: JSON.stringify(body) });
 const until = async (done) => { while (!done()) await new Promise((r) => setTimeout(r, 5)); };
 
-async function projectApp(t, opts = {}) {
+async function projectApp(t, { callOptions, ...opts } = {}) {
   const { createCallManager } = require('../call.js');
   const { EventEmitter } = require('node:events');
   const w = projectWorld();
+  w.input = [];
   const spawn = () => {
     if (w.spawnFails) throw new Error('spawn-failed');
     const c = new EventEmitter();
-    c.stdin = new EventEmitter(); c.stdin.write = () => true;
+    c.stdin = new EventEmitter(); c.stdin.write = (line) => { w.input.push(line); return true; };
     c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {};
     c.stderr = new EventEmitter(); c.kill = () => {};
     w.children.push(c);
     return c;
   };
-  w.call = createCallManager({ spawn, source: w.source, brain: fakeBrain, tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), botCmd: ['bot'] });
+  w.call = createCallManager({ spawn, source: w.source, brain: fakeBrain, tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), botCmd: ['bot'], ...callOptions });
   const get = await start(t, { source: w.source, scope: scope52, call: w.call, ...opts });
   const reply = async (url, init) => { const r = await get(url, init); return [r.status, await r.json()]; };
   const begin = (id = ALPHA) => reply('/api/call', posting({ link: LINK, project_id: id }));
@@ -586,6 +623,123 @@ async function projectApp(t, opts = {}) {
   const stop = async () => { const stopping = w.call.stop(); w.children.at(-1).emit('close', 0); await stopping; };
   return { w, get, reply, begin, hang, stop };
 }
+
+test('pairing HTTP routes enforce roles, strict origin, generation and project, and keep secrets off the wire and disk', async (t) => {
+  const { composeWrites } = require('../server.js');
+  const { createGrantManager } = require('../grants.js');
+  const { createScheduleRegistry, hashLink } = require('../schedule.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'call-audit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const link = 'https://teams.microsoft.com/meet/123?p=fixture-only-passcode';
+  const redactor = makeRedactor([]);
+  const viewer = 'viewer@example.com';
+  const approver = 'other@example.com';
+  const roles = rolesFor(`${ME},${viewer},${approver}`, `${ME},${approver}`);
+  const makeSchedule = () => createScheduleRegistry({ dir, validLink: (url) => url === link, projectMode: true });
+  const compose = () => composeWrites({ scope: scope52, roles, redactor, dir, callsEnabled: true });
+  const { actions, shares, investigations, record } = await compose();
+  assert.equal(actions, null);
+  assert.equal(shares, null);
+  assert.equal(investigations, null);
+  const schedule = makeSchedule();
+  const grantManager = createGrantManager({ record, roles, schedule });
+  const { get, w, stop } = await projectApp(t, { roles, redactor, schedule, callOptions: { grants: grantManager, record } });
+  t.after(async () => { if (w.call.running) await stop(); });
+  const request = async (method, path, { body, project = ALPHA, email = ME, headers = {} } = {}) => {
+    const response = await get(`${path}?project=${project}`, { method, body: body && JSON.stringify(body),
+      headers: { Origin: get.base, 'Sec-Fetch-Site': 'same-origin', 'x-rfactory-action': '1', ...headers } }, email);
+    return [response.status, await response.json()];
+  };
+  const schedules = '/api/call/schedules';
+  const grants = '/api/call/grant';
+  const now = Date.now();
+  const slotBody = { link, starts_at: now - 1000, ends_at: now + 120000, project_id: BETA };
+  const [created, { slot }] = await request('POST', schedules, { body: slotBody, email: ME.toUpperCase() });
+  assert.equal(created, 201);
+  assert.equal(slot.created_by, ME);
+  assert.equal(slot.project_id, ALPHA);
+  const scheduleResult = await request('GET', schedules, { email: viewer });
+  assert.deepEqual(scheduleResult, [200, { slots: [slot], can_approve: false }]);
+  assert.deepEqual(await request('GET', schedules, { project: BETA }), [200, { slots: [], can_approve: true }]);
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { project: BETA }))[0], 404);
+  assert.deepEqual(await request('POST', schedules, { body: { ...slotBody, link: 'private-invalid-url' } }), [400, { error: 'invalid-slot' }]);
+  assert.equal((await request('POST', schedules, { body: slotBody, email: viewer }))[0], 403);
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { email: viewer }))[0], 403);
+  for (const headers of [{ 'x-rfactory-action': '' }, { 'Sec-Fetch-Site': 'cross-site' }, { Origin: 'https://foreign.example' }]) {
+    assert.equal((await request('POST', schedules, { body: slotBody, headers }))[0], 403);
+    assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { headers }))[0], 403);
+  }
+
+  assert.equal((await get('/api/call', posting({ link, project_id: ALPHA }))).status, 202);
+  const { generation } = w.call;
+  assert.equal((await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }))[0], 409);
+  const child = w.children[0];
+  const output = (msg) => child.stdout.emit('data', `${JSON.stringify(msg)}\n`);
+  output({ type: 'state', state: 'in-call' });
+  assert.deepEqual(await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }),
+    [409, { error: 'display-unavailable' }]);
+  output({ type: 'pairing-display', ready: true });
+  const write = child.stdin.write;
+  child.stdin.write = (line) => {
+    if (line.startsWith('{')) {
+      const { type, code_id } = JSON.parse(line);
+      if (type === 'pairing-code') output({ type: 'pairing-result', code_id, displayed: true });
+    }
+    return write(line);
+  };
+  for (const verb of ['request', 'verify', 'revoke']) {
+    const mutation = `${grants}/${verb}`;
+    for (const headers of [{ 'x-rfactory-action': '' }, { 'Sec-Fetch-Site': 'same-site' }, { Origin: 'https://foreign.example' }]) {
+      assert.equal((await request('POST', mutation, { headers, body: { generation } }))[0], 403);
+    }
+    assert.equal((await request('POST', mutation, { body: { generation }, email: viewer }))[0], 403);
+    assert.deepEqual(await request('POST', mutation, { body: { generation }, project: BETA }), [409, { error: 'not-this-project' }]);
+    assert.deepEqual(await request('POST', mutation, { body: { generation: generation - 1 } }), [409, { error: 'stale-generation' }]);
+  }
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  const events = await get(`/api/call/events?project=${ALPHA}`, { signal: abort.signal });
+  const reader = events.body.getReader();
+  const issued = await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } });
+  assert.deepEqual(issued, [200, { ok: true }]);
+  const { code } = w.input.filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).find(({ type }) => type === 'pairing-code');
+  const pending = await request('GET', grants, { email: viewer });
+  const pendingStatus = { grant: null, pending: true, can_verify: false, can_approve: false, scheduled: true, display_ready: true, generation };
+  assert.deepEqual(pending, [200, pendingStatus]);
+  assert.deepEqual(await request('GET', grants, { email: approver }), [200, { ...pendingStatus, can_approve: true }]);
+  assert.deepEqual(await request('GET', grants, { email: ME.toUpperCase() }),
+    [200, { ...pendingStatus, can_approve: true, can_verify: true }]);
+  const submitted = 'private-wrong-entry';
+  const invalid = await request('POST', `${grants}/verify`, { body: { generation, code: submitted } });
+  assert.deepEqual(invalid, [400, { error: 'invalid-code' }]);
+  const [verified, { grant }] = await request('POST', `${grants}/verify`, { body: { generation, code } });
+  assert.equal(verified, 200);
+  assert.equal(grant.scope, 'tests');
+  const outside = await request('GET', grants, { project: BETA });
+  assert.deepEqual(outside, [200, { grant: null, pending: false, can_verify: false, can_approve: true, scheduled: false, display_ready: false, generation }]);
+  const revoked = await request('POST', `${grants}/revoke`, { body: { generation, grant_id: grant.grant_id } });
+  assert.deepEqual(revoked, [200, { ok: true, revoked: true }]);
+
+  let sse = '';
+  while (!sse.includes('"state":"revoked"')) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false);
+    sse += Buffer.from(value).toString();
+  }
+  await reader.cancel();
+  assert.match(sse, /"type":"grant-updated","state":"granted"/);
+  const { record: reopenedRecord } = await compose();
+  const auditFile = fs.readdirSync(dir).find((name) => name.endsWith('.jsonl'));
+  const rows = await reopenedRecord.readDay(auditFile.slice(0, -6));
+  assert.deepEqual(rows.map(({ entry }) => entry.state), ['code-issued', 'code-rejected', 'granted', 'revoked']);
+  for (const { entry } of rows) assert.equal(entry.link_hash, hashLink(link));
+  assert.deepEqual(makeSchedule().list({ projectId: ALPHA }), [slot]);
+  const published = JSON.stringify([scheduleResult, issued, pending, invalid, grant, outside, revoked, sse, rows,
+    fs.readFileSync(path.join(dir, 'schedules.json'), 'utf8')]);
+  for (const secret of [link, 'fixture-only-passcode', code, submitted]) assert.ok(!published.includes(secret));
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`))[0], 200);
+  await stop();
+});
 
 test('project start: allowlist before CFactory, exact id only, failures free the slot', async (t) => {
   const a = await projectApp(t);
@@ -1149,4 +1303,191 @@ test('main() starts a GitHub scope with the fake MCP binary; a failing start-up 
   assert.match(String(failure.message), /missing tool/);
   assert.equal(fs.existsSync(failingPidFile), true, 'start-up reached the child');
   assert.ok(!String(failure.message).includes(token) && !written.includes(token));
+});
+
+const jiraCloudId = '11111111-2222-3333-4444-555555555555';
+const jiraToken = 'synthetic-web-jira-token';
+const jiraScope = (token_file) => ({
+  name: 'team-abc',
+  source: { kind: 'jira', cloud_id: jiraCloudId, project: 'ABC', email: 'rfactory-reader@example.com',
+    token_file, flagged_field: 'customfield_10021' },
+  mapping: { status: { 'Waiting for customer': 'blocked' } },
+  brain: { destination: 'rfactory-host' },
+  writes_enabled: false,
+});
+const jiraItems = [
+  { id: 'ABC-1', kind: 'issue', title: 'Done', state: 'done' },
+  { id: 'ABC-2', kind: 'issue', title: 'Title ' + SECRET, source_state: 'Status ' + SECRET, state: 'unknown' },
+];
+
+test('Jira standup: exact reply, redaction, and summary for complete, empty and truncated reads', async (t) => {
+  let result = { items: jiraItems, fetched_at: 'F', newest_update: 'N', truncated: false };
+  const calls = [];
+  const source = { kind: 'jira', snapshot: async (...args) => { calls.push(args); return result; } };
+  const get = await start(t, { source, scope: jiraScope(), redactor: makeRedactor([SECRET]) });
+  const post = { method: 'POST' };
+  const response = await get('/api/standup', post);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const summary = 'Jira project ABC: 1 done, 0 in progress, 0 blocked, 0 left, 1 unknown.';
+  const empty = 'Jira project ABC: 0 done, 0 in progress, 0 blocked, 0 left, 0 unknown.';
+  const cut = ' The project has more issues than were read.';
+  assert.deepEqual(Object.keys(body).sort(),
+    ['counts', 'destination', 'fetched_at', 'items', 'newest_update', 'summary', 'summary_error', 'truncated', 'unknown']);
+  assert.deepEqual(body.counts, { done: 1, in_progress: 0, blocked: 0, left: 0, unknown: 1 });
+  assert.deepEqual([body.summary, body.summary_error, body.destination, body.fetched_at, body.newest_update, body.truncated],
+    [summary, null, 'the server', 'F', 'N', false]);
+  assert.deepEqual(body.items[1], { ...jiraItems[1], title: 'Title [redacted]', source_state: 'Status [redacted]' });
+  assert.deepEqual(body.unknown, [body.items[1]]);
+  assert.ok(!JSON.stringify(body).includes(SECRET));
+  const different = await get('/api/standup?project=XYZ', { ...post, body: JSON.stringify({ project: 'XYZ' }) });
+  assert.deepEqual(await different.json(), body);
+  assert.deepEqual(calls, [[], []]);
+
+  for (const [items, truncated, expected] of [
+    [jiraItems, true, summary + cut],
+    [[], false, empty + ' No issues matched the search for non-Done issues or issues updated in the last 14 days. If you expected matches, check that the Jira account can see the project.'],
+    [[], true, empty + cut],
+  ]) {
+    result = { ...result, items, truncated };
+    const r = await get('/api/standup', post);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).summary, expected);
+  }
+});
+
+test('Jira standup maps source failures to fixed 502 error codes', async (t) => {
+  let message;
+  const source = { kind: 'jira', snapshot: async () => { throw new Error(message); } };
+  const get = await start(t, { source, scope: jiraScope(), redactor: makeRedactor([]) });
+  for (const [failure, code] of [
+    ['jira-http-401', 'source-auth'], ['jira-http-403', 'source-auth'], ['source-timeout', 'source-timeout'],
+    ['jira-http-429', 'source-error'], ['jira-paging', 'source-error'],
+  ]) {
+    message = failure;
+    const r = await get('/api/standup', { method: 'POST' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: code });
+  }
+});
+
+test('Jira app only permits member requests for static files, config and standup', async (t) => {
+  const calls = [];
+  const boom = () => { calls.push('unexpected dependency call'); throw new Error('touched'); };
+  const double = new Proxy({}, { get: () => boom });
+  const call = new Proxy({ config: { listen: 'audio', sttConfigured: true } },
+    { get: (target, key) => Object.hasOwn(target, key) ? target[key] : boom });
+  const get = await start(t, { source: { kind: 'jira', snapshot: boom }, call, actions: double,
+    shares: double, investigations: double, notes: double, profiles: { runner: double }, desktop: {}, scope: jiraScope() });
+  for (const [url, method = 'GET'] of [
+    ['/api/review'], ['/api/review/K-1'], ['/api/actions'], ['/api/actions/1/approve', 'POST'], ['/api/shares'],
+    ['/api/investigations'], ['/api/call', 'POST'], ['/api/call', 'DELETE'], ['/api/call/events'], ['/api/projects'],
+    ['/api/notes'], ['/api/profiles'], ['/p/x'], ['/api/nope'], ['/api/standup'], ['/api/config', 'POST'],
+    ['/desktop.html'], ['/live.html'], ['/live.js'], ['/', 'HEAD'],
+  ]) {
+    const r = await get(url, { method });
+    assert.equal(r.status, 404, method + ' ' + url);
+    if (method !== 'HEAD') assert.deepEqual(await r.json(), { error: 'not-found' });
+  }
+  for (const url of ['/', '/app.js', '/api/config']) assert.equal((await get(url)).status, 200, url);
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: '', projects: false, source: 'jira' });
+  for (const url of ['/', '/api/nope']) {
+    assert.equal((await get(url, {}, 'x@example.com')).status, 403);
+    assert.equal((await get(url, {}, null)).status, 401);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('Jira credential environment names are refused regardless of case or word order', () => {
+  const { refuseJiraEnv, refuseKeyEnv } = require('../server.js');
+  for (const name of ['JIRA_API_TOKEN', 'ATLASSIAN_TOKEN', 'TOKEN_JIRA', 'rfactory_jira_key', 'secret_atlassian', 'jira_password']) {
+    const env = { [name]: jiraToken };
+    assert.throws(() => refuseJiraEnv(env), { message: 'key-in-environment' });
+    assert.doesNotThrow(() => refuseKeyEnv(env));
+  }
+  assert.doesNotThrow(() => refuseJiraEnv({ RFACTORY_SCOPE_FILE: '/tmp/scope', JIRA_PROJECT: 'ABC' }));
+});
+
+test('composeStandalone checks Jira switches and the token without starting or fetching', async () => {
+  const { composeStandalone } = require('../server.js');
+  const calls = [];
+  const source = { kind: 'jira', start: () => assert.fail('unexpected start'), snapshot: () => assert.fail('unexpected read') };
+  const scope = jiraScope();
+  const options = { scope, token: jiraToken, env: {}, createSource: (args) => { calls.push(args); return source; } };
+  for (const bad of [{ scope: { ...scope, shares_enabled: true } }, { scope: { ...scope, lookups_enabled: true } },
+    { env: { RFACTORY_CALLS: '1' } }, { env: { RFACTORY_DESKTOP: '1' } }]) {
+    await assert.rejects(composeStandalone({ ...options, ...bad }), { message: 'unsupported-scope' });
+  }
+  await assert.rejects(composeStandalone({ ...options, token: '' }), { message: 'jira-token-missing' });
+  assert.deepEqual(calls, []);
+  const fetcher = globalThis.fetch;
+  try {
+    globalThis.fetch = () => assert.fail('unexpected fetch');
+    assert.equal(await composeStandalone(options), source);
+    assert.deepEqual(calls, [{ scope, token: jiraToken }]);
+    assert.equal((await composeStandalone({ scope, token: jiraToken, env: {} })).kind, 'jira');
+  } finally { globalThis.fetch = fetcher; }
+});
+
+function jiraStartupFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-jira-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  const scope = jiraScope(tokenFile);
+  const scopeFile = path.join(dir, 'scope.json');
+  fs.writeFileSync(tokenFile, jiraToken + '\n', { mode: 0o600 });
+  fs.writeFileSync(scopeFile, JSON.stringify(scope));
+  return { scope, tokenFile, env: { NODE_PATH: process.env.NODE_PATH || '', RFACTORY_SCOPE_FILE: scopeFile, RFACTORY_ALLOWED_EMAILS: ME } };
+}
+
+test('main starts Jira on loopback and waits until a member requests a standup to fetch', async (t) => {
+  const { main } = require('../server.js');
+  const { env } = jiraStartupFixture(t);
+  const probe = http.createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+  const saved = process.env;
+  const realFetch = globalThis.fetch;
+  const urls = [];
+  let server;
+  try {
+    process.env = { ...env, PORT: String(port) };
+    globalThis.fetch = async (url) => { urls.push(url); throw new Error('Jira unreachable'); };
+    server = await main();
+    if (!server.listening) await once(server, 'listening');
+    assert.equal(server.address().address, '127.0.0.1');
+    assert.deepEqual(urls, []);
+    const post = (email) => realFetch('http://127.0.0.1:' + port + '/api/standup', {
+      method: 'POST', headers: { 'X-Forwarded-Email': email },
+    });
+    const result = await post(ME);
+    assert.equal(result.status, 502);
+    assert.deepEqual(await result.json(), { error: 'source-error' });
+    assert.equal((await post('x@example.com')).status, 403);
+    assert.deepEqual(urls.map((url) => url.origin + url.pathname),
+      ['https://api.atlassian.com/ex/jira/' + jiraCloudId + '/rest/api/3/search/jql']);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env = saved;
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('Jira startup exits with only a fixed code for bad token mode or credentials in the environment', (t) => {
+  const { env, scope, tokenFile } = jiraStartupFixture(t);
+  const base64 = Buffer.from(scope.source.email + ':' + jiraToken).toString('base64');
+  for (const [mode, extra, code] of [
+    [0o644, {}, 'jira-token-file-mode'],
+    [0o600, { JIRA_API_TOKEN: jiraToken }, 'key-in-environment'],
+  ]) {
+    fs.chmodSync(tokenFile, mode);
+    const result = spawnSync(process.execPath, [path.join(__dirname, '../server.js')],
+      { env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), 'rfactory-web: ' + code);
+    assert.equal(result.stdout, '');
+    assert.ok(!result.stderr.includes(jiraToken) && !result.stderr.includes(base64));
+  }
 });

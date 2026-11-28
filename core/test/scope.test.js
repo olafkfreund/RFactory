@@ -343,6 +343,101 @@ test('GitHub token_file loads into secrets and extras after checking the file', 
   } finally { f.cleanup(); }
 });
 
+test('Jira scope validates fields, reads a 0600 token and redacts both credential forms', () => {
+  const f = fixture();
+  const dir = path.dirname(f.keyFile);
+  const file = path.join(dir, 'scope.json');
+  const tokenFile = path.join(dir, 'jira-token');
+  const token = 'synthetic-jira-read-token';
+  const source = { kind: 'jira', cloud_id: '11111111-2222-3333-4444-555555555555', project: 'ABC',
+    email: 'rfactory-reader@example.com', token_file: tokenFile, flagged_field: 'customfield_10021' };
+  const scope = { name: 'team-abc', source, mapping: { status: { 'Waiting for customer': 'blocked' } },
+    brain: { destination: 'rfactory-host' }, writes_enabled: false };
+  const load = (config = scope, env = {}, secrets = [], extras = {}) => {
+    fs.writeFileSync(file, JSON.stringify(config));
+    return loadScope(file, env, secrets, extras);
+  };
+  const base64 = Buffer.from(source.email + ':' + token).toString('base64');
+  const fails = (code, config, env) => assert.throws(() => load(config, env), { message: code });
+  try {
+    fs.writeFileSync(tokenFile, token + '\n', { mode: 0o600 });
+    const secrets = [], extras = {};
+    assert.deepEqual(load(scope, {}, secrets, extras), scope);
+    assert.deepEqual(secrets, [token, base64]);
+    assert.deepEqual(extras, { jiraToken: token });
+    for (const value of [token, 'Authorization: Basic ' + base64]) {
+      const safe = makeRedactor(secrets).toModel(value);
+      assert.ok(!safe.includes(token) && !safe.includes(base64));
+    }
+
+    for (const [field, values] of Object.entries({
+      cloud_id: ['not-a-uuid', 'AAAAAAAA-2222-3333-4444-555555555555'],
+      project: ['abc', 'A', ['ABC']],
+      email: ['name:extra@example.com', 'name@\nexample.com', 42],
+      token_file: ['relative-token'],
+      flagged_field: ['flagged'],
+    })) {
+      for (const value of values) fails('invalid-scope', { ...scope, source: { ...source, [field]: value } });
+    }
+    for (const mapping of [{ status: { Waiting: 'closed' } }, { status: [] }, { status: null }, 'bad']) {
+      fails('invalid-scope', { ...scope, mapping });
+    }
+
+    const off = { ...scope };
+    for (const flag of ['writes', 'lookups', 'shares', 'investigations', 'notes']) {
+      const field = flag + '_enabled';
+      const enabled = { ...scope, [field]: true };
+      fails('invalid-scope', enabled);
+      fails('invalid-scope', enabled, { ['RFACTORY_' + flag.toUpperCase()]: 'on' });
+      off[field] = false;
+    }
+    fails('invalid-scope', { ...scope, brain: f.scope.brain, notes_enabled: true }, { RFACTORY_NOTES: 'on' });
+    assert.deepEqual(load(off), off);
+    fails('invalid-projects', { ...scope, projects: { allow: [{ id: 'repo:2' }] } });
+
+    fs.chmodSync(tokenFile, 0o640);
+    fails('jira-token-file-mode');
+    fails('jira-token-file-mode', { ...scope, source: { ...source, token_file: dir } });
+    fails('jira-token-file', { ...scope, source: { ...source, token_file: tokenFile + '-missing' } });
+    fs.chmodSync(tokenFile, 0o600);
+
+    const replacement = tokenFile + '-replacement';
+    fs.writeFileSync(replacement, 'synthetic-unvalidated-replacement', { mode: 0o644 });
+    const fstatSync = fs.fstatSync;
+    let checkedFd;
+    try {
+      fs.fstatSync = (fd) => {
+        const stat = fstatSync(fd);
+        checkedFd = fd;
+        fs.renameSync(replacement, tokenFile);
+        return stat;
+      };
+      const loaded = {};
+      load(scope, {}, [], loaded);
+      assert.deepEqual(loaded, { jiraToken: token });
+    } finally { fs.fstatSync = fstatSync; }
+    assert.throws(() => fstatSync(checkedFd), { code: 'EBADF' });
+    fs.chmodSync(tokenFile, 0o600);
+
+    for (const value of ['1234567', token + ' extra']) {
+      fs.writeFileSync(tokenFile, value);
+      fails('invalid-jira-token');
+    }
+    const readFileSync = fs.readFileSync;
+    try {
+      fs.readFileSync = (name, ...args) => {
+        if (typeof name === 'number') {
+          checkedFd = name;
+          throw new Error(token);
+        }
+        return readFileSync(name, ...args);
+      };
+      fails('jira-token-file');
+    } finally { fs.readFileSync = readFileSync; }
+    assert.throws(() => fstatSync(checkedFd), { code: 'EBADF' });
+  } finally { f.cleanup(); }
+});
+
 test('projects.allow: 1 to 50 unique project ids, nothing else', () => {
   const f = fixture();
   try {
@@ -493,5 +588,23 @@ test('the README "Without the Factories" scope file loads', () => {
     const extras = {};
     assert.deepEqual(loadScope(file, {}, [], extras), scope);
     assert.equal(extras.githubToken, 'synthetic-readme-token');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the README Jira scope file loads', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '../../README.md'), 'utf8');
+  const blocks = [...readme.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => JSON.parse(m[1]));
+  const scope = blocks.find((b) => b.source?.kind === 'jira');
+  assert.ok(scope, 'expected a Jira JSON block in README.md');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-readme-jira-scope-'));
+  try {
+    const tokenFile = path.join(dir, 'jira-token');
+    fs.writeFileSync(tokenFile, 'synthetic-jira-readme-token\n', { mode: 0o600 });
+    scope.source.token_file = tokenFile;
+    const file = path.join(dir, 'scope.json');
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const extras = {};
+    assert.deepEqual(loadScope(file, {}, [], extras), scope);
+    assert.equal(extras.jiraToken, 'synthetic-jira-readme-token');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

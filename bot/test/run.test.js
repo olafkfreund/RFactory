@@ -4,7 +4,9 @@ const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const fs = require('fs');
 const path = require('path');
+const { runInNewContext } = require('node:vm');
 const { run } = require('../run.js');
+const { ZOOM } = require('../node_modules/@vibeconferencing/calls/providers/zoom-selectors.js');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 const SECRET = 'ghp_' + 'a'.repeat(36);
@@ -35,7 +37,7 @@ function setup(over = {}) {
     clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; }, now: () => over.now?.value ?? 0 },
     mkdtemp: over.mkdtemp || (async (p) => p + 'X' + (calls.hosts.length || '')),
     rm: async (p) => { calls.rm.push(p); calls.order.push('rm'); await over.rm?.(p); },
-    ...(over.readFile ? { readFile: over.readFile } : {}),
+    readFile: over.readFile || (async (file) => fs.readFileSync(file)),
     playwrightHost: async (o) => {
       calls.hostOpts = o;
       const host = { context: { pages: () => over.pages || [] }, close: async () => {
@@ -206,6 +208,61 @@ function avatarPage(calls, confirmations = [true], errors = 0) {
   } };
 }
 
+test('pairing IPC acknowledges only a successful render after camera confirmation, without exposing codes', async () => {
+  const codeId = 'a1234567-1234-1234-1234-123456789abc';
+  const pairing = [];
+  const page = { evaluate: async (fn, value) => {
+    const source = fn.toString();
+    if (source.includes('Turn off camera')) return true;
+    if (source.includes('setPairingCode')) {
+      pairing.push(value);
+      if (value === 'EEEEEE') throw new Error('Evaluation failed for EEEEEE');
+      return value === 'B3CD45';
+    }
+    return false;
+  } };
+  const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page });
+  const results = () => s.out.filter(({ type }) => type === 'pairing-result');
+  const issue = async (code) => { s.msg({ type: 'pairing-code', code, code_id: codeId }); await tick(); };
+  try {
+    await issue('A2CD34');
+    assert.deepStrictEqual(pairing, []);
+    assert.deepStrictEqual(results(), [{ type: 'pairing-result', code_id: codeId, displayed: false }]);
+    s.timers.find((timer) => timer.ms === 3000).fn();
+    await tick();
+    assert.deepStrictEqual(s.out.find(({ type }) => type === 'pairing-display'), { type: 'pairing-display', ready: true });
+    await issue('B3CD45');
+    await issue('EEEEEE');
+    s.msg({ type: 'pairing-clear' });
+    await tick();
+    assert.deepStrictEqual(pairing, ['B3CD45', 'EEEEEE', null]);
+    assert.deepStrictEqual(results().map(({ displayed }) => displayed), [false, true, false]);
+    assert.strictEqual(s.speaks.length, 0);
+    assert.doesNotMatch(JSON.stringify([s.calls.chat, s.out]), /A2CD34|B3CD45|EEEEEE/);
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('a bot with no avatar cannot acknowledge a displayed pairing code', async () => {
+  const s = await joined();
+  try {
+    const code_id = 'a1234567-1234-1234-1234-123456789abc';
+    s.msg({ type: 'pairing-code', code: 'A2CD34', code_id });
+    await tick();
+    assert.ok(!s.out.some(({ type }) => type === 'pairing-display'));
+    assert.deepStrictEqual(s.out.find(({ type }) => type === 'pairing-result'),
+      { type: 'pairing-result', code_id, displayed: false });
+  } finally { s.stdin.end(); await s.done; }
+});
+
+test('a join error quoting a Teams link does not log its URL or passcode', async () => {
+  const link = 'https://teams.microsoft.com/meet/123?p=sample-passcode-only';
+  const s = setup({ platform: 'teams', join: async () => { throw new Error(`Cannot navigate to ${link}`); } });
+  s.stdin.write(`${link}\n`);
+  assert.strictEqual(await s.done, 1);
+  assert.match(s.logs(), /Cannot navigate to \[redacted\]/);
+  assert.doesNotMatch(JSON.stringify(s.out), /sample-passcode-only/);
+});
+
 test('a Teams link reaches join unchanged and the avatar camera is not checked by a Meet label', async () => {
   const link = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d';
   const calls = { order: [] };
@@ -236,6 +293,7 @@ test('avatar does not wait for the chat line, retries a refused camera, then pol
     s.timers.find((t) => t.ms === 5000).fn(); await tick();
     assert.deepStrictEqual(s.calls.camera, [true, true, false]);
     assert.ok(s.logs().includes('avatar failed: render'));
+    assert.deepStrictEqual(s.out.filter(({ type }) => type === 'pairing-display').map(({ ready }) => ready), [true, false]);
     assert.ok(calls.order.includes('inject'));
     assert.deepStrictEqual(s.calls.chat, []);
   } finally { s.stdin.end(); await s.done; }
@@ -272,6 +330,7 @@ test('three camera refusals turn it off; injection failure is logged without end
       }
       assert.deepStrictEqual(s.calls.camera, failedInjection ? [false] : [true, true, true, false]);
       assert.ok(s.logs().includes(failedInjection ? 'avatar failed: inject boom' : 'avatar failed: camera refused'));
+      assert.ok(!s.out.some(({ type }) => type === 'pairing-display'));
       s.msg({ type: 'speak', seq: 7, wav: 'AAAA' }); await tick();
       s.speaks[0].resolve({ cancelled: false }); await tick();
       assert.strictEqual(s.out.find((m) => m.type === 'spoke').result, 'done');
@@ -725,6 +784,19 @@ test('page report uses last real page, caps and redacts text; audio never reads 
   }
 });
 
+test('failed Zoom join redacts the invite passcode in both the error and page report', async () => {
+  const passcode = 'dummy-zoom-passcode';
+  const link = `https://zoom.us/j/123456789?pwd=%27${passcode}`;
+  const rewritten = ZOOM.webClientJoinUrl(link);
+  const redirect = 'https://zoom.us/signin?from=' + encodeURIComponent(link);
+  const pages = [{ url: () => redirect, evaluate: async () => `Could not open ${redirect}` }];
+  const s = setup({ pages, join: async () => { throw joinError('auth-required', `Could not open ${rewritten}`); } });
+  s.stdin.write(`${link}\n`);
+  assert.equal(await s.done, 1);
+  assert.match(s.logs(), /join failed: .*\/wc\/join\/123456789\?pwd=\[redacted\] page: ".*%3Fpwd%3D\[redacted\]"/);
+  assert.ok(!JSON.stringify(s.out).includes(passcode));
+});
+
 test('page read failure and two second limit yield an empty page report', async () => {
   for (const evaluate of [async () => { throw new Error('page failed'); }, () => new Promise(() => {})]) {
     const s = setup({ pages: [{ url: () => 'https://last', evaluate }], joinQueue: [joinError('auth-required')] });
@@ -1034,6 +1106,18 @@ test('roster, no-audio and notice retry follow their timers', async () => {
   s.stdin.end(); await s.done;
 });
 
+test('Zoom captions mode reports a failed chat notice after one retry', async () => {
+  const s = setup({ platform: 'zoom', chatFails: true, env: { RFACTORY_LISTEN: 'platform' } });
+  s.stdin.write('https://zoom.us/wc/join/123456789\n');
+  await tick();
+  assert.equal(s.calls.chat.length, 1);
+  s.timers.find((timer) => timer.ms === 10000 && !timer.cleared).fn();
+  await tick();
+  assert.equal(s.calls.chat.length, 2);
+  assert.deepEqual(s.out.filter((m) => m.type === 'hearing'), [{ type: 'hearing', state: 'notice-failed' }]);
+  s.stdin.end(); await s.done;
+});
+
 test('audio leave during join discards the bridge without starting the tap', async () => {
   let release, onAudio;
   const order = [];
@@ -1050,6 +1134,28 @@ test('audio leave during join discards the bridge without starting the tap', asy
   assert.ok(!s.out.some((m) => m.type === 'audio'));
 });
 
+
+test('Zoom rejoin text only signals removal when the Leave and End controls are absent', async () => {
+  for (const label of ['leave', 'end', null]) {
+    const results = [];
+    const document = { body: { innerText: 'Can you rejoin?' },
+      querySelector: (selectors) => selectors.toLowerCase().split(', ').includes(`button[aria-label="${label}" i]`) ? {} : null };
+    const page = { evaluate: async (fn) => {
+      if (fn.name !== 'pageLeft') return false;
+      const left = runInNewContext(`(${fn})()`, { document });
+      results.push(left);
+      return left;
+    } };
+    const s = setup({ page, platform: 'zoom' });
+    s.stdin.write('https://zoom.us/j/123456789\n');
+    try {
+      await tick();
+      await s.timers.find((timer) => timer.ms === 4000 && !timer.cleared).fn();
+      assert.deepStrictEqual(results, [label === null]);
+      assert.equal(s.states().at(-1), label ? 'in-call' : 'removed', label);
+    } finally { s.stdin.end(); await s.done; }
+  }
+});
 
 test('a removal shown by the page stops the bot within one 4 s check (Teams reports none itself)', async () => {
   let removed = false;
