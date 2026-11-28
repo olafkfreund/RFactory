@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 spec: spec/2026-11-28-60-protected-inventory.md
 coders:
