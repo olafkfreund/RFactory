@@ -96,6 +96,10 @@ Run by the lead after Step 1:
 
 Revert the slice 1 merge commit on `main` (or `git checkout main -- README.md` on the branch before merge). Because `.github/workflows/deploy.yml:7-9` triggers on every push to `main`, reverting on `main` also requires the owner's timing OK and an agent-bus announcement.
 
+## Deviations
+
+- Step 1's Jira row records that a local RFactory server was verified against Jira Cloud. The [issue #59 live check](https://github.com/olafkfreund/RFactory/issues/59) on 2026-11-28 supersedes the plan's pending verification note. The check used an admin token, so the dedicated read-only account setup remains unverified.
+
 ## Decisions (2026-11-28)
 
 - Owner approved the plan with its recommendation: no open design questions remained (all design decisions were settled in the approved intent and spec); proceed with Step 1 using `agy`, run the lead checks, then get the owner's timing OK and announce on the agent bus before merging to `main`.
