@@ -70,7 +70,7 @@ Deliver issue #25 in two slices. This plan covers **slice 1**: updating `README.
    - **Agents (MCP)** (preserved and reconciled from `README.md:28-36` on `main`): keep the read-only MCP tools overview, key creation/revocation, and data-destination notice; generalize any `kubectl` namespace/deployment layout details if needed to match Decision 2(a).
    - **Updating the feature list** (new section): state that any pull request that ships a feature or changes what is available must update the feature list in `README.md` and the affected guide page under `docs/` in the same pull request.
    - **Licence** (preserved from `README.md:137-139` on `main`): keep the existing AGPL-3.0, `LICENSE`, `NOTICE.md`, and `LICENSES/` text unchanged.
-   -> verify by `grep -nE 'Zoom|Slack|p620|k3d-factory|pod\.sh up' README.md` (expected: no matches) and checking all relative links in `README.md` resolve to existing files.
+   -> verify with `node --test core/test/readme.test.js` from the repository root and the manual public-content review below.
    Traps: `README.md` is published publicly at `rfactory.freundcloud.com` (`CNAME`); do not include secrets, real email addresses, real meeting links, participant names, private project names, host names, or cluster layout. Do not modify any code, manifest, or `.github/workflows/deploy.yml`. Start from `origin/main:README.md` (`181c6e7`, 139 lines) so PR #71, #74, #75, #76, #77, #79, and #81 additions are not lost; note that `web/agent-tools.js`, `web/reads.js`, `web/notes.js`, `docs/multi-participant-test.md`, and `deploy/k8s/check-egress.sh` are on `main` (`181c6e7`) and not in this pre-merge branch worktree.
 
 ## Tests
@@ -78,14 +78,11 @@ Deliver issue #25 in two slices. This plan covers **slice 1**: updating `README.
 Run by the lead after Step 1:
 
 1. **Forbidden terms / public-content check:**
-   - Automated sanity grep (expected: only the `rfactory-reader@example.com` placeholder in the Jira scope snippet, if preserved; no other matches):
-     `grep -nE 'Zoom|Slack|p620|k3d-factory|pod\.sh up|@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' README.md`
+   - Run `node --test core/test/readme.test.js` from the repository root. The public-content test fails on case-insensitive matches for unsupported platforms, known cluster layout strings, Meet and Teams URLs, complete agent keys, and email addresses. It allows the documented Jira placeholder and the Claude recovery runbook reference.
    - Explicit manual review of the complete `README.md` (and `git diff origin/main -- README.md`) against every item in the approved public-content list: confirm no secrets/tokens, no real email addresses, no real meeting links, no participant names, no private project names, and no host names or cluster layout details.
 2. **Relative link check** (expected: every Markdown link target in `README.md` resolves to an existing file or directory on `main`):
-   - Extract and check all `[...](...)` relative targets from `README.md` (excluding `http://`/`https://` and `#` anchors), e.g.:
-     `grep -oE '\]\([^)]+\)' README.md | sed 's/^\](\(.*\))$/\1/' | grep -vE '^(https?://|#)' | while read -r p; do test -e "$p" || echo "MISSING: $p"; done`
-   - Also verify referenced bare paths (`intent/`, `spec/`, `plan/`, `docs/hearing.md`, `docs/multi-participant-test.md`, `deploy/k3d/README.md`, `deploy/k8s/check-egress.sh`, `core/RESULTS.md`, `plan/2026-11-24-33-rfactory-in-cluster.md`, `deploy/k8s/bootstrap-secrets.sh`, `deploy/oauth2-proxy.yaml`, `LICENSE`, `NOTICE.md`, `LICENSES/`) exist in the repository.
-3. **Scope check** (expected: only `README.md` and `intent/`/`spec/`/`plan/` artifacts for #25 changed):
+   - The same test file fails on missing relative Markdown targets and backticked repository paths. Confirm the Claude recovery runbook separately in its own repository.
+3. **Scope check** (expected: `README.md`, the `intent/`/`spec/`/`plan/` artifacts for #25, the README regression test, and regenerated Graphify files):
    `git status --short && git diff --name-only origin/main...HEAD`
 4. **Status and code alignment check:**
    Verify every feature row, platform claim, and role description in `README.md` against the current `main` (`181c6e7` or newer) source files (`web/server.js`, `web/actions.js`, `web/shares.js`, `web/investigations.js`, `core/src/roles.js`, `core/src/call/hearing.js`, `bot/run.js`) and GitHub issue states (#2, #3, #5, #8, #10, #12, #13, #16, #18, #22, #26, #27, #28, #49, #51, #52, #56, #58, #59, #62, #67).
@@ -99,6 +96,9 @@ Revert the slice 1 merge commit on `main` (or `git checkout main -- README.md` o
 ## Deviations
 
 - Step 1's Jira row records that a local RFactory server was verified against Jira Cloud. The [issue #59 live check](https://github.com/olafkfreund/RFactory/issues/59) on 2026-11-28 supersedes the plan's pending verification note. The check used an admin token, so the dedicated read-only account setup remains unverified.
+- Step 1's Standup notes row now specifies that approvers propose tasks during a writable call, then approve notes after the call so members can download the Markdown. The Jira row now states the credential and verification limits from the live check.
+- Step 1 names the deployment scope file and restores the reference to the Claude login recovery runbook in `factory-gitops`. The restart instruction remains generic. Two sentences in the preserved sections now use Factory's name.
+- Final review added `core/test/readme.test.js` for the README wording, paths, and public-content checks. The tests replace the example shell checks and run with the core suite. The test file and repository-required Graphify refresh extend the documentation-only file scope.
 
 ## Decisions (2026-11-28)
 

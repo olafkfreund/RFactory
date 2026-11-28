@@ -23,8 +23,8 @@ Work follows intent -> spec -> plan: see `intent/`, `spec/`, `plan/`.
 | Standalone mode and roles | Provides a read-only standalone core, enforces the `member`, `approver`, and `admin` roles, and offers GitHub web standup without Factory. | partly shipped (standalone S1, roles, and web-github) | `web-github` has yet to be checked with a live repository or token. | #2 |
 | Bot name "Factory" and wake rules | Factory wakes only when addressed at the start of a request. | shipped | — | #62 (includes #65) |
 | MCP server | Gives outside agents read-only access through MCP. | partly shipped (read-only MCP server) | Released with the switch off (`sha-040a0e0`). | #27 |
-| Standup notes | Captures notes in a call. On the page, you can review, edit, approve, and download them as Markdown or propose tasks from them. | partly shipped (reviewed notes, Markdown download, and task proposals) | Released with the switch off (`sha-040a0e0`). | #58 |
-| Jira and Confluence | Shows a read-only standup for one Jira Cloud project on the page without Factory (`source.kind: "jira"`). Confluence and in-call lookups are later slices. | partly shipped (Jira slice 1) | Verified against Jira Cloud from a local RFactory server (#59). | #59 |
+| Standup notes | Captures notes in a call for review and editing on the page. Approvers can propose tasks only during a writable call. After the call ends, approvers can approve the notes and members can download the approved notes as Markdown. | partly shipped (reviewed notes, Markdown download, and task proposals) | Released with the switch off (`sha-040a0e0`). | #58 |
+| Jira and Confluence | Shows a read-only standup for one Jira Cloud project on the page without Factory (`source.kind: "jira"`). Confluence and in-call lookups are later slices. | partly shipped (Jira slice 1) | Verified against Jira Cloud from a local RFactory server using an admin token (#59). The dedicated read-only account setup is still unverified. | #59 |
 | Elevated calls | Requires pairing verified by the portal before commands, terminals, agents, or write access. | planned | — | #22 |
 | CLI | Controls and automates RFactory from the command line. | planned | — | #26 |
 
@@ -41,7 +41,7 @@ RFactory reads the configured project's cards from CFactory, read-only. A card c
 - **issues**: blocked, failed stages, issue sync errors, board-versus-issue mismatches;
 - **unknown**: any other status, shown as it is.
 
-In a call the bot speaks a two- or three-sentence headline built from the counts; the page shows the full lists.
+In a call Factory speaks a two- or three-sentence headline built from the counts. The page shows the full lists.
 
 **Freshness.** Issue data is `current`, `stale` or `unavailable`, from CFactory's sync state for the configured repository. A stale or failed read is reported as such, never as a gap.
 
@@ -125,7 +125,7 @@ In this mode calls, the desktop, shares, lookups, changes, the review panel and 
 
 ## How the bot hears
 
-During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
+During a call, Factory hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
 
 For the multi-participant live test runbook, see [`docs/multi-participant-test.md`](docs/multi-participant-test.md).
 
@@ -144,8 +144,9 @@ Approvers and admins must also be members. The web app refuses to start if eithe
 See the [cluster deployment plan](plan/2026-11-24-33-rfactory-in-cluster.md) and the [operator guide for per-call desktop VMs](deploy/k3d/README.md). Use [`deploy/k8s/bootstrap-secrets.sh`](deploy/k8s/bootstrap-secrets.sh) to apply configuration and credentials from `~/.config/rfactory`. Use `--dry-run` to see what it would write. Keep credentials out of Git.
 
 - To change membership, edit `roles.env` and run the bootstrap script. The deployment restarts.
+- Edit the deployment's scope in `scope.cluster.json` in the same configuration directory.
 - To check the egress limit from the running deployment, run [`deploy/k8s/check-egress.sh`](deploy/k8s/check-egress.sh). Use `--baseline` before a policy change.
-- To re-seed the shared Claude login, update the login credential using the deployment's secrets management procedure, then restart RFactory.
+- To re-seed the shared Claude login, follow `docs/secrets-management.md` in the `factory-gitops` repository, then restart RFactory.
 - `deploy/pod.sh` is for development only.
 
 ## Agents (MCP)
