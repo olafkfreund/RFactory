@@ -2,7 +2,9 @@
 
 RFactory is a web app where an AI bot named **Factory** joins team calls. Factory runs standups, answers questions, shares the board, and runs read-only investigations. It can propose changes that, after approval, go through PFactory, AIFactory, and TFactory via CFactory.
 
-RFactory accepts **Google Meet** and **Microsoft Teams** links only. Google Meet still sometimes refuses Factory on the first attempt from a fresh VM (#49, seen again in the #73 live check). That check confirmed that Factory answered the first question using Meet captions (#56) and could hear in Meet `audio` mode (#67). The Teams live rerun (#16) is still unverified.
+RFactory accepts **Google Meet** and **Microsoft Teams** links. An additional guest-call platform is available when `RFACTORY_ZOOM_CALLS=1` and a desktop runner is configured. Google Meet still sometimes refuses Factory on the first attempt from a fresh VM (#49, seen again in the #73 live check). That check confirmed that Factory answered the first question using Meet captions (#56) and could hear in Meet `audio` mode (#67). The Teams live rerun (#16) is still unverified.
+
+The [user guide](docs/user-guide.md) covers the available platforms and walks through a call. The [operator guide](docs/operator-guide.md) covers setup and troubleshooting.
 
 Work follows intent -> spec -> plan: see `intent/`, `spec/`, `plan/`.
 
@@ -25,8 +27,9 @@ Work follows intent -> spec -> plan: see `intent/`, `spec/`, `plan/`.
 | MCP server | Gives outside agents read-only access through MCP. | partly shipped (read-only MCP server) | Released with the switch off (`sha-040a0e0`). | #27 |
 | Standup notes | Captures notes in a call for review and editing on the page. Approvers can propose tasks only during a writable call. After the call ends, approvers can approve the notes and members can download the approved notes as Markdown. | partly shipped (reviewed notes, Markdown download, and task proposals) | Released with the switch off (`sha-040a0e0`). | #58 |
 | Jira and Confluence | Shows a read-only standup for one Jira Cloud project on the page without Factory (`source.kind: "jira"`). Confluence and in-call lookups are later slices. | partly shipped (Jira slice 1) | Verified against Jira Cloud from a local RFactory server using an admin token (#59). The dedicated read-only account setup is still unverified. | #59 |
-| Elevated calls | Requires pairing verified by the portal before commands, terminals, agents, or write access. | planned | — | #22 |
-| CLI | Controls and automates RFactory from the command line. | planned | — | #26 |
+| Guest joining on an additional meeting platform | Accepts ordinary guest invites when a desktop runner is configured and `RFACTORY_ZOOM_CALLS=1`. | partly shipped (guest calls, slice A) | Released with the switch off. Live guest admission, hearing, speaking, and leaving still need verification. | [#1](https://github.com/olafkfreund/RFactory/issues/1#issuecomment-7237993130) |
+| Elevated calls | With calls enabled and a working bot camera tile, an approver can schedule a meeting and obtain a time-limited grant through portal-verified pairing. Commands, terminals, in-call agents, and branch writes are later slices. | partly shipped (scheduling, pairing, and grants) | The live pairing check is pending. | [#22](https://github.com/olafkfreund/RFactory/issues/22#issuecomment-7237993352) |
+| CLI | `rfactory` signs members in, reads project data, starts and ends calls, and follows what Factory heard. It requires a Keycloak device-flow client and a proxy that accepts its bearer tokens. | partly shipped (sign-in, reads, and call control) | Live sign-in and smoke checks are pending. | [#26](https://github.com/olafkfreund/RFactory/issues/26#issuecomment-7237993756) |
 
 ## Standup and review
 
