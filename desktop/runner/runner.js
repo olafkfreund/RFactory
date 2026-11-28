@@ -222,6 +222,7 @@ function inClusterConfig(env) {
     profiles: { keyPath: '/etc/rfactory/tls/profile-key' }, maxVms: 3, runtimeMaxSec: 10800,
     workerBeatTimeoutMs: 30000, serverBeatTimeoutMs: 60000, idleMs: 600000, bootGraceMs: 45000,
     egressQuotaBytes: 1073741824, verifyHooks: env.RF_VERIFY_HOOKS === '1',
+    startupTiming: env.RFACTORY_STARTUP_TIMING === '1',
     loginsPath: env.RF_PREVIEW_LOGINS_PATH || null,
     ranges: require('../ranges/ranges.json'),
     net: { previews: scopePreviews, dns: { platform: platformNames, scopes: scopeDomains } },

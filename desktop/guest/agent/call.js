@@ -27,7 +27,7 @@ async function withProxy(proxy, chromium, launch) {
 // does not know it, sees no lobby, join or call UI, and reports "denied" after its limbo grace (k14). This clicks through it,
 // then fills the name step that follows (too late for the library's own fill); Join stays the library's to press.
 // shortcut: matches the English label only (the guest Chrome runs in English); upgrade if the library learns the page.
-const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === window.top) {
+const meetGuestScript = (startupTiming) => `if (location.hostname === 'meet.google.com' && window === window.top) {
   const visible = (sel, re) => [...document.querySelectorAll(sel)].find((e) => e.offsetParent && re.test(e.textContent || ''));
   let joined = false;
   const t = setInterval(async () => {
@@ -46,11 +46,15 @@ const MEET_GUEST = `if (location.hostname === 'meet.google.com' && window === wi
     joined = true;
     setTimeout(() => {
       const join = visible('button, [role="button"]', /^\\s*(Join now|Ask to join)\\s*$/i);
-      if (join && !join.disabled && join.getAttribute('aria-disabled') !== 'true') join.click();
+      if (join && !join.disabled && join.getAttribute('aria-disabled') !== 'true') {
+        ${startupTiming ? "console.log('[rfactory] guest join click');" : ''}
+        join.click();
+      }
     }, 5000);
   }, 500);
   setTimeout(() => clearInterval(t), 300000);
 }`;
+const MEET_GUEST = meetGuestScript(false);
 
 // Teams gives an anonymous guest a disabled "Captions" item until captions are available in the meeting (k14: the light
 // client's More menu showed it aria-disabled; the library clicks it once at join and never again, so the bot stayed deaf).
@@ -77,11 +81,17 @@ const TEAMS_CAPTIONS = `if (/(^|\\.)teams\\.(microsoft|live)\\.com$|(^|\\.)teams
 // The guest's call worker (plan 13c): bot/run.js with its stdin/stdout carried as call-in / call-out pieces.
 // The call Chrome gets callLaunchArgs(nonce) and the share (step 11) runs in that same Chrome.
 // deps (tests): run, playwrightHost, chromium, join, clock, chown. onExit() fires when the worker has finished.
-function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {}, deps = {}, env = process.env }) {
+function createCallWorker({ nonce, screen = false, proxy, send, startupTiming = false, onExit = () => {}, deps = {}, env = process.env }) {
   const stdin = new PassThrough();
   let host = null, share = null, buf = '', skipping = false;
   const run = deps.run || require('../../../bot/run.js').run;
+  const timing = startupTiming ? (stage, attempt) => {
+    try { send({ type: 'startup-timing', stage, ...(attempt === undefined ? {} : { attempt }) }); }
+    catch { /* teardown can close the control channel before the observation */ }
+  } : undefined;
+  timing?.('worker-ready');
   const workerDeps = {
+    startupTiming: timing,
     playwrightHost: async (o) => {
       const launch = deps.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
       const sandboxed = env.CALL_UID && env.CALL_GID;
@@ -89,7 +99,7 @@ function createCallWorker({ nonce, screen = false, proxy, send, onExit = () => {
       // Meet refuses a Chrome launched with --no-sandbox (#68).
       host = await withProxy(proxy, deps.chromium, () => launch({ ...o, args: [...(o.args || []), ...(!sandboxed ? ['--no-sandbox'] : []), ...callLaunchArgs(nonce, screen)] }));
       try {
-        await host.context.addInitScript(MEET_GUEST);
+        await host.context.addInitScript(startupTiming ? meetGuestScript(true) : MEET_GUEST);
         if (env.RFACTORY_LISTEN !== 'audio') await host.context.addInitScript(TEAMS_CAPTIONS); // own transcription replaces the captions
       } catch (e) { // the bot never received this host, so it cannot close it
         await host.close().catch(() => {});

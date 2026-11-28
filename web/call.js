@@ -749,6 +749,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
         ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
       emit({ type: 'state', state: 'joining' });
       if (lookupsOn) emitLimits(c);
+      child.acceptStartup?.(generation, platform);
       child.stdin.write(`${link}\n`);
     } catch (error) { // a call that cannot be set up is torn down; its slot is free once its child has gone
       killGroup(c, 'SIGKILL');

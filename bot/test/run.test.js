@@ -34,13 +34,14 @@ function setup(over = {}) {
       mediaPage: {}, getParticipants: async () => over.participants || [] }),
   });
   const deps = {
+    startupTiming: over.startupTiming,
     clock: { setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; }, clearTimeout: (t) => { t.cleared = true; }, now: () => over.now?.value ?? 0 },
     mkdtemp: over.mkdtemp || (async (p) => p + 'X' + (calls.hosts.length || '')),
     rm: async (p) => { calls.rm.push(p); calls.order.push('rm'); await over.rm?.(p); },
     readFile: over.readFile || (async (file) => fs.readFileSync(file)),
     playwrightHost: async (o) => {
       calls.hostOpts = o;
-      const host = { context: { pages: () => over.pages || [] }, close: async () => {
+      const host = { context: over.context || { pages: () => over.pages || [] }, close: async () => {
         calls.close++; calls.order.push('close'); await over.close?.();
       } };
       calls.hosts.push({ host, opts: o });
@@ -1111,4 +1112,28 @@ test('a removal shown by the page stops the bot within one 4 s check (Teams repo
   assert.ok(s.states().includes('removed'));
   assert.strictEqual(s.calls.leave, 1);
   assert.strictEqual(s.calls.close, 1);
+});
+
+test('Meet startup timing observes one join click per attempt and emits only fixed markers', async () => {
+  for (const signal of ['[electron-meet] Clicking join: Ask to join',
+    '[electron-meet] Accepted call-recording disclosure (clicked "Join now") — recording/transcription consented on the user\'s behalf',
+    '[rfactory] guest join click']) {
+    const stages = [];
+    const page = { url: () => 'https://meet.google.com/test' };
+    const context = Object.assign(new EventEmitter(), { pages: () => [page] });
+    const observe = (text, origin = page) => context.emit('console', { type: () => 'log', text: () => text, page: () => origin });
+    const s = setup({ context, startupTiming: (stage, attempt) => stages.push([stage, attempt]),
+      join: async () => {
+        observe(signal, { url: page.url });
+        observe('unrelated sensitive content');
+        assert.deepStrictEqual(stages, [['chrome-start', 1], ['browser-ready', 1]]);
+        observe(signal); observe(signal);
+        return s.call;
+      } });
+    s.stdin.write('https://meet.google.com/example\n');
+    await tick();
+    assert.deepStrictEqual(stages, [['chrome-start', 1], ['browser-ready', 1], ['join-click', 1], ['admitted', 1]]);
+    assert.strictEqual(context.listenerCount('console'), 0);
+    s.msg({ type: 'leave' }); await s.done;
+  }
 });

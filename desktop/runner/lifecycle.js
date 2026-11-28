@@ -34,6 +34,7 @@ function createLifecycle(config, deps) {
     if (!vm) return Promise.resolve({ ok: true, already: true });
     if (vm.destroying) return vm.destroying; // idempotent
     // one line per destroy, so why a desktop ended is on record (k14: an egress-quota end was known only by elimination)
+    timing(vm, reason === 'boot-failed' ? 'boot-failed' : 'stopped');
     (deps.log || console.log)(`runner: destroy ${id} reason=${reason}`);
     vm.destroying = (async () => {
       owners.delete(vm.sock);
@@ -65,7 +66,18 @@ function createLifecycle(config, deps) {
   const MAX_CHUNKS = 1024;
   function endCall(vm) { if (vm.callSock) vm.callSock.destroy(); vm.callSock = null; } // no worker behind it: let web/vm-call.js see the close
   function failPending(vm, error) { for (const p of vm.pending.values()) p.resolve({ error }); vm.pending.clear(); }
+  function timing(vm, stage, attempt) {
+    if (!vm.timingTag) return;
+    // The decoder allowlists guest stages and attempts, so this set stays bounded even on a noisy channel.
+    const key = `${stage}:${attempt ?? ''}`;
+    const seen = vm.timingSeen ??= new Set();
+    if (seen.has(key)) return;
+    seen.add(key);
+    (deps.log || console.log)(JSON.stringify({ type: 'startup-timing', stage, call_tag: vm.timingTag,
+      desktop_id: vm.id, ...(attempt === undefined ? {} : { attempt }) }));
+  }
   function onAgentMessage(vm, m) {
+    if (m.type === 'startup-timing') { timing(vm, m.stage, m.attempt); return; }
     if (m.type === 'view-closed') {
       const p = vm.pending.get(m.action_id);
       if (p?.kind === 'view-close' && p.share_id === m.share_id) { vm.pending.delete(m.action_id); p.resolve({ ok: true, type: 'view-closed', share_id: m.share_id }); }
@@ -110,8 +122,9 @@ function createLifecycle(config, deps) {
   }
   function sendCallConfig(vm) {
     if (!vm.nonce || !vm.agent) return;
+    if (!vm.configSent) timing(vm, 'guest-ready');
     vm.configSent = true; // first message on every control connection; the guest keeps one worker and ignores repeats
-    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.proxy ? { proxy: vm.proxy } : {}),
+    vm.agent.write(encode({ type: 'call-config', nonce: vm.nonce, ...(vm.timingTag ? { startup_timing: true } : {}), ...(vm.proxy ? { proxy: vm.proxy } : {}),
       ...(vm.autoSelectScreen ? { auto_select_screen: true } : {}), ...(vm.avatar ? { avatar: vm.avatar } : {}),
       ...(vm.listen ? { listen: vm.listen } : {}), ...(vm.language ? { language: vm.language } : {}) }));
   }
@@ -277,8 +290,10 @@ function createLifecycle(config, deps) {
         volumes: [{ name: 'root', containerDisk: { image: k.diskImage, imagePullPolicy: 'Never' } }, ...(profile ? [profile.volume] : [])] } };
     // a destroy that lands while boot awaits removes the map entry; boot must then delete what it created and stop
     const live = async () => { if (vms.get(vm.id) !== vm || vm.destroying) { await deps.k8s.deleteVmi(vmiName); throw new Error('destroyed during boot'); } };
+    timing(vm, 'vmi-requested');
     await deps.k8s.createVmi(vmi);
     vm.vmiCreated = true;
+    timing(vm, 'vm-created');
     await live();
     const created = await deps.k8s.getVmi(vmiName);
     if (!created?.metadata?.uid) throw new Error('VMI has no UID');
@@ -321,6 +336,7 @@ function createLifecycle(config, deps) {
     }
     await live();
     await deps.k8s.unpauseVmi(vmiName);
+    timing(vm, 'vm-unpaused');
   }
   async function start(call_id, scope, diskSpec, platform, avatar, listen, language) {
     if (state.blocked) return { error: 'cleanup-blocked', message: state.alert };
@@ -331,7 +347,9 @@ function createLifecycle(config, deps) {
     const vm = { id, sock: id, created: now,
       lastWorker: now + (config.bootGraceMs || 0), lastServer: now + (config.bootGraceMs || 0), lastActivity: now, call_id, scope,
       pending: new Map(), nonce: call_id ? newNonce() : null, diskSpec, avatar, listen, language };
+    if (config.startupTiming && platform === 'meet' && call_id) vm.timingTag = crypto.createHash('sha256').update(call_id).digest('hex').slice(0, 16);
     vms.set(id, vm);
+    timing(vm, 'vm-reserved');
     try { await boot(vm, platform); } catch (error) {
       await destroy(id, 'boot-failed');
       if (/exceeded quota|: 403$/.test(error.message) && !vm.vmiCreated) return { error: 'capacity', message: 'no desktop slot is free' };

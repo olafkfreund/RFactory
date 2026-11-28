@@ -53,7 +53,9 @@ const schemas = Object.freeze({
   desktop_scroll: { dy: number, action_id: optional(string), hosts: optional(hosts) },
   desktop_screenshot: { action_id: optional(string), hosts: optional(hosts) },
   desktop_login: { profile: string, action_id: optional(string), hosts: optional(hosts), login: optional(login) },
-  'call-config': { nonce: string, proxy: optional(v => !!v && typeof v === 'object' && string(v.addr) && string(v.token) && v.token.length > 0 &&
+  'startup-timing': { stage: v => ['worker-ready', 'chrome-start', 'browser-ready', 'join-click', 'refused', 'timeout', 'retry', 'admitted', 'join-error'].includes(v),
+    attempt: optional(v => Number.isInteger(v) && v >= 1 && v <= 3) },
+  'call-config': { startup_timing: optional(boolean), nonce: string, proxy: optional(v => !!v && typeof v === 'object' && string(v.addr) && string(v.token) && v.token.length > 0 &&
     Object.keys(v).every(k => ['addr', 'token'].includes(k))), auto_select_screen: optional(boolean), avatar: optional(v => string(v) && /^[a-z0-9]{1,16}$/.test(v)),
     listen: optional(v => v === 'platform' || v === 'audio'), language: optional(v => string(v) && LANGUAGE.test(v)) },
   // the call worker's stdin (call-in) and stdout (call-out) lines, cut into pieces; end closes the line (plan 13c)
