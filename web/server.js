@@ -44,6 +44,9 @@ function validLink(link) {
   try { u = new URL(link); } catch { return false; }
   if (u.protocol !== 'https:' || u.port || u.username || u.password || u.hash || link !== u.href) return false;
   if (u.host === 'meet.google.com') return !u.search && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname);
+  if (u.host === 'zoom.us' || /^[a-z0-9-]+\.zoom\.us$/.test(u.host)) {
+    return /^\/(?:j|wc\/join)\/\d{9,11}\/?$/.test(u.pathname) && /^(?:\?pwd=[^&]*)?$/.test(u.search);
+  }
   return (u.host === 'teams.microsoft.com' && /^\/l\/meetup-join\/[^/]+(\/[^/]*)*$/.test(u.pathname))
     || (u.host === 'teams.live.com' && /^\/meet\/[0-9A-Za-z]+\/?$/.test(u.pathname))
     || (u.host === 'teams.microsoft.com' && /^\/meet\/[0-9]+\/?$/.test(u.pathname)); // the newer work link, with ?p=<passcode>

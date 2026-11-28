@@ -6,6 +6,19 @@ const { makeRedactor } = require('../src/redact.js');
 const secret = 'planted-secret-value';
 const { toModel, logSafe } = makeRedactor([secret]);
 
+test('Zoom invite passcodes are redacted without swallowing neighboring parameters', () => {
+  const { logSafeWindow } = makeRedactor([]);
+  const invite = 'https://zoom.us/j/123456789';
+  for (const query of ['?pwd=dummy%2Bcode&other=1', '?other=1&pwd=dummy%2Bcode']) {
+    const text = `open "${invite}${query}"`;
+    for (const redact of [toModel, logSafe, logSafeWindow]) {
+      assert.equal(redact(text), text.replace('dummy%2Bcode', '[redacted]'));
+    }
+  }
+  assert.equal(logSafeWindow(`${invite}?pwd=dummy-pass\n  code&other=1`),
+    `${invite}?pwd=[redacted]\n  [redacted]&other=1`);
+});
+
 test('log window redacts credentials split across lines and keeps ordinary output', () => {
   const { logSafeWindow } = makeRedactor([]);
   const lines = ['1 test passed', 'AKIA12345678', '90ABCDEF', '-----BEGIN RSA PRIVATE KEY-----',

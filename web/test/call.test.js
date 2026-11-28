@@ -435,6 +435,22 @@ test('audio log events contain counts and timing but no child or STT canary text
   } finally { f.restore(); }
 });
 
+test('a failed Zoom join cannot expose the invite passcode in the web call log', async () => {
+  const f = setup();
+  const passcode = 'dummy-zoom-passcode';
+  const link = `https://us02web.zoom.us/j/123456789?pwd=${passcode}`;
+  try {
+    await f.manager.start(link, { listen: 'platform' });
+    const child = f.children[0];
+    child.output({ type: 'log', message: `join failed: Could not open ${link}` });
+    child.output({ type: 'join-failure', code: 'auth-required', reason: 'other', attempt: 1, of: 3, retrying: false });
+    const logs = f.events.filter((e) => e.type === 'log').map((e) => e.message);
+    assert.ok(logs.includes('join failed: Could not open https://us02web.zoom.us/j/123456789?pwd=[redacted]'));
+    assert.ok(logs.every((line) => !line.includes(passcode)));
+    const stopping = f.manager.stop(); child.close(); await stopping;
+  } finally { f.restore(); }
+});
+
 test('notice failure remains visible after later own hearing lines', async () => {
   const f = setup({ stt: { transcribe: async () => ({ text: '' }) } });
   try {
@@ -443,6 +459,20 @@ test('notice failure remains visible after later own hearing lines', async () =>
     f.children[0].output({ type: 'hearing', state: 'own' });
     assert.equal(f.manager.current().find((e) => e.type === 'hearing').state, 'notice-failed');
     const stopping = f.manager.stop(); f.children[0].close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('Zoom captions mode forwards notice failure and ignores own-transcription hearing events', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('https://zoom.us/j/123456789', { listen: 'platform' });
+    const child = f.children[0];
+    child.output({ type: 'hearing', state: 'notice-failed' });
+    child.output({ type: 'hearing', state: 'own' });
+    child.output({ type: 'hearing', state: 'no-audio' });
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'),
+      { type: 'hearing', state: 'notice-failed', listen: 'platform' });
+    const stopping = f.manager.stop(); child.close(); await stopping;
   } finally { f.restore(); }
 });
 

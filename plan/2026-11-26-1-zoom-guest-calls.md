@@ -112,3 +112,8 @@ Enable ordinary Zoom invite links in the desktop-VM call path. Start with a smal
 ## Open questions
 
 None.
+
+## Deviations
+
+- Step 4's probe and policy edits are deferred until the lead records two IPv4 addresses inside `zoom.cidrs` verified on TCP 443 from the cluster node. The local runner tests cover the current policy and probe list.
+- Step 7 is deferred pending the Step 6 join, speak, and clean Stop result and observed Zoom page text. Step 8's default decision is deferred until all four Slice 2 live results are recorded.

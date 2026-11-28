@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const fs = require('fs');
 const path = require('path');
+const { runInNewContext } = require('node:vm');
 const { run } = require('../run.js');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
@@ -667,6 +668,17 @@ test('page report uses last real page, caps and redacts text; audio never reads 
   }
 });
 
+test('failed Zoom join redacts the invite passcode in both the error and page report', async () => {
+  const passcode = 'dummy-zoom-passcode';
+  const link = `https://zoom.us/j/123456789?pwd=${passcode}`;
+  const pages = [{ url: () => link, evaluate: async () => `Could not open ${link}` }];
+  const s = setup({ pages, join: async () => { throw joinError('auth-required', `Could not open ${link}`); } });
+  s.stdin.write(`${link}\n`);
+  assert.equal(await s.done, 1);
+  assert.match(s.logs(), /join failed: .*\?pwd=\[redacted\].*page: .*\?pwd=\[redacted\]/);
+  assert.ok(!JSON.stringify(s.out).includes(passcode));
+});
+
 test('page read failure and two second limit yield an empty page report', async () => {
   for (const evaluate of [async () => { throw new Error('page failed'); }, () => new Promise(() => {})]) {
     const s = setup({ pages: [{ url: () => 'https://last', evaluate }], joinQueue: [joinError('auth-required')] });
@@ -976,6 +988,18 @@ test('roster, no-audio and notice retry follow their timers', async () => {
   s.stdin.end(); await s.done;
 });
 
+test('Zoom captions mode reports a failed chat notice after one retry', async () => {
+  const s = setup({ platform: 'zoom', chatFails: true, env: { RFACTORY_LISTEN: 'platform' } });
+  s.stdin.write('https://zoom.us/wc/join/123456789\n');
+  await tick();
+  assert.equal(s.calls.chat.length, 1);
+  s.timers.find((timer) => timer.ms === 10000 && !timer.cleared).fn();
+  await tick();
+  assert.equal(s.calls.chat.length, 2);
+  assert.deepEqual(s.out.filter((m) => m.type === 'hearing'), [{ type: 'hearing', state: 'notice-failed' }]);
+  s.stdin.end(); await s.done;
+});
+
 test('audio leave during join discards the bridge without starting the tap', async () => {
   let release, onAudio;
   const order = [];
@@ -992,6 +1016,20 @@ test('audio leave during join discards the bridge without starting the tap', asy
   assert.ok(!s.out.some((m) => m.type === 'audio'));
 });
 
+
+test('Zoom Leave and End controls prevent a false removal when the page says rejoin', async () => {
+  for (const label of ['leave', 'end']) {
+    const document = { body: { innerText: 'Can you rejoin?' },
+      querySelector: (selectors) => selectors.toLowerCase().split(', ').includes(`button[aria-label="${label}" i]`) ? {} : null };
+    const page = { evaluate: async (fn) => fn.name === 'pageLeft' && runInNewContext(`(${fn})()`, { document }) };
+    const s = setup({ page, platform: 'zoom' });
+    s.stdin.write('https://zoom.us/j/123456789\n');
+    await tick();
+    await s.timers.find((timer) => timer.ms === 4000 && !timer.cleared).fn();
+    assert.equal(s.states().at(-1), 'in-call', label);
+    s.stdin.end(); await s.done;
+  }
+});
 
 test('a removal shown by the page stops the bot within one 4 s check (Teams reports none itself)', async () => {
   let removed = false;

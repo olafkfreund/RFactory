@@ -161,7 +161,7 @@ function render(doc, data, now = Date.now()) {
 const projectIds = new WeakMap();
 const sourceKinds = new WeakMap(); // standalone source kind per document ('github' | 'jira'): no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
-const UNAVAILABLE = "This project isn't available in Meet";
+const UNAVAILABLE = "This project isn't available for calls";
 
 async function run(doc) {
   const status = doc.getElementById('status');
@@ -834,7 +834,7 @@ function handleCall(doc, event, now = Date.now()) {
     const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
       'captions-off': `Hearing: captions are not on yet; Factory cannot hear${event.notConfigured ? ' (own transcription not configured)' : ''}`,
       own: 'Hearing: own transcription', 'no-audio': 'Hearing: own transcription (no audio received)',
-      'notice-failed': 'Hearing: own transcription (call notice failed)' };
+      'notice-failed': `Hearing: ${event.listen === 'platform' ? 'captions' : 'own transcription'} (call notice failed)` };
     if (states[event.state] && doc.getElementById('call-hearing')) set('call-hearing', states[event.state]);
   }
   else if (event.type === 'voice') set('call-voice', `voice: ${event.voice}`);
@@ -889,7 +889,7 @@ function wireProjectCall(doc, project) {
     } catch { return; }
     const mine = !!project && status.running && status.project?.id === project.id;
     const busy = status.running && !mine;
-    get('call-busy').textContent = busy ? `Meet is busy with a call for ${status.project?.name || 'another project'}` : '';
+    get('call-busy').textContent = busy ? `A call is already running for ${status.project?.name || 'another project'}` : '';
     if (mine) {
       generation = status.generation;
       if (!stream) open();

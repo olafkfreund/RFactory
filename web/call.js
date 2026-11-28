@@ -552,9 +552,11 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
       if (c.turn) armQuiet(c);
     }
-    else if (msg.type === 'hearing' && c.listen === 'audio' && ['own', 'no-audio', 'notice-failed'].includes(msg.state))
-      { if (msg.state === 'notice-failed') c.noticeFailed = true;
-        emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state, dropped: c.dropped }); }
+    else if (msg.type === 'hearing' && (msg.state === 'notice-failed' || (c.listen === 'audio' && ['own', 'no-audio'].includes(msg.state)))) {
+      if (msg.state === 'notice-failed') c.noticeFailed = true;
+      emit({ type: 'hearing', state: msg.state === 'own' && c.noticeFailed ? 'notice-failed' : msg.state,
+        ...(c.listen === 'audio' ? { dropped: c.dropped } : { listen: c.listen }) });
+    }
     else if (msg.type === 'roster' && c.listen === 'audio' && Number.isInteger(msg.count) && msg.count >= 0) {
       c.roster = { count: msg.count, ...(msg.count === 1 && typeof msg.name === 'string' ? { name: msg.name } : {}) };
       emit({ type: 'roster', ...c.roster });
@@ -576,7 +578,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
 
   async function start(link, { listen: override, binding = null, view = null } = {}) {
     if (call) throw new Error('busy');
-    const platform = link.startsWith('https://meet.google.com/') ? 'meet' : 'teams';
+    const platform = link.startsWith('https://meet.google.com/') ? 'meet'
+      : /^https:\/\/(?:[a-z0-9-]+\.)*zoom\.us\//.test(link) ? 'zoom' : 'teams';
     const selected = resolveListen({ listen: override === undefined ? listen : override, platform, sttConfigured });
     const whisperLanguage = toWhisperLanguage(language);
     if (!whisperLanguage) throw new Error('unsupported-language');

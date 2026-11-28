@@ -516,7 +516,7 @@ test('a project page shows its repositories, scopes every read and starts with t
 
 test('another project\'s call shows busy and opens no stream, until it is over', async (t) => {
   const p = await projectPage(t, '/p/alpha', { status: { running: true, generation: 2, project: { id: 'id-b', name: 'Beta <b>' } } });
-  assert.equal(p.byId['call-busy'].textContent, 'Meet is busy with a call for Beta <b>');
+  assert.equal(p.byId['call-busy'].textContent, 'A call is already running for Beta <b>');
   assert.equal(p.byId['call-join'].disabled, true);
   assert.equal(p.streams.length, 0);
   p.status = { running: false, generation: 2, project: null };
@@ -530,7 +530,7 @@ test('another project\'s call shows busy and opens no stream, until it is over',
 test('unknown, ambiguous and not-allowed links, and a refused start, show the project as unavailable', async (t) => {
   for (const answer of [[404, { error: 'project-unknown' }], [403, { error: 'project-not-allowed' }], [502, { error: 'project-resolve-failed' }]]) {
     const p = await projectPage(t, '/p/nope', { routes: { '/api/projects/resolve?slug=nope': answer } });
-    assert.equal(p.byId['project-info'].textContent, "This project isn't available in Meet");
+    assert.equal(p.byId['project-info'].textContent, "This project isn't available for calls");
     assert.equal(p.byId['call-join'].disabled, true);
     assert.equal(p.byId.run.disabled, true);
     assert.deepEqual(p.urls(), ['/api/projects', '/api/projects/resolve?slug=nope', '/api/call/status']);
@@ -538,7 +538,7 @@ test('unknown, ambiguous and not-allowed links, and a refused start, show the pr
   const p = await projectPage(t, '/p/alpha', { routes: { call: [404, { error: 'project-unknown' }] } });
   p.byId['call-link'].value = 'x';
   await p.click('call-join');
-  assert.equal(p.byId['call-error'].textContent, "This project isn't available in Meet");
+  assert.equal(p.byId['call-error'].textContent, "This project isn't available for calls");
 });
 
 test('the front page only offers the picker, which opens the project\'s own page', async (t) => {
@@ -581,7 +581,7 @@ test('decisions carry the project, a share Stop its id, and a link slug is encod
   const odd = await projectPage(t, '/p/a&slug=b');
   assert.ok(odd.urls().includes('/api/projects/resolve?slug=a%26slug%3Db'));
   const broken = await projectPage(t, '/p/%E0%A4%A');
-  assert.equal(broken.byId['project-info'].textContent, "This project isn't available in Meet");
+  assert.equal(broken.byId['project-info'].textContent, "This project isn't available for calls");
 });
 
 function notesShim() {

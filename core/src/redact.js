@@ -9,6 +9,7 @@ const PATTERNS = [
   /\b(acw|cfk|rfk)_[A-Za-z0-9]{16,}/g,
 ];
 const KEY_VALUE = /(authorization|x-api-key|api[_-]?key|token|password)(\s*[:=]\s*)("[^"]+"|'[^']+'|\S+)/gi;
+const PWD_QUERY = /([?&]pwd=)[^&\s"'<>]+/g;
 const KEY_VALUE_WINDOW = /(authorization|x-api-key|api[_-]?key|token|password)([ \t]*(?:\r?\n[ \t]*)?[:=][ \t]*|[ \t]*[:=][ \t]*(?:\r?\n[ \t]*)?)(?=\S)/gi;
 const BEARER = /bearer\s+[A-Za-z0-9._~+\/=-]{16,}/gi;
 const BEARER_WINDOW = /bearer(?:[ \t]+|[ \t]*\r?\n[ \t]*)[A-Za-z0-9._~+\/=-]{16,}/gi;
@@ -159,6 +160,10 @@ function keyValueSpans(text, limit) {
     found.push(one);
     KEY_VALUE_WINDOW.lastIndex = one.match[1];
   }
+  for (const { 0: query, 1: prefix, index } of text.matchAll(PWD_QUERY)) {
+    const end = index + query.length;
+    found.push({ match: [index, end], value: [index + prefix.length, end] });
+  }
   return found;
 }
 // the KEY_VALUE_WINDOW match starting exactly at `at`, or null
@@ -173,7 +178,7 @@ function makeRedactor(secrets) {
   const values = [...secrets].sort((a, b) => b.length - a.length);
 
   function redactString(input) {
-    let result = input;
+    let result = input.replace(PWD_QUERY, '$1[redacted]');
     for (const secret of values) result = result.split(secret).join('[redacted]');
     for (const pattern of PATTERNS) result = result.replace(pattern, '[redacted]');
     result = redactLegacyPem(result);

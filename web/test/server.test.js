@@ -225,6 +225,8 @@ test('call page renders each hearing state as text', () => {
     ['no-audio', 'Hearing: own transcription (no audio received)'],
     ['notice-failed', 'Hearing: own transcription (call notice failed)'],
   ]) { handleCall(doc, { type: 'hearing', state }); assert.equal(nodes['call-hearing'].textContent, expected); }
+  handleCall(doc, { type: 'hearing', state: 'notice-failed', listen: 'platform' });
+  assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (call notice failed)');
   handleCall(doc, { type: 'hearing', state: 'captions', notConfigured: true });
   assert.equal(nodes['call-hearing'].textContent, 'Hearing: captions (own transcription not configured)');
   handleCall(doc, { type: 'hearing', state: 'captions-off', notConfigured: true });
@@ -257,6 +259,26 @@ test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   assert.equal((await post(get, { link: 'https://meet.google.com/abc-defg-hij' })).status, 409);
   assert.equal((await get('/api/call', { method: 'DELETE' })).status, 200);
   assert.deepEqual(call.stopped, ['requested']);
+});
+
+test('call routes accept only ordinary Zoom invite links', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call });
+  const links = ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/j/1234567890/?pwd=dummy%2Bpass',
+    'https://zoom.us/wc/join/12345678901?pwd=dummy', 'https://us02web.zoom.us/wc/join/123456789'];
+  for (const link of links) {
+    assert.equal((await post(get, { link })).status, 202, link);
+    await get('/api/call', { method: 'DELETE' });
+  }
+  for (const link of ['http://zoom.us/j/123456789', 'https://zoom.us/my/personal', 'https://zoomgov.com/j/123456789',
+    'https://x.y.zoom.us/j/123456789', 'https://zoom.us.example.com/j/123456789', 'https://zoom.us/j/12345678',
+    'https://zoom.us/wc/join/123456789012', 'https://zoom.us:444/j/123456789', 'https://zoom.us:443/j/123456789',
+    'https://guest:pass@zoom.us/j/123456789', 'https://zoom.us/j/123456789#fragment',
+    'https://zoom.us/j/123456789?pwd=dummy&other=1', 'https://zoom.us/j/123456789?pwd=x&pwd=y',
+    'https://zoom.us/j/123456789?%70wd=dummy', 'https://zoom.us/j/123456789?other=1']) {
+    assert.equal((await post(get, { link })).status, 400, link);
+  }
+  assert.deepEqual(call.started, links);
 });
 
 test('call events stream as SSE and unsubscribe on close', async (t) => {

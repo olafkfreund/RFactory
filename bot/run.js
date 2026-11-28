@@ -21,7 +21,7 @@ const TERMINAL = ['left', 'removed', 'error'];
 // Runs in the page: the in-call Leave control is gone AND the page says the call was left or ended. Chat or captions
 // saying "rejoin" cannot pass alone (Codex). Teams' provider reports no removal, so this also watches for one (#16).
 function pageLeft() {
-  return !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"]')
+  return !document.querySelector('#hangup-button, button[aria-label="Leave call"], [data-tid="call-hangup"], button[aria-label="End" i], button[aria-label="Leave" i]')
     && /leave by mistake|rejoin|you left|left the (meeting|call)|removed you|been removed|meeting (has )?ended|call ended/i
       .test((document.body && document.body.innerText) || '');
 }
@@ -363,7 +363,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (!holdChat) {
       try { await call.chat.send(chatLine); } catch (e) {
         log(`chat line failed: ${e.message}`);
-        if (audio && !closing) noticeTimer = d.clock.setTimeout(async () => {
+        if (!closing) noticeTimer = d.clock.setTimeout(async () => {
           noticeTimer = null;
           if (closing) return;
           try { await call.chat.send(chatLine); } catch { if (!closing) send({ type: 'hearing', state: 'notice-failed' }); }
