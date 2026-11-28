@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 22
 intent: intent/2026-11-26-22-elevated-call-pairing.md
 ---
@@ -41,7 +41,7 @@ Per Decisions 2 and 10, an approver must register the meeting link and its time 
   - `web/call.js` sends `{ type: 'pairing-code', code }` and `{ type: 'pairing-clear' }` over stdin to `bot/run.js` (same JSON-line protocol as `speak`/`cancel`/`leave` at `bot/run.js:2-4`, `web/call.js:117-123`).
   - `bot/run.js` forwards these to the browser page via `page.evaluate(...)` on `window.__rfAvatar` (`bot/avatar/renderer.js:14`).
   - `bot/avatar/renderer.js` adds `setPairingCode(code)` and `clearPairingCode()`; `draw()` (`:68-135`) renders a high-contrast banner across the top of the avatar tile (`Code: XXXXXX`) when active, never speaking it and never posting to meeting chat.
-  - *Fallback:* If the live test shows the avatar tile is unreadable in Meet's grid layout, the fallback on runner/VM calls (`RFACTORY_DESKTOP === '1'`) is rendering the code in the shared view's `.rf-banner` (`desktop/guest/agent/viewer/board.js:29-34`) via `share-desktop.js` (`web/call.js:594`). When no runner is configured (`shareDesktop === null`), no shared view exists, so a non-runner deployment would fall back to a larger/full-frame avatar tile layout instead (Open question 1).
+  - *Fallback:* If the live test shows the avatar tile is unreadable in Meet's grid layout, the fallback on runner/VM calls (`RFACTORY_DESKTOP === '1'`) is rendering the code in the shared view's `.rf-banner` (`desktop/guest/agent/viewer/board.js:29-34`) via `share-desktop.js` (`web/call.js:594`). When no runner is configured (`shareDesktop === null`), no shared view exists, so a non-runner deployment would fall back to a larger/full-frame avatar tile layout instead (deferred unless the live check shows the tile is illegible).
 
 ### 4. Grant manager (`web/grants.js`)
 
@@ -107,7 +107,11 @@ A new `createGrantManager({ record, redactor, roles, schedule, clock = Date })` 
   3. Page shows elevated state, scope, approver, and expiry; bot speaks the scope only (not the approver, not the code).
   4. Wrong, expired, and reused codes fail; Revoke and call end both end the grant; spoken command/write requests are still refused; `actions-record` and logs contain no code.
 
+## Decisions (2026-11-28)
+
+1. **Avatar tile readability in live Meet/Teams:** Implement the avatar tile overlay in slice 1 and verify readability during the single live check; only add the shared-view banner fallback if the live check shows the tile is illegible.
+2. **Grace period duration:** Use `10 minutes` (`600000` ms) after `ends_at`, capped at `issued_at + 60 minutes` and call end.
+
 ## Open questions
 
-1. **Avatar tile readability in live Meet/Teams:** Decision 3 uses the bot's avatar tile if readable in a live test, otherwise the shared view's banner. *Recommendation:* Implement the avatar tile overlay in slice 1 and verify readability during the single live check; only add the shared-view banner fallback if the live check shows the tile is illegible.
-2. **Grace period duration:** Decision 10 specifies "a short grace period, with a hard maximum of 60 minutes". *Recommendation:* Use `10 minutes` (`600000` ms) after `ends_at`, capped at `issued_at + 60 minutes` and call end.
+None
