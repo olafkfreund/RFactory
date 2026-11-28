@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 1
 intent: intent/2026-11-26-1-zoom-guest-calls.md
 ---
@@ -112,5 +112,8 @@ Only after Slice 1 passes in a live call (join, speak, and clean Stop; if the bo
 
 ## Open questions
 
-1. **Which Zoom IP(s) inside `desktop/ranges/ranges.json:29-80` should be listed in `zoom.probe`?**
-   *Recommendation:* Resolve `app.zoom.us` and `zoom.us`, verify the addresses fall inside `zoom.cidrs` and answer TCP 443 from the cluster node, and pin two of them in `zoom.probe` (matching `teams.probe` at `desktop/ranges/ranges.json:114-117`).
+None.
+
+## Decisions (2026-11-28)
+
+1. **Zoom preflight `probe` IPs (`desktop/ranges/ranges.json:29-80`)**: Resolve `app.zoom.us` and `zoom.us`, verify the addresses fall inside `zoom.cidrs` and answer TCP 443 from the cluster node, and pin two of them in `zoom.probe` (matching `teams.probe` at `desktop/ranges/ranges.json:114-117`).
