@@ -22,10 +22,10 @@ function repoUrl(owner, repo, suffix = '', under = '') {
 }
 function validNumber(number) { return Number.isSafeInteger(number) && number > 0; }
 
-async function boundedJson(response) {
+async function boundedJson(response, prefix = 'github') {
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
-    throw new Error(`github-http-${response.status}`);
+    throw new Error(prefix + '-http-' + response.status);
   }
   if (!response.body) return {};
   const reader = response.body.getReader();
@@ -36,7 +36,7 @@ async function boundedJson(response) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > BODY_LIMIT) throw new Error('github-body-too-large');
+      if (size > BODY_LIMIT) throw new Error(prefix + '-body-too-large');
       chunks.push(value);
     }
   } catch (error) { await reader.cancel().catch(() => {}); throw error; }

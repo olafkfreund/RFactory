@@ -29,7 +29,11 @@ const HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 };
-const sourceCode = (error) => error?.message === 'source-timeout' ? 'source-timeout' : 'source-error';
+function sourceCode(error) {
+  if (error?.message === 'source-timeout') return 'source-timeout';
+  if (error?.message === 'jira-http-401' || error?.message === 'jira-http-403') return 'source-auth';
+  return 'source-error';
+}
 
 // Meet: a bare room code. Teams: the join link as Microsoft issues it (the query carries the meeting context), passed on unchanged.
 function validLink(link) {
@@ -72,7 +76,8 @@ function keepAlive(desktop_id, runner, ms) {
 
 function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
-  const reads = createReads({ scope });
+  const jira = source.kind === 'jira';
+  const reads = createReads({ scope: jira ? null : scope });
   const { allowed } = reads; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
   const json = (res, status, value) => send(res, status, 'application/json', JSON.stringify(value));
@@ -111,19 +116,27 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
   }
 
   const WORDS = { done: 'done', in_progress: 'in progress', blocked: 'blocked', left: 'left', unknown: 'unknown' };
-  async function githubStandup(view) {
+  async function standaloneStandup(view) {
     let raw;
     try { raw = await view.snapshot(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
     const counts = summarise(raw.items);
-    const summary = `Repository: ${Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ')}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
-    // titles, states and evidence are copied from GitHub: the whole reply is redacted
+    const tally = Object.entries(WORDS).map(([k, w]) => `${counts[k]} ${w}`).join(', ');
+    let summary;
+    if (view.kind === 'jira') {
+      summary = `Jira project ${scope.source.project}: ${tally}.`;
+      if (raw.truncated) summary += ' The project has more issues than were read.';
+      else if (raw.items.length === 0) summary += ' No issues were read: check that the Jira account can see the project.';
+    } else {
+      summary = `Repository: ${tally}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
+    }
+    // Titles, states and evidence come from the source.
     return [200, redactor.toModel({ items: raw.items, counts, unknown: raw.items.filter((i) => i.state === 'unknown'),
       fetched_at: raw.fetched_at, newest_update: raw.newest_update, truncated: raw.truncated, summary, summary_error: null, destination: 'the server' })];
   }
 
   async function standup(view) {
-    if (view.kind === 'github') return githubStandup(view);
+    if (view.kind === 'github' || view.kind === 'jira') return standaloneStandup(view);
     let data;
     try { data = await view.standupData(); }
     catch (error) { return [502, { error: sourceCode(error) }]; }
@@ -135,6 +148,8 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     if (!email) return json(res, 401, { error: 'unauthenticated' });
     if (!roles.has(email, 'member')) return json(res, 403, { error: 'forbidden' });
     const [url, ...search] = req.url.split('?');
+    if (jira && !((req.method === 'GET' && (Object.hasOwn(STATIC, url) || url === '/api/config')) ||
+        (req.method === 'POST' && url === '/api/standup'))) return json(res, 404, { error: 'not-found' });
     const query = new URLSearchParams(search.join('?'));
     if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
     if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
@@ -157,7 +172,8 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
         .catch(readFailed(res));
       return;
     }
-    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(call?.config || {}), projects: !!allowed, ...(source.kind === 'github' ? { source: 'github' } : {}) });
+    if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(jira ? {} : call?.config || {}), projects: !!allowed,
+      ...(jira || source.kind === 'github' ? { source: source.kind } : {}) });
     const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
@@ -329,12 +345,18 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     json(res, 404, { error: 'not-found' });
   });
   if (desktop && !live) live = { isMember: desktop.isMember, openVnc: desktop.openVnc };
-  if (live) require('./live-view.js').attachLiveView(server, { roles, ...live }); // live: { isMember, openVnc }
+  if (!jira && live) require('./live-view.js').attachLiveView(server, { roles, ...live }); // live: { isMember, openVnc }
   return server;
 }
 
 function refuseKeyEnv(env) {
   if (Object.keys(env).some((k) => /^CFACTORY_.*KEY/.test(k) || /^RFACTORY_AGENT.*KEY/.test(k))) throw new Error('key-in-environment');
+}
+
+function refuseJiraEnv(env) {
+  if (Object.keys(env).some((k) => /jira|atlassian/i.test(k) && /token|key|secret|password/i.test(k))) {
+    throw new Error('key-in-environment');
+  }
 }
 
 // The record exists when writes, shares, investigations, lookups, notes or agents are on; only writes build a writer and its managers
@@ -429,9 +451,14 @@ async function composeAgents({ scope, agents, key, redactor, call, slot, actions
   return { endpoint, url, source, close: async () => { await endpoint.close(); await source.close?.(); } };
 }
 
-// The GitHub scope reads one repository and does nothing else: every CFactory feature is refused, not skipped.
-async function composeStandalone({ scope, token, env, createSource = require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
+async function composeStandalone({ scope, token, env, createSource = scope.source?.kind === 'jira'
+  ? require('@rfactory/core/src/sources/jira.js').createJiraSource
+  : require('@rfactory/core/src/sources/github-web.js').createGithubSource }) {
   if (scope.shares_enabled || scope.lookups_enabled || env.RFACTORY_CALLS === '1' || env.RFACTORY_DESKTOP === '1') throw new Error('unsupported-scope');
+  if (scope.source?.kind === 'jira') {
+    if (!token) throw new Error('jira-token-missing');
+    return createSource({ scope, token });
+  }
   if (!token) throw new Error('github-token-missing');
   const source = createSource({ scope, bin: env.GITHUB_MCP_SERVER_BIN, token });
   await source.start();
@@ -449,8 +476,10 @@ async function main() {
   const extras = {};
   const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
-  if (scope.source.kind === 'github') {
-    const source = await composeStandalone({ scope, token: extras.githubToken, env: process.env });
+  const jira = scope.source.kind === 'jira';
+  if (jira) refuseJiraEnv(process.env);
+  if (jira || scope.source.kind === 'github') {
+    const source = await composeStandalone({ scope, token: jira ? extras.jiraToken : extras.githubToken, env: process.env });
     return createApp({ source, scope, redactor: makeRedactor(secrets), roles, commit: process.env.RFACTORY_COMMIT || '' })
       .listen(Number(process.env.PORT) || 8080, '127.0.0.1');
   }
@@ -511,4 +540,4 @@ if (require.main === module) {
   main().catch((error) => { console.error(`rfactory-web: ${String(error.message).split(':')[0]}`); process.exit(1); });
 }
 
-module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, main, recordBrain };
+module.exports = { composeWrites, composeLookups, composeAgents, composeStandalone, makeLogin, createApp, refuseKeyEnv, refuseJiraEnv, main, recordBrain };

@@ -1,7 +1,63 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mapGithub, summarise } = require('../src/items.js');
+const { mapGithub, mapJira, summarise } = require('../src/items.js');
+
+const jiraScope = { source: { flagged_field: 'customfield_10021' },
+  mapping: { status: { Waiting: 'blocked', Parked: 'left', 42: 'done', Invalid: 'closed' } } };
+const jiraIssue = (name, category, extra = {}) => ({ key: 'ABC-12',
+  fields: { summary: 'Example', status: { name, statusCategory: { key: category } }, ...extra } });
+
+test('Jira first matching rule wins and all states are counted', () => {
+  const flagged = { customfield_10021: [{ value: 'Impediment' }] };
+  const rows = [
+    [null, 'done', flagged, 'unknown', 'J0'],
+    ['Waiting', undefined, {}, 'blocked', 'J1'],
+    ['Complete', 'done', flagged, 'done', 'J2'],
+    ['Working', 'indeterminate', flagged, 'blocked', 'J3'],
+    ['Working', 'indeterminate', {}, 'in_progress', 'J4'],
+    ['Open', 'new', {}, 'left', 'J5'],
+    ['Other', 'archived', flagged, 'unknown', 'J6'],
+    ['Parked', 'done', flagged, 'left', 'J1'],
+    ['Invalid', 'new', flagged, 'blocked', 'J3'],
+  ];
+  const items = mapJira(rows.map(([name, category, fields]) => jiraIssue(name, category, fields)), jiraScope);
+  for (const [i, [name, , , state, rule]] of rows.entries()) {
+    expectRule(items[i], state, rule, 'observed');
+    assert.equal(items[i].source_state, name);
+  }
+  assert.deepEqual(summarise(items), { done: 1, in_progress: 1, blocked: 3, left: 2, unknown: 2 });
+});
+
+test('Jira ignores non-string status names, unrecognised categories and malformed flags', () => {
+  const check = (issue, state, rule, scope = jiraScope) =>
+    expectRule(mapJira([issue], scope)[0], state, rule, 'observed');
+  for (const name of [42, {}, '']) check(jiraIssue(name, 'done'), 'unknown', 'J0');
+  check(null, 'unknown', 'J0');
+  const flag = { customfield_10021: ['Impediment'] };
+  check({ fields: { status: { name: 'Open' }, ...flag } }, 'unknown', 'J6');
+  for (const category of [undefined, 'archived']) check(jiraIssue('Open', category, flag), 'unknown', 'J6');
+  for (const value of ['Impediment', [], null, {}]) {
+    check(jiraIssue('Open', 'new', { customfield_10021: value }), 'left', 'J5');
+  }
+  check(jiraIssue('Open', 'new', flag), 'left', 'J5', { source: {} });
+  for (const name of ['constructor', 'toString']) check(jiraIssue(name, 'new'), 'left', 'J5');
+});
+
+test('Jira items expose display names only and normalise timestamps', () => {
+  const [assigned, unassigned, malformed] = mapJira([
+    jiraIssue('Open', 'new', { assignee: { displayName: 'A Reader', emailAddress: 'private@example.com', accountId: 'hidden-account' },
+      updated: '2026-11-20T10:00:00.000+0100' }),
+    jiraIssue('Working', 'indeterminate', { assignee: null, updated: 'soon' }),
+    jiraIssue('Open', 'new', { updated: { toString: null } }),
+  ], jiraScope);
+  assert.deepEqual(assigned, { id: 'ABC-12', kind: 'issue', title: 'Example', url: '', state: 'left', source_state: 'Open',
+    rule: 'J5', basis: 'observed', assignees: ['A Reader'], updated_at: '2026-11-20T09:00:00.000Z', evidence: [] });
+  assert.deepEqual(unassigned.assignees, []);
+  assert.equal(unassigned.updated_at, null);
+  assert.equal(malformed.updated_at, null);
+  assert.doesNotMatch(JSON.stringify([assigned, unassigned]), /private@example\.com|hidden-account/);
+});
 
 const mapping = { board: { 'In review': 'in_progress', Parked: 'left' } };
 const iss = (number, o = {}) => ({ number, title: `t${number}`, state: 'open', html_url: `u${number}`, labels: [], assignees: [], ...o });
