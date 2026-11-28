@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 80
 intent: intent/2026-11-28-80-captions-robustness.md
 ---
@@ -34,8 +34,8 @@ First slice covers the four RFactory-owned paths and one Meet dialog path from t
 
 5. **Dismissing the `"Captions and translation"` Meet dialog (`@vibeconferencing/calls` `providers/google-meet-provider.js` or `bot/run.js`, Decision 1).**
    - `guestHelper` (`bot/run.js:439-461`) stops when `join()` resolves (`bot/run.js:485`), while `dismissBlockingModals` in `@vibeconferencing/calls` (`providers/google-meet-provider.js:206-260` covers `"Got it"`, `"Ready to present?"`, and Settings, with additional handlers following) is called from the in-call sweep (`line 1396`), the pre-join loop (`line 2091`), and the admission loop (`line 2200`).
-   - Preferred path: add a `"Captions and translation"` dialog rule to `dismissBlockingModals` in `@vibeconferencing/calls` (`providers/google-meet-provider.js`) guarded so it runs only post-admission (during the in-call sweep, never in the pre-join or admission loops), if a patch release can ship with #80.
-   - Fallback path if an upstream release would delay #80: start a scoped post-join watcher in `bot/run.js` (after `join()` in `start()` at `bot/run.js:508-528`, cleared on `stop()`/`closing`) that checks `call._inner.page` for a visible `[role="dialog"]` containing `"captions and translation"` and clicks its close/dismiss button.
+   - If an upstream `@vibeconferencing/calls` release would delay #80, land the scoped post-join watcher in `bot/run.js` (after `join()` in `start()` at `bot/run.js:508-528`, cleared on `stop()`/`closing`) that checks `call._inner.page` for a visible `[role="dialog"]` containing `"captions and translation"` and clicks its close/dismiss button.
+   - In parallel, upstream a `"Captions and translation"` dialog rule to `dismissBlockingModals` in `@vibeconferencing/calls` (`providers/google-meet-provider.js`) guarded so it runs only post-admission (during the in-call sweep, never in the pre-join or admission loops).
 
 ## Alternatives rejected
 
@@ -65,9 +65,11 @@ First slice covers the four RFactory-owned paths and one Meet dialog path from t
 - Live check (Google Meet captions mode):
   - Re-run `"investigate … in aifactory-demo"`, `"move card FCT 161 to ready"` (confirming the garbled move produces a pending `FCT-161 → ready` proposal with execution still behind the existing approver gate), and `"K Factory. Share the board."`, and confirm `"Captions and translation"` is dismissed post-admission without blocking the call UI.
 
-## Open questions (each with a recommendation)
+## Decisions (2026-11-28)
 
-1. **Where should the `"Captions and translation"` dialog dismissal land first: `@vibeconferencing/calls` or `bot/run.js`?**
-   - *Recommendation:* Put the scoped watcher in `bot/run.js` if an upstream `@vibeconferencing/calls` release would delay #80, and upstream it to `dismissBlockingModals` (`providers/google-meet-provider.js`) in parallel.
-2. **Should `namedRepository` (`web/investigations.js:24-46`) only normalize `"a"` / `"ai"` splits or also allow a 1-character typo on longer tokens?**
-   - *Recommendation:* Start with `"a"` / `"ai"` split normalization only in slice 1; it directly fixes the observed `"a factory demo"` failure with minimal risk of false positives.
+1. **`"Captions and translation"` dialog dismissal:** Put the scoped watcher in `bot/run.js` if an upstream `@vibeconferencing/calls` release would delay #80, and upstream it to `dismissBlockingModals` (`providers/google-meet-provider.js`) in parallel.
+2. **`namedRepository` (`web/investigations.js:24-46`) normalization:** Start with `"a"` / `"ai"` split normalization only in slice 1; it directly fixes the observed `"a factory demo"` failure with minimal risk of false positives.
+
+## Open questions
+
+None
