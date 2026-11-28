@@ -9,6 +9,14 @@ const { checkFacts } = require('../facts.js');
 const SYSTEM_PROMPT = path.join(__dirname, 'claude-system-prompt.txt');
 const QA_SYSTEM_PROMPT = path.join(__dirname, 'claude-qa-system-prompt.txt');
 const ACTION_SYSTEM_PROMPT = path.join(__dirname, 'claude-action-system-prompt.txt');
+const CAPTIONS_ACTION_GUIDANCE = [
+  'The request comes from live captions and may split or mishear card keys, statuses, and repository names',
+  '(e.g. "car" -> "card", "fct 161" -> "FCT-161", "already" -> "to ready", "a factory demo" -> "aifactory-demo").',
+  'Match against snapshot keys, allowed statuses, and repositories only when one target clearly fits.',
+  'For create_card in a multi-repository project where no repository matches or two or more fit equally well,',
+  'omit repository_id instead of returning {"action":"none"} so the server asks which repository.',
+  'Return {"action":"none"} only when the request is unclear or asks for an unsupported action.',
+].join(' ');
 const NOTE_SYSTEM_PROMPT = path.join(__dirname, 'claude-note-system-prompt.txt');
 const DESKTOP_SYSTEM_PROMPT = path.join(__dirname, 'claude-desktop-system-prompt.txt');
 const SUMMARY_SYSTEM_PROMPT = path.join(__dirname, 'claude-summary-system-prompt.txt');
@@ -132,7 +140,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   }
 
-  async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false, repositories } = {}) {
+  async function propose(snapshot, { deadline = clock() + 55000, request, desktop = false, captionsMode = false, repositories } = {}) {
     await checkDestination(deadline);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
@@ -144,8 +152,9 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       })), request: { content: { untrusted: true, text: redactor.toModel(request) } } });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
-      const { stdout, stderr } = await run([...ARGV.slice(0, -1), desktop ? DESKTOP_SYSTEM_PROMPT : ACTION_SYSTEM_PROMPT],
-        { cwd, input: prompt, timeout });
+      const args = [...ARGV.slice(0, -1), desktop ? DESKTOP_SYSTEM_PROMPT : ACTION_SYSTEM_PROMPT,
+        ...(captionsMode && !desktop ? ['--append-system-prompt', CAPTIONS_ACTION_GUIDANCE] : [])];
+      const { stdout, stderr } = await run(args, { cwd, input: prompt, timeout });
       let response;
       try { response = JSON.parse(stdout); }
       catch { throw new Error('brain-error'); }

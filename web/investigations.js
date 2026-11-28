@@ -21,26 +21,35 @@ const QUANTITY = String.raw`(?:\d+|zero|one|two|three|four|five|six|seven|eight|
 const COUNT_CLAIM = new RegExp(String.raw`\b${QUANTITY}(?:\W+(?:of|the|these|those|our|its|their|your|my|a|an))*\W+${TEST_WORD}\b|\b${TEST_WORD}(?:\W+\w+)?\W+\d+\b`, 'i');
 const count = (value) => Number.isInteger(value) && value >= 0;
 
-function namedRepository(request, repositories) {
+function namedRepository(request, repositories, { captionsMode = false } = {}) {
   if (repositories.length === 1) return repositories[0];
+  // Restore the missing i only within a candidate's "a factory" span.
+  const captionWord = (word, previous) => previous === 'a' && word === 'factory' ? 'ifactory' : word;
   const words = String(request).toLowerCase().match(/[a-z0-9]+/g) || [];
   const matches = [];
   for (const repository of repositories) {
     for (const name of [repository.path.split('/').at(-1), repository.path]) {
-      const wanted = (name.toLowerCase().match(/[a-z0-9]+/g) || []).join('');
+      const nameWords = name.toLowerCase().match(/[a-z0-9]+/g) || [];
+      const wanted = nameWords.join('');
       if (!wanted) continue;
+      const normalizedWanted = captionsMode
+        ? nameWords.map((word, index) => captionWord(word, nameWords[index - 1])).join('') : wanted;
       for (let start = 0; start < words.length; start++) {
         let joined = '';
-        for (let end = start; end < words.length && joined.length < wanted.length; end++) {
-          joined += words[end];
-          if (joined === wanted) matches.push({ repository, start, end });
+        let normalized = '';
+        for (let end = start; end < words.length && joined.length < normalizedWanted.length; end++) {
+          const word = words[end];
+          joined += word;
+          if (captionsMode) normalized += captionWord(word, end > start ? words[end - 1] : undefined);
+          const exact = joined === wanted;
+          if (exact || (captionsMode && normalized === normalizedWanted)) matches.push({ repository, start, end, exact });
         }
       }
     }
   }
   const outer = matches.filter((match) => !matches.some((other) =>
     other.start <= match.start && other.end >= match.end &&
-    (other.start < match.start || other.end > match.end)));
+    (other.start < match.start || other.end > match.end || (other.exact && !match.exact))));
   const ids = new Set(outer.map((match) => match.repository.id));
   return ids.size === 1 ? outer[0].repository : undefined;
 }
@@ -283,7 +292,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     entry.finished = true;
     note(entry, 'expired');
   }
-  async function request(text, speaker, show_log = false) {
+  async function request(text, speaker, show_log = false, { captionsMode = false } = {}) {
     if (!enabled || !scope.investigations_enabled) return reply(403, OFF);
     if (typeof show_log !== 'boolean') return reply(400, "I can't do that.");
     if (generation === undefined) return reply(409, 'There is no call right now.');
@@ -293,7 +302,7 @@ function createInvestigationManager({ readSource, writer, brain, shares, record,
     const target = callTarget;
     const source = target?.view || readSource;
     const repositories = target?.binding?.repositories;
-    const repository = repositories && namedRepository(text, repositories);
+    const repository = repositories && namedRepository(text, repositories, { captionsMode });
     if (repositories && !repository) return reply(400,
       `Which repository: ${repositories.map((repo) => repo.path.split('/').at(-1)).join(' or ')}?`);
     let context;

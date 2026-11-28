@@ -14,14 +14,14 @@ const CLAIM = {
   unknown: 'unknown', unclear: 'unknown',
 };
 
-function checkFacts(text, snapshot) {
+function checkFacts(text, snapshot, { dedupeRefusals = false } = {}) {
   const items = snapshot.items || [];
   const repo = items[0]?.id.slice(0, items[0].id.lastIndexOf('#')).toLowerCase();
-  return checkFactsDetailed(text, snapshot, { repo }).text;
+  return checkFactsDetailed(text, snapshot, { repo, dedupeRefusals }).text;
 }
 
 // evidence: items read live during the turn; they replace snapshot entries, but counts stay the snapshot's
-function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
+function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [], dedupeRefusals = false }) {
   const items = snapshot.items || [];
   const counts = summarise(items);
   const byKey = new Map([...items, ...evidence].map((item) => [item.id.includes('#') ? item.id.toLowerCase() : item.id, item]));
@@ -37,8 +37,11 @@ function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
     : byNumber.get(ref.number);
   let cut = false;
 
-  const checked = text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
-    if (index % 2) return sentence;
+  const checked = [];
+  const refusal = "I couldn't confirm that.";
+  let refused = false;
+  text.split(/(?<=[.!?])(\s+)/).forEach((sentence, index, parts) => {
+    if (index % 2) return;
     const references = [...sentence.matchAll(REFERENCE)].map((match) => ({
       number: Number(match[3] || match[6] || match[7] || match[8]),
       repo: match[1] ? `${match[1]}/${match[2]}`.toLowerCase()
@@ -70,9 +73,15 @@ function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
       !countClaims.some((c) => state.start >= c.index && state.start < c.index + c[0].length) &&
       !references.some((ref) => itemFor(ref)?.state === state.state)));
     if (invalid) cut = true;
-    return invalid ? "I couldn't confirm that." : sentence;
-  }).join('').replace(/I couldn't confirm that\.(?:\s+I couldn't confirm that\.)+/g, "I couldn't confirm that.");
-  return { text: checked, cut };
+    const result = invalid ? refusal : sentence;
+    if (dedupeRefusals && result.trim() === refusal) {
+      if (refused) return;
+      refused = true;
+    }
+    checked.push(parts[index - 1] || '', result);
+  });
+  const answer = checked.join('').replace(/I couldn't confirm that\.(?:\s+I couldn't confirm that\.)+/g, "I couldn't confirm that.");
+  return { text: answer, cut };
 }
 
 module.exports = { checkFacts, checkFactsDetailed };

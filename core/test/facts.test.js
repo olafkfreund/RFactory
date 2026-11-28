@@ -128,3 +128,13 @@ test('consecutive failed sentences produce one spoken refusal, including snapsho
   assert.equal(checked('#99 is done. #98 is done.'), refused);
   assert.equal(checked('#99 is done. #98 is done. #3 is blocked.'), `${refused} #3 is blocked.`);
 });
+
+test('captions emit one refusal even after a snapshot-only first pass', () => {
+  const raw = '#99 is done. #3 is blocked. #98 is done.\n#1 is done.';
+  const firstPass = checked(raw);
+  assert.deepEqual(checkFactsDetailed(raw, snapshot, { dedupeRefusals: false }),
+    { text: `${refused} #3 is blocked. ${refused}\n#1 is done.`, cut: true });
+  const expected = `${refused} #3 is blocked.\n#1 is done.`;
+  assert.deepEqual(checkFactsDetailed(raw, snapshot, { dedupeRefusals: true }), { text: expected, cut: true });
+  assert.equal(checkFacts(firstPass, snapshot, { dedupeRefusals: true }), expected);
+});

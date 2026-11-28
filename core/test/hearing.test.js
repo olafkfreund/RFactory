@@ -534,3 +534,20 @@ test('notes off: all note phrases keep their previous routing', () => {
     assert.equal(addressed[0]?.kind, expected, request);
   }
 });
+
+test('K and Kay wake only at sentence boundaries in platform captions', () => {
+  for (const [text, captionsMode, source, expected] of [
+    ['K Factory. Share the board.', true, undefined, ['share']],
+    ["Kay, Factory what's blocked?", true, undefined, ['question']],
+    ["Kay, Factory, what's blocked?", true, undefined, ['question']],
+    ['They said k factory. Share the board.', true, undefined, []],
+    ['K Factory. Share the board.', false, undefined, []],
+    ['K Factory. Share the board.', true, 'audio', []],
+    ['K Factory-floor needs a standup.', true, undefined, []],
+  ]) {
+    const addressed = [];
+    const hearing = createHearing({ captionsMode, onAddressed: ({ kind }) => addressed.push(kind) });
+    hearing.heard({ id: 'a', text, source, settled: true });
+    assert.deepEqual(addressed, expected, text);
+  }
+});

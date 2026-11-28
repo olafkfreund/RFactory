@@ -1,6 +1,10 @@
 'use strict';
 
-const WAKE = /(?:^[\s"'“‘(]*|[.!?…]\s+)(?:(?<greet>hey|hi|hello)(?:,\s*|\s+)|(?:hey|hi|hello|ok|okay)(?:[,!.]+\s*|\s+))?factor(?:y|ies)\b/gi;
+function wakePattern(greetings) {
+  return new RegExp(String.raw`(?:^[\s"'“‘(]*|[.!?…]\s+)(?:(?<greet>${greetings})(?:,\s*|\s+)|(?:hey|hi|hello|ok|okay)(?:[,!.]+\s*|\s+))?factor(?:y|ies)\b`, 'gi');
+}
+const WAKE = wakePattern('hey|hi|hello');
+const CAPTION_WAKE = wakePattern('hey|hi|hello|k|kay');
 const SEP = /^\s*(?:[,.!?:;…–—]|-+(?:\s|$))/;
 // a possessive or hyphenated name ("Factory's", "factory-floor") ends the request before it but never wakes
 const COMPOUND = /^(?:['’]|[-\u2010\u2011]\w)/;
@@ -23,11 +27,11 @@ const NOTES = new RegExp(`${ASK}(?:what\\s+did\\s+you\\s+note(?:\\s+down)?|read\
 // keep old caption labels for rollback; the bot's own speech never wakes it (#62)
 const SELF_NAMES = Object.freeze(['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']);
 
-function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES, notes = false }) {
+function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES, notes = false, captionsMode = false }) {
   const blocks = new Map();
   const ownNames = selfNames.map((name) => name.trim().toLowerCase());
 
-  function heard({ id, speaker, text, settled = false }) {
+  function heard({ id, speaker, text, settled = false, source }) {
     if (typeof speaker === 'string') {
       let label = speaker.trim().toLowerCase();
       while (true) {
@@ -52,10 +56,11 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
     block.speaker = speaker;
     clock.clearTimeout(block.timer);
 
-    if (new RegExp(WAKE.source, WAKE.flags).test(text)) {
+    const pattern = captionsMode && source !== 'audio' ? CAPTION_WAKE : WAKE;
+    if (new RegExp(pattern).test(text)) {
       const dispatch = () => {
         block.timer = null;
-        const wake = new RegExp(WAKE.source, WAKE.flags);
+        const wake = new RegExp(pattern);
         let match = wake.exec(block.text);
         let i = 0;
         while (match) {

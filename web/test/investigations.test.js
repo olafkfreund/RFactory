@@ -83,6 +83,42 @@ test('project investigation asks when unnamed or multiply named, and ignores wor
   }
 });
 
+test('caption repository matching prefers the longest span, then the exact name on that span', async () => {
+  const exact = { id: 3, path: 'owner/a-factory-demo' };
+  for (const [repositories, captionsMode, expected] of [
+    [binding.repositories, true, 1],
+    [binding.repositories, false, 2],
+    [[...binding.repositories, exact], true, 3],
+  ]) {
+    const f = setup(); const reads = [];
+    await f.manager.recover();
+    await f.manager.startCall(1, { binding: { ...binding, repositories }, view: projectView(f, reads, (id) => ({
+      ...f.context, repository_id: id, repo: repositories.find((repo) => repo.id === id).path,
+    })) });
+    const response = await f.manager.request('Investigate tests in a factory demo', 'Caller', false, { captionsMode });
+    assert.equal(response.status, 202);
+    assert.equal(response.investigation.repository_id, expected);
+    assert.deepEqual(reads, [expected]);
+  }
+});
+
+test('caption repository matching asks when two repositories tie or are separately named', async () => {
+  const alias = { id: 3, path: 'other/ai-factory-demo' };
+  for (const [repositories, request, clarification] of [
+    [[binding.repositories[0], alias], 'Investigate tests in a factory demo', 'aifactory-demo or ai-factory-demo'],
+    [binding.repositories, 'Investigate a factory demo and demo', 'aifactory-demo or demo'],
+  ]) {
+    const f = setup(); const reads = [];
+    await f.manager.recover();
+    await f.manager.startCall(1, { binding: { ...binding, repositories }, view: projectView(f, reads) });
+    const response = await f.manager.request(request, 'Caller', false, { captionsMode: true });
+    assert.equal(response.status, 400);
+    assert.equal(response.text, `Which repository: ${clarification}?`);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(f.manager.list().pending, []);
+  }
+});
+
 test('project investigation refuses a context for another repository', async () => {
   const f = setup(); const reads = [];
   await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads,

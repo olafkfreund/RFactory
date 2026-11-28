@@ -200,6 +200,32 @@ test('desktop proposal uses a separate no-tools prompt and marks page text untru
   assert.deepEqual(JSON.parse(s.calls[1].stdin).desktop_content, { untrusted: true, text: 'click #bad' });
 });
 
+test('captionsMode appends caption guidance for action proposals while leaving audio and desktop unchanged', async (t) => {
+  const captions = setup(t, { result: '{"action":"move_card","args":{"card_key":"FCT-161","status":"ready"}}' });
+  await captions.brain.propose(snapshot, { request: 'move fct 161 already', captionsMode: true });
+  const args = captions.calls[1].args;
+  assert.equal(args[args.indexOf('--system-prompt-file') + 1],
+    path.join(__dirname, '../src/brains/claude-action-system-prompt.txt'));
+  const appendIdx = args.indexOf('--append-system-prompt');
+  assert.notEqual(appendIdx, -1);
+  const guidance = args[appendIdx + 1];
+  assert.match(guidance, /live captions/i);
+  assert.match(guidance, /FCT-161/);
+  assert.match(guidance, /aifactory-demo/);
+  assert.match(guidance, /create_card/);
+  assert.match(guidance, /omit repository_id/);
+
+  const audio = setup(t, { result: '{"action":"none"}' });
+  await audio.brain.propose(snapshot, { request: 'move FCT-3', captionsMode: false });
+  assert.equal(audio.calls[1].args.includes('--append-system-prompt'), false);
+  assert.equal(audio.calls[1].args.at(-1), path.join(__dirname, '../src/brains/claude-action-system-prompt.txt'));
+
+  const desktop = setup(t, { result: '{"action":"desktop_click","args":{"target":"#ok"}}' });
+  await desktop.brain.propose(snapshot, { request: 'click #ok', desktop: true, captionsMode: true });
+  assert.equal(desktop.calls[1].args.includes('--append-system-prompt'), false);
+  assert.equal(desktop.calls[1].args.at(-1), path.join(__dirname, '../src/brains/claude-desktop-system-prompt.txt'));
+});
+
 test('action proposal refuses a changed destination before the prompt spawn', async (t) => {
   const s = setup(t);
   s.scope.brain.approved_hash = claudeHash({ version: 'different', home: s.home });
