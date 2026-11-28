@@ -14,7 +14,6 @@
   "69": "test cfactory.test.js",
   "73": "bot bot/package.json",
   "76": "runner k8s-lifecycle.test.js",
-  "77": "web live-view.test.js",
   "82": "spike spike/package.json",
   "84": "test run.test.js",
   "89": "bot run()",
