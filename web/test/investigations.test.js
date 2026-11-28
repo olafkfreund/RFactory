@@ -37,13 +37,114 @@ function setup(options = {}) {
   const brain = { summarize: async (...args) => { calls.push(['brain', ...args]); return options.brain ? options.brain(...args) : { text: 'A summary.' }; } };
   const manager = createInvestigationManager({ readSource, writer, brain, shares, record, redactor, clock, log: options.log || (() => {}),
     scope: { investigations_enabled: true, source: { kind: 'cfactory', repository_id: 7 } },
-    roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,member@example.com', RFACTORY_APPROVERS: 'owner@example.com' }), enabled: true });
+    roles: loadRoles({ RFACTORY_ALLOWED_EMAILS: 'owner@example.com,member@example.com', RFACTORY_APPROVERS: 'owner@example.com' }),
+    enabled: true, rebind: options.rebind });
   manager.subscribe((event) => events.push(event));
-  return { manager, clock, context, calls, entries, events };
+  return { manager, clock, context, calls, entries, events, readSource };
 }
 async function ready(f) { await f.manager.recover(); await f.manager.startCall(1); const result = await f.manager.request('why tests fail', 'Caller'); assert.equal(result.status, 202); return result.investigation; }
 const approve = (f, p) => f.manager.approve(p.id, 'owner@example.com', p.hash);
 const stop = (f, p) => f.manager.stop('member@example.com', p.id);
+
+const binding = { projectId: 'project-a', name: 'Project A', repositories: [
+  { id: 1, path: 'owner/aifactory-demo' }, { id: 2, path: 'owner/demo' },
+] };
+const projectView = (f, calls, context = (id) => ({ ...f.context, repository_id: id,
+  repo: binding.repositories.find((repo) => repo.id === id)?.path })) => ({
+  investigateAvailable: f.readSource.investigateAvailable,
+  investigationContext: async (id) => { calls.push(id); return context(id); },
+});
+
+test('project investigation names the only repository, a short name, or a full path', async () => {
+  for (const [repositories, request, expected] of [
+    [binding.repositories.slice(0, 1), 'why tests fail', 1],
+    [binding.repositories, 'Why in AI factory demo?', 1],
+    [binding.repositories, 'Investigate owner demo', 2],
+    [binding.repositories, 'Investigate AI factory demo', 1],
+  ]) {
+    const f = setup({ rebind: async () => ({ ...binding, repositories }) });
+    const reads = [];
+    await f.manager.recover(); await f.manager.startCall(1, { binding: { ...binding, repositories }, view: projectView(f, reads) });
+    const response = await f.manager.request(request, 'Caller');
+    assert.equal(response.status, 202, request);
+    assert.deepEqual(reads, [expected]);
+    assert.equal(response.investigation.repository_id, expected);
+    assert.equal(response.investigation.project_id, 'project-a');
+  }
+});
+
+test('project investigation asks when unnamed or multiply named, and ignores words inside larger words', async () => {
+  for (const request of ['why tests fail', 'investigate demonstrate', 'investigate aifactory-demo and demo']) {
+    const f = setup(); const reads = [];
+    await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads) });
+    assert.equal((await f.manager.request(request, 'Caller')).text, 'Which repository: aifactory-demo or demo?');
+    assert.deepEqual(reads, []);
+    assert.deepEqual(f.manager.list().pending, []);
+  }
+});
+
+test('project investigation refuses a context for another repository', async () => {
+  const f = setup(); const reads = [];
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads,
+    () => ({ ...f.context, repository_id: 2 })) });
+  assert.equal((await f.manager.request('investigate aifactory demo', 'Caller')).status, 503);
+  assert.deepEqual(reads, [1]);
+  assert.deepEqual(f.manager.list().pending, []);
+});
+
+test('project start rejects a context that switches repositories after approval', async () => {
+  const f = setup({ rebind: async () => binding }); const reads = [];
+  let count = 0;
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads,
+    (id) => ({ ...f.context, repository_id: ++count === 1 ? id : 2, repo: 'owner/aifactory-demo' })) });
+  const p = (await f.manager.request('investigate aifactory demo', 'Caller')).investigation;
+  assert.equal((await approve(f, p)).status, 200);
+  await until(() => f.entries.at(-1)?.state === 'rejected');
+  assert.deepEqual(reads, [1, 1]);
+  assert.equal(f.entries.at(-1).reason, 'context changed');
+  assert.ok(!f.calls.some((call) => call[0] === 'card'));
+});
+
+test('project investigation rebind refusal sends no card and keeps ids on record', async () => {
+  for (const rebind of [async () => { throw new Error('not allowed'); }, async () => ({ ...binding, repositories: binding.repositories.slice(1) })]) {
+    const f = setup({ rebind }); const reads = [];
+    await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads) });
+    const p = (await f.manager.request('investigate aifactory demo', 'Caller')).investigation;
+    assert.equal((await approve(f, p)).status, 200);
+    await until(() => f.entries.at(-1)?.state === 'rejected');
+    assert.equal(f.entries.at(-1).reason, 'context changed');
+    assert.ok(f.entries.every((entry) => entry.project_id === 'project-a' && entry.repository_id === 1));
+    assert.ok(!f.calls.some((call) => call[0] === 'card'));
+  }
+});
+
+test('project start uses its stored repository, card id, and log share target', async () => {
+  const f = setup({ rebind: async () => binding }); const reads = [];
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f, reads) });
+  const p = (await f.manager.request('investigate owner demo', 'Caller', true)).investigation;
+  assert.equal((await approve(f, p)).status, 200);
+  await until(() => f.manager.list().running?.state === 'running');
+  assert.deepEqual(reads, [2, 2]);
+  assert.deepEqual(f.calls.find((call) => call[0] === 'card'), ['card', 'investigate owner demo', 2]);
+  await until(() => f.calls.some((call) => call[0] === 'share'));
+  const share = f.calls.find((call) => call[0] === 'share')[2];
+  assert.equal(share.generation, 1);
+  assert.deepEqual(share.target, { project_id: 'project-a', repository_id: 2 });
+  assert.ok(f.entries.every((entry) => entry.project_id === 'project-a' && entry.repository_id === 2));
+});
+
+test('recovery keeps a removed project target while stopping its recorded run', async () => {
+  const old = { id: 'old', kind: 'investigate', repo: 'owner/aifactory-demo', sha: SHA, request: 'why',
+    card_key: 'FCT-old', run_id: 'run-old', state: 'running', project_id: 'removed', repository_id: 1 };
+  const f = setup({ unfinished: [old], rebind: async () => { throw new Error('removed'); },
+    state: () => ({ state: 'stopped', pods_gone: true, tests: [] }) });
+  await f.manager.recover();
+  assert.deepEqual(f.calls.filter((call) => ['stop', 'state'].includes(call[0])),
+    [['stop', 'FCT-old', 'run-old'], ['state', 'FCT-old', 'run-old']]);
+  assert.equal(f.entries.at(-1).state, 'stopped');
+  assert.equal(f.entries.at(-1).project_id, 'removed');
+  assert.equal(f.entries.at(-1).repository_id, 1);
+});
 
 test('approval is hashed, role gated and claims the only dispatch slot synchronously', async () => {
   const gate = deferred(); const f = setup({ investigate: () => gate.promise }); const p = await ready(f);
@@ -531,4 +632,31 @@ test('Stop reports what was observed', async () => {
     const p = await ready(f); await approve(f, p); await running(f);
     assert.equal((await stop(f, p)).text, text);
   }
+});
+
+test('investigation project follows its list, record, and log share', async () => {
+  const f = setup(); await f.manager.recover(); await f.manager.startCall(1, { projectId: 'repo:2' });
+  const p = (await f.manager.request('why', 'Caller', true)).investigation;
+  assert.equal(p.project_id, 'repo:2');
+  assert.equal(f.manager.list().pending[0].project_id, 'repo:2');
+  await approve(f, p);
+  await until(() => f.calls.some((c) => c[0] === 'share'));
+  assert.equal(f.calls.find((c) => c[0] === 'share')[2].projectId, 'repo:2');
+  assert.ok(f.entries.every((e) => e.project_id === 'repo:2'));
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  await f.manager.endCall();
+  const plain = setup(); await plain.manager.recover(); await plain.manager.startCall(2);
+  const next = (await plain.manager.request('why', 'Caller')).investigation;
+  assert.ok(!('project_id' in next));
+  await approve(plain, next);
+  await until(() => plain.manager.list().running?.state === 'running');
+  assert.ok(plain.entries.every((e) => !('project_id' in e)));
+});
+
+test('investigation recovery keeps the project outside its payload', async () => {
+  const f = setup({ unfinished: [{ id: 'old', state: 'starting', repo: 'owner/notes-api', sha: SHA,
+    request: 'why', card_key: 'FCT-1', dispatched_at: '2026-11-17T12:00:00Z', project_id: 'repo:2' }] });
+  await f.manager.recover();
+  assert.equal(f.manager.list().running.project_id, 'repo:2');
+  assert.equal(f.entries.at(-1).project_id, 'repo:2');
 });

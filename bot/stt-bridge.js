@@ -28,6 +28,8 @@ async function installSttBridge(host, { onAudio, log }) {
   });
   await host.context.addInitScript(() => {
     if (window !== window.top) return;
+    // Meet's insertable-stream pump can starve the decoder (#67).
+    try { delete RTCRtpReceiver.prototype.createEncodedStreams; delete RTCRtpSender.prototype.createEncodedStreams; } catch {}
     window.addEventListener('message', (event) => {
       const data = event.data;
       if (event.source !== window || !data?.__botsInCalls || data.action !== 'stt-audio') return;

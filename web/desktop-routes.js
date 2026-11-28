@@ -7,7 +7,6 @@ const TOOLS = new Set(['desktop_open', 'desktop_click', 'desktop_type', 'desktop
 const SHOT_MAX = 6 * 1024 * 1024; // base64 characters; the runner caps the image at 4 MiB
 const SHOT_TYPES = [['/9j/', 'image/jpeg'], ['iVBORw0KGgo', 'image/png']];
 
-const CLOSED = "Changes aren't available for this project yet.";
 const LIFETIME = 10 * 60 * 1000;
 const PENDING_LIMIT = 5;
 const ID = '([A-Za-z0-9_-]{1,64})';
@@ -79,8 +78,7 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
   const shares = new Map(); // desktop_id -> { share_id, url }; kept until the guest confirms the stop or the desktop is gone
   const pages = new Map(); // desktop_id -> origin of the last page the guest opened: what a proposal is bound to
   const shots = new Map(); // desktop_id -> { b64, type, at }: for approvers on the page only; a no-tools text brain cannot take an image
-  const closed = () => projectCall()?.writable === false; // #52: a project call without the default repository changes nothing
-  const permitted = async (name, args) => writesEnabled === true && !closed() && (await isAllowed(scopeName, name, args)) === true;
+  const permitted = async (name, args) => writesEnabled === true && (await isAllowed(scopeName, name, args)) === true;
   const runDesktop = async (name, args, context) => {
     if (!(await permitted(name, args))) throw new Error('scope-not-allowed'); // also covers an approval that outlived a config change
     const result = await run(name, args, context);
@@ -101,10 +99,9 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
   // live-view membership: a signed-in member of this server's scope, and the desktop belongs to that scope
   const isMember = async (email, id) => roles.has(email, 'member') && !!(await find(id));
 
-  async function request(text, desktopId, snapshot) {
+  // during: the call the snapshot was read for, noted before the read; a call that changed since drops the proposal
+  async function request(text, desktopId, snapshot, during = projectCall()) {
     const refused = { text: "I can't do that." };
-    if (closed()) return { text: CLOSED };
-    const during = projectCall(); // the snapshot is this call's: a proposal cannot outlive it
     const desk = desktopId && await find(desktopId);
     if (!desk || !brain || !redactor) return refused;
     const proposal = await brain.propose({ ...snapshot, desktop_content: { untrusted: true, text: redactor.toModel(pageText.get(desktopId) || '') } },
@@ -160,10 +157,6 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
           cleanup_alert: roles.has(email, 'admin') ? state.alert : null });
       }
       const body = (await readJson(req)) || {};
-      // revoke, reject and share/stop only end things, so they stay open
-      if (closed() && (what === 'handover' || what === 'request' || what.endsWith('/approve'))) {
-        return what === 'request' ? json(res, 200, { text: CLOSED }) : json(res, 409, { error: CLOSED });
-      }
       if (what === 'handover') {
         const minutes = body.minutes;
         if (!Number.isInteger(minutes) || minutes < 1 || minutes > 30) return json(res, 400, { error: 'invalid-minutes' });
@@ -182,7 +175,8 @@ function createDesktop({ roles, scopeName, writesEnabled = false, isAllowed = as
       }
       if (what === 'request') {
         if (typeof body.text !== 'string' || !body.text || body.text.length > 500) return json(res, 400, { error: 'bad-request' });
-        return json(res, 200, await request(body.text, id, snapshot ? await snapshot(projectCall()?.view) : { items: [] }));
+        const during = projectCall(); // noted before the snapshot is read: request() compares against it
+        return json(res, 200, await request(body.text, id, snapshot ? await snapshot(during?.view) : { items: [] }, during));
       }
       if (what === 'revoke') { await sessions.revoke(id); return json(res, 200, { ok: true }); }
       if (what === 'share/stop') {

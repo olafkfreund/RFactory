@@ -111,3 +111,20 @@ test('live evidence replaces its snapshot entry; counts stay the snapshot\'s', (
   assert.equal(check('2 blocked.').cut, false);
   assert.equal(check('1 left.').cut, false);
 });
+
+test('multiple repositories resolve full references by name and bare numbers only when unique', () => {
+  const snap = { items: [{ id: 'Owner/One#7', state: 'done' }, { id: 'owner/two#7', state: 'blocked' },
+    { id: 'Owner/One#8', state: 'left' }] };
+  const check = (text) => checkFactsDetailed(text, snap, { repos: ['Owner/One', 'owner/two'] }).text;
+  assert.equal(check('Owner/One#7 is done.'), 'Owner/One#7 is done.');
+  assert.equal(check('owner/two#7 is blocked.'), 'owner/two#7 is blocked.');
+  assert.equal(check('OWNER/ONE#7 is blocked.'), refused);
+  assert.equal(check('#7 is done.'), refused);
+  assert.equal(check('#8 is left.'), '#8 is left.');
+  assert.equal(check('other/repo#8 is left.'), refused);
+});
+
+test('consecutive failed sentences produce one spoken refusal, including snapshot-only answers', () => {
+  assert.equal(checked('#99 is done. #98 is done.'), refused);
+  assert.equal(checked('#99 is done. #98 is done. #3 is blocked.'), `${refused} #3 is blocked.`);
+});

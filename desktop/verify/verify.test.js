@@ -38,6 +38,67 @@ test('callstream gives up after its tries', async () => {
   await assert.rejects(join({ client, id: 'ab', link: 'l', out: new PassThrough(), tries: 3, sleep: async () => {} }), /call-refused-404/);
 });
 
+const NOW = new Date('2026-11-27T10:00:00Z');
+test('callevents filter in timings mode keeps no text and no names', () => {
+  const { filter } = require('./callevents');
+  const events = [
+    { type: 'question', id: 'q1', speaker: 'Ann', text: 'secret', kind: 'ask' },
+    { type: 'answer', text: 'secret', snapshot: { a: 1 }, sources: ['s'] },
+    { type: 'limits', budget_usd: 5, spent_usd: 1.5, exhausted: false, name: 'x' },
+    { type: 'hearing', state: 'own', dropped: 3 },
+    { type: 'state', state: 'in-call', code: 'Bad Code!' },
+    { type: 'project', id: 'p', name: 'N', repositories: ['r'] },
+    { type: 'roster', names: ['Ann'] },
+    ...['dropped question: queue full', 'dropped question: batch full', 'brain failed: x', 'source failed: y', 'chat line failed: z', 'something else']
+      .map((message) => ({ type: 'log', message })),
+  ];
+  const out = events.map((e) => require('./callevents').filter(e, { now: NOW }));
+  const bad = ['text', 'speaker', 'sources', 'snapshot', 'message', 'name', 'repositories'];
+  for (const o of out.filter(Boolean)) for (const k of bad) assert.ok(!(k in o), k);
+  assert.deepEqual(out[0], { received_at: NOW.toISOString(), type: 'question', id: 'q1', kind: 'ask' });
+  assert.deepEqual(out[1], { received_at: NOW.toISOString(), type: 'answer' });
+  assert.deepEqual(out[2], { received_at: NOW.toISOString(), type: 'limits', budget_usd: 5, spent_usd: 1.5, exhausted: false });
+  assert.equal(out[3].dropped, 3);
+  assert.deepEqual(out[4], { received_at: NOW.toISOString(), type: 'state', state: 'in-call' });
+  assert.equal(out[5], null);
+  assert.equal(out[6], null);
+  assert.deepEqual(out.slice(7, 12).map((o) => o.class), ['dropped-queue-full', 'dropped-batch-full', 'brain-failed', 'source-failed', 'notice-failed']);
+  assert.equal(out[12], null);
+  assert.equal(filter({ type: 'state', state: 'error', code: 'meet-denied' }, { now: NOW }).code, 'meet-denied');
+  assert.equal(filter({ type: 'hearing', state: 'captions-off' }, { now: NOW }).state, 'captions-off');
+});
+
+test('callevents filter --full keeps the text but not the roster', () => {
+  const { filter } = require('./callevents');
+  assert.equal(filter({ type: 'answer', text: 'hi' }, { full: true, now: NOW }).text, 'hi');
+  assert.equal(filter({ type: 'roster' }, { full: true, now: NOW }), null);
+});
+
+// run the real callevents.js against a local server that answers every request with <status>, <headers> and <body>
+async function runEvents(status, headers, body, args = ['p 1']) {
+  const server = http.createServer((req, res) => { res.writeHead(status, headers); res.end(body); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const child = spawn(process.execPath, [path.join(__dirname, 'callevents.js'), ...args], {
+      env: { ...process.env, VERIFY_SERVER_URL: `http://127.0.0.1:${server.address().port}/`, VERIFY_APPROVER_COOKIE: 'c=1' },
+    });
+    let stdout = '';
+    child.stdout.on('data', (c) => { stdout += c; });
+    const code = await new Promise((r) => child.on('close', r));
+    return { code, stdout };
+  } finally { server.close(); }
+}
+const SSE = { 'content-type': 'text/event-stream' };
+
+test('callevents exits 2 on a redirect, 3 on idle, 0 after the stream', async () => {
+  assert.equal((await runEvents(302, { location: '/login' }, '')).code, 2);
+  const idle = await runEvents(200, SSE, 'data: {"type":"idle"}\n\n');
+  assert.deepEqual([idle.code, idle.stdout], [3, '']);
+  const two = await runEvents(200, SSE, ': hi\ndata: {"type":"state","state":"in-call"}\n\ndata: nope\n\ndata: {"type":"hearing","state":"own"}\n\n');
+  assert.equal(two.code, 0);
+  assert.equal(two.stdout.trim().split('\n').length, 2);
+});
+
 test('fixture /login reports lengths only and /reset clears them', async () => {
   const [a, b] = [18931, 18932];
   const child = spawn(process.execPath, [path.join(__dirname, 'fixture.js'), String(a), String(b)], { stdio: 'ignore' });
@@ -66,6 +127,212 @@ function bash(script, { node = 'exit 0', env = {} } = {}) {
   fs.rmSync(dir, { recursive: true });
   return { out: r.stdout, err: r.stderr, log, status: r.status };
 }
+
+// Run the whole readiness script with local command fakes; no browser or server is contacted.
+function readiness({ refused = false, markStopped = true, live = false, leftAfter = '',
+  limits = '2.0', invalidAnswer = false, deleteDelay = 0, statusDelay = 0, stopWait = 3 } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'readiness-'));
+  const verify = path.join(dir, 'desktop', 'verify');
+  fs.mkdirSync(verify, { recursive: true });
+  fs.mkdirSync(path.join(dir, 'bot/node_modules/@vibeconferencing/calls'), { recursive: true });
+  for (const name of ['readiness.sh', 'fixtures']) fs.symlinkSync(path.join(__dirname, name), path.join(verify, name));
+  fs.writeFileSync(path.join(verify, 'lib.sh'), `${read('lib.sh')}
+owner_confirm() {
+  echo "$1 $2"
+  if [ "$1" = 'readiness-platform-${leftAfter}' ]; then
+    echo '{"type":"state","state":"left"}' >> "$EV"
+  fi
+  CONFIRMED=1
+  pass "$1"
+}
+`);
+  const chrome = path.join(dir, 'chrome');
+  fs.writeFileSync(chrome, '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'curl'), `#!/bin/sh
+cat >/dev/null
+method= path= body=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -X) shift; method=$1 ;;
+    --data) shift; body=$1 ;;
+    --max-time) shift; max=$1 ;;
+    http://dummy/*) path=$1 ;;
+  esac
+  shift
+done
+case "$path" in *'/api/call/status') route=status ;; *'/api/call') route=call ;; *) route=other ;; esac
+printf '%s %s %s\n' "$method" "$route" "$body" >> '${dir}/calls.log'
+case "$method $route" in
+  'POST call')
+    ${refused ? "echo '{\"error\":\"busy\"}'" : `rm -f '${dir}/stopped'; printf '%s' "$body" | jq -r .listen > '${dir}/mode'; echo '{"ok":true}'`} ;;
+  'DELETE call')
+    echo "delete max $max" >> '${dir}/calls.log'
+    sleep ${deleteDelay}
+    ${markStopped ? `touch '${dir}/stopped'` : ':'}
+    echo '{"ok":true}' ;;
+  'GET status')
+    if [ -f '${dir}/stopped' ]; then
+      echo "status max $max" >> '${dir}/calls.log'
+      sleep ${statusDelay}
+      echo '{"running":false,"starting":false,"generation":7}'
+    else echo '{"running":true,"starting":false,"generation":7,"project":{"id":"dummy-project"}}'; fi ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'node'), `#!/bin/sh
+case "$1" in
+  */callevents.js)
+    echo reader >> '${dir}/calls.log'
+    if [ '${live}' = false ]; then echo 'stream closed: idle' >&2; exit 3; fi
+    trap 'exit 0' TERM
+    mode=$(cat '${dir}/mode')
+    if [ "$mode" = platform ]; then
+      echo '{"type":"hearing","state":"captions-off"}'
+    else
+      echo '{"type":"hearing","state":"own"}'
+    fi
+    ${limits === null ? ':' : `echo '{"type":"limits","budget_usd":${limits}}'`}
+    echo '{"type":"state","state":"in-call"}'
+    if [ "$mode" = platform ]; then sleep 0.5; echo '{"type":"hearing","state":"captions"}'; fi
+    echo '{"type":"greeting","result":"done"}'
+    while :; do sleep 0.05; done ;;
+  */observer.js)
+    trap 'sleep 0.2; test ! -d "$3" || echo observer-closed >> "${dir}/calls.log"; exit 0' TERM
+    echo in-call
+    while :; do
+      for ask in "$3"/ask-*; do
+        [ -f "$ask" ] || continue
+        rm "$ask"
+        name=\${ask##*/ask-}
+        echo "asking $name"
+        echo '{"type":"question"}' >> "$3/events.jsonl"
+        if [ "$name" = ask ] && [ '${invalidAnswer}' = true ]; then
+          echo '{"type":"log","message":"brain failed"}' >> "$3/events.jsonl"
+        fi
+        echo '{"type":"answer","sources":[]}' >> "$3/events.jsonl"
+        echo "asked $name"
+      done
+      sleep 0.05
+    done ;;
+esac
+`, { mode: 0o755 });
+  try {
+    const r = spawnSync(path.join(verify, 'readiness.sh'), [], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, VERIFY_SERVER_URL: 'http://dummy',
+        VERIFY_APPROVER_COOKIE: 'dummy-cookie', VERIFY_MEET_LINK: 'dummy-link', VERIFY_PROJECT_ID: 'dummy-project',
+        CHROME_PATH: chrome, TMPDIR: dir, VERIFY_JOIN_WAIT: '3', VERIFY_ANSWER_WAIT: '2', VERIFY_TURN_WAIT: '3',
+        VERIFY_SETTLE: '0', VERIFY_STOP_WAIT: String(stopWait), VERIFY_CONFIRM_DIR: '' }, encoding: 'utf8', timeout: 15000,
+    });
+    return { ...r, log: fs.existsSync(path.join(dir, 'calls.log')) ? fs.readFileSync(path.join(dir, 'calls.log'), 'utf8').trim().split('\n') : [] };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('readiness closes an idle stream and stops each started mode with its generation', () => {
+  const r = readiness();
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-stream/);
+  assert.deepEqual(r.log.filter((line) => line.startsWith('DELETE call')).map((line) => line.includes('"generation":7')), [true, true]);
+  assert.deepEqual(r.log.slice(0, 3).map((line) => line.split(' ').slice(0, 2).join(' ')), ['POST call', 'GET status', 'reader']);
+});
+
+test('readiness does not stop a call when start was refused', () => {
+  const r = readiness({ refused: true });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-start/);
+  assert.equal(r.log.filter((line) => line.startsWith('DELETE call')).length, 0);
+});
+
+test('readiness does not retry a stop or start the next mode without stop confirmation', () => {
+  const r = readiness({ markStopped: false, stopWait: 1 });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-stop/);
+  assert.equal(r.log.filter((line) => line.startsWith('DELETE call')).length, 1);
+  assert.equal(r.log.filter((line) => line.startsWith('POST call')).length, 1);
+});
+
+test('readiness waits for captions, checks answers and notices, and includes stop time in the switch', () => {
+  const r = readiness({ live: true, deleteDelay: 1.1 });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  for (const mode of ['platform', 'audio']) {
+    for (const check of ['hearing', 'limits', 'observer', 'answered', 'notice', 'spoken', 'stop']) {
+      assert.ok(r.stdout.includes(`PASS readiness-${mode}-${check}`), r.stdout);
+    }
+  }
+  assert.match(r.stdout, /captions join saying 'Factory \(AI\) is listening; say'/);
+  assert.match(r.stdout, /audio join saying it 'transcribes this call on RFactory's own servers'/);
+  assert.ok(Number(r.stdout.match(/readiness-switch-seconds (\d+)/)?.[1]) >= 1, r.stdout);
+});
+
+test('readiness checks liveness after each owner confirmation', () => {
+  for (const step of ['notice', 'spoken']) {
+    const r = readiness({ live: true, leftAfter: step });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`FAIL readiness-platform-live: call state left after ${step} confirmation`), r.stdout);
+    assert.ok(r.stdout.includes('PASS readiness-audio-stop'), r.stdout);
+  }
+});
+
+test('readiness caps stop requests, rejects a late idle response and waits for the observer on failure', () => {
+  const r = readiness({ live: true, deleteDelay: 1.1, statusDelay: 3, stopWait: 3 });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /FAIL readiness-platform-stop/);
+  assert.ok(r.log.includes('delete max 3'), r.log);
+  assert.match(r.log.find((line) => line.startsWith('status max ')), /^status max [12]$/);
+  assert.equal(r.log.filter((line) => line.startsWith('DELETE call')).length, 1);
+  assert.equal(r.log.filter((line) => line.startsWith('POST call')).length, 1);
+  assert.equal(r.log.at(-1), 'observer-closed');
+});
+
+test('readiness reports absent lookup limits and rejects a settled failed answer', () => {
+  const noLimits = readiness({ live: true, limits: null });
+  assert.match(noLimits.stdout, /FAIL readiness-platform-limits: no limits event/);
+  assert.doesNotMatch(noLimits.stdout, /PASS readiness-platform-observer/);
+  const invalid = readiness({ live: true, invalidAnswer: true });
+  assert.match(invalid.stdout, /FAIL readiness-platform-answered: first answer did not qualify/);
+  assert.doesNotMatch(invalid.stdout, /PASS readiness-platform-notice/);
+});
+
+test('observer skips Chrome when already stopped and exits promptly after closing the browser', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'observer-'));
+  try {
+    const verify = path.join(dir, 'desktop/verify');
+    const guest = path.join(dir, 'desktop/guest/agent');
+    const calls = path.join(dir, 'bot/node_modules/@vibeconferencing/calls');
+    for (const destination of [verify, guest, path.join(calls, 'hosts')]) fs.mkdirSync(destination, { recursive: true });
+    const observer = path.join(verify, 'observer.js');
+    fs.copyFileSync(path.join(__dirname, 'observer.js'), observer);
+    fs.writeFileSync(path.join(guest, 'call.js'), "exports.MEET_GUEST = '';");
+    fs.writeFileSync(path.join(calls, 'hosts/playwright.js'), `
+      exports.playwrightHost = async () => {
+        console.log('browser launched');
+        return { context: { addInitScript() {} }, async close() { console.log('browser closed'); } };
+      };
+    `);
+    fs.writeFileSync(path.join(calls, 'index.js'), `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      exports.join = async () => ({
+        mic: { setMuted() {} },
+        _inner: { page: { async screenshot({ path: screenshot }) {
+          fs.writeFileSync(screenshot, '');
+          fs.writeFileSync(path.join(path.dirname(screenshot), 'end'), '');
+        } } },
+      });
+    `);
+    const run = () => spawnSync(process.execPath, [observer, 'dummy-chrome', dir], {
+      env: { ...process.env, VERIFY_MEET_LINK: 'dummy-link' }, encoding: 'utf8', timeout: 2500,
+    });
+    const end = path.join(dir, 'end');
+    fs.writeFileSync(end, '');
+    const alreadyStopped = run();
+    assert.equal(alreadyStopped.status, 0, alreadyStopped.stderr);
+    assert.equal(alreadyStopped.stdout, 'done\n');
+    fs.unlinkSync(end);
+    const active = run();
+    assert.equal(active.status, 0, String(active.error || active.stderr));
+    assert.equal(active.stdout, 'browser launched\nin-call\nbrowser closed\ndone\n');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 const beats = (log) => log.split('\n').filter((l) => /\/heartbeat/.test(l) && l.includes('"desktop_id":"abc"')).length;
 
 test('new_desktop keeps a server heartbeat running; NO_BEAT=1 withholds it', () => {
