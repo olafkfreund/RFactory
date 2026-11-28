@@ -823,3 +823,77 @@ test('GitHub reply renders the five lists, hides the CFactory sections and shows
   for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(byId[s].hidden, true, s);
   assert.equal(byId.summary.textContent, 'Repository: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
 });
+
+// slice #59: the page in Jira mode
+test('Jira mode: no call panel, no streams, only /api/config-driven standup requests', async (t) => {
+  const p = await projectPage(t, '/', {
+    config: { source: 'jira', projects: false },
+    routes: { '/api/standup': [200, { ...base, items: [], unknown: [], summary: 'Jira project ABC: 0 done, 0 in progress, 0 blocked, 0 left, 0 unknown.', destination: 'the server' }] },
+  });
+  assert.equal(p.byId.call.hidden, true);
+  assert.deepEqual(p.requests, [['POST', '/api/standup']]);
+  await p.click('run');
+  assert.deepEqual(p.requests, [['POST', '/api/standup'], ['POST', '/api/standup']]);
+  assert.equal(p.streams.length, 0);
+});
+
+test('Jira reply in Jira mode renders the five lists, Jira texts, no links, and hostile text as textContent', async (t) => {
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  const reply = (over) => ({
+    fetched_at: '2026-11-28T11:59:30Z',
+    newest_update: '2026-11-27T12:00:00Z',
+    items: [
+      { id: 'ABC-1', title: '<img src=x onerror=1>', url: 'https://github.com/o/r/issues/1', state: 'done', source_state: 'Done', evidence: [] },
+      { id: 'ABC-2', title: 'two', url: '', state: 'in_progress', source_state: 'In Progress', evidence: [] },
+      { id: 'ABC-3', title: 'three', url: '', state: 'blocked', source_state: 'Waiting', evidence: [] },
+      { id: 'ABC-4', title: 'four', url: '', state: 'left', source_state: 'To Do', evidence: [] },
+      { id: 'ABC-5', title: 'five', url: '', state: 'unknown', source_state: '<b>x</b>', evidence: [] },
+    ],
+    unknown: [{ id: 'ABC-5', title: 'five', url: '', state: 'unknown', source_state: '<b>x</b>', evidence: [] }],
+    counts: {},
+    truncated: false,
+    summary: 'Jira project ABC: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.',
+    summary_error: null,
+    destination: 'the server',
+    ...over,
+  });
+
+  const jiraPage = await projectPage(t, '/', {
+    config: { source: 'jira', projects: false },
+    routes: { '/api/standup': [200, reply()] },
+  });
+  render(jiraPage.doc, reply(), now);
+  for (const s of ['done', 'in_progress', 'blocked', 'left', 'unknown']) {
+    assert.ok(jiraPage.byId[s].all().some((n) => n.tag === 'li' && n.textContent !== 'None'), s);
+  }
+  for (const s of ['now', 'missing', 'next', 'issues']) assert.equal(jiraPage.byId[s].hidden, true, s);
+  assert.match(jiraPage.byId.age.textContent, /^As of .+ \(just now\) · newest issue update .+, 1 day ago$/);
+  assert.equal(jiraPage.byId.summary.textContent, 'Jira project ABC: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
+  assert.equal(jiraPage.byId.destination.textContent, 'Summary by the server; counts are taken from Jira.');
+
+  // No <a> even when the URL matches ISSUE_URL. The browser test checks HTML parsing.
+  assert.equal(jiraPage.byId.done.all().filter((n) => n.tag === 'a').length, 0);
+  assert.ok(jiraPage.byId.done.textContent.includes('<img src=x onerror=1>'));
+  assert.ok(jiraPage.byId.unknown.textContent.includes('<b>x</b>'));
+
+  // Without newest_update and with summary_error
+  render(jiraPage.doc, reply({ newest_update: null, summary: null, summary_error: 'bad' }), now);
+  assert.match(jiraPage.byId.age.textContent, /^As of .+ \(just now\) · no issue updates$/);
+  assert.equal(jiraPage.byId.summary.textContent, 'No summary (bad). The list above is still current.');
+
+  // Same reply in GitHub mode and with no mode keeps today's texts
+  const ghPage = await projectPage(t, '/', {
+    config: { source: 'github', projects: false },
+    routes: { '/api/standup': [200, reply()] },
+  });
+  const noMode = shim();
+  for (const id of ['stale', 'summary-card']) noMode.byId[id] = new Node('x');
+  for (const [doc, byId] of [[ghPage.doc, ghPage.byId], [noMode.doc, noMode.byId]]) {
+    render(doc, reply(), now);
+    assert.match(byId.age.textContent, /^As of .+ \(just now\) · newest card update .+, 1 day ago$/);
+    assert.equal(byId.destination.textContent, 'Summary by the server; card keys, states and counts are checked against the board.');
+    render(doc, reply({ newest_update: null, summary: null, summary_error: 'bad' }), now);
+    assert.match(byId.age.textContent, /^As of .+ \(just now\) · no card updates$/);
+    assert.equal(byId.summary.textContent, 'No summary (bad). The board above is still current.');
+  }
+});

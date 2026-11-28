@@ -5,7 +5,6 @@
   "18": "runner runner.js",
   "20": "test server.test.js",
   "22": "test avatar-state.test.js",
-  "29": "web server.js",
   "42": "verify verify.test.js",
   "47": "verify net.sh",
   "48": "verify profiles.sh",

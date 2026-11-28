@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const http = require('node:http');
+const { once } = require('node:events');
 const { createApp, makeLogin } = require('../server.js');
 const { handleCall } = require('../public/app.js');
 const { makeRedactor } = require('@rfactory/core/src/redact.js');
@@ -1149,4 +1151,191 @@ test('main() starts a GitHub scope with the fake MCP binary; a failing start-up 
   assert.match(String(failure.message), /missing tool/);
   assert.equal(fs.existsSync(failingPidFile), true, 'start-up reached the child');
   assert.ok(!String(failure.message).includes(token) && !written.includes(token));
+});
+
+const jiraCloudId = '11111111-2222-3333-4444-555555555555';
+const jiraToken = 'synthetic-web-jira-token';
+const jiraScope = (token_file) => ({
+  name: 'team-abc',
+  source: { kind: 'jira', cloud_id: jiraCloudId, project: 'ABC', email: 'rfactory-reader@example.com',
+    token_file, flagged_field: 'customfield_10021' },
+  mapping: { status: { 'Waiting for customer': 'blocked' } },
+  brain: { destination: 'rfactory-host' },
+  writes_enabled: false,
+});
+const jiraItems = [
+  { id: 'ABC-1', kind: 'issue', title: 'Done', state: 'done' },
+  { id: 'ABC-2', kind: 'issue', title: 'Title ' + SECRET, source_state: 'Status ' + SECRET, state: 'unknown' },
+];
+
+test('Jira standup: exact reply, redaction, and summary for complete, empty and truncated reads', async (t) => {
+  let result = { items: jiraItems, fetched_at: 'F', newest_update: 'N', truncated: false };
+  const calls = [];
+  const source = { kind: 'jira', snapshot: async (...args) => { calls.push(args); return result; } };
+  const get = await start(t, { source, scope: jiraScope(), redactor: makeRedactor([SECRET]) });
+  const post = { method: 'POST' };
+  const response = await get('/api/standup', post);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const summary = 'Jira project ABC: 1 done, 0 in progress, 0 blocked, 0 left, 1 unknown.';
+  const empty = 'Jira project ABC: 0 done, 0 in progress, 0 blocked, 0 left, 0 unknown.';
+  const cut = ' The project has more issues than were read.';
+  assert.deepEqual(Object.keys(body).sort(),
+    ['counts', 'destination', 'fetched_at', 'items', 'newest_update', 'summary', 'summary_error', 'truncated', 'unknown']);
+  assert.deepEqual(body.counts, { done: 1, in_progress: 0, blocked: 0, left: 0, unknown: 1 });
+  assert.deepEqual([body.summary, body.summary_error, body.destination, body.fetched_at, body.newest_update, body.truncated],
+    [summary, null, 'the server', 'F', 'N', false]);
+  assert.deepEqual(body.items[1], { ...jiraItems[1], title: 'Title [redacted]', source_state: 'Status [redacted]' });
+  assert.deepEqual(body.unknown, [body.items[1]]);
+  assert.ok(!JSON.stringify(body).includes(SECRET));
+  const different = await get('/api/standup?project=XYZ', { ...post, body: JSON.stringify({ project: 'XYZ' }) });
+  assert.deepEqual(await different.json(), body);
+  assert.deepEqual(calls, [[], []]);
+
+  for (const [items, truncated, expected] of [
+    [jiraItems, true, summary + cut],
+    [[], false, empty + ' No issues matched the search for non-Done issues or issues updated in the last 14 days. If you expected matches, check that the Jira account can see the project.'],
+    [[], true, empty + cut],
+  ]) {
+    result = { ...result, items, truncated };
+    const r = await get('/api/standup', post);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).summary, expected);
+  }
+});
+
+test('Jira standup maps source failures to fixed 502 error codes', async (t) => {
+  let message;
+  const source = { kind: 'jira', snapshot: async () => { throw new Error(message); } };
+  const get = await start(t, { source, scope: jiraScope(), redactor: makeRedactor([]) });
+  for (const [failure, code] of [
+    ['jira-http-401', 'source-auth'], ['jira-http-403', 'source-auth'], ['source-timeout', 'source-timeout'],
+    ['jira-http-429', 'source-error'], ['jira-paging', 'source-error'],
+  ]) {
+    message = failure;
+    const r = await get('/api/standup', { method: 'POST' });
+    assert.equal(r.status, 502);
+    assert.deepEqual(await r.json(), { error: code });
+  }
+});
+
+test('Jira app only permits member requests for static files, config and standup', async (t) => {
+  const calls = [];
+  const boom = () => { calls.push('unexpected dependency call'); throw new Error('touched'); };
+  const double = new Proxy({}, { get: () => boom });
+  const call = new Proxy({ config: { listen: 'audio', sttConfigured: true } },
+    { get: (target, key) => Object.hasOwn(target, key) ? target[key] : boom });
+  const get = await start(t, { source: { kind: 'jira', snapshot: boom }, call, actions: double,
+    shares: double, investigations: double, notes: double, profiles: { runner: double }, desktop: {}, scope: jiraScope() });
+  for (const [url, method = 'GET'] of [
+    ['/api/review'], ['/api/review/K-1'], ['/api/actions'], ['/api/actions/1/approve', 'POST'], ['/api/shares'],
+    ['/api/investigations'], ['/api/call', 'POST'], ['/api/call', 'DELETE'], ['/api/call/events'], ['/api/projects'],
+    ['/api/notes'], ['/api/profiles'], ['/p/x'], ['/api/nope'], ['/api/standup'], ['/api/config', 'POST'],
+    ['/desktop.html'], ['/live.html'], ['/live.js'], ['/', 'HEAD'],
+  ]) {
+    const r = await get(url, { method });
+    assert.equal(r.status, 404, method + ' ' + url);
+    if (method !== 'HEAD') assert.deepEqual(await r.json(), { error: 'not-found' });
+  }
+  for (const url of ['/', '/app.js', '/api/config']) assert.equal((await get(url)).status, 200, url);
+  assert.deepEqual(await (await get('/api/config')).json(), { commit: '', projects: false, source: 'jira' });
+  for (const url of ['/', '/api/nope']) {
+    assert.equal((await get(url, {}, 'x@example.com')).status, 403);
+    assert.equal((await get(url, {}, null)).status, 401);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('Jira credential environment names are refused regardless of case or word order', () => {
+  const { refuseJiraEnv, refuseKeyEnv } = require('../server.js');
+  for (const name of ['JIRA_API_TOKEN', 'ATLASSIAN_TOKEN', 'TOKEN_JIRA', 'rfactory_jira_key', 'secret_atlassian', 'jira_password']) {
+    const env = { [name]: jiraToken };
+    assert.throws(() => refuseJiraEnv(env), { message: 'key-in-environment' });
+    assert.doesNotThrow(() => refuseKeyEnv(env));
+  }
+  assert.doesNotThrow(() => refuseJiraEnv({ RFACTORY_SCOPE_FILE: '/tmp/scope', JIRA_PROJECT: 'ABC' }));
+});
+
+test('composeStandalone checks Jira switches and the token without starting or fetching', async () => {
+  const { composeStandalone } = require('../server.js');
+  const calls = [];
+  const source = { kind: 'jira', start: () => assert.fail('unexpected start'), snapshot: () => assert.fail('unexpected read') };
+  const scope = jiraScope();
+  const options = { scope, token: jiraToken, env: {}, createSource: (args) => { calls.push(args); return source; } };
+  for (const bad of [{ scope: { ...scope, shares_enabled: true } }, { scope: { ...scope, lookups_enabled: true } },
+    { env: { RFACTORY_CALLS: '1' } }, { env: { RFACTORY_DESKTOP: '1' } }]) {
+    await assert.rejects(composeStandalone({ ...options, ...bad }), { message: 'unsupported-scope' });
+  }
+  await assert.rejects(composeStandalone({ ...options, token: '' }), { message: 'jira-token-missing' });
+  assert.deepEqual(calls, []);
+  const fetcher = globalThis.fetch;
+  try {
+    globalThis.fetch = () => assert.fail('unexpected fetch');
+    assert.equal(await composeStandalone(options), source);
+    assert.deepEqual(calls, [{ scope, token: jiraToken }]);
+    assert.equal((await composeStandalone({ scope, token: jiraToken, env: {} })).kind, 'jira');
+  } finally { globalThis.fetch = fetcher; }
+});
+
+function jiraStartupFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-jira-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  const scope = jiraScope(tokenFile);
+  const scopeFile = path.join(dir, 'scope.json');
+  fs.writeFileSync(tokenFile, jiraToken + '\n', { mode: 0o600 });
+  fs.writeFileSync(scopeFile, JSON.stringify(scope));
+  return { scope, tokenFile, env: { NODE_PATH: process.env.NODE_PATH || '', RFACTORY_SCOPE_FILE: scopeFile, RFACTORY_ALLOWED_EMAILS: ME } };
+}
+
+test('main starts Jira on loopback and waits until a member requests a standup to fetch', async (t) => {
+  const { main } = require('../server.js');
+  const { env } = jiraStartupFixture(t);
+  const probe = http.createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+  const saved = process.env;
+  const realFetch = globalThis.fetch;
+  const urls = [];
+  let server;
+  try {
+    process.env = { ...env, PORT: String(port) };
+    globalThis.fetch = async (url) => { urls.push(url); throw new Error('Jira unreachable'); };
+    server = await main();
+    if (!server.listening) await once(server, 'listening');
+    assert.equal(server.address().address, '127.0.0.1');
+    assert.deepEqual(urls, []);
+    const post = (email) => realFetch('http://127.0.0.1:' + port + '/api/standup', {
+      method: 'POST', headers: { 'X-Forwarded-Email': email },
+    });
+    const result = await post(ME);
+    assert.equal(result.status, 502);
+    assert.deepEqual(await result.json(), { error: 'source-error' });
+    assert.equal((await post('x@example.com')).status, 403);
+    assert.deepEqual(urls.map((url) => url.origin + url.pathname),
+      ['https://api.atlassian.com/ex/jira/' + jiraCloudId + '/rest/api/3/search/jql']);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env = saved;
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('Jira startup exits with only a fixed code for bad token mode or credentials in the environment', (t) => {
+  const { env, scope, tokenFile } = jiraStartupFixture(t);
+  const base64 = Buffer.from(scope.source.email + ':' + jiraToken).toString('base64');
+  for (const [mode, extra, code] of [
+    [0o644, {}, 'jira-token-file-mode'],
+    [0o600, { JIRA_API_TOKEN: jiraToken }, 'key-in-environment'],
+  ]) {
+    fs.chmodSync(tokenFile, mode);
+    const result = spawnSync(process.execPath, [path.join(__dirname, '../server.js')],
+      { env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), 'rfactory-web: ' + code);
+    assert.equal(result.stdout, '');
+    assert.ok(!result.stderr.includes(jiraToken) && !result.stderr.includes(base64));
+  }
 });

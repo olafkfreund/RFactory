@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { STATES } = require('./items.js');
 const { makeRedactor } = require('./redact.js');
 const { toWhisperLanguage } = require('./stt-languages.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
@@ -21,6 +22,10 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
+  if (scope.source?.kind === 'jira' &&
+      [scope.writes_enabled, scope.lookups_enabled, scope.shares_enabled, scope.investigations_enabled, scope.notes_enabled].includes(true)) {
+    throw new Error('invalid-scope');
+  }
   if (Object.hasOwn(scope, 'avatar')) {
     const validId = (id) => typeof id === 'string' && !!portraits[id]?.anchors;
     if (!(scope.avatar === 'random' || validId(scope.avatar) ||
@@ -99,7 +104,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       (scope.source?.kind === 'github' &&
        (typeof scope.source.owner !== 'string' || !scope.source.owner ||
         typeof scope.source.repo !== 'string' || !scope.source.repo))) throw new Error('invalid-scope');
-  let key, githubToken;
+  let key, githubToken, jiraToken;
   const projectTokens = [];
   if (scope.source?.kind === 'cfactory') {
     const source = scope.source;
@@ -136,6 +141,30 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
         projectTokens.push(token);
       }
     }
+  } else if (scope.source?.kind === 'jira') {
+    const { cloud_id, project, email, token_file, flagged_field } = scope.source;
+    const mapping = scope.mapping;
+    const plain = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (typeof cloud_id !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cloud_id) ||
+        typeof project !== 'string' || !/^[A-Z][A-Z0-9_]{1,19}$/.test(project) ||
+        typeof email !== 'string' || !/^[^\s:@]+@[^\s:@]+$/.test(email) ||
+        typeof token_file !== 'string' || !path.isAbsolute(token_file) ||
+        (flagged_field !== undefined && (typeof flagged_field !== 'string' || !/^customfield_\d+$/.test(flagged_field)))) {
+      throw new Error('invalid-scope');
+    }
+    if (mapping !== undefined && (!plain(mapping) ||
+        (Object.hasOwn(mapping, 'status') && (!plain(mapping.status) ||
+         !Object.values(mapping.status).every((state) => STATES.includes(state)))))) throw new Error('invalid-scope');
+    try {
+      // A FIFO must not block startup before fstat can reject it.
+      const fd = fs.openSync(token_file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      try {
+        const file = fs.fstatSync(fd);
+        if (file.isFile() && (file.mode & 0o7777) === 0o600) jiraToken = fs.readFileSync(fd, 'utf8').trim();
+      } finally { fs.closeSync(fd); }
+    } catch { throw new Error('jira-token-file'); }
+    if (jiraToken === undefined) throw new Error('jira-token-file-mode');
+    if (!/^\S{8,}$/.test(jiraToken)) throw new Error('invalid-jira-token');
   } else {
     if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
     if (Object.hasOwn(scope.source, 'token_file')) {
@@ -153,6 +182,11 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
        !DESTINATIONS.has(scope.brain.destination))) throw new Error('invalid-scope');
   if (key) secrets.push(key);
   if (githubToken) { secrets.push(githubToken); extras.githubToken = githubToken; } // after the key: secrets[0] stays CFactory's
+  if (jiraToken) {
+    secrets.push(jiraToken);
+    secrets.push(Buffer.from(scope.source.email + ':' + jiraToken).toString('base64'));
+    extras.jiraToken = jiraToken;
+  }
   secrets.push(...projectTokens);
   if (agents) { for (const a of agents) secrets.push(a.key); extras.agents = agents; }
   return scope;

@@ -85,6 +85,49 @@ The token is a fine-grained, read-only token for that one repository. It sits in
 
 In this mode calls, the desktop, shares, lookups, changes and the review panel are off. The server refuses to start if calls, the desktop, shares, lookups or changes are switched on; the review panel has no switch and answers 404.
 
+### Jira
+
+RFactory can also show a read-only standup of one Jira Cloud project with no Factory running. Put this in a scope file (the `brain` block is required but unused here):
+
+```json
+{
+  "name": "team-abc",
+  "source": {
+    "kind": "jira",
+    "cloud_id": "11111111-2222-3333-4444-555555555555",
+    "project": "ABC",
+    "email": "rfactory-reader@example.com",
+    "token_file": "/run/rfactory/jira-token",
+    "flagged_field": "customfield_10021"
+  },
+  "mapping": { "status": { "Waiting for customer": "blocked" } },
+  "brain": { "destination": "rfactory-host" },
+  "writes_enabled": false
+}
+```
+
+Start `node web/server.js` with `RFACTORY_SCOPE_FILE` (that file), `RFACTORY_ALLOWED_EMAILS` and `PORT`. The server listens on `127.0.0.1` and trusts the `X-Forwarded-Email` header, so it must sit behind the identity proxy (`deploy/oauth2-proxy.yaml`).
+
+Use a dedicated Jira account with *Browse projects* on the one project only, and a scoped API token with a read scope only (if the token screen offers it) and an expiry date. Put the token in a file with mode `0600` and never in the environment; renewing it means replacing the file and restarting the server.
+
+Every signed-in member sees every issue that account can read in the project, including issues Jira would hide from that member.
+
+Status rules (first match wins):
+
+| Rule | Condition | State |
+|---|---|---|
+| J0 | the status name is not a non-empty string | `unknown` |
+| J1 | the status name is an own key of `mapping.status`, mapped to one of the five states | the mapped state |
+| J2 | category `done` | `done` |
+| J3 | category `new` or `indeterminate`, `flagged_field` set in the scope, and the issue's value for it is a non-empty array | `blocked` |
+| J4 | category `indeterminate` | `in_progress` |
+| J5 | category `new` | `left` |
+| J6 | anything else | `unknown` |
+
+`mapping.status` lets an admin override specific status names; Jira's `done` category includes statuses such as "Won't do", and flags are read only when `flagged_field` names the field.
+
+In this mode calls, the desktop, shares, lookups, changes, the review panel and links to Jira are off.
+
 ## How the bot hears
 
 During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
