@@ -48,9 +48,9 @@
     "semantic_hash": "030f7482daa62ad48c086dfaf6810dcc"
   },
   "bot/test/run.test.js": {
-    "mtime": 1795859303.9214625,
-    "seen": 1795859331.5718644,
-    "ast_hash": "e2df70b1e67226c3c14efbfccb1c2b18",
+    "mtime": 1795859899.932917,
+    "seen": 1795859953.650965,
+    "ast_hash": "3ca74a45c6a401c7e5378990926b1083",
     "semantic_hash": ""
   },
   "core/bench/ollama-standup.js": {
@@ -144,9 +144,9 @@
     "semantic_hash": ""
   },
   "core/src/redact.js": {
-    "mtime": 1795859185.47996,
-    "seen": 1795859331.5719388,
-    "ast_hash": "2d506d11e1c1e8ed446671042cacd177",
+    "mtime": 1795859983.4329367,
+    "seen": 1795860004.050894,
+    "ast_hash": "a1dc0e2edde9fcecf923258244fc0268",
     "semantic_hash": ""
   },
   "core/src/roles.js": {
@@ -294,9 +294,9 @@
     "semantic_hash": "d61efa4fa37775eea9d2ca89128dfbdd"
   },
   "core/test/redact.test.js": {
-    "mtime": 1795859206.3982253,
-    "seen": 1795859331.5720494,
-    "ast_hash": "7034fb5047e45344d07dae79d4871028",
+    "mtime": 1795859881.1069062,
+    "seen": 1795859953.651138,
+    "ast_hash": "957619a4ee84e7bbf506c005ae650178",
     "semantic_hash": ""
   },
   "core/test/roles.test.js": {
@@ -360,9 +360,9 @@
     "semantic_hash": "2514d375c6d86e5f406b07a0f569d8fa"
   },
   "deploy/pod.sh": {
-    "mtime": 1795859113.9280524,
-    "seen": 1795859331.5721033,
-    "ast_hash": "671c92f81e9d828612af1d056bbd6b67",
+    "mtime": 1795859983.4329367,
+    "seen": 1795860004.0510452,
+    "ast_hash": "68f9460500bc75ca937d9a5e977054d3",
     "semantic_hash": ""
   },
   "deploy/source-guard.sh": {
@@ -798,9 +798,9 @@
     "semantic_hash": ""
   },
   "web/call.js": {
-    "mtime": 1795859275.428101,
-    "seen": 1795859331.5723264,
-    "ast_hash": "2855e748729c29c119635ee122829a8e",
+    "mtime": 1795859843.0492258,
+    "seen": 1795859953.6513712,
+    "ast_hash": "dc631840016cc5f5aae6a60b8e63a623",
     "semantic_hash": ""
   },
   "web/desktop-routes.js": {
@@ -846,9 +846,9 @@
     "semantic_hash": "36944221dfef764c977a20fac5d25214"
   },
   "web/server.js": {
-    "mtime": 1795859185.47596,
-    "seen": 1795859331.5724952,
-    "ast_hash": "d0feb1daacb457d5e2af03e4352f8a30",
+    "mtime": 1795859843.0492258,
+    "seen": 1795859953.6515262,
+    "ast_hash": "1b2876e50115deeb80fb61a1c55b589f",
     "semantic_hash": ""
   },
   "web/share-desktop.js": {
@@ -882,9 +882,9 @@
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
-    "mtime": 1795859275.4301012,
-    "seen": 1795859331.5725207,
-    "ast_hash": "283099a0a48934e9d2f1009f76bb4747",
+    "mtime": 1795859926.7872446,
+    "seen": 1795859953.6515496,
+    "ast_hash": "b189d23dab0165c868c007a6b8a0cda1",
     "semantic_hash": ""
   },
   "web/test/containerfile.test.js": {
@@ -906,15 +906,15 @@
     "semantic_hash": "c3a943eb0f1256ade51d1416d1562c71"
   },
   "web/test/pod.test.js": {
-    "mtime": 1795859113.9440527,
-    "seen": 1795859331.5725365,
-    "ast_hash": "4b1a452d4909ec956e4e8e30fc6abc1f",
+    "mtime": 1795859983.4329367,
+    "seen": 1795860004.0514102,
+    "ast_hash": "53ba98d62735c882f2f57c05bf3f0cee",
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795859275.4291012,
-    "seen": 1795859331.5725389,
-    "ast_hash": "3ab3d9a717ea670eaf79a9bd90edffab",
+    "mtime": 1795859926.7862446,
+    "seen": 1795859953.6515665,
+    "ast_hash": "8fd0cbea805f2e65e2d761dbb4464415",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -954,9 +954,9 @@
     "semantic_hash": "8e843b587e1dd67de5ba96c127880da8"
   },
   "web/vm-call.js": {
-    "mtime": 1795785613.9922514,
-    "seen": 1795859331.572562,
-    "ast_hash": "d4148ea5514c97cbf295517b000da6b5",
+    "mtime": 1795859843.0482256,
+    "seen": 1795859953.6515887,
+    "ast_hash": "680e00426b5bf561397a857f9ba5c137",
     "semantic_hash": ""
   },
   "core/src/review.js": {
@@ -3204,9 +3204,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-26-1-zoom-guest-calls.md": {
-    "mtime": 1795859313.161575,
-    "seen": 1795859331.5729926,
-    "ast_hash": "9f207636ab1f5672969564b54d051339",
+    "mtime": 1795859934.074474,
+    "seen": 1795859953.6520448,
+    "ast_hash": "2f528ff7a46123975528b3c65c4f800f",
     "semantic_hash": ""
   },
   "spec/2026-11-26-1-zoom-guest-calls.md": {

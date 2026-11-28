@@ -115,5 +115,7 @@ None.
 
 ## Deviations
 
+- Step 1 validates ordinary Zoom invite links, but the call API returns `503 zoom-unavailable` before starting a worker until the lead enables `RFACTORY_ZOOM_CALLS=1` on a web instance configured with a desktop runner. Enable it after the verified Zoom probe hosts, runner image, and matching NetworkPolicy are deployed. Empty `?pwd=` is invalid. The call manager and VM spawn use the same platform classifier.
+- Step 1 redaction also covers mixed-case `pwd` keys, percent-encoded redirect URLs, and literal apostrophes in Zoom web-client URLs. Configured secrets and passcodes are matched against the original string so overlapping spans are fully redacted.
 - Step 4's probe and policy edits are deferred until the lead records two IPv4 addresses inside `zoom.cidrs` verified on TCP 443 from the cluster node. The local runner tests cover the current policy and probe list.
 - Step 7 is deferred pending the Step 6 join, speak, and clean Stop result and observed Zoom page text. Step 8's default decision is deferred until all four Slice 2 live results are recorded.

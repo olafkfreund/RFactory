@@ -261,9 +261,20 @@ test('call routes: 401/403, link validation, 409, DELETE', async (t) => {
   assert.deepEqual(call.stopped, ['requested']);
 });
 
-test('call routes accept only ordinary Zoom invite links', async (t) => {
+test('call routes refuse valid Zoom invites before starting a call when Zoom is disabled', async (t) => {
   const call = fakeCall();
   const get = await start(t, { source, brain: fakeBrain, call });
+  for (const link of ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/wc/join/123456789?pwd=dummy']) {
+    const response = await post(get, { link });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'zoom-unavailable' });
+  }
+  assert.deepEqual(call.started, []);
+});
+
+test('call routes accept only ordinary Zoom invite links when Zoom is enabled', async (t) => {
+  const call = fakeCall();
+  const get = await start(t, { source, brain: fakeBrain, call, zoomEnabled: true });
   const links = ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/j/1234567890/?pwd=dummy%2Bpass',
     'https://zoom.us/wc/join/12345678901?pwd=dummy', 'https://us02web.zoom.us/wc/join/123456789'];
   for (const link of links) {
@@ -275,7 +286,7 @@ test('call routes accept only ordinary Zoom invite links', async (t) => {
     'https://zoom.us/wc/join/123456789012', 'https://zoom.us:444/j/123456789', 'https://zoom.us:443/j/123456789',
     'https://guest:pass@zoom.us/j/123456789', 'https://zoom.us/j/123456789#fragment',
     'https://zoom.us/j/123456789?pwd=dummy&other=1', 'https://zoom.us/j/123456789?pwd=x&pwd=y',
-    'https://zoom.us/j/123456789?%70wd=dummy', 'https://zoom.us/j/123456789?other=1']) {
+    'https://zoom.us/j/123456789?pwd=', 'https://zoom.us/j/123456789?%70wd=dummy', 'https://zoom.us/j/123456789?other=1']) {
     assert.equal((await post(get, { link })).status, 400, link);
   }
   assert.deepEqual(call.started, links);

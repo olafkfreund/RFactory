@@ -34,7 +34,7 @@ function fakeClock() {
   };
 }
 
-function setup({ brainTurn, ttsSay, sourceSnapshot, sourceStandup, tts, maleTts, avatar, random, desktop, stt, listen, language, sttUrl, sttSecretFile, extra } = {}) {
+function setup({ create = createCallManager, brainTurn, ttsSay, sourceSnapshot, sourceStandup, tts, maleTts, avatar, random, desktop, stt, listen, language, sttUrl, sttSecretFile, extra } = {}) {
   const clock = fakeClock();
   const children = [], events = [], kills = [], spoken = [], spawnOptions = [];
   const snapshot = { items: [{ id: 'FCT-1', state: 'blocked', title: 'Blocked' }], fetched_at: 'today', newest_update: 'today' };
@@ -56,7 +56,7 @@ function setup({ brainTurn, ttsSay, sourceSnapshot, sourceStandup, tts, maleTts,
   };
   const originalKill = process.kill;
   process.kill = (pid, signal) => { kills.push([pid, signal]); };
-  const manager = createCallManager({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot), standupData: sourceStandup || (async () => standup) },
+  const manager = create({ spawn: child, source: { snapshot: sourceSnapshot || (async () => snapshot), standupData: sourceStandup || (async () => standup) },
     brain: { turn: brainTurn || (async () => ({ text: 'FCT-1 is blocked.' })) },
     tts: tts || { voice: 'espeak-ng', say: ttsSay || (async (s) => Buffer.from(s)) },
     maleTts, avatar, random, redactor: makeRedactor([]), clock, quietMs: 1500, botCmd: ['fake-bot'], desktop, stt, listen, language, sttUrl, sttSecretFile, ...extra });
@@ -443,9 +443,13 @@ test('a failed Zoom join cannot expose the invite passcode in the web call log',
     await f.manager.start(link, { listen: 'platform' });
     const child = f.children[0];
     child.output({ type: 'log', message: `join failed: Could not open ${link}` });
+    child.output({ type: 'log', message: `redirect: https://zoom.us/signin?from=${encodeURIComponent(link)}` });
+    child.output({ type: 'log', message: `client: https://app.zoom.us/wc/join/123456789?pwd='${passcode}` });
     child.output({ type: 'join-failure', code: 'auth-required', reason: 'other', attempt: 1, of: 3, retrying: false });
     const logs = f.events.filter((e) => e.type === 'log').map((e) => e.message);
     assert.ok(logs.includes('join failed: Could not open https://us02web.zoom.us/j/123456789?pwd=[redacted]'));
+    assert.ok(logs.includes('redirect: https://zoom.us/signin?from=https%3A%2F%2Fus02web.zoom.us%2Fj%2F123456789%3Fpwd%3D[redacted]'));
+    assert.ok(logs.includes('client: https://app.zoom.us/wc/join/123456789?pwd=[redacted]'));
     assert.ok(logs.every((line) => !line.includes(passcode)));
     const stopping = f.manager.stop(); child.close(); await stopping;
   } finally { f.restore(); }
@@ -470,9 +474,32 @@ test('Zoom captions mode forwards notice failure and ignores own-transcription h
     child.output({ type: 'hearing', state: 'notice-failed' });
     child.output({ type: 'hearing', state: 'own' });
     child.output({ type: 'hearing', state: 'no-audio' });
+    assert.deepEqual(f.events.filter((e) => e.type === 'hearing'), [
+      { type: 'hearing', state: 'captions', notConfigured: true },
+      { type: 'hearing', state: 'notice-failed', listen: 'platform' },
+    ]);
     assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'),
       { type: 'hearing', state: 'notice-failed', listen: 'platform' });
     const stopping = f.manager.stop(); child.close(); await stopping;
+  } finally { f.restore(); }
+});
+
+test('auto hearing sends Zoom invite hosts to resolveListen as Zoom', async (t) => {
+  const scope = require('../../core/src/scope.js');
+  const resolveListen = t.mock.method(scope, 'resolveListen');
+  const file = require.resolve('../call.js');
+  const cached = require.cache[file];
+  delete require.cache[file];
+  let create;
+  try { create = require(file).createCallManager; } finally { require.cache[file] = cached; }
+  const f = setup({ create, listen: 'auto' });
+  try {
+    for (const link of ['https://zoom.us/j/123456789', 'https://us02web.zoom.us/wc/join/123456789']) {
+      await f.manager.start(link);
+      const stopping = f.manager.stop(); f.children.at(-1).close(); await stopping;
+    }
+    assert.deepEqual(resolveListen.mock.calls.map(({ arguments: [options] }) => options),
+      [{ listen: 'auto', platform: 'zoom', sttConfigured: false }, { listen: 'auto', platform: 'zoom', sttConfigured: false }]);
   } finally { f.restore(); }
 });
 

@@ -77,6 +77,15 @@ test('pod.sh with RFACTORY_DESKTOP refuses missing or loose runner files and a m
   assert.notEqual(run({ ...env, RFACTORY_DESKTOP: 'yes' }, { runnerFiles: true }).status, 0); // the web enables desktop only with 1
 });
 
+test('pod.sh forwards Zoom opt-in only with desktop VM calls', () => {
+  const desktop = { RFACTORY_DESKTOP: '1', RFACTORY_RUNNER_URL: 'https://x:1' };
+  const zoom = { RFACTORY_ZOOM_CALLS: '1' };
+  const options = { runnerFiles: true };
+  assert.doesNotMatch(run(desktop, options).web, /RFACTORY_ZOOM_CALLS/);
+  assert.doesNotMatch(run(zoom, options).web, /RFACTORY_ZOOM_CALLS/);
+  assert.match(run({ ...desktop, ...zoom }, options).web, /-e RFACTORY_ZOOM_CALLS=1/);
+});
+
 test('pod.sh forwards RFACTORY_SHARES and mounts the record when writes are off; refuses other values', () => {
   const off = run({ RFACTORY_WRITES: 'off', RFACTORY_SHARES: 'on' });
   assert.equal(off.status, 0);

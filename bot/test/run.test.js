@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { runInNewContext } = require('node:vm');
 const { run } = require('../run.js');
+const { ZOOM } = require('../node_modules/@vibeconferencing/calls/providers/zoom-selectors.js');
 
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 const SECRET = 'ghp_' + 'a'.repeat(36);
@@ -670,12 +671,14 @@ test('page report uses last real page, caps and redacts text; audio never reads 
 
 test('failed Zoom join redacts the invite passcode in both the error and page report', async () => {
   const passcode = 'dummy-zoom-passcode';
-  const link = `https://zoom.us/j/123456789?pwd=${passcode}`;
-  const pages = [{ url: () => link, evaluate: async () => `Could not open ${link}` }];
-  const s = setup({ pages, join: async () => { throw joinError('auth-required', `Could not open ${link}`); } });
+  const link = `https://zoom.us/j/123456789?pwd=%27${passcode}`;
+  const rewritten = ZOOM.webClientJoinUrl(link);
+  const redirect = 'https://zoom.us/signin?from=' + encodeURIComponent(link);
+  const pages = [{ url: () => redirect, evaluate: async () => `Could not open ${redirect}` }];
+  const s = setup({ pages, join: async () => { throw joinError('auth-required', `Could not open ${rewritten}`); } });
   s.stdin.write(`${link}\n`);
   assert.equal(await s.done, 1);
-  assert.match(s.logs(), /join failed: .*\?pwd=\[redacted\].*page: .*\?pwd=\[redacted\]/);
+  assert.match(s.logs(), /join failed: .*\/wc\/join\/123456789\?pwd=\[redacted\] page: ".*%3Fpwd%3D\[redacted\]"/);
   assert.ok(!JSON.stringify(s.out).includes(passcode));
 });
 
@@ -1017,17 +1020,25 @@ test('audio leave during join discards the bridge without starting the tap', asy
 });
 
 
-test('Zoom Leave and End controls prevent a false removal when the page says rejoin', async () => {
-  for (const label of ['leave', 'end']) {
+test('Zoom rejoin text only signals removal when the Leave and End controls are absent', async () => {
+  for (const label of ['leave', 'end', null]) {
+    const results = [];
     const document = { body: { innerText: 'Can you rejoin?' },
       querySelector: (selectors) => selectors.toLowerCase().split(', ').includes(`button[aria-label="${label}" i]`) ? {} : null };
-    const page = { evaluate: async (fn) => fn.name === 'pageLeft' && runInNewContext(`(${fn})()`, { document }) };
+    const page = { evaluate: async (fn) => {
+      if (fn.name !== 'pageLeft') return false;
+      const left = runInNewContext(`(${fn})()`, { document });
+      results.push(left);
+      return left;
+    } };
     const s = setup({ page, platform: 'zoom' });
     s.stdin.write('https://zoom.us/j/123456789\n');
-    await tick();
-    await s.timers.find((timer) => timer.ms === 4000 && !timer.cleared).fn();
-    assert.equal(s.states().at(-1), 'in-call', label);
-    s.stdin.end(); await s.done;
+    try {
+      await tick();
+      await s.timers.find((timer) => timer.ms === 4000 && !timer.cleared).fn();
+      assert.deepStrictEqual(results, [label === null]);
+      assert.equal(s.states().at(-1), label ? 'in-call' : 'removed', label);
+    } finally { s.stdin.end(); await s.done; }
   }
 });
 

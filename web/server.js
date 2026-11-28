@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
 const { createReads, refusal, describe, CARD_KEY } = require('./reads.js');
+const { createVmSpawn, platformOf } = require('./vm-call.js');
 
 const PUBLIC = path.join(__dirname, 'public');
 const STATIC = {
@@ -45,7 +46,7 @@ function validLink(link) {
   if (u.protocol !== 'https:' || u.port || u.username || u.password || u.hash || link !== u.href) return false;
   if (u.host === 'meet.google.com') return !u.search && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(u.pathname);
   if (u.host === 'zoom.us' || /^[a-z0-9-]+\.zoom\.us$/.test(u.host)) {
-    return /^\/(?:j|wc\/join)\/\d{9,11}\/?$/.test(u.pathname) && /^(?:\?pwd=[^&]*)?$/.test(u.search);
+    return /^\/(?:j|wc\/join)\/\d{9,11}\/?$/.test(u.pathname) && /^(?:\?pwd=[^&]+)?$/.test(u.search);
   }
   return (u.host === 'teams.microsoft.com' && /^\/l\/meetup-join\/[^/]+(\/[^/]*)*$/.test(u.pathname))
     || (u.host === 'teams.live.com' && /^\/meet\/[0-9A-Za-z]+\/?$/.test(u.pathname))
@@ -79,7 +80,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
+function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, zoomEnabled = false, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
   const jira = source.kind === 'jira';
   const files = jira ? STATIC : { ...STATIC, ...LIVE_STATIC, ...(desktop ? DESKTOP_STATIC : {}) };
@@ -297,6 +298,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
+          if (!zoomEnabled && platformOf(body.link) === 'zoom') return json(res, 503, { error: 'zoom-unavailable' });
           if (slot.starting || call.running) return json(res, 409, { error: 'busy' });
           let started;
           if (allowed) {
@@ -527,13 +529,13 @@ async function main() {
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, notes, desktop,
       ...(lookup ? { ...lookup, scope, record } : {}),
-      ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
+      ...(runner ? { runner, spawn: createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   const commit = process.env.RFACTORY_COMMIT || '';
   const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
   console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
   return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
-    commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
+    commit, slot, zoomEnabled: Boolean(runner) && process.env.RFACTORY_ZOOM_CALLS === '1' }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 
 // The stored preview login goes through the runner's own login route; a 200 {ok:false} (the guest's fill failed) is a failure too.

@@ -4,6 +4,7 @@ const { spawn: nodeSpawn } = require('node:child_process');
 const fs = require('node:fs');
 const { createHearing, SELF_NAMES } = require('../core/src/call/hearing.js');
 const { resolveListen } = require('../core/src/scope.js');
+const { platformOf } = require('./vm-call.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts, checkFactsDetailed } = require('@rfactory/core/src/facts.js');
@@ -578,8 +579,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
 
   async function start(link, { listen: override, binding = null, view = null } = {}) {
     if (call) throw new Error('busy');
-    const platform = link.startsWith('https://meet.google.com/') ? 'meet'
-      : /^https:\/\/(?:[a-z0-9-]+\.)*zoom\.us\//.test(link) ? 'zoom' : 'teams';
+    const platform = platformOf(link) ?? 'teams';
     const selected = resolveListen({ listen: override === undefined ? listen : override, platform, sttConfigured });
     const whisperLanguage = toWhisperLanguage(language);
     if (!whisperLanguage) throw new Error('unsupported-language');

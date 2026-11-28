@@ -8,6 +8,7 @@
 # and the Claude login home in $RFACTORY_CLAUDE_HOME (default ~/.local/share/rfactory/claude-home).
 # Desktop VMs (#3) only when RFACTORY_DESKTOP=1: also RFACTORY_RUNNER_URL and the runner's mTLS client files in
 # $RFACTORY_CONFIG/desktop-runner/ (client.crt, client.key, ca.crt; mode 600, mounted read-only, never printed);
+# RFACTORY_ZOOM_CALLS=1 enables Zoom with a desktop runner after its verified probes and matching policy are deployed.
 # RFACTORY_BRAIN_RECORD is passed on only when set. With RFACTORY_DESKTOP unset the pod is as before.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -111,6 +112,7 @@ up() {
       -e RFACTORY_RUNNER_CA=/run/rfactory/desktop-runner/ca.crt
       -v "$d/client.crt:/run/rfactory/desktop-runner/client.crt:ro,Z" -v "$d/client.key:/run/rfactory/desktop-runner/client.key:ro,Z"
       -v "$d/ca.crt:/run/rfactory/desktop-runner/ca.crt:ro,Z")
+    [ "${RFACTORY_ZOOM_CALLS:-}" != 1 ] || desktop+=(-e RFACTORY_ZOOM_CALLS=1)
     # verify only: the record lives in a host directory mounted at the same path, so the scripts can read it
     [ -z "${RFACTORY_BRAIN_RECORD:-}" ] || desktop+=(-e RFACTORY_BRAIN_RECORD="$RFACTORY_BRAIN_RECORD"
       -v "$(dirname "$RFACTORY_BRAIN_RECORD"):$(dirname "$RFACTORY_BRAIN_RECORD"):U,Z")

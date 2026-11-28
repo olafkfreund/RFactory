@@ -19,6 +19,29 @@ test('Zoom invite passcodes are redacted without swallowing neighboring paramete
     `${invite}?pwd=[redacted]\n  [redacted]&other=1`);
 });
 
+test('Zoom passcodes redact in rewritten URLs, mixed-case keys, and encoded redirects', () => {
+  const redactor = makeRedactor([]);
+  for (const [prefix, passcode, suffix] of [
+    ['https://app.zoom.us/wc/join/123456789?pwd=', "'dummy'code%26tail", '&other=1'],
+    ['https://zoom.us/j/123456789?PWD=', 'dummy', '#fragment'],
+    ['https://zoom.us/signin?from=https%3A%2F%2Fzoom.us%2Fj%2F123456789%3fPwd%3d', 'dummy%2526code', '%26other%3D1&next=2'],
+    ['https://zoom.us/signin?from=https%3A%2F%2Fzoom.us%2Fj%2F123456789%3Fother%3D1%26pwd%3D', 'dummy', '&next=2'],
+  ]) {
+    for (const redact of [redactor.toModel, redactor.logSafe, redactor.logSafeWindow]) {
+      assert.equal(redact(prefix + passcode + suffix), prefix + '[redacted]' + suffix);
+    }
+  }
+});
+
+test('configured secrets and overlapping Zoom passcodes are both fully redacted', () => {
+  const secret = 'private-prefix?pwd=value';
+  const redactor = makeRedactor([secret]);
+  for (const redact of [redactor.toModel, redactor.logSafe, redactor.logSafeWindow]) {
+    assert.equal(redact(secret), '[redacted]');
+    assert.equal(redact(secret + '-tail&other=1'), '[redacted]&other=1');
+  }
+});
+
 test('log window redacts credentials split across lines and keeps ordinary output', () => {
   const { logSafeWindow } = makeRedactor([]);
   const lines = ['1 test passed', 'AKIA12345678', '90ABCDEF', '-----BEGIN RSA PRIVATE KEY-----',

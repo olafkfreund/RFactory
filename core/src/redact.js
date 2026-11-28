@@ -9,7 +9,10 @@ const PATTERNS = [
   /\b(acw|cfk|rfk)_[A-Za-z0-9]{16,}/g,
 ];
 const KEY_VALUE = /(authorization|x-api-key|api[_-]?key|token|password)(\s*[:=]\s*)("[^"]+"|'[^']+'|\S+)/gi;
-const PWD_QUERY = /([?&]pwd=)[^&\s"'<>]+/g;
+const PWD_QUERIES = [
+  /([?&]pwd=)[^&#\s"<>]+/gi, // the Zoom web client can leave apostrophes literal
+  /((?:%3f|%26)pwd%3d)(?:(?!%26)[^&#\s"<>])+/gi, // an invite nested in an encoded redirect parameter
+];
 const KEY_VALUE_WINDOW = /(authorization|x-api-key|api[_-]?key|token|password)([ \t]*(?:\r?\n[ \t]*)?[:=][ \t]*|[ \t]*[:=][ \t]*(?:\r?\n[ \t]*)?)(?=\S)/gi;
 const BEARER = /bearer\s+[A-Za-z0-9._~+\/=-]{16,}/gi;
 const BEARER_WINDOW = /bearer(?:[ \t]+|[ \t]*\r?\n[ \t]*)[A-Za-z0-9._~+\/=-]{16,}/gi;
@@ -150,6 +153,14 @@ function keyValueMatch(text, match, limit) {
   if (end === start) while (end < text.length && !space(text.charCodeAt(end))) end++;
   return { match: [match.index, end], value: [start, end] };
 }
+function* pwdSpans(text) {
+  for (const pattern of PWD_QUERIES) {
+    for (const { 0: query, 1: prefix, index } of text.matchAll(pattern)) {
+      yield { match: [index, index + query.length], value: [index + prefix.length, index + query.length] };
+    }
+  }
+}
+
 function keyValueSpans(text, limit) {
   const found = [];
   KEY_VALUE_WINDOW.lastIndex = 0;
@@ -160,11 +171,19 @@ function keyValueSpans(text, limit) {
     found.push(one);
     KEY_VALUE_WINDOW.lastIndex = one.match[1];
   }
-  for (const { 0: query, 1: prefix, index } of text.matchAll(PWD_QUERY)) {
-    const end = index + query.length;
-    found.push({ match: [index, end], value: [index + prefix.length, end] });
-  }
+  for (const one of pwdSpans(text)) found.push(one);
   return found;
+}
+
+function mergeSpans(spans) {
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
 }
 // the KEY_VALUE_WINDOW match starting exactly at `at`, or null
 function keyValueAt(text, at, limit) {
@@ -178,8 +197,21 @@ function makeRedactor(secrets) {
   const values = [...secrets].sort((a, b) => b.length - a.length);
 
   function redactString(input) {
-    let result = input.replace(PWD_QUERY, '$1[redacted]');
-    for (const secret of values) result = result.split(secret).join('[redacted]');
+    let result = input;
+    const spans = Array.from(pwdSpans(input), ({ value }) => value);
+    if (spans.length) {
+      // Match both against the original string so an overlap cannot hide part of either credential.
+      for (const secret of values) for (const span of occurrences(input, secret)) spans.push(span);
+      let cursor = 0;
+      result = '';
+      for (const [start, end] of mergeSpans(spans)) {
+        result += input.slice(cursor, start) + '[redacted]';
+        cursor = end;
+      }
+      result += input.slice(cursor);
+    } else {
+      for (const secret of values) result = result.split(secret).join('[redacted]');
+    }
     for (const pattern of PATTERNS) result = result.replace(pattern, '[redacted]');
     result = redactLegacyPem(result);
     // bearer first: otherwise "authorization: Bearer <tok>" redacts only the word "Bearer" (plan D7)
@@ -365,13 +397,7 @@ function makeRedactor(secrets) {
       add(offsets[i + 1] + indent, end);
       if (end === offsets[i + 1] + next.length) ends.add(end);
     }
-    spans.sort((a, b) => a[0] - b[0]);
-    const merged = [];
-    for (const [start, end] of spans) {
-      const last = merged[merged.length - 1];
-      if (last && start <= last[1]) last[1] = Math.max(last[1], end);
-      else merged.push([start, end]);
-    }
+    const merged = mergeSpans(spans);
     let lineStart = 0;
     let spanIndex = 0;
     return lines.map((line) => {
