@@ -347,6 +347,12 @@ test('lookup turn without cost or model reports null', async (t) => {
   assert.deepEqual(await s.brain.turn(snapshot, { deadline: 90000, lookup }), { text: 'ok', cost: null, model: null });
 });
 
+test('lookup turn uses a selected Claude model only when supplied', async (t) => {
+  const s = lookupBrain(t, { stdout: success });
+  await s.brain.turn(snapshot, { deadline: 90000, lookup, model: 'claude-sonnet-4-6' });
+  assert.deepEqual(s.calls[1].args.slice(-2), ['--model', 'claude-sonnet-4-6']);
+});
+
 test('lookup timeout is the time left minus 3 s, with no 40 s clamp', async (t) => {
   const s = lookupBrain(t, { hang: true });
   const original = global.setTimeout;

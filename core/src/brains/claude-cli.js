@@ -72,7 +72,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
   }
 
   // #51: one answer with read-only MCP lookups; the endpoint behind lookup.url enforces the tools and the scope
-  async function lookupTurn(cwd, prompt, { deadline, lookup, signal }) {
+  async function lookupTurn(cwd, prompt, { deadline, lookup, signal, model }) {
     const config = path.join(cwd, 'mcp.json');
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { rfactory: {
       type: 'http', url: lookup.url, headers: { Authorization: `Bearer ${lookup.token}` },
@@ -82,7 +82,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     const args = [...ARGV.slice(0, -1), LOOKUP_SYSTEM_PROMPT, '--mcp-config', config,
       '--allowedTools', lookup.tools.map((name) => `mcp__rfactory__${name}`).join(','),
       '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
-      '--max-budget-usd', String(lookup.budgetUsd)];
+      '--max-budget-usd', String(lookup.budgetUsd), ...(model ? ['--model', model] : [])];
     // the CLI exits 1 with its JSON on stdout when it stops on budget or an API failure
     const { stdout, failed } = await run(args, { cwd, input: prompt, timeout, signal }).catch((error) => {
       if (error.stdout === undefined) throw error;
@@ -110,7 +110,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
     }
   }
 
-  async function answerTurn(snapshot, { deadline = clock() + 55000, question, lookup, signal }) {
+  async function answerTurn(snapshot, { deadline = clock() + 55000, question, lookup, signal, model }) {
     await checkDestination(deadline, lookup && signal);
 
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rfactory-claude-'));
@@ -119,7 +119,7 @@ function createClaudeBrain(scope, redactor, { spawn = nodeSpawn, clock = Date.no
       const prompt = JSON.stringify({ ...safe, items: (safe.items || []).map(({ title, evidence, source_state, assignees, ...item }) => ({
         ...item, content: { untrusted: true, text: JSON.stringify({ title, evidence, source_state, assignees }) },
       })), ...(question === undefined ? {} : { question: { content: { untrusted: true, text: redactor.toModel(question) } } }) });
-      if (lookup) return await lookupTurn(cwd, prompt, { deadline, lookup, signal });
+      if (lookup) return await lookupTurn(cwd, prompt, { deadline, lookup, signal, model });
       const timeout = Math.min(40000, deadline - clock() - 2000);
       if (timeout <= 0) throw new Error('brain-timeout');
       const { stdout, stderr } = await run(question === undefined ? ARGV : [...ARGV.slice(0, -1), QA_SYSTEM_PROMPT],

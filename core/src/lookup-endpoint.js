@@ -6,6 +6,7 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 const refused = (text = 'lookup-refused') => ({ isError: true, content: [{ type: 'text', text }] });
+const LOOKUP_LIMIT = 8;
 function createLookupEndpoint({ lookups }) {
   const contexts = new Map();
   const sockets = new Map();
@@ -19,6 +20,15 @@ function createLookupEndpoint({ lookups }) {
     }
     return null;
   }
+  function toolsFor(ctx) {
+    return !ctx || ctx.signal.aborted ? [] : lookups.tools(ctx).filter((x) => ctx.tools.includes(x.name));
+  }
+  async function invoke(ctx, name, args) {
+    if (!ctx || ctx.controller.signal.aborted || !ctx.tools.includes(name)) return { error: 'lookup-refused' };
+    if (ctx.rounds >= LOOKUP_LIMIT) { ctx.roundLimited = true; return { error: 'round-limit' }; }
+    ctx.rounds++;
+    return lookups.call(ctx, name, args);
+  }
   return {
     async start() {
       server = http.createServer(async (req, res) => {
@@ -27,12 +37,9 @@ function createLookupEndpoint({ lookups }) {
         const [token, ctx] = found;
         sockets.get(token).add(req.socket);
         const mcp = new Server({ name: 'rfactory', version: '1' }, { capabilities: { tools: {} } });
-        mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: lookups.tools(ctx).filter((x) => ctx.tools.includes(x.name)) }));
+        mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolsFor(ctx) }));
         mcp.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-          if (ctx.controller.signal.aborted || !ctx.tools.includes(params.name)) return refused(); // revoked mid-request
-          if (ctx.rounds >= 8) { ctx.roundLimited = true; return refused('round-limit'); }
-          ctx.rounds++;
-          const result = await lookups.call(ctx, params.name, params.arguments || {});
+          const result = await invoke(ctx, params.name, params.arguments || {});
           return result.error ? refused(result.error) : { content: [{ type: 'text', text: JSON.stringify(result) }] };
         });
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -49,6 +56,9 @@ function createLookupEndpoint({ lookups }) {
       sockets.set(token, new Set());
       return token;
     },
+    toolsFor: (token) => toolsFor(contexts.get(token)),
+    call: (token, name, args) => invoke(contexts.get(token), name, args),
+    remaining: (token) => LOOKUP_LIMIT - (contexts.get(token)?.rounds ?? LOOKUP_LIMIT),
     revoke(token) {
       const ctx = contexts.get(token);
       if (!ctx) return;
@@ -63,4 +73,4 @@ function createLookupEndpoint({ lookups }) {
     },
   };
 }
-module.exports = { createLookupEndpoint };
+module.exports = { createLookupEndpoint, LOOKUP_LIMIT };

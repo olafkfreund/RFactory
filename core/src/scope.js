@@ -4,11 +4,31 @@ const path = require('node:path');
 const { STATES } = require('./items.js');
 const { makeRedactor } = require('./redact.js');
 const { toWhisperLanguage } = require('./stt-languages.js');
+const { checkOpenAiDestination, checkClaudeModel } = require('./brains/destination.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const DESTINATIONS = new Set(['third-party', 'rfactory-host', 'other-machine']);
 const LISTEN = new Set(['auto', 'platform', 'audio']);
 const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
+const CLAUDE = Object.freeze({ provider: 'anthropic', model: 'default' });
+
+function projectProviders(scope, projectId) {
+  return scope?.projects?.allow.find((project) => project.id === projectId)?.providers ?? [CLAUDE];
+}
+
+function openAiKey(file) {
+  let key;
+  try {
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (stat.isFile() && (stat.mode & 0o7777) === 0o600) key = fs.readFileSync(fd, 'utf8').trim();
+    } finally { fs.closeSync(fd); }
+  } catch { throw new Error('openai-key-file'); }
+  if (key === undefined) throw new Error('openai-key-file-mode');
+  if (!/^sk-[A-Za-z0-9_-]{16,}$/.test(key)) throw new Error('invalid-openai-key');
+  return key;
+}
 
 // auto: Meet keeps its captions, the other platforms use own transcription when it is configured.
 function resolveListen({ listen = 'auto', platform, sttConfigured }) {
@@ -51,16 +71,39 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
   const budget = scope.lookup_budget_usd;
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
+  const providerKeys = new Map();
   if (Object.hasOwn(scope, 'projects')) {
     if (scope.source?.kind !== 'cfactory') throw new Error('invalid-projects'); // projects come from CFactory
     const onlyKey = (o, key) => !!o && Object.keys(o).sort().join() === key.split(',').sort().join();
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
-        !allow.every((p) => (onlyKey(p, 'id') || onlyKey(p, 'id,github_read')) && typeof p.id === 'string' &&
+        !allow.every((p) => p && !Array.isArray(p) && Object.keys(p).every((key) => ['id', 'github_read', 'providers'].includes(key)) && typeof p.id === 'string' &&
           /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
         new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
     const seen = new Set();
     for (const p of allow) {
+      if (Object.hasOwn(p, 'providers')) {
+        if (scope.lookups_enabled !== true || scope.brain?.kind !== 'claude-cli' || !Array.isArray(p.providers) ||
+            !p.providers.length || p.providers.length > 10) throw new Error('invalid-providers');
+        const choices = new Set();
+        for (const config of p.providers) {
+          const id = `${config?.provider}:${config?.model}`;
+          if (choices.has(id)) throw new Error('invalid-providers');
+          choices.add(id);
+          if (config?.provider === CLAUDE.provider) {
+            if (!onlyKey(config, config.model === CLAUDE.model ? 'provider,model' : 'provider,model,approved_hash')) throw new Error('invalid-providers');
+            checkClaudeModel(config);
+            continue;
+          }
+          if (!onlyKey(config, 'provider,model,base_url,approved_hash,key_file,input_usd_per_million,output_usd_per_million') ||
+              config.provider !== 'openai' || typeof config.key_file !== 'string' || !path.isAbsolute(config.key_file) ||
+              ![config.input_usd_per_million, config.output_usd_per_million].every((price) => Number.isFinite(price) && price > 0 && price <= 10000)) throw new Error('invalid-providers');
+          checkOpenAiDestination(config, env);
+        }
+        for (const config of p.providers) {
+          if (config.provider === 'openai' && !providerKeys.has(config.key_file)) providerKeys.set(config.key_file, openAiKey(config.key_file));
+        }
+      }
       if (!Object.hasOwn(p, 'github_read')) continue;
       const reads = p.github_read;
       if (!Array.isArray(reads) || reads.length < 1 || reads.length > 20) throw new Error('invalid-projects');
@@ -189,7 +232,8 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   }
   secrets.push(...projectTokens);
   if (agents) { for (const a of agents) secrets.push(a.key); extras.agents = agents; }
+  if (providerKeys.size) { secrets.push(...providerKeys.values()); extras.openAiKeys = providerKeys; }
   return scope;
 }
 
-module.exports = { loadScope, resolveListen };
+module.exports = { loadScope, resolveListen, projectProviders, CLAUDE };

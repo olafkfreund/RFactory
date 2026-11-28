@@ -624,6 +624,41 @@ async function projectApp(t, { callOptions, ...opts } = {}) {
   return { w, get, reply, begin, hang, stop };
 }
 
+test('call start rejects out-of-project models before dispatch and only publishes safe choices', async (t) => {
+  const openAi = { provider: 'openai', model: 'gpt-5-mini' };
+  const claude = { provider: 'anthropic', model: 'default' };
+  const scope = { ...scope52, lookups_enabled: true, projects: { allow: [
+    { id: ALPHA, providers: [claude, { ...openAi, key_file: '/private/openai', base_url: 'https://api.openai.com/v1', approved_hash: 'private-approval' }] },
+    { id: BETA },
+  ] } };
+  const dispatched = [];
+  const f = await projectApp(t, { scope, callOptions: { scope, quietMs: 0, lookups: {},
+    lookupsFor: () => ({ lookups: {}, githubs: [] }), project: {},
+    endpoint: { register: () => 'token', revoke() {}, toolsFor: () => [] }, record: { append: async () => {} },
+    openAi: async ({ provider }, _snapshot, { question }) => { dispatched.push([provider, question]); return { text: 'Found it.', cost: 0 }; },
+    brain: { turn: async () => { dispatched.push(['anthropic']); return { text: 'Found it.', cost: 0 }; } },
+  } });
+  t.after(async () => { if (f.w.call.running) await f.stop(); });
+  const [status, result] = await f.reply('/api/projects/resolve?slug=alpha');
+  assert.equal(status, 200);
+  assert.deepEqual(result.providers, [claude, openAi]);
+  assert.doesNotMatch(JSON.stringify(result), /private|api\.openai/);
+  const [, projects] = await f.reply('/api/projects');
+  assert.deepEqual(projects[0].providers, [claude, openAi]);
+  assert.equal(projects[1].providers, undefined);
+  const post = (project_id, choice) => f.reply('/api/call', posting({ link: LINK, project_id, ...choice }));
+  for (const [id, choice] of [[BETA, openAi], [ALPHA, { ...openAi, model: 'unapproved' }], [ALPHA, { provider: 'openai' }]]) {
+    assert.deepEqual(await post(id, choice), [403, { error: 'provider-unavailable' }]);
+  }
+  assert.equal(f.w.children.length, 0);
+  assert.deepEqual(dispatched, []);
+  assert.deepEqual(await post(ALPHA, openAi), [202, { ok: true }]);
+  assert.deepEqual(f.w.call.current().find(({ type }) => type === 'provider'), { type: 'provider', ...openAi });
+  f.w.children[0].stdout.emit('data', JSON.stringify({ type: 'heard', id: 'q', speaker: 'Caller', text: 'Factory, is it ready?' }) + '\n');
+  for (let attempt = 0; !dispatched.length && attempt < 25; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(dispatched, [['openai', 'is it ready?']]);
+});
+
 test('pairing HTTP routes enforce roles, strict origin, generation and project, and keep secrets off the wire and disk', async (t) => {
   const { composeWrites } = require('../server.js');
   const { createGrantManager } = require('../grants.js');

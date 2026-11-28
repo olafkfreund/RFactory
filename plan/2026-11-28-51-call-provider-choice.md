@@ -31,3 +31,8 @@ Run the adapter mock tests and all core and web suites. Verify zero provider req
 ## Rollback
 
 Disable the OpenAI choice for the test project. If a release rollback is needed, restore the prior image and configuration through the normal approval process. Existing Claude configurations keep their original behavior.
+
+## Deviations
+
+- Antigravity supplied part of the picker code before timing out. Codex finished the page wiring and tests.
+- Updated the README feature list in this PR under its contributor rule. The new user and operator guides are in a separate draft PR and will need their provider entry aligned when both changes land.

@@ -615,6 +615,38 @@ test('a project page shows its repositories, scopes every read and starts with t
   assert.deepEqual([p.byId['call-join'].disabled, p.byId['call-leave'].disabled], [false, true]);
 });
 
+test('the call form submits only listed provider choices and attributes answers with their sources', async (t) => {
+  const providers = [{ provider: 'anthropic', model: 'default' }, { provider: 'openai', model: 'gpt-5-mini' }];
+  const p = await projectPage(t, '/p/alpha', { routes: {
+    '/api/projects/resolve?slug=alpha': [200, { ...ALPHA, providers: [...providers, { provider: 'other', model: 'unknown' }] }],
+    call: [403, { error: 'provider-unavailable' }],
+  } });
+  const picker = p.byId['call-projects'].querySelector('select');
+  assert.equal(picker.attrs.id, 'call-provider');
+  assert.deepEqual(picker.children.map((option) => option.textContent), ['Claude', 'OpenAI (gpt-5-mini)']);
+  picker.value = '9';
+  await p.click('call-join');
+  assert.ok(!p.requests.some(([method, url]) => method === 'POST' && url === '/api/call'));
+  assert.match(p.byId['call-error'].textContent, /provider is not available/);
+  picker.value = '1';
+  p.byId['call-link'].value = 'https://meet.google.com/abc-defg-hij';
+  p.byId['call-listen'].value = 'platform';
+  await p.click('call-join');
+  const post = p.requests.find(([method, url]) => method === 'POST' && url === '/api/call');
+  assert.deepEqual({ provider: post[2].provider, model: post[2].model }, providers[1]);
+  assert.match(p.byId['call-error'].textContent, /provider is not available/);
+
+  handleCall(p.doc, { type: 'provider', ...providers[1] });
+  assert.match(p.byId['call-projects'].textContent, /Question provider: OpenAI/);
+  handleCall(p.doc, { type: 'limits', budget_usd: 2, spent_usd: 0, lookups_per_question: 8, answer_seconds: 90, github: 'o/a' });
+  handleCall(p.doc, { type: 'answer', ...providers[1], text: 'It is open.', sources: [{ kind: 'issue', ref: 3 }] });
+  handleCall(p.doc, { type: 'answer', ...providers[0], text: 'I agree.', sources: [] });
+  const [openAi, claude] = p.byId['call-log'].children;
+  assert.match(openAi.textContent, /OpenAI \(gpt-5-mini\) answered/);
+  assert.equal(openAi.querySelector('a').attrs.href, 'https://github.com/o/a/issues/3');
+  assert.match(claude.textContent, /Claude answered/);
+});
+
 test('another project\'s call shows busy and opens no stream, until it is over', async (t) => {
   const p = await projectPage(t, '/p/alpha', { status: { running: true, generation: 2, project: { id: 'id-b', name: 'Beta <b>' } } });
   assert.equal(p.byId['call-busy'].textContent, 'A call is already running for Beta <b>');
