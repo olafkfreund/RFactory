@@ -1,12 +1,14 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { STATES } = require('./items.js');
 const { makeRedactor } = require('./redact.js');
 const { toWhisperLanguage } = require('./stt-languages.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
 
 const DESTINATIONS = new Set(['third-party', 'rfactory-host', 'other-machine']);
 const LISTEN = new Set(['auto', 'platform', 'audio']);
+const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
 
 // auto: Meet keeps its captions, the other platforms use own transcription when it is configured.
 function resolveListen({ listen = 'auto', platform, sttConfigured }) {
@@ -20,6 +22,10 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
+  if (scope.source?.kind === 'jira' &&
+      [scope.writes_enabled, scope.lookups_enabled, scope.shares_enabled, scope.investigations_enabled, scope.notes_enabled].includes(true)) {
+    throw new Error('invalid-scope');
+  }
   if (Object.hasOwn(scope, 'avatar')) {
     const validId = (id) => typeof id === 'string' && !!portraits[id]?.anchors;
     if (!(scope.avatar === 'random' || validId(scope.avatar) ||
@@ -38,23 +44,68 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (scope.investigations_enabled !== true && env.RFACTORY_INVESTIGATIONS && env.RFACTORY_INVESTIGATIONS !== 'off') throw new Error('investigations-enabled-env');
   // an investigation creates a card and a run with the write key, so "writes off" turns it off too
   if (scope.investigations_enabled === true && !scope.writes_enabled) throw new Error('investigations-need-writes');
+  if (Object.hasOwn(scope, 'notes_enabled') && typeof scope.notes_enabled !== 'boolean') throw new Error('notes-enabled');
+  if (scope.notes_enabled === true && env.RFACTORY_NOTES !== 'on') throw new Error('notes-enabled');
+  if (scope.notes_enabled !== true && env.RFACTORY_NOTES && env.RFACTORY_NOTES !== 'off') throw new Error('notes-enabled-env');
+  if (scope.notes_enabled === true && scope.brain?.kind !== 'claude-cli') throw new Error('notes-need-claude-brain');
   if (Object.hasOwn(scope, 'lookups_enabled') && typeof scope.lookups_enabled !== 'boolean') throw new Error('lookups-enabled');
   const budget = scope.lookup_budget_usd;
   if (scope.lookups_enabled === true && Object.hasOwn(scope, 'lookup_budget_usd') && !(typeof budget === 'number' && budget >= 0.1 && budget <= 20)) throw new Error('lookup-budget');
   if (Object.hasOwn(scope, 'projects')) {
     if (scope.source?.kind !== 'cfactory') throw new Error('invalid-projects'); // projects come from CFactory
-    const onlyKey = (o, key) => !!o && Object.keys(o).join() === key;
+    const onlyKey = (o, key) => !!o && Object.keys(o).sort().join() === key.split(',').sort().join();
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
-        !allow.every((p) => onlyKey(p, 'id') && typeof p.id === 'string' && /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
+        !allow.every((p) => (onlyKey(p, 'id') || onlyKey(p, 'id,github_read')) && typeof p.id === 'string' &&
+          /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
         new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
+    const seen = new Set();
+    for (const p of allow) {
+      if (!Object.hasOwn(p, 'github_read')) continue;
+      const reads = p.github_read;
+      if (!Array.isArray(reads) || reads.length < 1 || reads.length > 20) throw new Error('invalid-projects');
+      for (const r of reads) {
+        if (!onlyKey(r, 'repository_id,owner,repo,token_file') || !Number.isInteger(r.repository_id) ||
+            !name(r.owner) || !name(r.repo) || typeof r.token_file !== 'string' || !path.isAbsolute(r.token_file) ||
+            seen.has(r.repository_id) || (Object.hasOwn(scope.source, 'github_read') && r.repository_id === scope.source.repository_id) ||
+            (p.id.startsWith('repo:') && r.repository_id !== Number(p.id.slice(5)))) throw new Error('invalid-projects');
+        seen.add(r.repository_id);
+      }
+    }
   }
+  let agents;
+  if (Object.hasOwn(scope, 'agents')) {
+    const list = scope.agents;
+    const allow = new Set(scope.projects?.allow.map((p) => p.id));
+    const plain = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+    if (!scope.projects || !Array.isArray(list) || list.length < 1 || list.length > 10) throw new Error('invalid-agents');
+    for (const a of list) {
+      if (!plain(a) || Object.keys(a).sort().join() !== 'key_file,name,projects,scope' ||
+          typeof a.name !== 'string' || !/^[a-z0-9-]{1,32}$/.test(a.name) || a.scope !== 'read' ||
+          typeof a.key_file !== 'string' || !path.isAbsolute(a.key_file) ||
+          !Array.isArray(a.projects) || a.projects.length < 1 || new Set(a.projects).size !== a.projects.length ||
+          !a.projects.every((id) => allow.has(id))) throw new Error('invalid-agents');
+    }
+    if (new Set(list.map((a) => a.name)).size !== list.length) throw new Error('invalid-agents');
+    agents = list.map((a) => {
+      let file;
+      try { file = fs.statSync(a.key_file); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('agent-key-file-mode'); throw error; }
+      if (!file.isFile() || (file.mode & 0o777) !== 0o600) throw new Error('agent-key-file-mode');
+      const agentKey = fs.readFileSync(a.key_file, 'utf8').trim();
+      if (!/^rfk_[A-Za-z0-9]{32,}$/.test(agentKey)) throw new Error('invalid-agent-key');
+      return { name: a.name, scope: a.scope, projects: a.projects, key: agentKey };
+    });
+    if (new Set(agents.map((a) => a.key)).size !== agents.length) throw new Error('invalid-agent-key');
+    if (env.RFACTORY_AGENTS !== 'on') throw new Error('agents-enabled');
+  } else if (env.RFACTORY_AGENTS && env.RFACTORY_AGENTS !== 'off') throw new Error('agents-enabled-env');
   if (!DESTINATIONS.has(scope.brain?.destination)) throw new Error('invalid-destination');
   if (typeof scope.name !== 'string' || !scope.name ||
       (scope.source?.kind === 'github' &&
        (typeof scope.source.owner !== 'string' || !scope.source.owner ||
         typeof scope.source.repo !== 'string' || !scope.source.repo))) throw new Error('invalid-scope');
-  let key, githubToken;
+  let key, githubToken, jiraToken;
+  const projectTokens = [];
   if (scope.source?.kind === 'cfactory') {
     const source = scope.source;
     if (typeof source.mcp_url !== 'string' || !URL.canParse(source.mcp_url) ||
@@ -73,7 +124,6 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     // with lookups off the GitHub fields are ignored, so a missing token mount cannot stop start-up
     if (scope.lookups_enabled && Object.hasOwn(source, 'github_read')) {
       const read = source.github_read;
-      const name = (v) => typeof v === 'string' && /^(?!\.{1,2}$)[\w.-]+$/.test(v);
       if (!name(read?.owner) || !name(read.repo) || typeof read.token_file !== 'string' ||
           !path.isAbsolute(read.token_file)) throw new Error('invalid-scope');
       const tokenFile = fs.statSync(read.token_file);
@@ -81,13 +131,64 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       githubToken = fs.readFileSync(read.token_file, 'utf8').trim();
       if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
     }
-  } else if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
+    if (scope.lookups_enabled) {
+      for (const r of (scope.projects?.allow ?? []).flatMap((p) => p.github_read ?? [])) {
+        const tokenFile = fs.statSync(r.token_file);
+        if (!tokenFile.isFile() || (tokenFile.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
+        const token = fs.readFileSync(r.token_file, 'utf8').trim();
+        if (!/^\S{8,}$/.test(token)) throw new Error('invalid-github-token');
+        (extras.githubTokens ??= {})[r.repository_id] = token;
+        projectTokens.push(token);
+      }
+    }
+  } else if (scope.source?.kind === 'jira') {
+    const { cloud_id, project, email, token_file, flagged_field } = scope.source;
+    const mapping = scope.mapping;
+    const plain = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (typeof cloud_id !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cloud_id) ||
+        typeof project !== 'string' || !/^[A-Z][A-Z0-9_]{1,19}$/.test(project) ||
+        typeof email !== 'string' || !/^[^\s:@]+@[^\s:@]+$/.test(email) ||
+        typeof token_file !== 'string' || !path.isAbsolute(token_file) ||
+        (flagged_field !== undefined && (typeof flagged_field !== 'string' || !/^customfield_\d+$/.test(flagged_field)))) {
+      throw new Error('invalid-scope');
+    }
+    if (mapping !== undefined && (!plain(mapping) ||
+        (Object.hasOwn(mapping, 'status') && (!plain(mapping.status) ||
+         !Object.values(mapping.status).every((state) => STATES.includes(state)))))) throw new Error('invalid-scope');
+    try {
+      // A FIFO must not block startup before fstat can reject it.
+      const fd = fs.openSync(token_file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      try {
+        const file = fs.fstatSync(fd);
+        if (file.isFile() && (file.mode & 0o7777) === 0o600) jiraToken = fs.readFileSync(fd, 'utf8').trim();
+      } finally { fs.closeSync(fd); }
+    } catch { throw new Error('jira-token-file'); }
+    if (jiraToken === undefined) throw new Error('jira-token-file-mode');
+    if (!/^\S{8,}$/.test(jiraToken)) throw new Error('invalid-jira-token');
+  } else {
+    if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
+    if (Object.hasOwn(scope.source, 'token_file')) {
+      const tokenFile = scope.source.token_file;
+      if (typeof tokenFile !== 'string' || !path.isAbsolute(tokenFile)) throw new Error('invalid-scope');
+      const file = fs.statSync(tokenFile);
+      if (!file.isFile() || (file.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
+      githubToken = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
+    }
+  }
   if (scope.brain?.kind === 'claude-cli' &&
       (typeof scope.brain.home !== 'string' || !path.isAbsolute(scope.brain.home) ||
        !/^(?:[a-fA-F0-9]{64})?$/.test(scope.brain.approved_hash) ||
        !DESTINATIONS.has(scope.brain.destination))) throw new Error('invalid-scope');
   if (key) secrets.push(key);
   if (githubToken) { secrets.push(githubToken); extras.githubToken = githubToken; } // after the key: secrets[0] stays CFactory's
+  if (jiraToken) {
+    secrets.push(jiraToken);
+    secrets.push(Buffer.from(scope.source.email + ':' + jiraToken).toString('base64'));
+    extras.jiraToken = jiraToken;
+  }
+  secrets.push(...projectTokens);
+  if (agents) { for (const a of agents) secrets.push(a.key); extras.agents = agents; }
   return scope;
 }
 

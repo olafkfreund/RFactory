@@ -406,3 +406,11 @@ test('review round 5: a key after a swallowing value, AWS retries, one scan per 
   }
   assert.ok(best < 200, `Bearer runs took ${Math.round(best)} ms`);
 });
+
+test('an rfk_ agent key that is not in secrets is redacted, also wrapped over two lines', () => {
+  const k = 'rfk_' + 'a1B2'.repeat(8);
+  const r = makeRedactor([]);
+  assert.equal(r.toModel(`key ${k} end`), 'key [redacted] end');
+  const out = r.logSafeWindow(['context '.repeat(5) + k.slice(0, 20), k.slice(20) + ' tail'.repeat(10)]).join('\n');
+  assert.ok(!out.includes(k.slice(5, 20)) && !out.includes(k.slice(20)), out);
+});

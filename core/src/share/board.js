@@ -6,14 +6,16 @@ const TITLE_SECRET = /(password|passwd|secret|token|api[ _-]?key|credential)s?\s
 const STAGES = { queued: 'queued', dispatched: 'queued', running: 'running', in_progress: 'running', succeeded: 'done', done: 'done', failed: 'failed', error: 'failed' };
 const LIMIT = 48 * 1024;
 
-function projectBoard(rawCards, repos, repoId, project, redactor, now) {
+function projectBoard(rawCards, repos, repoIds, project, redactor, now) {
   const safe = (value, max) => Array.from(redactor.logSafe(typeof value === 'string' ? value : '')).slice(0, max).join('');
   const columns = Object.fromEntries(COLUMNS.map((column) => [column, { total: 0, shown: 0, omitted: 0 }]));
   const board = { project: safe(project, 80), at: redactor.logSafe(now instanceof Date ? now.toISOString() : now), columns, cards: [] };
   const entries = [];
 
   for (const card of Array.isArray(rawCards) ? rawCards : []) {
-    if (!card || repositoryOf(card, repos) !== repoId) continue;
+    if (!card) continue;
+    const repoId = repositoryOf(card, repos);
+    if (!(Array.isArray(repoIds) ? repoIds.includes(repoId) : repoId === repoIds)) continue;
     const column = COLUMNS.includes(card.status) ? card.status : 'backlog';
     columns[column].total++;
     if (!COLUMNS.includes(card.status)) {
@@ -21,7 +23,11 @@ function projectBoard(rawCards, repos, repoId, project, redactor, now) {
       continue;
     }
     const redactedTitle = redactor.logSafe(typeof card.title === 'string' ? card.title : '');
-    const title = TITLE_SECRET.test(redactedTitle) ? '[title hidden]' : Array.from(redactedTitle).slice(0, 120).join('');
+    const ownTitle = TITLE_SECRET.test(redactedTitle) ? '[title hidden]' : redactedTitle;
+    const repo = repos.repositories.find((r) => r.id === repoId);
+    const prefix = Array.isArray(repoIds) && repoIds.length > 1
+      ? `[${redactor.logSafe((repo?.intake_project ?? repo?.project ?? '').split('/').at(-1))}] ` : '';
+    const title = Array.from(prefix + ownTitle).slice(0, 120).join('');
     const stages = Object.fromEntries(['plan', 'code', 'test'].map((stage) => {
       const runs = card.stage_runs?.[stage];
       const run = Array.isArray(runs) ? runs.at(-1) : runs;

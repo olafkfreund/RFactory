@@ -21,7 +21,6 @@ const JOIN_CODES = ['lobby-timeout', 'denied', 'auth-required', 'blocked-by-admi
 const JOIN_REASONS = ['cant-join', 'no-call-ui', 'removed', 'other'];
 const SORRY = "Sorry, I can't answer that right now.";
 const ANSWER_MS = 90000; // #51: a lookup answer, counted from the question's arrival
-const CLOSED = "Changes aren't available for this project yet."; // #52: writes stay with the default repository's project
 const repositoryName = (project) => project?.github ? `${project.github.owner}/${project.github.repo}` : null;
 const usd = (n) => Math.round(n * 1e6) / 1e6;
 
@@ -34,18 +33,18 @@ function spoken(text) {
 // what the turn delivered, one entry per card, issue, PR or file
 function sourcesOf(reads) {
   const sources = new Map();
-  for (const { ok, kind, ref, title } of reads) {
+  for (const { ok, kind, ref, title, repo } of reads) {
     if (!ok) continue;
     for (const one of (kind === 'card' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'; a file name may hold a comma
-      const key = `${kind}:${one}`;
-      if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title });
+      const key = `${kind}:${repo || ''}:${one}`;
+      if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title, ...(repo ? { repo } : {}) });
     }
   }
   return [...sources.values()];
 }
 
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
-  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, runner = null,
+  redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, notes = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
   stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null }) {
   const lookupsOn = !!(lookups && scope?.lookups_enabled);
@@ -62,7 +61,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
-    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project'].includes(event.type)) current.set(event.type, event);
+    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project', 'notes'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     if (event.type === 'investigation-updated') investigationEvents.set(event.investigation.id, event);
@@ -109,6 +108,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     // redacted again here, immediately before speech
     queueSpeech(c, result ? [...event.counts, redactor.logSafeWindow(event.summary)].join(' ') : text);
   });
+  if (notes) notes.subscribe((event) => { if (!foreign(event)) emit(outgoing(event)); });
   const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
   let call = null;
   const logFor = (c, message) => { if (call === c) log(message); };
@@ -141,13 +141,16 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     for (const controller of c.requests) controller.abort();
     c.requests.clear();
     c.generation++;
+    notes?.closeIntake();
     c.queue.length = 0;
     clock.clearTimeout(c.limitTimer);
+    clock.clearTimeout(c.captionTimer);
     for (const resolve of c.waiters.values()) resolve('cancelled');
     c.waiters.clear();
     c.stopping = (async () => {
       log(`stopping: ${reason}`);
       if (actions) await Promise.resolve().then(() => actions.endCall()).catch((error) => logFor(c, `actions end failed: ${error.message}`));
+      notes?.endCall(); // after the proposals expired above, so their notes hear it
       // not awaited: a slow CFactory must not keep the bot in the call; the manager holds its slot until the stop is confirmed
       if (investigations) Promise.resolve().then(() => investigations.endCall()).catch((error) => logFor(c, `investigations end failed: ${error.message}`));
       if (shares) await Promise.resolve().then(() => shares.endCall()).catch((error) => logFor(c, `shares end failed: ${error.message}`));
@@ -221,7 +224,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function emitLimits(c) {
     if (call !== c) return;
     emit({ type: 'limits', budget_usd: budget, spent_usd: c.lookupSpend, answer_seconds: ANSWER_MS / 1000,
-      lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repositoryName(c.project) });
+      lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repositoryName(c.project),
+      ...(c.project?.bound ? { githubs: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}) });
   }
 
   // one line per question turn; never question text, answer text or tool output
@@ -244,7 +248,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const { signal } = controller;
     const deadline = question.arrivedAt + ANSWER_MS;
     const ctx = { project: c.project, ...(c.lookups ? { lookups: c.lookups } : {}), deadline, controller, signal,
-      tools: [...FACTORY, ...(c.project.github ? GITHUB : [])],
+      tools: [...FACTORY, ...(c.project.github || c.project.githubs?.length ? GITHUB : [])],
       rounds: 0, roundLimited: false, commit: null, reads: [] };
     const token = endpoint.register(ctx);
     c.lookupTurn = ctx;
@@ -270,6 +274,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       ({ cost = null, model = null } = result);
       if (signal.aborted) throw new Error('aborted');
       const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
+        ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
         evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
       text = checked.text;
       outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
@@ -335,7 +340,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   async function requestAction(c, item, generation) {
     let text;
     try {
-      const result = item.desktop ? await desktop.request(item.text, c.child.desktop_id, await snapshot(c))
+      const result = item.desktop ? await desktop.request(item.text, c.child.desktop_id, await snapshot(c), c.projectCall) // this call, so a later call cannot take the proposal
         : await actions.request(item.text, item.speaker);
       if (result.question) return answer(c, { ...item, kind: 'question' }, generation);
       text = result.text;
@@ -345,6 +350,26 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       text = "Sorry, I can't do that right now.";
     }
     if (c.generation !== generation || c.stopping) return;
+    await queueSpeech(c, text, generation);
+  }
+
+  async function requestNote(c, item, generation) {
+    const stale = () => c.generation !== generation || c.stopping || call !== c;
+    let text;
+    try {
+      const snap = await snapshot(c);
+      if (stale()) return;
+      const raw = await brain.note(snap, { request: item.text, deadline: now() + 55000 });
+      if (stale()) return;
+      if (raw?.note === 'none') return answer(c, { ...item, kind: 'question' }, generation);
+      const result = notes.note(raw, { snapshotKeys: new Set(snap.items.map((i) => i.id)), speaker: item.speaker, generation: callCount });
+      if (result.dropped) return;
+      text = result.text;
+    } catch (error) {
+      if (stale()) return;
+      log(`note failed: ${String(error?.message).split(':')[0].slice(0, 40)}`);
+      text = "Sorry, I couldn't note that.";
+    }
     await queueSpeech(c, text, generation);
   }
 
@@ -381,8 +406,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const question = c.queue.shift();
     c.runningBatch = question.batch;
     const generation = c.generation;
-    const closed = c.binding && !c.binding.writable && ['share', 'investigate', 'action'].includes(question.kind);
-    (closed ? queueSpeech(c, CLOSED, generation) : question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : answer(c, question, generation)).catch((error) => logFor(c, `answer failed: ${error.message}`)).finally(() => {
+    (question.kind === 'share' ? requestShare(c, question, generation) : question.kind === 'investigate' ? requestInvestigation(c, question, generation) : question.kind === 'action' ? requestAction(c, question, generation) : question.kind === 'notes' ? queueSpeech(c, notes.headline(), generation) : question.kind === 'note' ? requestNote(c, question, generation) : answer(c, question, generation)).catch((error) => logFor(c, `answer failed: ${error.message}`)).finally(() => {
       c.working = false;
       drain(c);
     });
@@ -391,10 +415,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function addressed(c, item) {
     if (c.stopping) return;
     const question = { ...item, id: redactor.toModel(item.id), text: redactor.toModel(item.text), speaker: redactor.toModel(item.speaker) };
-    question.desktop = !!desktop && !['share', 'investigate'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
+    question.desktop = !!desktop && !['share', 'investigate', 'note', 'notes'].includes(question.kind) && /^(?:open|click|type|scroll|share|screenshot|take a screenshot)\b/i.test(question.text);
     if (question.desktop) question.kind = 'action';
-    // no write path here (or none for this call's project, #52): 1b behaviour
-    if (question.kind === 'action' && (!actions || (c.binding && !c.binding.writable)) && !question.desktop) question.kind = 'question';
+    // no write path here: 1b behaviour
+    if (question.kind === 'action' && !actions && !question.desktop) question.kind = 'question';
     if (lookupsOn) question.arrivedAt = now();
     // #62: one caption block can hold several requests; its scan calls back synchronously, and those form a batch
     if (c.batch?.id !== item.id) {
@@ -411,8 +435,10 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       for (const resolve of c.waiters.values()) resolve('cancelled');
       c.waiters.clear();
       c.speech = Promise.resolve();
-      const timer = clock.setTimeout(() => stopCall(c, 'asked'), 5000);
-      queueSpeech(c, 'Leaving now.').finally(() => { clock.clearTimeout(timer); stopCall(c, 'asked'); });
+      notes?.closeIntake();
+      const withNotes = !!notes?.count();
+      const timer = clock.setTimeout(() => stopCall(c, 'asked'), withNotes ? 15000 : 5000);
+      queueSpeech(c, withNotes ? `${notes.headline()} Leaving now.` : 'Leaving now.').finally(() => { clock.clearTimeout(timer); stopCall(c, 'asked'); });
     } else if (question.batch.queued >= 4) log('dropped question: batch full');
     else if (!question.batch.queued && c.working && c.queue.length >= 2) log('dropped question: queue full');
     else {
@@ -488,6 +514,23 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       }).finally(() => { logFor(c, `stt ms=${now() - started} bytes=${part.bytes}`); c.requests.delete(controller); segment.done = true; settle(c); });
   }
 
+  // #56: the greeting, once per call; in Meet captions mode it waits for the bot's "captions on"
+  function greet(c) {
+    if (c.greeted) return;
+    c.greeted = true;
+    queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`);
+  }
+  // #56: times and counts only, never caption text
+  function captionSeen(c) {
+    if (!c.firstCaption) { c.firstCaption = true; logFor(c, `first caption ms=${now() - c.inCallAt}`); }
+    c.captionLines++;
+    c.captionTimer ||= clock.setTimeout(() => {
+      c.captionTimer = null;
+      logFor(c, `captions heard ms=${now() - c.inCallAt} lines=${c.captionLines}`);
+      c.captionLines = 0;
+    }, 5000);
+  }
+
   function incoming(c, line) {
     if (call !== c || c.stopping) return;
     let msg;
@@ -496,10 +539,15 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`); }
+      if (msg.state === 'in-call') { c.inCall = true; c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
+      if (c.holdGreeting && c.inCall) captionSeen(c);
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
+    } else if (msg.type === 'captions' && c.holdGreeting && c.inCall && typeof msg.on === 'boolean') {
+      logFor(c, `captions ${msg.on ? 'on' : 'off'} ms=${now() - c.inCallAt}`);
+      emit({ type: 'hearing', state: msg.on ? 'captions' : 'captions-off', ...(!sttConfigured ? { notConfigured: true } : {}) });
+      if (msg.on) greet(c);
     } else if (msg.type === 'audio') audio(c, msg);
     else if (msg.type === 'speech' && c.listen === 'audio' && typeof msg.stream === 'string' && msg.stream.length <= 128) {
       if (c.turn) armQuiet(c);
@@ -544,17 +592,20 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const callTts = resolvedAvatar?.startsWith('m') ? maleTts : tts;
     let exit;
     const exited = new Promise((resolve) => { exit = resolve; });
-    // #52: the whole call reads through its project's view; GitHub stays the default repository's binding
-    const writable = !binding || binding.writable;
+    // #52: the whole call reads through its project's view
+    const target = binding ? { binding, view } : undefined;
+    const own = binding && lookupsOn ? lookupsFor(binding) : null;
     const c = { binding, view: binding ? view : source,
-      project: binding && project ? { repositoryId: project.repositoryId, github: writable ? project.github : null, bound: true } : project,
-      lookups: binding && lookupsOn ? lookupsFor(binding.repositories.map((r) => r.id)) : null,
-      projectCall: binding ? { writable: binding.writable, view } : null, // what the desktop routes may do, and read
+      project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
+        githubs: own?.githubs ?? [], bound: true } : project,
+      lookups: own?.lookups ?? null,
+      projectCall: target ?? null, // what the desktop routes may do, and read
       child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false,
+      holdGreeting: selected === 'platform' && platform === 'meet', greeted: false, inCallAt: 0, firstCaption: false, captionLines: 0, captionTimer: null, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
     call = c;
     child.on('error', (error) => { logFor(c, `child failed: ${error.message}`); stopCall(c, 'child error'); });
     child.on('close', () => {
@@ -565,7 +616,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     child.stdin.on('error', (error) => logFor(c, `child stdin failed: ${error.message}`));
     child.stderr.on('data', (data) => logFor(c, selected === 'audio' ? `child stderr: ${data.length} bytes` : data.toString()));
     try {
-      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item) });
+      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item), notes: !!notes });
       c.limitTimer = clock.setTimeout(() => stopCall(c, '60-minute limit'), 60 * 60 * 1000);
       let buffer = '', skipping = false;
       child.stdout.setEncoding('utf8');
@@ -588,16 +639,17 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       // startCall sets its generation synchronously; the returned promise only expires old pending items
       const generation = ++callCount;
       bound = !!binding;
-      // a project without the default repository gets no write manager: nothing can be proposed in it
-      if (actions && writable) Promise.resolve(actions.startCall(generation)).catch((error) => logFor(c, `actions start failed: ${error.message}`));
+      if (actions) Promise.resolve(actions.startCall(generation, ...(target ? [target] : []))).catch((error) => logFor(c, `actions start failed: ${error.message}`));
       // a VM call (runner given) shares through its desktop; the VM's id is known once spawn has created it
       const shareDesktop = runner ? createShareDesktop({ runner, desktopId: () => c.child.desktop_id, clock }) : null;
-      c.showLog = !!(writable && shares && shareDesktop); // the log can only be shown through a share on this call's desktop
-      if (investigations && writable) Promise.resolve(investigations.startCall(generation)).catch((error) => logFor(c, `investigations start failed: ${error.message}`));
-      if (shares && writable) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
+      c.showLog = !!(shares && shareDesktop); // the log can only be shown through a share on this call's desktop
+      notes?.startCall(generation, { project: binding ? { id: binding.projectId, name: binding.name } : null,
+        writable: !!(actions && (!binding || binding.writable)) });
+      if (investigations) Promise.resolve(investigations.startCall(generation, ...(target ? [target] : []))).catch((error) => logFor(c, `investigations start failed: ${error.message}`));
+      if (shares) Promise.resolve(shares.startCall(generation, { desktop: shareDesktop, ...target })).catch((error) => logFor(c, `shares start failed: ${error.message}`));
       if (binding) emit({ type: 'project', id: binding.projectId, name: binding.name, repositories: binding.repositories });
       emit({ type: 'voice', voice: c.voice });
-      emit({ type: 'hearing', state: selected === 'audio' ? 'own' : 'captions',
+      emit({ type: 'hearing', state: selected === 'audio' ? 'own' : c.holdGreeting ? 'captions-off' : 'captions',
         ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
       emit({ type: 'state', state: 'joining' });
       if (lookupsOn) emitLimits(c);

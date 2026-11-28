@@ -14,11 +14,16 @@ const SHARE = /^(?=[\s\S]*\b(?:board|screen)\b)[\s,.:;-]*(?:please[,\s]+)?(?:(?:
 // an investigation request starts with investigate / find out / look into / "open a terminal ... and ..."
 const INVESTIGATE = /^[\s,.:;-]*(?:please\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:investigate|find out|look into|open an? terminal\b.*\band\b)/i;
 const STANDUP = /\bstand[ -]?up\b/i;
+const ASK = '^[\\s,.:;-]*(?:please[,\\s]+)?(?:(?:can|could|would|will) you\\s+(?:please\\s+)?)?';
+// a note request names what to record; a noun use ("a note-taking card", "blocker count") is not one
+const NOTE = new RegExp(`${ASK}(?:(?:take|make|add)\\s+a\\s+note(?![-\\w])(?:\\s*[:,]|\\s+(?:that|to|of|about)\\b|\\s*$)|note(?![-\\w])|decision(?:\\s*[:,]|\\s+(?:is|was)\\b)|we(?:\\s+have|['’]ve)?\\s+decided\\b|action(?:\\s+item)?\\s+for\\s+\\w|blocker(?:\\s*[:,]|\\s+(?:is|on)\\b))`, 'i');
+// the headline request is the whole utterance
+const NOTES = new RegExp(`${ASK}(?:what\\s+did\\s+you\\s+note(?:\\s+down)?|read\\s+(?:me\\s+)?(?:back\\s+)?the\\s+notes|what\\s+are\\s+the\\s+notes)(?:\\s+(?:please|so far))?\\s*[?.!]*$`, 'i');
 
 // keep old caption labels for rollback; the bot's own speech never wakes it (#62)
 const SELF_NAMES = Object.freeze(['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']);
 
-function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES }) {
+function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNames = SELF_NAMES, notes = false }) {
   const blocks = new Map();
   const ownNames = selfNames.map((name) => name.trim().toLowerCase());
 
@@ -67,7 +72,7 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
           if (accepted && addressed && n && !history.some((seen) => n.startsWith(seen) || seen.startsWith(n))) {
             history.push(n);
             onAddressed({
-              kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
+              kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : notes && NOTES.test(addressed) ? 'notes' : notes && NOTE.test(addressed) ? 'note' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
               text: addressed, speaker: block.speaker, id,
             });
           }
