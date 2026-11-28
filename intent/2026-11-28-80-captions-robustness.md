@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 80
 author: olafkfreund
 ---
@@ -45,11 +45,11 @@ When this work is done, in captions mode:
 
 ## Open questions
 
-1. **Where should the `"Captions and translation"` dialog be dismissed — in `bot/run.js` or upstream in `@vibeconferencing/calls`?**
-   - *Recommendation:* Add it to `@vibeconferencing/calls` (`dismissBlockingModals` in `providers/google-meet-provider.js`) if we can release a patch, or handle it in `bot/run.js` alongside the call lifecycle if an upstream release would delay the fix.
-2. **Which short filler words should be allowed before `"Factory"` in `WAKE` (`core/src/call/hearing.js:3`)?**
-   - *Recommendation:* Allow observed single-syllable caption mishearings of `"Hey"` / `"Okay"` (such as `"k"` and `"kay"`) only when followed by a separator or greeting pattern at a sentence boundary, rather than any arbitrary word.
-3. **Should fuzzy repository and card-key matching live in deterministic code (`namedRepository` / pre-normalization) or in the model prompt (`claude-action-system-prompt.txt`)?**
-   - *Recommendation:* Keep deterministic matching for `namedRepository` (handling spaces and `"a"`/`"ai"` splits with an ambiguity check) so investigations stay fast and predictable, and add brief guidance in `claude-action-system-prompt.txt` for caption-garbled card keys and repository names in actions.
-4. **In `core/src/facts.js:74`, should non-consecutive `"I couldn't confirm that."` sentences all be collapsed to one?**
-   - *Recommendation:* Yes—keep at most one `"I couldn't confirm that."` per answer, or drop duplicates after the first occurrence.
+None
+
+## Decisions (2026-11-28)
+
+1. **Where to dismiss the `"Captions and translation"` dialog:** Add it to `@vibeconferencing/calls` (`dismissBlockingModals` in `providers/google-meet-provider.js`) if we can release a patch, or handle it in `bot/run.js` alongside the call lifecycle if an upstream release would delay the fix.
+2. **Short filler words before `"Factory"` in `WAKE` (`core/src/call/hearing.js:3`):** Allow observed single-syllable caption mishearings of `"Hey"` / `"Okay"` (such as `"k"` and `"kay"`) only when followed by a separator or greeting pattern at a sentence boundary, rather than any arbitrary word.
+3. **Where fuzzy repository and card-key matching lives:** Keep deterministic matching for `namedRepository` (handling spaces and `"a"`/`"ai"` splits with an ambiguity check) so investigations stay fast and predictable, and add brief guidance in `claude-action-system-prompt.txt` for caption-garbled card keys and repository names in actions.
+4. **Non-consecutive `"I couldn't confirm that."` sentences (`core/src/facts.js:74`):** Keep at most one `"I couldn't confirm that."` per answer, or drop duplicates after the first occurrence.
