@@ -21,7 +21,7 @@ Every decision from `intent/2026-11-26-1-zoom-guest-calls.md` ("Decisions (2026-
 5. Only ordinary invite links with an optional passcode are supported; personal-room links, Zoom for Government, and vanity paths are out of scope.
 6. If Zoom refuses the guest bot from a desktop VM, the slice stops and returns to the owner.
 7. "Joins, hears, speaks, leaves" is sufficient for Zoom support; screen share and avatar are deferred to a follow-up issue.
-8. Issue `#1` remains the umbrella; Zoom, Slack, and Phase 4 each get their own issue (handled by the lead).
+8. Issue `#1` remains the umbrella; retitling `#1` and creating separate issues for Zoom, Slack, and Phase 4 are separate steps for the lead.
 
 ### Slice 1: Feasibility path (join, hear captions, speak, leave)
 
@@ -29,13 +29,13 @@ Every decision from `intent/2026-11-26-1-zoom-guest-calls.md` ("Decisions (2026-
    Extend `validLink(link)` to accept `https` URLs on `zoom.us` or `^[a-z0-9-]+\.zoom\.us$` with path `/j/<9-11 digits>` or `/wc/join/<9-11 digits>` (optional trailing slash) and at most a `pwd` query parameter. Keep existing Meet and Teams rules unchanged, and keep `port`, `username`, `password`, `hash`, and `link !== u.href` rejections.
 
 2. **Platform classification (`web/call.js:531`)**
-   Replace the two-way Meet/Teams check with a three-way check matching `platformOf` in `web/vm-call.js:8-14`: `meet.google.com` -> `'meet'`, `zoom.us` / `*.zoom.us` -> `'zoom'`, otherwise `'teams'`.
+   Replace the two-way Meet/Teams check with a three-way check (`meet.google.com` -> `'meet'`, `zoom.us` / `*.zoom.us` -> `'zoom'`, otherwise `'teams'`). This agrees with `platformOf` (`web/vm-call.js:8-14`) for links accepted by `validLink` (`platformOf` also matches `*.slack.com`, explicitly matches `teams.microsoft.com` / `teams.live.com`, and returns `null` for unsupported hosts).
 
-3. **Passcode redaction (`core/src/redact.js:11, 182`)**
-   Add a rule in `makeRedactor` to redact `pwd=` query parameter values (e.g. `([?&]pwd=)[^&\s"'<>]+` -> `$1[redacted]`) in `redactString` and `logSafeWindow`. This keeps Zoom passcodes out of logs, `failureReport` (`bot/run.js:395-396`), and the web call log.
+3. **Passcode redaction (`core/src/redact.js:11, 182, 203, 235`)**
+   Add a rule in `makeRedactor` to redact `pwd=` query parameter values (e.g. `([?&]pwd=)[^&\s"'<>]+` -> `$1[redacted]`) in `redactString` (`:175-183`) and `logSafeWindow` (`:203`, key-value spans at `:235`). This keeps Zoom passcodes out of logs, `failureReport` (`bot/run.js:395-396`), and the web call log.
 
 4. **Zoom preflight probe (`desktop/ranges/ranges.json:28-98`, `desktop/runner/preflight.js:41-47`, `deploy/k8s/rfactory-desktops/networkpolicies.yaml:94-158`)**
-   `preflight('zoom', ...)` currently tries `firstHost(cidr)` on TCP 443 for every CIDR in `ranges.json`, which fails because those first addresses do not answer. Add a `probe` list under `ranges.json`'s `zoom` entry (the same pattern `teams` uses at `desktop/ranges/ranges.json:114-117`) pointing to verified Zoom edge IPs inside `zoom.cidrs` that answer TCP 443. Regenerate `rfactory-runner-egress-media-probe` in `deploy/k8s/rfactory-desktops/networkpolicies.yaml:97-158` so `desktop/runner/kyverno-scope.test.js:97-108` passes.
+   `preflight('zoom', ...)` loops over `firstHost(cidr)` on TCP 443 and returns on the first success (`desktop/runner/preflight.js:41-47`). `plan/2026-11-18-3-agent-workspace-k3d.md:603` recorded those first addresses not answering, while `desktop/runner/preflight.test.js:50-57` uses a stand-in `connect` that always returns `true`. Add a `probe` list under `ranges.json`'s `zoom` entry (the same pattern `teams` uses at `desktop/ranges/ranges.json:114-117`) pointing to verified Zoom edge IPs inside `zoom.cidrs` that answer TCP 443. Regenerate `rfactory-runner-egress-media-probe` in `deploy/k8s/rfactory-desktops/networkpolicies.yaml:97-158` so `desktop/runner/kyverno-scope.test.js:97-108` passes.
 
 5. **Egress allowlist (`desktop/runner/runner.js:213-219`)**
    `zoom.us` is already in `RF_PLATFORM_NAMES` (`desktop/runner/runner.js:214`), which covers `*.zoom.us`. Keep egress closed to everything else; if the live feasibility test shows Zoom's web client requires an additional Zoom-owned static/CDN domain, record it and add it with its source before expanding.
@@ -46,9 +46,15 @@ Every decision from `intent/2026-11-26-1-zoom-guest-calls.md` ("Decisions (2026-
 7. **Guard `pageLeft()` against false removal (`bot/run.js:22-26`)**
    `pageLeft()` currently returns `true` whenever `#hangup-button`, `button[aria-label="Leave call"]`, and `[data-tid="call-hangup"]` are all absent and the body text matches `/rejoin|.../i`. On Zoom, those Meet/Teams selectors are always absent, and `ZoomProvider`'s leave button is `button[aria-label="End" i], button[aria-label="Leave" i]` (`@vibeconferencing/calls/providers/zoom-selectors.js:300`). Add Zoom's leave button selector to `pageLeft()` so `watchLeft()` (`bot/run.js:177-187`) does not misclassify an active Zoom call as removed.
 
+8. **Flag `notice-failed` in Captions mode (`bot/run.js:351-357`, `web/call.js:507-509`, `web/public/app.js:623-627`)**
+   Per Decision 4, if guest chat fails, the spoken greeting is the notice and the web UI flags `notice-failed` regardless of listening mode. Remove the `audio` gate on the `notice-failed` emit in `bot/run.js:353`, accept `notice-failed` in `web/call.js:507` when `c.listen === 'platform'` without switching the hearing state to own transcription, and update `web/public/app.js:623-627` so `notice-failed` displays a mode-appropriate label (e.g., captions vs. own transcription).
+
+9. **Guest-image rebuild and pin (`desktop/guest/agent.nix:20-27`, `deploy/k8s/rfactory-desktops/runner.yaml:49-51`)**
+   Because `desktop/guest/agent.nix` packages `bot/run.js` (`:22`) and `core/src/redact.js` (`:25`), Slice 1 requires rebuilding and pinning the guest image in `deploy/k8s/rfactory-desktops/runner.yaml:49-51` before the live test (with owner approval and an agent-bus notice).
+
 ### Slice 2: Hardening after feasibility passes
 
-Only after Slice 1 passes in a live call:
+Only after Slice 1 passes in a live call (join, speak, and clean Stop; if the bot joins, speaks, and leaves cleanly in `platform` mode but hears nothing, proceed directly to the `listen: 'audio'` check below rather than stopping as a join refusal):
 
 1. **Removal and meeting-end detection (`bot/run.js:22-26, 285-292`)**
    Record Zoom's exact page text when removed by the host or when the host ends the meeting, and add those patterns to `pageLeft()` so `watchLeft()` and `leftConfirmed()` work on Zoom as they do on Meet and Teams.
@@ -61,8 +67,13 @@ Only after Slice 1 passes in a live call:
 3. **Own transcription check (`core/src/scope.js:12-17`)**
    Run a second live check with `listen: 'audio'` (`RFACTORY_LISTEN=audio`). If own transcription works cleanly on Zoom, keep `resolveListen` returning `'audio'` for non-Meet platforms when STT is configured (`core/src/scope.js:16`). If it fails or degrades, update `resolveListen` to default `zoom` to `'platform'` while keeping `audio` selectable explicitly.
 
+4. **Spoken leave check (`web/call.js:406-415`)**
+   The shared voice-leave handler (`question.kind === 'leave'`) already exists in `web/call.js:406-415`. Verify `"Factory, leave"` in its own live Zoom attempt.
+
 ### Deferred
 
+- **Removal, meeting-end detection, and spoken `"Factory, leave"`** on Zoom (Slice 2).
+- **Clearer join-failure reasons and own-transcription check** on Zoom (Slice 2).
 - **Screen share and avatar** on Zoom (follow-up issue).
 - **Slack huddles** (requires signed-in profile store, separate issue).
 - **Phase 4** live Factory events (separate issue).
@@ -78,9 +89,9 @@ Only after Slice 1 passes in a live call:
 ## Risks
 
 - **Zoom blocks unauthenticated guest joins from cluster IPs (reCAPTCHA or browser-guest restrictions)**: Mitigated by running Slice 1 as a feasibility test first and stopping if Zoom refuses the guest bot (Decision 6).
-- **Zoom's caption overlay (`#live-transcription-subtitle`) is not active or readable for guests**: `@vibeconferencing/calls/providers/zoom-provider.js:16-20` notes `transcriptAvailable()` is `false` (Full Transcript panel selectors are `null`), while `zoom-session.js:171` reads `readOverlay()`. If Zoom's web client does not render the overlay for a guest when the host enables captions, hearing in `platform` mode will fail and Zoom will depend on `audio` mode.
-- **Guest chat disabled by host or Zoom web client**: If `call.chat.send(chatLine)` fails (`bot/run.js:351-358`), participants only hear the spoken greeting; in `audio` mode `notice-failed` is flagged in the web UI.
-- **Guest-image release window**: Any change to `desktop/guest/agent/call.js` (needed only in Slice 2 if an init script is added for waiting room / disabled-browser detection) requires rebuilding and pinning a new guest image in `deploy/k8s/rfactory-desktops/runner.yaml:49-51`.
+- **Zoom's caption overlay (`#live-transcription-subtitle`) is not active or readable for guests**: `@vibeconferencing/calls/providers/zoom-provider.js:16-20` notes `transcriptAvailable()` is `false` (Full Transcript panel selectors are `null`), while `zoom-session.js:171` reads `readOverlay()`. If Zoom's web client does not render the overlay for a guest when the host enables captions, hearing in `platform` mode will fail; if the bot joins, speaks, and leaves cleanly, move directly to testing `listen: 'audio'` (rather than stopping as a join refusal).
+- **Guest chat disabled by host or Zoom web client**: If `call.chat.send(chatLine)` fails (`bot/run.js:351-358`), participants only hear the spoken greeting and `notice-failed` is flagged in the web UI in both `platform` and `audio` modes.
+- **Guest-image release window**: Slice 1 edits `bot/run.js` and `core/src/redact.js`, both packaged by `desktop/guest/agent.nix:22, 25`, so Slice 1 already requires rebuilding and pinning a new guest image in `deploy/k8s/rfactory-desktops/runner.yaml:49-51`. Any Slice 2 change to `desktop/guest/agent/call.js` requires another guest-image release. Both deployment and live testing require the owner's OK and an agent-bus notice first.
 - **Passcode leakage**: Without `pwd=` redaction in `core/src/redact.js`, a failed join or `failureReport` (`bot/run.js:396`) could log the meeting passcode. Fixed in Slice 1 before any live test.
 
 ## Verification
@@ -88,21 +99,18 @@ Only after Slice 1 passes in a live call:
 1. **Unit and policy tests (after edits, before any live test):**
    - `web` tests: `validLink` accepts `https://zoom.us/j/<digits>`, `https://us02web.zoom.us/j/<digits>?pwd=<token>`, and `/wc/join/<digits>`; rejects non-`https`, `/my/...`, `zoomgov.com`, ports, hashes, and extra query parameters. Meet and Teams link tests remain green.
    - `core` tests: `makeRedactor` redacts `pwd=` values in URLs across `toModel`, `logSafe`, and `logSafeWindow`.
-   - `bot` tests: `pageLeft()` does not trigger on Zoom when Zoom's Leave/End button is present.
+   - `bot` and `web` tests: `pageLeft()` does not trigger on Zoom when Zoom's Leave/End button is present; `notice-failed` is emitted, forwarded in `platform` mode without switching to own transcription, and rendered with a mode-appropriate label in `web/public/app.js`.
    - `desktop/runner` tests: `preflight.test.js` and `kyverno-scope.test.js` pass with the updated `zoom` `probe` hosts and `deploy/k8s/rfactory-desktops/networkpolicies.yaml`.
 
-2. **One live feasibility check (after owner OK and agent-bus notice):**
+2. **One live feasibility check (after guest-image pin, owner OK, and agent-bus notice for deployment and test):**
    - Owner hosts a Zoom meeting with browser guests, waiting room, and captions enabled.
    - Start one call from the web UI with `listen: 'platform'` (Captions) and paste the invite link (`?pwd=...`).
-   - Observe: preflight passes, VM boots, bot reaches waiting room, host admits `"Factory (AI)"`, bot posts chat notice (or flags `notice-failed` and speaks greeting), answers one spoken `"Hey Factory, what's blocked?"` question, and leaves cleanly on Stop with VM destroyed and no passcode in logs.
+   - Observe: preflight passes, VM boots, bot reaches waiting room, host admits `"Factory (AI)"`, bot posts chat notice (or, in a blocked-chat check, flags `notice-failed` in the web UI and speaks the greeting), answers one spoken `"Hey Factory, what's blocked?"` question, and leaves cleanly on Stop with VM destroyed and no passcode in logs.
 
-3. **Slice 2 checks (only after Slice 1 passes):**
-   - One live check each for removal by host / meeting ended, join-failure reasons, and `listen: 'audio'` (own transcription), each recorded before setting Zoom's `resolveListen` default.
+3. **Slice 2 checks (only after Slice 1 join/speak/leave passes):**
+   - One live check each for spoken `"Factory, leave"`, removal by host / meeting ended, join-failure reasons, and `listen: 'audio'` (own transcription), each recorded before setting Zoom's `resolveListen` default.
 
 ## Open questions
 
 1. **Which Zoom IP(s) inside `desktop/ranges/ranges.json:29-80` should be listed in `zoom.probe`?**
    *Recommendation:* Resolve `app.zoom.us` and `zoom.us`, verify the addresses fall inside `zoom.cidrs` and answer TCP 443 from the cluster node, and pin two of them in `zoom.probe` (matching `teams.probe` at `desktop/ranges/ranges.json:114-117`).
-
-2. **Does `bot/run.js:351-358` need to emit `notice-failed` in `platform` (captions) mode too if Zoom blocks guest chat, or only in `audio` mode?**
-   *Recommendation:* Keep `notice-failed` limited to `audio` mode as written (`bot/run.js:353`), matching Decision 4 ("while the bot transcribes the call itself").
