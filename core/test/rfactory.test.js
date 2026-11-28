@@ -3,11 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { once } = require('node:events');
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
+const { promisify } = require('node:util');
 const { createApp } = require('../../web/server.js');
 const { loadRoles } = require('../src/roles.js');
 const { makeRedactor } = require('../src/redact.js');
@@ -46,8 +47,12 @@ async function cli(t, url) {
   const config = join(dir, 'rfactory');
   const session = join(config, 'session.json');
   const env = { PATH: process.env.PATH, XDG_CONFIG_HOME: dir, RFACTORY_URL: url };
-  async function run(args, code = 0, extraEnv = {}, nodeArgs = []) {
-    const child = spawn(process.execPath, [...nodeArgs, BIN, ...args], { env: { ...env, ...extraEnv }, signal: AbortSignal.timeout(12000) });
+  function start(args, extraEnv = {}, nodeArgs = [], cwd = dir) {
+    return spawn(process.execPath, [...nodeArgs, BIN, ...args],
+      { cwd, env: { ...env, ...extraEnv }, signal: AbortSignal.timeout(12000) });
+  }
+  async function run(args, code = 0, extraEnv = {}, nodeArgs = [], cwd = dir) {
+    const child = start(args, extraEnv, nodeArgs, cwd);
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
@@ -63,7 +68,7 @@ async function cli(t, url) {
     await fs.mkdir(config, { mode: 0o700, recursive: true });
     await fs.writeFile(session, JSON.stringify({ url, expires_at, access_token: TOKEN }), { mode: 0o600 });
   }
-  return { run, signedIn, dir, config, session };
+  return { start, run, signedIn, dir, config, session };
 }
 
 function json(res, status, body) {
@@ -78,11 +83,14 @@ async function app(t, { scoped = true, calls = true } = {}) {
   const freshness = { state: 'current', last_polled_at: '2026-11-26T09:00:00Z' };
   const world = { requests: [], events: [], starts: [], stops: [], generation: 10, project: null, subscribers: new Set() };
   const source = {
-    listProjects: async () => [alpha, beta],
+    listProjects: async () => {
+      if (world.catalogDown) throw new Error('catalog unavailable');
+      return [alpha, beta];
+    },
     listRepositories: async () => [{ id: 1, project: 'owner/alpha' }, { id: 2, project: 'owner/beta' }],
     resolveProject: async (slug) => ({ project: [alpha, beta].find((entry) => entry.slug === slug) }),
     forRepositories: () => ({
-      standupData: async () => ({ cards: [card], conflicting: 0, freshness, fetched_at: '2026-11-26T09:00:00Z' }),
+      standupData: async () => ({ cards: [card], conflicting: 0, freshness }),
       reviewData: async (key) => ({ found: key === card.card_key, card, freshness, discussion: { available: false } }),
     }),
   };
@@ -145,7 +153,7 @@ async function app(t, { scoped = true, calls = true } = {}) {
 test('every subcommand validates usage and remote commands require a session', async (t) => {
   const { run, session } = await cli(t, 'http://127.0.0.1:1');
   await Promise.all([
-    run([], 2), run(['--help']), run(['no-such-command'], 2), run(['status', '--token', TOKEN], 2),
+    run([], 2), run(['no-such-command'], 2), run(['status', '--token', TOKEN], 2),
     run(['login', '--url', 'http://example.org'], 2), run(['logout', 'extra'], 2),
     run(['login', '--url'], 2), run(['status', 'extra'], 2), run(['projects', 'extra'], 2),
     run(['join', '--project', PROJECT], 2),
@@ -153,9 +161,26 @@ test('every subcommand validates usage and remote commands require a session', a
     ...SCOPED.map((command) => run(command, 2)),
     ...REMOTE.map((command) => run(command, 3, { RFACTORY_PROJECT: PROJECT })),
   ]);
+  assert.match((await run(['--help'])).stdout, /^Usage: rfactory <command>/);
   assert.deepEqual(JSON.parse((await run(['logout', '--json'])).stdout), { ok: true });
   await fs.mkdir(session, { recursive: true });
   assert.match((await run(['logout'], 1)).stderr, /Could not remove the session file/);
+});
+
+test('session reads require a private regular file owned by the current UID', async (t) => {
+  const { run, signedIn, world, dir, session } = await app(t);
+  await signedIn();
+  const otherUid = join(dir, 'other-uid.cjs');
+  await fs.writeFile(otherUid, 'const uid = process.getuid(); process.getuid = () => uid + 1;');
+  await run(['status'], 3, {}, ['--require', otherUid]);
+  await fs.chmod(session, 0o644);
+  await run(['status'], 3);
+  await fs.chmod(session, 0o600);
+  const realSession = session + '.real';
+  await fs.rename(session, realSession);
+  await fs.symlink(realSession, session);
+  await run(['status'], 3);
+  assert.deepEqual(world.requests, []);
 });
 
 test('HTTP status exits and target binding happen without redirects or token leaks', async (t) => {
@@ -215,6 +240,10 @@ test('project reads use id first, then the canonical slug and the requested proj
   assert.deepEqual(standup.unknown, []);
   assert.equal(standup.freshness.state, 'current');
   assert.match(standup.headline, /1 done/);
+  const humanStandup = (await run(['standup', '--project', PROJECT])).stdout;
+  assert.match(humanStandup, /headline: .*1 done/);
+  assert.match(humanStandup, /newest_update: none/);
+  assert.doesNotMatch(humanStandup, /fetched_at|undefined/);
   assert.ok(!world.requests.some((entry) => entry.path.includes('/resolve')));
   assert.equal((await get(['review'], { RFACTORY_PROJECT: 'alpha' })).failed[0].card_key, 'RF-26');
   assert.ok(world.requests.some((entry) => entry.path === '/api/projects/resolve?slug=alpha'));
@@ -223,6 +252,11 @@ test('project reads use id first, then the canonical slug and the requested proj
   assert.doesNotMatch(detail.stdout, /\x1b|hidden title/);
   await run(['review', '--project', PROJECT, 'MISSING'], 4);
   await run(['review', '--project', 'missing'], 4);
+  const before = world.requests.length;
+  for (const key of ['.', '..']) {
+    assert.match((await run(['review', '--project', PROJECT, key], 4)).stderr, /Invalid review card key/);
+  }
+  assert.ok(world.requests.slice(before).every(({ path }) => ['/api/config', '/api/projects'].includes(path)));
   for (const cmd of ['actions', 'shares', 'investigations']) {
     const data = await get([cmd, '--project', PROJECT]);
     assert.deepEqual(data.pending, [{ id: 'own', project_id: PROJECT }]);
@@ -248,12 +282,25 @@ test('join returns on 202, and leave sends the fetched generation only for its p
   assert.match((await run(['leave', '--project', PROJECT], 4)).stderr, /stale-generation/);
   assert.deepEqual(world.stops, []);
   world.stale = false;
-  assert.deepEqual(JSON.parse((await run(['leave', '--project', PROJECT, '--json'])).stdout), { ok: true });
+  assert.deepEqual(JSON.parse((await run(['leave', '--project', 'alpha', '--json'])).stdout), { ok: true });
   assert.deepEqual(world.stops, ['requested']);
   const deletes = () => world.requests.filter((entry) => entry.method === 'DELETE').length;
   const count = deletes();
   await run(['leave', '--project', PROJECT], 4);
   assert.equal(deletes(), count);
+});
+
+test('leave with the running project ID works during a catalog outage', async (t) => {
+  const { run, signedIn, world } = await app(t);
+  await signedIn();
+  world.project = { id: PROJECT, name: 'Alpha' };
+  world.catalogDown = true;
+  await run(['projects'], 1);
+  const before = world.requests.length;
+  await run(['leave', '--project', PROJECT]);
+  assert.deepEqual(world.requests.slice(before).map(({ method, path }) => [method, path]),
+    [['GET', '/api/config'], ['GET', '/api/call/status'], ['DELETE', '/api/call']]);
+  assert.deepEqual(world.stops, ['requested']);
 });
 
 test('heard projects allowlisted event fields in both outputs, including nested values', async (t) => {
@@ -325,27 +372,53 @@ test('heard parses split CRLF, multiline data, and CR-only boundaries', async (t
   assert.deepEqual(stdout.trim().split('\n').map(JSON.parse), [{ type: 'log', message: 'hé' }, { type: 'ended' }]);
 });
 
+test('heard exits successfully and unsubscribes when stdout closes', async (t) => {
+  const { start, signedIn, world } = await app(t);
+  await signedIn();
+  world.project = { id: PROJECT, name: 'Alpha' };
+  world.events = [{ type: 'log', message: 'first' }];
+  const child = start(['heard', '--project', PROJECT, '--json']);
+  t.after(() => child.kill());
+  const exited = once(child, 'close');
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  const [first] = await once(child.stdout, 'data');
+  assert.deepEqual(JSON.parse(first.toString()), world.events[0]);
+  assert.equal(world.subscribers.size, 1);
+  const stdoutClosed = once(child.stdout, 'close');
+  child.stdout.destroy();
+  await stdoutClosed;
+  for (const emit of world.subscribers) emit({ type: 'log', message: 'after stdout closes' });
+  assert.deepEqual(await exited, [0, null]);
+  assert.equal(stderr, '');
+  for (let attempts = 0; world.subscribers.size && attempts < 20; attempts++) await delay(10);
+  assert.equal(world.subscribers.size, 0);
+});
+
 test('OIDC device login handles pending, slow down, success, expiry and logout', { timeout: 12000 }, async (t) => {
   const issuer = 'https://keycloak.freundcloud.org.uk/realms/factory';
   let discoveryStatus = 200;
+  let deviceEndpoint = 'https://keycloak.freundcloud.org.uk/device';
+  let tokenEndpoint = 'https://keycloak.freundcloud.org.uk/token';
+  let verificationUri = 'https://keycloak.freundcloud.org.uk/verify';
+  let deviceRequests = 0;
   let expire = false;
   let polls = [];
   const deviceCode = 'mock-device-code';
   const mock = await listen(t, http.createServer(async (req, res) => {
     const path = req.url;
     if (path === '/realms/factory/.well-known/openid-configuration') {
-      return json(res, discoveryStatus, { issuer,
-        device_authorization_endpoint: 'https://keycloak.freundcloud.org.uk/device',
-        token_endpoint: 'https://keycloak.freundcloud.org.uk/token' });
+      return json(res, discoveryStatus, { issuer, device_authorization_endpoint: deviceEndpoint, token_endpoint: tokenEndpoint });
     }
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
     if (path === '/device') {
+      deviceRequests++;
       assert.equal(req.method, 'POST');
       assert.deepEqual(form, { client_id: 'rfactory-cli', scope: 'openid email' });
       return json(res, 200, { device_code: deviceCode, user_code: 'TEST-0123',
-        verification_uri: 'https://keycloak.freundcloud.org.uk/verify', expires_in: expire ? 0.3 : 10, interval: 0.05 });
+        verification_uri: verificationUri, expires_in: expire ? 0.3 : 10, interval: 0.05 });
     }
     assert.equal(path, '/token');
     assert.deepEqual(form, { client_id: 'rfactory-cli', device_code: deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' });
@@ -354,7 +427,11 @@ test('OIDC device login handles pending, slow down, success, expiry and logout',
     if (polls.length < 3) return json(res, 400, { error: polls.length === 1 ? 'authorization_pending' : 'slow_down' });
     json(res, 200, { access_token: TOKEN, expires_in: 60, refresh_token: 'unused-refresh-token' });
   }));
-  const { run, dir, config, session } = await cli(t, mock);
+  const { run, dir, config: absoluteConfig } = await cli(t, mock);
+  const home = join(dir, 'home');
+  const config = join(home, '.config', 'rfactory');
+  const session = join(config, 'session.json');
+  const relativeEnv = { HOME: home, XDG_CONFIG_HOME: 'relative-config' };
   const preload = join(dir, 'mock-keycloak.cjs');
   await fs.writeFile(preload, [
     'const original = globalThis.fetch;',
@@ -365,7 +442,7 @@ test('OIDC device login handles pending, slow down, success, expiry and logout',
     '};',
   ].join('\n'));
   const options = ['--require', preload];
-  const signedIn = await run(['login', '--json'], 0, {}, options);
+  const signedIn = await run(['login', '--json'], 0, relativeEnv, options);
   assert.equal(polls.length, 3);
   assert.ok(polls[1] - polls[0] >= 40);
   assert.ok(polls[2] - polls[1] >= 5000);
@@ -381,16 +458,56 @@ test('OIDC device login handles pending, slow down, success, expiry and logout',
   assert.equal(saved.client_id, 'rfactory-cli');
   assert.ok(saved.expires_at > Date.now());
   assert.deepEqual(JSON.parse(signedIn.stdout), { ok: true });
-  await run(['logout']);
+  await assert.rejects(fs.stat(join(dir, relativeEnv.XDG_CONFIG_HOME)), { code: 'ENOENT' });
+  const wrongTarget = await run(['status', '--url', 'http://127.0.0.1:1'], 3, relativeEnv, [], home);
+  assert.match(wrongTarget.stderr, /Session belongs to a different server/);
+  await run(['logout'], 0, relativeEnv, [], home);
   await assert.rejects(fs.stat(session), { code: 'ENOENT' });
   await run(['status'], 3);
   discoveryStatus = 502;
   await run(['login'], 1, {}, options);
   discoveryStatus = 200;
+  const foreign = 'https://example.org/device';
+  const validDevice = deviceEndpoint;
+  const validToken = tokenEndpoint;
+  deviceEndpoint = foreign;
+  assert.match((await run(['login'], 1, {}, options)).stderr, /Invalid identity provider discovery response/);
+  deviceEndpoint = validDevice;
+  tokenEndpoint = foreign;
+  assert.match((await run(['login'], 1, {}, options)).stderr, /Invalid identity provider discovery response/);
+  tokenEndpoint = validToken;
+  assert.equal(deviceRequests, 1);
+  const validVerification = verificationUri;
+  for (const url of [foreign, validVerification.replace('https:', 'http:')]) {
+    verificationUri = url;
+    const invalid = await run(['login'], 1, {}, options);
+    assert.match(invalid.stderr, /Invalid device verification URL/);
+    assert.doesNotMatch(invalid.stderr, /TEST-0123/);
+  }
+  assert.equal(polls.length, 3);
+  verificationUri = validVerification;
   expire = true;
   polls = [];
   const timed = await run(['login'], 3, {}, options);
   assert.equal(polls.length, 1);
   assert.match(timed.stderr, /timed out.*rfactory login/);
-  await assert.rejects(fs.stat(session), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(join(absoluteConfig, 'session.json')), { code: 'ENOENT' });
+});
+
+test('clean web consumer install links the rfactory executable', async (t) => {
+  const root = join(__dirname, '../..');
+  const fixture = await fs.mkdtemp(join(tmpdir(), 'rfactory-install-'));
+  t.after(() => fs.rm(fixture, { recursive: true, force: true }));
+  const files = ['core/package.json', 'core/bin/rfactory.js', 'core/src/rfactory-auth.js', 'core/src/rfactory-client.js',
+    'web/package.json', 'web/package-lock.json'];
+  for (const file of files) {
+    const dest = join(fixture, file);
+    await fs.mkdir(join(dest, '..'), { recursive: true });
+    await fs.copyFile(join(root, file), dest);
+  }
+  const exec = promisify(execFile);
+  const cwd = join(fixture, 'web');
+  await exec('npm', ['ci', '--omit=dev', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd });
+  const { stdout } = await exec(join(cwd, 'node_modules/.bin/rfactory'), ['--help']);
+  assert.match(stdout, /^Usage: rfactory <command>/);
 });

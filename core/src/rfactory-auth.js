@@ -2,7 +2,7 @@
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const { homedir } = require('node:os');
-const { join } = require('node:path');
+const { isAbsolute, join } = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const { failure, relogin, targetUrl, sanitize } = require('./rfactory-client.js');
@@ -10,7 +10,10 @@ const { failure, relogin, targetUrl, sanitize } = require('./rfactory-client.js'
 const ISSUER = 'https://keycloak.freundcloud.org.uk/realms/factory';
 const CLIENT_ID = 'rfactory-cli';
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
-const sessionDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'rfactory');
+function sessionDir() {
+  const config = process.env.XDG_CONFIG_HOME || '';
+  return join(isAbsolute(config) ? config : join(homedir(), '.config'), 'rfactory');
+}
 const seconds = (value) => Number.isFinite(value) && value > 0 && value * 1000 <= 2 ** 31 - 1;
 
 async function readSession() {
@@ -19,7 +22,9 @@ async function readSession() {
     const file = await fs.open(join(sessionDir(), 'session.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = await file.stat();
-      if (stat.isFile() && (stat.mode & 0o777) === 0o600) session = JSON.parse(await file.readFile('utf8'));
+      if (stat.isFile() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o600) {
+        session = JSON.parse(await file.readFile('utf8'));
+      }
     } finally { await file.close(); }
   } catch (error) {
     if (!(error instanceof SyntaxError) && !['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) {
@@ -93,8 +98,7 @@ async function login(url, { issuer = ISSUER, stderr = process.stderr } = {}) {
   let verification;
   try {
     verification = new URL(verification_uri);
-    if (verification.protocol !== 'https:' &&
-        !(verification.protocol === 'http:' && verification.origin === authority.origin)) throw new Error();
+    if (verification.protocol !== authority.protocol || verification.origin !== authority.origin) throw new Error();
     if (verification.username || verification.password) throw new Error();
   } catch { throw failure(1, 'Invalid device verification URL.'); }
   const expires = Date.now() + expires_in * 1000;

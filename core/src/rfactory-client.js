@@ -111,8 +111,7 @@ async function stream(response, emit, checkExpiry) {
         const event = readEvent(data);
         data = [];
         if (event) {
-          emit(event);
-          if (TERMINAL.has(event.type)) return;
+          if (await emit(event) === false || TERMINAL.has(event.type)) return;
         }
       } else if (line === 'data' || line.startsWith('data:')) {
         data.push(line.slice(5).replace(/^ /, ''));
@@ -201,6 +200,20 @@ function createClient(target, session) {
     } finally { clearTimeout(timer); }
   }
 
+  async function listProjects() {
+    const projects = await request('api/projects');
+    if (!Array.isArray(projects)) throw failure(1, 'Invalid server project list.');
+    return projects;
+  }
+
+  async function projectId(name) {
+    const chosen = (await listProjects()).find((entry) => entry?.id === name) ||
+      await request('api/projects/resolve', { query: { slug: name } });
+    const { id } = chosen;
+    if (typeof id !== 'string' || !id) throw failure(1, 'Invalid server project id.');
+    return id;
+  }
+
   return async function run(command, { project: name, listen, arg }, emit) {
     const config = await request('api/config');
     if (config.projects === false) throw failure(4, 'This server has no project scope.');
@@ -209,13 +222,17 @@ function createClient(target, session) {
       const call = await request('api/call/status', { accept404: true });
       return { ...fields('commit projects listen sttConfigured')(config), call };
     }
-    const projects = await request('api/projects');
-    if (!Array.isArray(projects)) throw failure(1, 'Invalid server project list.');
-    if (command === 'projects') return { projects };
-    const chosen = projects.find((entry) => entry?.id === name) ||
-      await request('api/projects/resolve', { query: { slug: name } });
-    const { id } = chosen;
-    if (typeof id !== 'string' || !id) throw failure(1, 'Invalid server project id.');
+    if (command === 'projects') return { projects: await listProjects() };
+    if (command === 'leave') {
+      const status = await request('api/call/status');
+      const runningId = status.project?.id;
+      if (status.running !== true || !runningId || (runningId !== name && runningId !== await projectId(name))) {
+        throw failure(4, 'There is no running call for this project.');
+      }
+      if (!Number.isInteger(status.generation)) throw failure(1, 'Invalid call generation.');
+      return request('api/call', { method: 'DELETE', body: { generation: status.generation } });
+    }
+    const id = await projectId(name);
     const query = { project: id };
     switch (command) {
       case 'standup': {
@@ -235,14 +252,6 @@ function createClient(target, session) {
           throw failure(1, 'Invalid call acceptance response.');
         }
         return { ok: true };
-      case 'leave': {
-        const status = await request('api/call/status');
-        if (status.running !== true || status.project?.id !== id) {
-          throw failure(4, 'There is no running call for this project.');
-        }
-        if (!Number.isInteger(status.generation)) throw failure(1, 'Invalid call generation.');
-        return request('api/call', { method: 'DELETE', body: { generation: status.generation } });
-      }
       case 'heard':
         return heard(id, emit);
     }

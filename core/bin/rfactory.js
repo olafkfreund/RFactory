@@ -41,6 +41,7 @@ function argumentsFor(args) {
 
 const MULTILINE = new Set(['text', 'message', 'headline', 'description', 'body', 'findings', 'detail', 'request']);
 function human(value, field, indent = '') {
+  if (value === undefined) return [];
   const prefix = field === undefined ? '' : sanitize(field) + ': ';
   if (Array.isArray(value)) {
     if (!value.length) return [indent + prefix + '[]'];
@@ -67,37 +68,47 @@ function hideToken(value, token) {
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [hideToken(key, token), hideToken(entry, token)]));
 }
 
+// Write callbacks handle errors before stdout emits them as stream events.
+process.stdout.on('error', () => {});
+
+function writeOutput(text) {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(text + '\n', (error) => {
+      if (error && error.code !== 'EPIPE') reject(error);
+      else resolve(!error);
+    });
+  });
+}
+
 async function main(args) {
   const options = argumentsFor(args);
-  if (options.help) { process.stdout.write(USAGE + '\n'); return; }
+  if (options.help) return writeOutput(USAGE);
   const { command, json, url } = options;
-  const print = (value, lines) => process.stdout.write((json ? JSON.stringify(value) : lines.join('\n')) + '\n');
+  const print = (value, lines) => writeOutput(json ? JSON.stringify(value) : lines.join('\n'));
   if (command === 'logout') {
     await logout();
-    print({ ok: true }, ['Signed out.']);
-    return;
+    return print({ ok: true }, ['Signed out.']);
   }
   const target = targetUrl(url);
   if (command === 'login') {
-    print(await login(target.href), ['Signed in.']);
-    return;
+    return print(await login(target.href), ['Signed in.']);
   }
   const session = await readSession();
   const run = createClient(target.href, session);
   const result = await run(command, options, (event) => {
     const { type, ...data } = hideToken(event, session.access_token);
-    print({ type, ...data }, [sanitize(type), ...human(data, undefined, '  ')]);
+    return print({ type, ...data }, [sanitize(type), ...human(data, undefined, '  ')]);
   });
   if (command === 'heard') return;
   const safe = hideToken(result, session.access_token);
   if (command === 'status') {
     const { call, ...config } = safe;
-    print(safe, [...human(config), ...(call === null ? ['Calls disabled.'] : human(call, 'call'))]);
-  } else if (command === 'join' || command === 'leave') {
-    print(safe, [command === 'join' ? 'Join accepted.' : 'Call ended.']);
-  } else {
-    print(safe, human(safe));
+    return print(safe, [...human(config), ...(call === null ? ['Calls disabled.'] : human(call, 'call'))]);
   }
+  if (command === 'join' || command === 'leave') {
+    return print(safe, [command === 'join' ? 'Join accepted.' : 'Call ended.']);
+  }
+  return print(safe, human(safe));
 }
 
 main(process.argv.slice(2)).catch((error) => {

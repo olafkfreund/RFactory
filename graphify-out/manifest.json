@@ -3198,27 +3198,27 @@
     "semantic_hash": ""
   },
   "core/bin/rfactory.js": {
-    "mtime": 1795858273.4446013,
-    "seen": 1795858573.636433,
-    "ast_hash": "fdcbed5ad12021a611ff513d21949f52",
+    "mtime": 1795859203.5561893,
+    "seen": 1795859227.449767,
+    "ast_hash": "9ad11a5f08d4e589134e5dc7fc6f2f16",
     "semantic_hash": ""
   },
   "core/src/rfactory-auth.js": {
-    "mtime": 1795858520.6895273,
-    "seen": 1795858573.6364768,
-    "ast_hash": "a3be7fa5730594211a58dd609c1b948f",
+    "mtime": 1795859068.4093363,
+    "seen": 1795859192.5114772,
+    "ast_hash": "e63b9da67a014da4e90d561052c740b6",
     "semantic_hash": ""
   },
   "core/src/rfactory-client.js": {
-    "mtime": 1795858520.6895273,
-    "seen": 1795858573.6364794,
-    "ast_hash": "83263a12537c5486665ad9538041de3c",
+    "mtime": 1795859203.5561893,
+    "seen": 1795859227.4498193,
+    "ast_hash": "8b56c8d9da76ca9502fad32d92e0db5e",
     "semantic_hash": ""
   },
   "core/test/rfactory.test.js": {
-    "mtime": 1795858520.6895273,
-    "seen": 1795858573.6365623,
-    "ast_hash": "f9d50ab1ece6f1638a5863dd81b24340",
+    "mtime": 1795859159.8415098,
+    "seen": 1795859192.5115857,
+    "ast_hash": "8853d6e5c8fa7c0ccb77515f77871a16",
     "semantic_hash": ""
   },
   "intent/2026-11-26-26-cli-control.md": {
@@ -3228,9 +3228,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-26-26-cli-control.md": {
-    "mtime": 1795858025.5832481,
-    "seen": 1795858573.6373026,
-    "ast_hash": "7f281acfd7f40612c0e076eeb4153b3e",
+    "mtime": 1795859088.9347353,
+    "seen": 1795859192.51247,
+    "ast_hash": "3a8bb2ab4fe2ef46b8a8cd88890ad396",
     "semantic_hash": ""
   },
   "spec/2026-11-26-26-cli-control.md": {
