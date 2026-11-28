@@ -58,13 +58,30 @@ function createRecord({ dir, clock = Date, redactor }) {
     return [...last.values()];
   }
 
+  // shortcut: reads the whole day file, stream it when a day passes a few MB
+  async function readDay(day, after = 0) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('bad-day');
+    let text;
+    try { text = await fs.promises.readFile(path.join(dir, `${day}.jsonl`), 'utf8'); } catch (e) {
+      if (e.code === 'ENOENT') return [];
+      throw e;
+    }
+    const out = [];
+    text.split('\n').forEach((raw, i) => {
+      const line = i + 1;
+      if (line <= after || !raw) return;
+      try { out.push({ line, entry: JSON.parse(raw) }); } catch { /* incomplete last line */ }
+    });
+    return out;
+  }
+
   function unfinished() { return lastEntries().filter((e) => !e.kind && e.state === 'executing'); }
   function unfinishedShares() { return lastEntries().filter((e) => e.kind === 'share' && ['starting', 'running'].includes(e.state)); }
   // 'investigate': rows written before the audit kind was put after the payload's own kind
   function unfinishedInvestigations() { return lastEntries().filter((e) => ['investigation', 'investigate'].includes(e.kind) &&
     ['starting', 'running', 'stopping', 'uncertain'].includes(e.state)); }
 
-  return { append, prune, unfinished, unfinishedShares, unfinishedInvestigations };
+  return { append, prune, readDay, unfinished, unfinishedShares, unfinishedInvestigations };
 }
 
 module.exports = { createRecord };

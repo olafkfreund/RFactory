@@ -21,11 +21,20 @@ function checkFacts(text, snapshot) {
 }
 
 // evidence: items read live during the turn; they replace snapshot entries, but counts stay the snapshot's
-function checkFactsDetailed(text, snapshot, { repo, evidence = [] }) {
+function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
   const items = snapshot.items || [];
   const counts = summarise(items);
-  const byKey = new Map([...items, ...evidence].map((item) => [item.id, item]));
-  const byNumber = new Map([...byKey.values()].map((item) => [Number(item.id.slice(item.id.lastIndexOf('#') + 1)), item]));
+  const byKey = new Map([...items, ...evidence].map((item) => [item.id.includes('#') ? item.id.toLowerCase() : item.id, item]));
+  const byNumber = new Map();
+  for (const item of byKey.values()) {
+    if (!item.id.includes('#')) continue;
+    const number = Number(item.id.slice(item.id.lastIndexOf('#') + 1));
+    byNumber.set(number, byNumber.has(number) ? null : item);
+  }
+  const allowed = repos?.map((name) => name.toLowerCase());
+  const itemFor = (ref) => ref.key ? byKey.get(ref.key) : ref.repo
+    ? (allowed ? allowed.includes(ref.repo) : ref.repo === repo) && byKey.get(`${ref.repo}#${ref.number}`)
+    : byNumber.get(ref.number);
   let cut = false;
 
   const checked = text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
@@ -45,8 +54,8 @@ function checkFactsDetailed(text, snapshot, { repo, evidence = [] }) {
     const countClaims = [...sentence.matchAll(COUNT)].filter((match) =>
       !references.some((ref) => match.index < ref.end && match.index + match[1].length > ref.start));
     const invalid = ((references.length || countClaims.length) && states.length && /\b(?:not|isn't|isn’t|no longer|never)\b/i.test(sentence)) || references.some((ref) => {
-      const item = ref.key ? byKey.get(ref.key) : byNumber.get(ref.number);
-      if ((ref.repo && ref.repo !== repo) || !item) return true;
+      const item = itemFor(ref);
+      if (!item) return true;
       if (!states.length) return false;
       const nearest = states.reduce((best, state) => {
         const distance = Math.max(ref.start - state.end, state.start - ref.end, 0);
@@ -59,10 +68,10 @@ function checkFactsDetailed(text, snapshot, { repo, evidence = [] }) {
     }) || (references.length > 0 && states.some((state) =>
       // every state word outside a count must belong to some named item ("#3 is blocked and done")
       !countClaims.some((c) => state.start >= c.index && state.start < c.index + c[0].length) &&
-      !references.some((ref) => (ref.key ? byKey.get(ref.key) : byNumber.get(ref.number))?.state === state.state)));
+      !references.some((ref) => itemFor(ref)?.state === state.state)));
     if (invalid) cut = true;
     return invalid ? "I couldn't confirm that." : sentence;
-  }).join('');
+  }).join('').replace(/I couldn't confirm that\.(?:\s+I couldn't confirm that\.)+/g, "I couldn't confirm that.");
   return { text: checked, cut };
 }
 
