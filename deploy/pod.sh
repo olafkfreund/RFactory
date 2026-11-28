@@ -134,8 +134,13 @@ up() {
       -e RFACTORY_STT_SECRET_FILE=/run/rfactory/stt-path -v "$cfg/stt-path:/run/rfactory/stt-path:ro,Z")
   fi
   # --init reaps the bot's Xvfb/Chrome children; --shm-size for Chrome (Phase 0); calls on (1b)
+  call_storage=()
+  if [[ " ${write[*]} ${share[*]} ${note[*]} " != *" -v rfactory-actions:"* ]]; then
+    podman volume exists rfactory-actions || podman volume create rfactory-actions >/dev/null
+    call_storage=(-v rfactory-actions:/var/lib/rfactory/actions:U)
+  fi
   podman run -d --pod "$pod" --name rfactory-web --init --shm-size=1g \
-    "${write[@]}" "${share[@]}" "${investigate[@]}" "${note[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" \
+    "${write[@]}" "${share[@]}" "${investigate[@]}" "${note[@]}" "${roles[@]}" "${desktop[@]}" "${stt[@]}" "${call_storage[@]}" \
     -e RFACTORY_CALLS=1 \
     -e RFACTORY_SCOPE_FILE=/etc/rfactory/scope.json \
     -e RFACTORY_ALLOWED_EMAILS="$allowed" \
@@ -154,6 +159,7 @@ up() {
     "$proxy_image" \
     --alpha-config=/etc/oauth2-proxy/config.yaml \
     --redirect-url=http://127.0.0.1:4180/oauth2/callback \
+    --skip-jwt-bearer-tokens=true \
     --email-domain='*' --cookie-secure=false --reverse-proxy=false --skip-provider-button=true >/dev/null
   echo "rfactory pod up: http://127.0.0.1:4180"
 }

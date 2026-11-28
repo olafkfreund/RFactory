@@ -28,7 +28,8 @@ async function start(t, opts) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
-  return (p, init = {}, email = ME) => fetch(base + p, { ...init, headers: email ? { 'X-Forwarded-Email': email } : {} });
+  const request = (p, init = {}, email = ME) => fetch(base + p, { ...init, headers: { ...init.headers, ...(email ? { 'X-Forwarded-Email': email } : {}) } });
+  return Object.assign(request, { base });
 }
 
 test('401 without identity, 403 for others, 200 for the owner (case-insensitive)', async (t) => {
@@ -600,20 +601,21 @@ const LINK = 'https://meet.google.com/abc-defg-hij';
 const posting = (body) => ({ method: 'POST', body: JSON.stringify(body) });
 const until = async (done) => { while (!done()) await new Promise((r) => setTimeout(r, 5)); };
 
-async function projectApp(t, opts = {}) {
+async function projectApp(t, { callOptions, ...opts } = {}) {
   const { createCallManager } = require('../call.js');
   const { EventEmitter } = require('node:events');
   const w = projectWorld();
+  w.input = [];
   const spawn = () => {
     if (w.spawnFails) throw new Error('spawn-failed');
     const c = new EventEmitter();
-    c.stdin = new EventEmitter(); c.stdin.write = () => true;
+    c.stdin = new EventEmitter(); c.stdin.write = (line) => { w.input.push(line); return true; };
     c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {};
     c.stderr = new EventEmitter(); c.kill = () => {};
     w.children.push(c);
     return c;
   };
-  w.call = createCallManager({ spawn, source: w.source, brain: fakeBrain, tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), botCmd: ['bot'] });
+  w.call = createCallManager({ spawn, source: w.source, brain: fakeBrain, tts: { voice: 'v', say: async (s) => Buffer.from(s) }, redactor: makeRedactor([]), botCmd: ['bot'], ...callOptions });
   const get = await start(t, { source: w.source, scope: scope52, call: w.call, ...opts });
   const reply = async (url, init) => { const r = await get(url, init); return [r.status, await r.json()]; };
   const begin = (id = ALPHA) => reply('/api/call', posting({ link: LINK, project_id: id }));
@@ -621,6 +623,123 @@ async function projectApp(t, opts = {}) {
   const stop = async () => { const stopping = w.call.stop(); w.children.at(-1).emit('close', 0); await stopping; };
   return { w, get, reply, begin, hang, stop };
 }
+
+test('pairing HTTP routes enforce roles, strict origin, generation and project, and keep secrets off the wire and disk', async (t) => {
+  const { composeWrites } = require('../server.js');
+  const { createGrantManager } = require('../grants.js');
+  const { createScheduleRegistry, hashLink } = require('../schedule.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'call-audit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const link = 'https://teams.microsoft.com/meet/123?p=fixture-only-passcode';
+  const redactor = makeRedactor([]);
+  const viewer = 'viewer@example.com';
+  const approver = 'other@example.com';
+  const roles = rolesFor(`${ME},${viewer},${approver}`, `${ME},${approver}`);
+  const makeSchedule = () => createScheduleRegistry({ dir, validLink: (url) => url === link, projectMode: true });
+  const compose = () => composeWrites({ scope: scope52, roles, redactor, dir, callsEnabled: true });
+  const { actions, shares, investigations, record } = await compose();
+  assert.equal(actions, null);
+  assert.equal(shares, null);
+  assert.equal(investigations, null);
+  const schedule = makeSchedule();
+  const grantManager = createGrantManager({ record, roles, schedule });
+  const { get, w, stop } = await projectApp(t, { roles, redactor, schedule, callOptions: { grants: grantManager, record } });
+  t.after(async () => { if (w.call.running) await stop(); });
+  const request = async (method, path, { body, project = ALPHA, email = ME, headers = {} } = {}) => {
+    const response = await get(`${path}?project=${project}`, { method, body: body && JSON.stringify(body),
+      headers: { Origin: get.base, 'Sec-Fetch-Site': 'same-origin', 'x-rfactory-action': '1', ...headers } }, email);
+    return [response.status, await response.json()];
+  };
+  const schedules = '/api/call/schedules';
+  const grants = '/api/call/grant';
+  const now = Date.now();
+  const slotBody = { link, starts_at: now - 1000, ends_at: now + 120000, project_id: BETA };
+  const [created, { slot }] = await request('POST', schedules, { body: slotBody, email: ME.toUpperCase() });
+  assert.equal(created, 201);
+  assert.equal(slot.created_by, ME);
+  assert.equal(slot.project_id, ALPHA);
+  const scheduleResult = await request('GET', schedules, { email: viewer });
+  assert.deepEqual(scheduleResult, [200, { slots: [slot], can_approve: false }]);
+  assert.deepEqual(await request('GET', schedules, { project: BETA }), [200, { slots: [], can_approve: true }]);
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { project: BETA }))[0], 404);
+  assert.deepEqual(await request('POST', schedules, { body: { ...slotBody, link: 'private-invalid-url' } }), [400, { error: 'invalid-slot' }]);
+  assert.equal((await request('POST', schedules, { body: slotBody, email: viewer }))[0], 403);
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { email: viewer }))[0], 403);
+  for (const headers of [{ 'x-rfactory-action': '' }, { 'Sec-Fetch-Site': 'cross-site' }, { Origin: 'https://foreign.example' }]) {
+    assert.equal((await request('POST', schedules, { body: slotBody, headers }))[0], 403);
+    assert.equal((await request('DELETE', `${schedules}/${slot.id}`, { headers }))[0], 403);
+  }
+
+  assert.equal((await get('/api/call', posting({ link, project_id: ALPHA }))).status, 202);
+  const { generation } = w.call;
+  assert.equal((await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }))[0], 409);
+  const child = w.children[0];
+  const output = (msg) => child.stdout.emit('data', `${JSON.stringify(msg)}\n`);
+  output({ type: 'state', state: 'in-call' });
+  assert.deepEqual(await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }),
+    [409, { error: 'display-unavailable' }]);
+  output({ type: 'pairing-display', ready: true });
+  const write = child.stdin.write;
+  child.stdin.write = (line) => {
+    if (line.startsWith('{')) {
+      const { type, code_id } = JSON.parse(line);
+      if (type === 'pairing-code') output({ type: 'pairing-result', code_id, displayed: true });
+    }
+    return write(line);
+  };
+  for (const verb of ['request', 'verify', 'revoke']) {
+    const mutation = `${grants}/${verb}`;
+    for (const headers of [{ 'x-rfactory-action': '' }, { 'Sec-Fetch-Site': 'same-site' }, { Origin: 'https://foreign.example' }]) {
+      assert.equal((await request('POST', mutation, { headers, body: { generation } }))[0], 403);
+    }
+    assert.equal((await request('POST', mutation, { body: { generation }, email: viewer }))[0], 403);
+    assert.deepEqual(await request('POST', mutation, { body: { generation }, project: BETA }), [409, { error: 'not-this-project' }]);
+    assert.deepEqual(await request('POST', mutation, { body: { generation: generation - 1 } }), [409, { error: 'stale-generation' }]);
+  }
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  const events = await get(`/api/call/events?project=${ALPHA}`, { signal: abort.signal });
+  const reader = events.body.getReader();
+  const issued = await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } });
+  assert.deepEqual(issued, [200, { ok: true }]);
+  const { code } = w.input.filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).find(({ type }) => type === 'pairing-code');
+  const pending = await request('GET', grants, { email: viewer });
+  const pendingStatus = { grant: null, pending: true, can_verify: false, can_approve: false, scheduled: true, display_ready: true, generation };
+  assert.deepEqual(pending, [200, pendingStatus]);
+  assert.deepEqual(await request('GET', grants, { email: approver }), [200, { ...pendingStatus, can_approve: true }]);
+  assert.deepEqual(await request('GET', grants, { email: ME.toUpperCase() }),
+    [200, { ...pendingStatus, can_approve: true, can_verify: true }]);
+  const submitted = 'private-wrong-entry';
+  const invalid = await request('POST', `${grants}/verify`, { body: { generation, code: submitted } });
+  assert.deepEqual(invalid, [400, { error: 'invalid-code' }]);
+  const [verified, { grant }] = await request('POST', `${grants}/verify`, { body: { generation, code } });
+  assert.equal(verified, 200);
+  assert.equal(grant.scope, 'tests');
+  const outside = await request('GET', grants, { project: BETA });
+  assert.deepEqual(outside, [200, { grant: null, pending: false, can_verify: false, can_approve: true, scheduled: false, display_ready: false, generation }]);
+  const revoked = await request('POST', `${grants}/revoke`, { body: { generation, grant_id: grant.grant_id } });
+  assert.deepEqual(revoked, [200, { ok: true, revoked: true }]);
+
+  let sse = '';
+  while (!sse.includes('"state":"revoked"')) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false);
+    sse += Buffer.from(value).toString();
+  }
+  await reader.cancel();
+  assert.match(sse, /"type":"grant-updated","state":"granted"/);
+  const { record: reopenedRecord } = await compose();
+  const auditFile = fs.readdirSync(dir).find((name) => name.endsWith('.jsonl'));
+  const rows = await reopenedRecord.readDay(auditFile.slice(0, -6));
+  assert.deepEqual(rows.map(({ entry }) => entry.state), ['code-issued', 'code-rejected', 'granted', 'revoked']);
+  for (const { entry } of rows) assert.equal(entry.link_hash, hashLink(link));
+  assert.deepEqual(makeSchedule().list({ projectId: ALPHA }), [slot]);
+  const published = JSON.stringify([scheduleResult, issued, pending, invalid, grant, outside, revoked, sse, rows,
+    fs.readFileSync(path.join(dir, 'schedules.json'), 'utf8')]);
+  for (const secret of [link, 'fixture-only-passcode', code, submitted]) assert.ok(!published.includes(secret));
+  assert.equal((await request('DELETE', `${schedules}/${slot.id}`))[0], 200);
+  await stop();
+});
 
 test('project start: allowlist before CFactory, exact id only, failures free the slot', async (t) => {
   const a = await projectApp(t);

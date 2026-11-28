@@ -131,7 +131,7 @@ test('canvas shows the mesh mouth and disclosure, closes on errors, and counts 3
     }
   });
 
-test('a still face renders speaking frames without errors',
+test('a still face renders speaking frames and shows and clears the pairing banner on a 720p tile',
   { skip: !chrome || !fs.existsSync(chrome) }, async () => {
     const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox'] });
     try {
@@ -141,12 +141,14 @@ test('a still face renders speaking frames without errors',
       await page.goto('about:blank');
       await page.evaluate(() => {
         const canvas = document.createElement('canvas');
-        canvas.width = canvas.height = 512;
+        canvas.width = 1280;
+        canvas.height = 720;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         const labels = [];
         const fillText = ctx.fillText.bind(ctx);
         ctx.fillText = (value, ...args) => { labels.push(value); fillText(value, ...args); };
         window.labels = labels;
+        window.bannerPixel = () => Array.from(ctx.getImageData(5, 5, 1, 1).data);
         window.__vibeconfMedia = {
           on() {},
           setCameraRenderer(factory) { window.renderer = factory({ canvas, ctx }); },
@@ -156,16 +158,32 @@ test('a still face renders speaking frames without errors',
       const portraitDataUrl = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, '../avatars/m04.webp')).toString('base64');
       await page.evaluate((script) => eval(script), buildRendererSource({ portraitDataUrl, anchors: stillAnchors }));
       const result = await page.evaluate(() => {
+        const beforeRendering = __rfAvatar.setPairingCode('A2CD34');
         const frames = [];
         for (let i = 0; i < 8; i++) {
           labels.length = 0;
           renderer.render();
           frames.push([...labels]);
         }
-        return { frames, errors: __rfAvatar.errors };
+        const frame = () => { labels.length = 0; renderer.render(); return { labels: [...labels], pixel: bannerPixel() }; };
+        const before = frame();
+        labels.length = 0;
+        const displayed = __rfAvatar.setPairingCode('A2CD34');
+        const immediate = [...labels];
+        const pairing = frame();
+        __rfAvatar.clearPairingCode();
+        const after = frame();
+        return { frames, before, pairing, after, beforeRendering, displayed, immediate, errors: __rfAvatar.errors };
       });
       assert.equal(result.errors, 0);
       assert.deepEqual(errors, []);
+      assert.equal(result.beforeRendering, false);
+      assert.equal(result.displayed, true);
+      assert.ok(result.immediate.includes('Code: A2CD34'));
+      assert.ok(result.pairing.labels.includes('Code: A2CD34'));
+      assert.deepEqual(result.pairing.pixel, [0, 0, 0, 255]);
+      assert.notDeepEqual(result.pairing, result.before);
+      assert.deepEqual(result.after, result.before);
       for (const labels of result.frames) {
         assert.deepEqual(labels, ['AI', 'Factory (AI)', 'Source: github.com/olafkfreund/RFactory']);
       }
