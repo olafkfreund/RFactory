@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 25
 spec: spec/2026-11-28-25-user-operator-guide.md
 coders:
