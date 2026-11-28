@@ -9,7 +9,7 @@ const { platformOf } = require('./vm-call.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
 const { checkFacts, checkFactsDetailed } = require('@rfactory/core/src/facts.js');
-const { FACTORY, GITHUB } = require('@rfactory/core/src/lookups.js');
+const { FACTORY, GITHUB, JIRA } = require('@rfactory/core/src/lookups.js');
 const { summarise } = require('@rfactory/core/src/items.js');
 const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
@@ -28,7 +28,9 @@ const repositoryName = (project) => project?.github ? `${project.github.owner}/$
 const usd = (n) => Math.round(n * 1e6) / 1e6;
 
 // #51: a spoken lookup answer is at most 3 sentences, without markdown; the page keeps the full text
-function spoken(text) {
+function spoken(text, jiraBound) {
+  if (jiraBound) text = text.replace(/\b(Jira(?: issue)?) ([A-Z][A-Z0-9_]*_[A-Z0-9_]*)-(\d+)\b/gi,
+      (_, label, project, number) => `${label} ${[...project].map((c) => c === '_' ? 'underscore' : c).join(' ')} ${number}`);
   const plain = String(text).replace(/[`*_#>]+/g, '').replace(/\s+/g, ' ').trim();
   return plain.split(/(?<=[.!?])\s+/).slice(0, 3).join(' ');
 }
@@ -38,7 +40,7 @@ function sourcesOf(reads) {
   const sources = new Map();
   for (const { ok, kind, ref, title, repo } of reads) {
     if (!ok) continue;
-    for (const one of (kind === 'card' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards: 'FCT-1,FCT-4'; a file name may hold a comma
+    for (const one of (kind === 'card' || kind === 'jira' ? String(ref).split(',') : [String(ref)]).filter(Boolean)) { // find_cards / jira_list: 'FCT-1,FCT-4'; a file name may hold a comma
       const key = `${kind}:${repo || ''}:${one}`;
       if (!sources.get(key)?.title) sources.set(key, { kind, ref: one, title, ...(repo ? { repo } : {}) });
     }
@@ -323,7 +325,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const { signal } = controller;
     const deadline = question.arrivedAt + ANSWER_MS;
     const ctx = { project: c.project, ...(c.lookups ? { lookups: c.lookups } : {}), deadline, controller, signal,
-      tools: [...FACTORY, ...(c.project.github || c.project.githubs?.length ? GITHUB : [])],
+      tools: [...FACTORY, ...(c.project.github || c.project.githubs?.length ? GITHUB : []), ...(c.project.jira?.projects?.length ? JIRA : [])],
       rounds: 0, roundLimited: false, commit: null, reads: [] };
     const token = endpoint.register(ctx);
     c.lookupTurn = ctx;
@@ -350,7 +352,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       if (signal.aborted) throw new Error('aborted');
       const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
         ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
-        evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
+        jiraBound: !!c.project.jira, jiraListed: ctx.reads.some((r) => r.ok && r.tool === 'jira_list'),
+        evidence: ctx.reads.filter((r) => r.ok && r.evidence).flatMap((r) => r.evidence) });
       text = checked.text;
       outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
     } catch (error) {
@@ -372,7 +375,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     emitLimits(c);
     if (outcome === 'aborted' || stale()) return;
     if (snap) emit({ type: 'answer', text, snapshot: snap, sources: sourcesOf(ctx.reads) });
-    await queueSpeech(c, spoken(text), generation);
+    await queueSpeech(c, spoken(text, !!c.project.jira), generation);
   }
 
   async function answer(c, question, generation) {
@@ -692,7 +695,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       sessionId: randomUUID(), linkHash: hashLink(link), projectId: binding ? binding.projectId : null,
       maskLink: (text) => link.startsWith('https://') ? text.replaceAll(link, '[redacted]') : text,
       project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
-        githubs: own?.githubs ?? [], bound: true } : project,
+        githubs: own?.githubs ?? [], jira: own?.jira ?? null, bound: true } : project,
       lookups: own?.lookups ?? null,
       projectCall: target ?? null, // what the desktop routes may do, and read
       child, exit: exited, exited: false, stopping: null, generation: 0, seq: 0,

@@ -782,7 +782,7 @@ function sourceUrl(repo, { kind, ref }) {
 
 function renderSource(doc, source) {
   const row = el(doc, 'div', undefined, 'who');
-  const name = source.kind === 'issue' || source.kind === 'pr' ? `${source.kind} #${source.ref}` : `${source.kind} ${source.ref}`;
+  const name = source.kind === 'issue' || source.kind === 'pr' ? `${source.kind} #${source.ref}` : `${source.kind === 'jira' ? 'Jira' : source.kind} ${source.ref}`;
   const label = source.title && source.title !== source.ref && source.title !== `#${source.ref}` ? `${name}: ${source.title}` : name;
   if (source.kind === 'card' && /^[A-Z][A-Z0-9]+-\d+$/.test(String(source.ref))) {
     const btn = el(doc, 'button', label, 'card-key');

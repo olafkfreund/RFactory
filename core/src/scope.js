@@ -18,6 +18,36 @@ function resolveListen({ listen = 'auto', platform, sttConfigured }) {
   return platform !== 'meet' && sttConfigured ? 'audio' : 'platform';
 }
 
+function validateJira({ cloud_id, email, token_file, flagged_field }, projects, mapping) {
+  const plain = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+  if (typeof cloud_id !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cloud_id) ||
+      (!Array.isArray(projects) || !projects.length || projects.length > 50 || new Set(projects).size !== projects.length ||
+       !projects.every((project) => typeof project === 'string' && /^[A-Z][A-Z0-9_]{1,19}$/.test(project))) ||
+      typeof email !== 'string' || !/^[^\s:@]+@[^\s:@]+$/.test(email) ||
+      typeof token_file !== 'string' || !path.isAbsolute(token_file) ||
+      (flagged_field !== undefined && (typeof flagged_field !== 'string' || !/^customfield_\d+$/.test(flagged_field)))) {
+    throw new Error('invalid-scope');
+  }
+  if (mapping !== undefined && (!plain(mapping) ||
+      (Object.hasOwn(mapping, 'status') && (!plain(mapping.status) ||
+       !Object.values(mapping.status).every((state) => STATES.includes(state)))))) throw new Error('invalid-scope');
+}
+
+function readJiraToken(token_file) {
+  let jiraToken;
+  try {
+    // A FIFO must not block startup before fstat can reject it.
+    const fd = fs.openSync(token_file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      const file = fs.fstatSync(fd);
+      if (file.isFile() && (file.mode & 0o7777) === 0o600) jiraToken = fs.readFileSync(fd, 'utf8').trim();
+    } finally { fs.closeSync(fd); }
+  } catch { throw new Error('jira-token-file'); }
+  if (jiraToken === undefined) throw new Error('jira-token-file-mode');
+  if (!/^\S{8,}$/.test(jiraToken)) throw new Error('invalid-jira-token');
+  return jiraToken;
+}
+
 function loadScope(file, env = process.env, secrets = [], extras = {}) {
   const text = fs.readFileSync(file, 'utf8');
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
@@ -56,11 +86,17 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     const onlyKey = (o, key) => !!o && Object.keys(o).sort().join() === key.split(',').sort().join();
     const allow = scope.projects?.allow;
     if (!onlyKey(scope.projects, 'allow') || !Array.isArray(allow) || allow.length < 1 || allow.length > 50 ||
-        !allow.every((p) => (onlyKey(p, 'id') || onlyKey(p, 'id,github_read')) && typeof p.id === 'string' &&
+        !allow.every((p) => (p && Object.keys(p).every((k) => ['id', 'github_read', 'jira_read'].includes(k))) && typeof p.id === 'string' &&
           /^(repo:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(p.id)) ||
         new Set(allow.map((p) => p.id)).size !== allow.length) throw new Error('invalid-projects');
     const seen = new Set();
     for (const p of allow) {
+      if (Object.hasOwn(p, 'jira_read')) {
+        const jira = p.jira_read;
+        if (!jira || typeof jira !== 'object' || Object.keys(jira).some((k) =>
+          !['cloud_id', 'projects', 'email', 'token_file', 'flagged_field', 'mapping'].includes(k))) throw new Error('invalid-projects');
+        validateJira(jira, jira.projects, jira.mapping);
+      }
       if (!Object.hasOwn(p, 'github_read')) continue;
       const reads = p.github_read;
       if (!Array.isArray(reads) || reads.length < 1 || reads.length > 20) throw new Error('invalid-projects');
@@ -132,6 +168,12 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       if (!/^\S{8,}$/.test(githubToken)) throw new Error('invalid-github-token');
     }
     if (scope.lookups_enabled) {
+      for (const p of scope.projects?.allow ?? []) {
+        if (!p.jira_read) continue;
+        const token = readJiraToken(p.jira_read.token_file);
+        (extras.jiraTokens ??= {})[p.id] = token;
+        projectTokens.push(token, Buffer.from(p.jira_read.email + ':' + token).toString('base64'));
+      }
       for (const r of (scope.projects?.allow ?? []).flatMap((p) => p.github_read ?? [])) {
         const tokenFile = fs.statSync(r.token_file);
         if (!tokenFile.isFile() || (tokenFile.mode & 0o777) !== 0o600) throw new Error('github-token-file-mode');
@@ -142,29 +184,8 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
       }
     }
   } else if (scope.source?.kind === 'jira') {
-    const { cloud_id, project, email, token_file, flagged_field } = scope.source;
-    const mapping = scope.mapping;
-    const plain = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
-    if (typeof cloud_id !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cloud_id) ||
-        typeof project !== 'string' || !/^[A-Z][A-Z0-9_]{1,19}$/.test(project) ||
-        typeof email !== 'string' || !/^[^\s:@]+@[^\s:@]+$/.test(email) ||
-        typeof token_file !== 'string' || !path.isAbsolute(token_file) ||
-        (flagged_field !== undefined && (typeof flagged_field !== 'string' || !/^customfield_\d+$/.test(flagged_field)))) {
-      throw new Error('invalid-scope');
-    }
-    if (mapping !== undefined && (!plain(mapping) ||
-        (Object.hasOwn(mapping, 'status') && (!plain(mapping.status) ||
-         !Object.values(mapping.status).every((state) => STATES.includes(state)))))) throw new Error('invalid-scope');
-    try {
-      // A FIFO must not block startup before fstat can reject it.
-      const fd = fs.openSync(token_file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-      try {
-        const file = fs.fstatSync(fd);
-        if (file.isFile() && (file.mode & 0o7777) === 0o600) jiraToken = fs.readFileSync(fd, 'utf8').trim();
-      } finally { fs.closeSync(fd); }
-    } catch { throw new Error('jira-token-file'); }
-    if (jiraToken === undefined) throw new Error('jira-token-file-mode');
-    if (!/^\S{8,}$/.test(jiraToken)) throw new Error('invalid-jira-token');
+    validateJira(scope.source, [scope.source.project], scope.mapping);
+    jiraToken = readJiraToken(scope.source.token_file);
   } else {
     if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');
     if (Object.hasOwn(scope.source, 'token_file')) {

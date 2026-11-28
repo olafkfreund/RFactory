@@ -608,3 +608,34 @@ test('the README Jira scope file loads', () => {
     assert.equal(extras.jiraToken, 'synthetic-jira-readme-token');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Factory projects validate their Jira binding and keep credentials out of project data', () => {
+  const f = fixture();
+  const file = path.join(path.dirname(f.keyFile), 'scope.json');
+  const tokenFile = path.join(path.dirname(f.keyFile), 'jira-token');
+  const token = 'synthetic-project-read-token';
+  const jira = { cloud_id: '11111111-2222-3333-4444-555555555555', projects: ['ABC', 'XYZ'],
+    email: 'reader@example.com', token_file: tokenFile, mapping: { status: { Parked: 'blocked' } } };
+  const project = { id: 'repo:2', jira_read: jira };
+  try {
+    f.scope.projects = { allow: [project, { id: 'repo:3' }] };
+    assert.deepEqual(f.load(), f.scope); // disabled lookups do not require a token mount
+    f.scope.lookups_enabled = true;
+    fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+    fs.writeFileSync(file, JSON.stringify(f.scope));
+    const extras = {}, secrets = [];
+    const scope = loadScope(file, {}, secrets, extras);
+    const encoded = Buffer.from(jira.email + ':' + token).toString('base64');
+    assert.deepEqual(extras.jiraTokens, { 'repo:2': token });
+    assert.deepEqual(secrets, [key, token, encoded]);
+    assert.ok(!JSON.stringify(scope).includes(token));
+    assert.equal(makeRedactor(secrets).toModel(token + ' ' + encoded), '[redacted] [redacted]');
+    fs.chmodSync(tokenFile, 0o644);
+    assert.throws(() => f.load(), /jira-token-file-mode/);
+    for (const bad of [{ cloud_id: 'other' }, { projects: [] }, { projects: ['ABC', 'ABC'] }, { projects: ['A/B'] },
+      { projects: 'ABC' }, { token_file: 'local' }, { mapping: { status: { Open: 'any' } } }, { token: 'inline' }]) {
+      project.jira_read = { ...jira, ...bad };
+      assert.throws(() => f.load(), /invalid-(scope|projects)/);
+    }
+  } finally { f.cleanup(); }
+});

@@ -448,7 +448,9 @@ async function composeWrites({ scope, source, brain, redactor, roles, dir, rebin
 
 // #51: the read-only lookup tools and their endpoint; GitHub only when its binding is the board's own repository.
 // The lookups read CFactory through their own bounded source; the app's source is untouched.
-async function composeLookups({ scope, key, redactor, token, tokens = {}, createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource }) {
+async function composeLookups({ scope, key, redactor, token, tokens = {}, jiraTokens = {},
+  createSource = require('@rfactory/core/src/sources/cfactory.js').createCfactorySource,
+  createJiraRead = require('@rfactory/core/src/sources/jira.js').createJiraRead }) {
   if (!scope.lookups_enabled) return null;
   const source = createSource({ mcpUrl: scope.source.mcp_url, key, repositoryId: scope.source.repository_id, redactor, bounded: true });
   await source.start();
@@ -468,8 +470,9 @@ async function composeLookups({ scope, key, redactor, token, tokens = {}, create
   const endpoint = createLookupEndpoint({ lookups: { tools: (ctx) => own(ctx).tools(ctx), call: (ctx, name, args) => own(ctx).call(ctx, name, args) } });
   const lookupsFor = (binding) => {
     const selected = [];
+    const allowEntry = scope.projects?.allow?.find((p) => p.id === binding.projectId);
     const candidates = binding.repositories.map((r) => {
-      const config = scope.projects?.allow.find((p) => p.id === binding.projectId)?.github_read?.find((g) => g.repository_id === r.id)
+      const config = allowEntry?.github_read?.find((g) => g.repository_id === r.id)
         ?? (r.id === scope.source.repository_id && token ? scope.source.github_read : null);
       return { repository: r, config };
     });
@@ -489,8 +492,18 @@ async function composeLookups({ scope, key, redactor, token, tokens = {}, create
     const clients = new Map(selected.map((g) => [`${g.owner}/${g.repo}`.toLowerCase(),
       g.repositoryId === scope.source.repository_id && token ? github
         : require('@rfactory/core/src/sources/github-read.js').createGithubRead({ token: tokens[g.repositoryId] })]));
+    let jira = null, jiraBinding = null;
+    const jiraConfig = allowEntry?.jira_read;
+    const jiraToken = jiraConfig ? jiraTokens[binding.projectId] : null;
+    if (jiraConfig && jiraToken) {
+      const captured = structuredClone(jiraConfig);
+      jira = createJiraRead({ binding: captured, token: jiraToken });
+      jiraBinding = { projects: captured.projects };
+    } else if (jiraConfig) {
+      console.error(`rfactory-web: jira-token-missing ${binding.projectId}`);
+    }
     return { lookups: createLookups({ source: source.forRepositories(binding.repositories.map((r) => r.id)),
-      github: selected.length > 1 ? clients : clients.values().next().value ?? null, redactor }), githubs: selected };
+      github: selected.length > 1 ? clients : clients.values().next().value ?? null, jira, redactor }), githubs: selected, jira: jiraBinding };
   };
   const lookupUrl = await endpoint.start();
   return { lookups, lookupsFor, endpoint, lookupUrl, project: { repositoryId: scope.source.repository_id, github: binding } };
@@ -535,7 +548,7 @@ async function main() {
   const slot = { starting: false }; // one call slot, shared by the page and the agents' status
   const scope = loadScope(process.env.RFACTORY_SCOPE_FILE, process.env, secrets, extras);
   const jira = scope.source.kind === 'jira';
-  if (jira) refuseJiraEnv(process.env);
+  if (jira || extras.jiraTokens) refuseJiraEnv(process.env);
   if (jira || scope.source.kind === 'github') {
     const source = await composeStandalone({ scope, token: jira ? extras.jiraToken : extras.githubToken, env: process.env });
     return createApp({ source, scope, redactor: makeRedactor(secrets), roles, commit: process.env.RFACTORY_COMMIT || '' })
@@ -551,7 +564,7 @@ async function main() {
   const dir = process.env.RFACTORY_ACTIONS_DIR || ACTIONS_DIR;
   const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir,
     rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
-  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
+  const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens, jiraTokens: extras.jiraTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
