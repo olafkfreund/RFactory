@@ -484,3 +484,20 @@ test('action recovery keeps the project of an executing line', async () => {
   assert.equal(f.entries[0].project_id, 'repo:2');
   assert.equal(f.manager.list().history[0].project_id, 'repo:2');
 });
+
+test('request forwards captionsMode and multi-repository create_card without repository_id asks which repository', async () => {
+  const seen = [];
+  const f = setup({ propose: async (_snapshot, options) => {
+    seen.push(options.captionsMode);
+    return { action: 'create_card', args: { title: 'New' } };
+  }, rebind: async () => binding });
+  await f.manager.recover(); await f.manager.startCall(1, { binding, view: projectView(f) });
+  for (const utterance of ['create New in unknown repo', 'create New in first or second']) {
+    const response = await f.manager.request(utterance, 'Caller', { captionsMode: true });
+    assert.equal(response.status, 400);
+    assert.equal(response.text, 'Which repository: first or second?');
+    assert.deepEqual(f.manager.list().pending, []);
+  }
+  await f.manager.request('create New', 'Caller');
+  assert.deepEqual(seen, [true, true, false]);
+});

@@ -789,7 +789,7 @@ test('caption credentials are redacted for brain, events and logs; malformed and
 
 function fakeActions() {
   const a = { requests: [], started: [], ended: 0, subs: new Set() };
-  a.request = async (text, speaker) => { a.requests.push([text, speaker]); return { status: 202, text: 'Server sentence.' }; };
+  a.request = async (...args) => { a.requests.push(args); return { status: 202, text: 'Server sentence.' }; };
   a.startCall = (g) => { a.started.push(g); };
   a.endCall = async () => { a.ended++; };
   a.subscribe = (fn) => { a.subs.add(fn); return () => a.subs.delete(fn); };
@@ -815,7 +815,7 @@ test('action utterances go to actions.request and the server sentence is spoken;
     assert.deepEqual(actions.started, [1]);
     children[0].stdout.emit('data', `${JSON.stringify({ type: 'heard', id: 1, speaker: 'Eve', text: 'Factory, create a card called Login', final: true })}\n`);
     clock.tick(1500); await flush(); await flush();
-    assert.deepEqual(actions.requests, [['create a card called Login', 'Eve']]);
+    assert.deepEqual(actions.requests, [['create a card called Login', 'Eve', { captionsMode: true }]]);
     const wav = spoken.filter((s) => s.startsWith('{')).map((s) => JSON.parse(s)).find((m) => m.type === 'speak');
     assert.equal(Buffer.from(wav.wav, 'base64').toString(), 'Server sentence.');
     children[0].stdout.emit('data', `${JSON.stringify({ type: 'spoke', seq: wav.seq, result: 'done' })}\n`);
@@ -1013,13 +1013,30 @@ function fakeInvestigations(result) {
   return s;
 }
 
+test('audio requests pass captionsMode false to actions and investigations', async () => {
+  for (const [manager, text, expected] of [
+    ['actions', 'create a card called Login', ['Participant', { captionsMode: false }]],
+    ['investigations', 'investigate the login failure', ['Participant', false, { captionsMode: false }]],
+  ]) {
+    const receiver = fakeManager();
+    const f = setup({ stt: { transcribe: async () => ({ text: `Factory, ${text}` }) }, extra: { [manager]: receiver } });
+    try {
+      await f.manager.start(MEET, { listen: 'audio' });
+      f.children[0].output(audio(0));
+      await flush(); f.clock.tick(1200); await flush();
+      assert.deepEqual(receiver.requests, [[text, ...expected]]);
+      await stopNow(f);
+    } finally { f.restore(); }
+  }
+});
+
 test('investigate utterances reach investigations, not the desktop; sentences are spoken once, only in the asking call', async () => {
   const original = process.kill; process.kill = () => {};
   try {
     const investigations = fakeInvestigations({ status: 202, text: 'Approve the investigation on the RFactory page.', investigation: { id: 'i1' } });
     const f = await shareCall({ investigations, desktop: { request: async () => { throw new Error('desktop must not be asked'); } } });
     await f.heard('Factory, open a terminal on notes-api and run the tests');
-    assert.deepEqual(investigations.requests, [['open a terminal on notes-api and run the tests', 'Eve', false]]);
+    assert.deepEqual(investigations.requests, [['open a terminal on notes-api and run the tests', 'Eve', false, { captionsMode: true }]]);
     assert.deepEqual(investigations.started, [[1]]);
     const update = (id, state, reason) => investigations.fire({ type: 'investigation-updated', investigation: { id, state, reason } });
     update('other', 'running');

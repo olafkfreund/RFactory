@@ -122,6 +122,64 @@ test('the guest helper does not run for a Teams link, and a throwing page never 
   s.stdin.end(); await s.done;
 });
 
+test('the Meet captions watcher dismisses only the visible matching dialog after admission and stops polling on leave', async () => {
+  const clicked = [];
+  let releaseJoin, polls = 0, releaseVisibility;
+  const captions = { text: 'CAPTIONS AND TRANSLATION', visible: false, buttons: ['Turn off captions', 'Dismiss dialog'] };
+  const dialogs = [{ text: 'Settings', visible: true, buttons: ['Close'] }, captions];
+  const page = {
+    evaluate: async () => false,
+    locator: (selector) => {
+      polls++;
+      assert.strictEqual(selector, '[role="dialog"]:visible');
+      return { filter };
+    },
+  };
+  function filter({ hasText }) {
+    const visible = dialogs.filter((dialog) => dialog.visible && hasText.test(dialog.text));
+    return { getByRole: (role, { name }) => {
+      assert.strictEqual(role, 'button');
+      const button = visible.flatMap((dialog) => dialog.buttons).find((label) => name.test(label));
+      return { first: () => ({
+        isVisible: async () => button === 'Dismiss dialog' && clicked.length > 0
+          ? new Promise((resolve) => { releaseVisibility = resolve; }) : Boolean(button),
+        click: async () => clicked.push(button),
+      }) };
+    } };
+  }
+  const s = await joined({ page, join: () => new Promise((resolve) => { releaseJoin = resolve; }) });
+  const poll = () => s.timers.filter((t) => t.ms === 1000).at(-1);
+  try {
+    assert.strictEqual(polls, 0);
+    releaseJoin(s.call); await tick();
+    assert.strictEqual(polls, 1);
+    assert.deepStrictEqual(clicked, []);
+
+    captions.visible = true;
+    await poll().fn();
+    assert.deepStrictEqual(clicked, ['Dismiss dialog']);
+
+    const timer = poll();
+    const inFlight = timer.fn(); await tick();
+    s.msg({ type: 'leave' }); await s.done;
+    assert.strictEqual(timer.cleared, true);
+    releaseVisibility(true); await inFlight;
+    assert.strictEqual(poll(), timer);
+    assert.deepStrictEqual(clicked, ['Dismiss dialog']);
+  } finally { releaseJoin?.(s.call); s.stdin.end(); await s.done; }
+});
+
+test('the Meet captions dialog watcher is off in audio mode and for other platforms', async () => {
+  let polls = 0;
+  const page = { evaluate: async () => false, locator: () => { polls++; } };
+  const audio = await audioJoined({ page });
+  const teams = await joined({ page, platform: 'teams' });
+  for (const s of [audio, teams]) {
+    s.stdin.end(); await s.done;
+  }
+  assert.strictEqual(polls, 0);
+});
+
 test('joining and lobby via onState, then in-call; options as planned', async () => {
   const s = await joined();
   assert.deepStrictEqual(s.states(), ['joining', 'lobby', 'in-call']);

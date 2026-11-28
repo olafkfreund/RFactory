@@ -273,7 +273,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
         lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: usd(budget - c.lookupSpend) } })]);
       ({ cost = null, model = null } = result);
       if (signal.aborted) throw new Error('aborted');
-      const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
+      const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { dedupeRefusals: c.listen === 'platform', repo: repositoryName(c.project)?.toLowerCase() ?? null,
         ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
         evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
       text = checked.text;
@@ -327,7 +327,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     try {
       const result = await brain.turn(snap, { deadline: now() + 55000,
         ...(question.kind === 'question' ? { question: question.text } : {}) });
-      text = checkFacts(redactor.toModel(result.text), snap);
+      text = checkFacts(redactor.toModel(result.text), snap, { dedupeRefusals: c.listen === 'platform' });
     } catch (error) {
       if (c.generation === generation && !c.stopping) log(`brain failed: ${error.message}`);
       text = SORRY;
@@ -341,7 +341,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     let text;
     try {
       const result = item.desktop ? await desktop.request(item.text, c.child.desktop_id, await snapshot(c), c.projectCall) // this call, so a later call cannot take the proposal
-        : await actions.request(item.text, item.speaker);
+        : await actions.request(item.text, item.speaker, { captionsMode: c.listen === 'platform' });
       if (result.question) return answer(c, { ...item, kind: 'question' }, generation);
       text = result.text;
     }
@@ -390,7 +390,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
 
   async function requestInvestigation(c, item, generation) {
     let result;
-    try { result = investigations ? await investigations.request(item.text, item.speaker, c.showLog) : { text: 'Investigations are turned off here.' }; }
+    try { result = investigations ? await investigations.request(item.text, item.speaker, c.showLog, { captionsMode: c.listen === 'platform' }) : { text: 'Investigations are turned off here.' }; }
     catch (error) {
       if (c.generation === generation && !c.stopping) log(`investigation failed: ${error.message}`);
       result = { text: "Sorry, I can't do that right now." };
@@ -616,7 +616,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     child.stdin.on('error', (error) => logFor(c, `child stdin failed: ${error.message}`));
     child.stderr.on('data', (data) => logFor(c, selected === 'audio' ? `child stderr: ${data.length} bytes` : data.toString()));
     try {
-      c.hearing = createHearing({ quietMs, clock, selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item), notes: !!notes });
+      c.hearing = createHearing({ quietMs, clock, captionsMode: selected === 'platform', selfNames: SELF_NAMES, onAddressed: (item) => addressed(c, item), notes: !!notes });
       c.limitTimer = clock.setTimeout(() => stopCall(c, '60-minute limit'), 60 * 60 * 1000);
       let buffer = '', skipping = false;
       child.stdout.setEncoding('utf8');

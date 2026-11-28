@@ -49,7 +49,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
   const description = (payload, effects, binding) => binding?.repositories.length > 1
     ? `${describe(payload, effects).slice(0, -1)} in ${payload.repository_path}.` : describe(payload, effects);
 
-  async function request(text, speaker) {
+  async function request(text, speaker, { captionsMode = false } = {}) {
     if (!enabled || !scope.writes_enabled) return reply(403, 'Changes are turned off here.');
     if (generation === undefined) return reply(409, 'There is no call right now.');
     const callGeneration = generation;
@@ -59,7 +59,7 @@ function createActionManager({ readSource, writer, brain, record, redactor, cloc
     const snapshot = await source.snapshot();
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     const proposal = await brain.propose(snapshot, { deadline: now() + 55000, request: text,
-      ...(repositories ? { repositories } : {}) });
+      ...(repositories ? { repositories } : {}), captionsMode });
     if (callGeneration !== generation) return reply(409, 'The call has ended.');
     if (proposal.action === 'none') return { status: 200, question: true };
     return submit(proposal, speaker, { generation: callGeneration, snapshotKeys: new Set(snapshot.items.map((item) => item.id)),

@@ -53,7 +53,8 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const ac = new AbortController();
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
-  let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
+  let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, captionsDialogTimer = null;
+  let closing = false, heardPcm = false, segment = 0;
   let holdChat = false, chatSent = false, captionsKnown = false;
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, joinWaitResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
@@ -188,6 +189,20 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (!closing) leftTimer = d.clock.setTimeout(watchLeft, 4000);
   }
 
+  // shortcut: uses the provider's private page until its post-admission sweep can handle this in captions mode.
+  async function watchCaptionsDialog() {
+    if (closing) return;
+    const page = call._inner?.page;
+    try {
+      if (page) {
+        const close = page.locator('[role="dialog"]:visible').filter({ hasText: /captions and translation/i })
+          .getByRole('button', { name: /^(close|dismiss)( (dialog|captions and translation))?$/i }).first();
+        if (await close.isVisible() && !closing) await close.click({ timeout: 1000 });
+      }
+    } catch { /* Meet may replace the dialog between checks. */ }
+    if (!closing) captionsDialogTimer = d.clock.setTimeout(watchCaptionsDialog, 1000);
+  }
+
   async function pollRoster() {
     if (closing || !call) return;
     try {
@@ -303,6 +318,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (leftTimer) d.clock.clearTimeout(leftTimer);
     if (noAudioTimer) d.clock.clearTimeout(noAudioTimer);
     if (noticeTimer) d.clock.clearTimeout(noticeTimer);
+    if (captionsDialogTimer) d.clock.clearTimeout(captionsDialogTimer);
     stopping = Promise.resolve().then(async () => {
       if (code) exitCode = code;
       stopStarted = Date.now();
@@ -515,6 +531,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       }
       // registered before the 'heard' forwarder, so "captions on" reaches the manager before the caption itself
       call.once('caption', () => { if (!captionsKnown) captions(true); }); // an explicit state from the library wins
+      watchCaptionsDialog();
     }
     if (!audio) call.on('caption', (t) => send({ type: 'heard', id: t.id, speaker: t.speaker, text: t.text, final: t.final }));
     call.on('state', (s) => { if (TERMINAL.includes(s)) { sendState(s); stop(`state ${s}`, s === 'error' ? 1 : 0); } });
