@@ -124,3 +124,11 @@ test('agent: call-config avatar reaches onCallConfig as the fourth argument', as
   await createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: async (...a) => seen.push(a) }).handle({ type: 'call-config', nonce: 'n1', avatar: 'ada', listen: 'audio', language: 'de' });
   assert.deepEqual(seen, [['n1', false, undefined, 'ada', 'audio', 'de']]);
 });
+
+test('agent forwards the timing opt-in once when accepting its first call config', async () => {
+  const seen = [];
+  const agent = createAgent({ control: {}, profile: {}, send: () => {}, onCallConfig: (...args) => seen.push(args) });
+  await agent.handle({ type: 'call-config', nonce: 'n1', startup_timing: true });
+  await agent.handle({ type: 'call-config', nonce: 'n2', startup_timing: true });
+  assert.deepEqual(seen, [['n1', false, undefined, undefined, undefined, undefined, true]]);
+});

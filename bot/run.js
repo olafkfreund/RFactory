@@ -489,17 +489,39 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     return stop;
   }
 
+  function watchJoinClick(context, report) {
+    const onConsole = (message) => {
+      const page = message.page();
+      if (closing || message.type() !== 'log' || !page || page !== context.pages()[0] ||
+          !page.url().startsWith('https://meet.google.com/')) return;
+      const text = message.text();
+      // The pinned provider logs regular joins just before dispatch, and recording consent just after.
+      if (text.startsWith('[electron-meet] Clicking join: ') || text === '[rfactory] guest join click' ||
+          text === '[electron-meet] Accepted call-recording disclosure (clicked "Join now") — recording/transcription consented on the user\'s behalf') {
+        context.off('console', onConsole);
+        report();
+      }
+    };
+    context.on('console', onConsole);
+    return () => context.off('console', onConsole);
+  }
+
   async function start(link) {
+    const timing = link.startsWith('https://meet.google.com/') ? d.startupTiming : null;
     const deadline = d.clock.now() + 300000;
     let prev = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) timing?.('retry', attempt);
       try {
         const join = d.join || require('@vibeconferencing/calls').join;
         const playwrightHost = d.playwrightHost || require('@vibeconferencing/calls/hosts/playwright').playwrightHost;
         dir = await d.mkdtemp(path.join(os.tmpdir(), 'rfactory-bot-'));
         if (closing) return;
+        timing?.('chrome-start', attempt);
         host = await playwrightHost({ userDataDir: dir, ...(env.CHROME_PATH ? { executablePath: env.CHROME_PATH } : {}) });
         if (closing) return;
+        timing?.('browser-ready', attempt);
+        const stopClickObserver = timing && watchJoinClick(host.context, () => timing('join-click', attempt));
         const stopGuestHelper = link.startsWith('https://meet.google.com/') ? guestHelper(host.context.pages()[0], ac.signal) : () => {};
         try {
           if (audio) bridge = await d.installSttBridge(host, { onAudio, log });
@@ -511,11 +533,18 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
             name: BOT_NAME, host, timeoutMs: remaining, signal: ac.signal,
             onState: (s) => { if (s === 'joining' || s === 'lobby') sendState(s); },
           });
-        } finally { stopGuestHelper(); }
+        } finally {
+          stopGuestHelper();
+          stopClickObserver?.();
+        }
         if (closing) return;
+        timing?.('admitted', attempt);
         break;
       } catch (e) {
         if (closing) return;
+        const code = failureCode(e);
+        timing?.(code === 'denied' || code === 'blocked-by-admin' ? 'refused'
+          : code === 'timeout' || code === 'lobby-timeout' ? 'timeout' : 'join-error', attempt);
         const wait = attempt === 1 ? 15000 : 45000;
         const retrying = failureCode(e) === 'denied' && attempt < 3 && deadline - d.clock.now() - 2000 - wait >= 60000;
         await failureReport(e, attempt, retrying);

@@ -811,3 +811,27 @@ test('create refuses a bad listen or language and puts good ones in call-config'
   assert.equal(conn.out[0].listen, 'audio');
   assert.equal(conn.out[0].language, 'pt-BR');
 });
+
+test('Meet startup diagnostics join guest observations to the reserved desktop and KubeVirt call label', async () => {
+  for (const enabled of [true, false]) {
+    const rows = [];
+    const f = setup({ config: { startupTiming: enabled }, deps: { log: (line) => rows.push(JSON.parse(line)) } });
+    const { desktop_id } = await f.create();
+    const control = await f.control(desktop_id);
+    assert.equal(control.out[0].startup_timing, enabled ? true : undefined);
+    for (let repeat = 0; repeat < 32; repeat++) {
+      control.reply({ type: 'startup-timing', stage: 'worker-ready' });
+      control.reply({ type: 'startup-timing', stage: 'join-click', attempt: 1 });
+    }
+    control.reply({ type: 'startup-timing', stage: 'join-click', attempt: 2 });
+    assert.equal(f.lc.heartbeat(desktop_id).ok, true);
+    assert.deepEqual(rows.map((r) => r.stage), enabled
+      ? ['vm-reserved', 'vmi-requested', 'vm-created', 'vm-unpaused', 'guest-ready', 'worker-ready', 'join-click', 'join-click'] : []);
+    const clicks = rows.filter((r) => r.stage === 'join-click');
+    assert.deepEqual(clicks.map((r) => r.attempt), enabled ? [1, 2] : []);
+    for (const row of rows) {
+      assert.deepEqual(row, { type: 'startup-timing', stage: row.stage, call_tag: f.manifests[0].metadata.labels['rfactory.io/call'],
+        desktop_id, ...(row.stage === 'join-click' ? { attempt: row.attempt } : {}) });
+    }
+  }
+});

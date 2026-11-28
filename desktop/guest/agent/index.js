@@ -68,7 +68,7 @@ function createAgent({ control, profile, send, resolveLogin, share, onCallConfig
       if (m.type === 'call-config') {
         if (configured || !onCallConfig) return undefined; // the nonce is fixed for the call
         configured = true;
-        return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token, m.avatar, m.listen, m.language)).catch(() => {}); // a throw is caught too
+        return Promise.resolve().then(() => onCallConfig(m.nonce, m.auto_select_screen === true, m.proxy?.token, m.avatar, m.listen, m.language, ...(m.startup_timing === true ? [true] : []))).catch(() => {}); // a throw is caught too
       }
       if (m.type === 'call-in') return onCallIn?.(m);
       if (m.type === 'heartbeat' || m.type === 'call-end' || m.type === 'cancel-ack' || m.type === 'action-result' || m.type === 'share-target-changed' || m.type === 'view-closed') return undefined;
@@ -119,11 +119,11 @@ function main() {
       share: { get active() { return worker?.share.active; }, start: (m) => worker.share.start(m), stop: () => worker.share.stop(),
         openView: (m) => worker.share.openView(m), updateView: (m) => worker.share.updateView(m), closeView: (id) => worker.share.closeView(id),
         startShare: (id) => worker.share.startShare(id), stopShare: (id) => worker.share.stopShare(id) }, // throws without a worker: the action answers ok:false
-      onCallConfig: (nonce, screen, token, avatar, listen, language) => {
+      onCallConfig: (nonce, screen, token, avatar, listen, language, startupTiming) => {
         if (!token) return; // no proxy credential, no Chrome: neither can reach the web
         const proxy = { server: `http://${proxyAddr.host}:${proxyAddr.port}`, username: 'rf', password: token };
         control.setProxy(proxy);
-        if (!worker) worker = createCallWorker({ nonce, screen, proxy, env: { ...process.env, ...(avatar ? { RFACTORY_AVATAR: avatar } : {}), ...(listen ? { RFACTORY_LISTEN: listen } : {}), ...(language ? { RFACTORY_LANGUAGE: language } : {}) }, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) });
+        if (!worker) worker = createCallWorker({ nonce, screen, proxy, startupTiming, env: { ...process.env, ...(avatar ? { RFACTORY_AVATAR: avatar } : {}), ...(listen ? { RFACTORY_LISTEN: listen } : {}), ...(language ? { RFACTORY_LANGUAGE: language } : {}) }, send: (m) => sendCurrent(m), onExit: () => sendHost({ type: 'call-end' }) });
       },
       onCallIn: (m) => worker?.in(m) });
     agents.push(agent);

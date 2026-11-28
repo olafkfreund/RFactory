@@ -161,3 +161,19 @@ test('vm spawn: close waits for the VM to be destroyed, also one still being cre
     assert.equal(closes, 1);
   }
 });
+
+test('Meet timing links the accepted generation to the runner handoff without exposing its call ID', async () => {
+  const f = fake();
+  const rows = [];
+  let tag;
+  f.runner.create = async ({ call_id }) => {
+    tag = require('node:crypto').createHash('sha256').update(call_id).digest('hex').slice(0, 16);
+    return { status: 200, body: { desktop_id: 'ab12' } };
+  };
+  const c = createVmSpawn({ runner: f.runner, scope: 's', startupTiming: true, timingLog: (line) => rows.push(JSON.parse(line)) })();
+  c.acceptStartup(3, 'meet');
+  c.stdin.write(LINK + '\n');
+  await tick();
+  assert.deepEqual(rows, ['accepted', 'create-requested'].map((stage) => ({ type: 'startup-timing', stage, generation: 3, call_tag: tag })));
+  c.kill();
+});

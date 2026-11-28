@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 
 // meet.google.com, *.zoom.us, *.slack.com, teams.microsoft.com, teams.live.com; anything else is refused before a VM exists
 function platformOf(link) {
@@ -26,11 +26,19 @@ function firstLine(stream) {
 // A spawn() for call.js whose "child process" is the call worker in a desktop VM (plan 13c):
 // stdin/stdout are the worker's lines over the runner's call stream, so call.js drives it as it drives a pod child.
 // `kill` ends the VM (call.js uses it where a pod child gets a signal). runner: the mTLS client.
-function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryMs = 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+function createVmSpawn({ runner, scope, startupTiming = process.env.RFACTORY_STARTUP_TIMING === '1', timingLog = console.log, heartbeatMs = 10000, tries = 120, retryMs = 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   return (_cmd, _args, opts) => {
     const avatar = opts?.env?.RFACTORY_AVATAR; // call.js's chosen portrait; the guest bot validates it against its manifest
     const { RFACTORY_LISTEN: listen, RFACTORY_LANGUAGE: language } = opts?.env || {};
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+    const callId = randomUUID();
+    let timing;
+    if (startupTiming) child.acceptStartup = (generation, platform) => {
+      if (platform !== 'meet') return;
+      const call_tag = createHash('sha256').update(callId).digest('hex').slice(0, 16);
+      timing = (stage) => timingLog(JSON.stringify({ type: 'startup-timing', stage, generation, call_tag }));
+      timing('accepted');
+    };
     let id = null, sock = null, beat = null, closed = false, creating = null;
     const close = (why) => {
       if (closed) return;
@@ -49,7 +57,8 @@ function createVmSpawn({ runner, scope, heartbeatMs = 10000, tries = 120, retryM
       const platform = platformOf(await firstLine(child.stdin));
       if (closed) return;
       if (!platform) throw new Error('unsupported call link');
-      creating = runner.create({ call_id: randomUUID(), scope, platform, ...(avatar ? { avatar } : {}),
+      timing?.('create-requested');
+      creating = runner.create({ call_id: callId, scope, platform, ...(avatar ? { avatar } : {}),
         ...(listen ? { listen } : {}), ...(language ? { language } : {}) })
         .then((made) => { if (made.status === 200) id = made.body.desktop_id; return made; });
       const made = await creating;
