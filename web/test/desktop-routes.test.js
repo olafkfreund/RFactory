@@ -359,35 +359,38 @@ test('a handover can fill a stored preview login; the profile id is the only thi
   assert.equal((await (await off.call('GET', '/api/desktop/d1/state', APPROVER)).json()).handover, null);
 });
 
-test('a project call without write access proposes and dispatches nothing; with it the snapshot is the call\'s view', async (t) => {
+test('a desktop request in any project call proposes and reads the call\'s own view', async (t) => {
   const seen = [];
   let running = null;
   const s = await start(t, { extra: { projectCall: () => running, snapshot: async (view) => { seen.push(view); return { items: [] }; } } });
   const ctx = { scope: 's1', call_id: 'c1', desktop_id: 'd1' };
   await s.desktop.queue.enqueue({ name: 'desktop_scroll', args: { dy: 1 }, running: ctx, reason: 'no-session' });
-  await s.desktop.queue.enqueue({ name: 'propose_share', args: { url: `${HOST}/page` }, running: ctx, reason: 'share-approval' });
-  const [action, share] = s.desktop.queue.list('d1');
-  running = { writable: false, view: 'closed-view' };
-  const closed = "Changes aren't available for this project yet.";
-  for (const [path, body] of [['handover', grant], [`actions/${action.id}/approve`, { hash: action.hash }], [`share/${share.id}/approve`, { hash: share.hash }]]) {
-    const r = await s.call('POST', `/api/desktop/d1/${path}`, APPROVER, body);
-    assert.deepEqual([r.status, await r.json()], [409, { error: closed }], path);
-  }
-  const asked = await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
-  assert.deepEqual(await asked.json(), { text: closed });
-  assert.deepEqual(await s.desktop.request('take a screenshot', 'd1', { items: [] }), { text: closed });
-  assert.equal((await s.desktop.queue.approve(action.id, 'd1', action.hash, APPROVER)).status, 502); // dispatch refuses on its own too
-  assert.deepEqual([s.ran.length, s.shares.length, s.prompts.length, seen.length], [0, 0, 0, 0]);
-  assert.equal((await s.call('POST', `/api/desktop/d1/actions/${share.id}/reject`, APPROVER, { hash: share.hash })).status, 200);
-  running = { writable: true, view: 'own-view' };
+  running = { binding: { projectId: 'p', repositories: [{ id: 3, path: 'o/b' }] }, view: 'own-view' }; // a project without the default repository
+  assert.equal((await s.call('POST', '/api/desktop/d1/handover', APPROVER, grant)).status, 200);
   await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
   assert.deepEqual(seen, ['own-view']);
   assert.equal(s.prompts.length, 1);
 });
 
+test('with no call running the snapshot has no view', async (t) => {
+  const seen = [];
+  const s = await start(t, { extra: { snapshot: async (view) => { seen.push(view); return { items: [] }; } } });
+  await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
+  assert.deepEqual(seen, [undefined]);
+});
+
+test('a call that changes while the snapshot is read drops the proposal', async (t) => {
+  let running = { view: 'a' };
+  const s = await start(t, { extra: { projectCall: () => running, snapshot: async () => { running = { view: 'b' }; return { items: [] }; } } });
+  const r = await s.call('POST', '/api/desktop/d1/request', APPROVER, { text: 'take a screenshot' });
+  assert.deepEqual(await r.json(), { text: "I can't do that." });
+  assert.equal(s.desktop.queue.list('d1').length, 0);
+  assert.equal(s.ran.length, 0);
+});
+
 test('a desktop proposal is dropped when another project call starts while it is made', async (t) => {
-  let running = { writable: true };
-  const s = await start(t, { extra: { projectCall: () => running, brain: { propose: async () => { running = { writable: true }; return { action: 'desktop_screenshot', args: {} }; } } } });
+  let running = { view: 'a' };
+  const s = await start(t, { extra: { projectCall: () => running, brain: { propose: async () => { running = { view: 'b' }; return { action: 'desktop_screenshot', args: {} }; } } } });
   assert.deepEqual(await s.desktop.request('take a screenshot', 'd1', { items: [] }), { text: "I can't do that." });
   assert.equal(s.desktop.queue.list('d1').length, 0);
 });

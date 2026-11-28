@@ -11,6 +11,7 @@ The factory cluster is the deployment: see `plan/2026-11-24-33-rfactory-in-clust
 - `roles.env` (mode 600) holds `ALLOWED=`, `APPROVERS=` and `ADMINS=` as comma lists.
 - `scope.cluster.json` is the cluster's scope file (the in-cluster CFactory URL). `scope.json` stays for the p620 pod.
 - **Change a member:** edit `roles.env`, run `deploy/k8s/bootstrap-secrets.sh`; the pod restarts.
+- **Check the egress limit:** `deploy/k8s/check-egress.sh` (`--baseline` before a policy change). It probes from the pod and changes nothing.
 - **Re-seed the shared Claude login:** update the `factory-cli-creds` Secret as `docs/secrets-management.md` in factory-gitops describes, then `kubectl --context k3d-factory -n factory rollout restart deploy/rfactory`.
 - `deploy/pod.sh` is a development path only.
 
@@ -23,6 +24,16 @@ The factory cluster is the deployment: see `plan/2026-11-24-33-rfactory-in-clust
 - `RFACTORY_ADMINS`: members with the admin role.
 
 Approvers and admins must also be members; otherwise the web app refuses to start (`roles-not-members`).
+
+## Agents (MCP)
+
+- **What an agent can do:** read-only access through seven MCP tools (`whoami`, `status`, `projects`, `standup`, `review`, `approvals`, `record`); an agent can change nothing.
+- **Make a key:** `umask 077; printf 'rfk_%s' "$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 32)" > ~/.config/rfactory/agent-keys/<name>`.
+- **Configure:** add the agent to `agents` in `scope.cluster.json` (`{ "name": "<name>", "scope": "read", "key_file": "/run/rfactory/keys/agent-<name>", "projects": ["repo:2"] }`), set `RFACTORY_AGENTS=on` on `deploy/rfactory`, and run `deploy/k8s/bootstrap-secrets.sh`.
+- **Forward:** `kubectl port-forward deploy/rfactory 8090:8090 -n factory`.
+- **Connect Claude Code:** point the HTTP MCP client at `http://127.0.0.1:8090/mcp` with the key in an `Authorization: Bearer` header, without putting the key on a command line, in shell history, in the environment or in a file in Git.
+- **Revoke:** remove the `agents` entry and `~/.config/rfactory/agent-keys/<name>`, set `RFACTORY_AGENTS` to `off` when it was the last key, run `deploy/k8s/bootstrap-secrets.sh`, and wait for `kubectl rollout status deploy/rfactory -n factory`.
+- **Where the data goes:** what a tool returns goes to the agent's model provider.
 
 ## Standup and review
 
@@ -48,9 +59,80 @@ In a call the bot speaks a two- or three-sentence headline built from the counts
 
 Card descriptions, criteria, stage detail and comments appear only in the review. They never reach the AI, the call or the shared board. Stage results can come from another card with the same correlation key until olafkfreund/CFactory#583 is fixed; test cases, branches, pull requests, plan findings and pending approvals aren't in the card data yet.
 
+## Without the Factories
+
+RFactory can show a read-only standup of one GitHub repository with no Factory running. Put this in a scope file (the `brain` block is required but unused here):
+
+```json
+{
+  "name": "my-repo",
+  "source": {
+    "kind": "github",
+    "owner": "my-org",
+    "repo": "my-repo",
+    "token_file": "/run/secrets/github-token",
+    "project": { "owner": "my-org", "number": 1 }
+  },
+  "mapping": { "board": { "In Progress": "in_progress", "Blocked": "blocked", "Done": "done" } },
+  "brain": { "kind": "claude-cli", "home": "/var/lib/rfactory/claude", "approved_hash": "", "destination": "third-party" },
+  "writes_enabled": false
+}
+```
+
+Start `node web/server.js` with `RFACTORY_SCOPE_FILE` (that file), `RFACTORY_ALLOWED_EMAILS`, `GITHUB_MCP_SERVER_BIN` (the path to `github-mcp-server` 1.14.0) and `PORT`. The server listens on `127.0.0.1` and trusts the `X-Forwarded-Email` header, so it must sit behind the identity proxy (`deploy/oauth2-proxy.yaml`).
+
+The token is a fine-grained, read-only token for that one repository. It sits in a file with mode `0600`, and only the `github-mcp-server` child sees it.
+
+In this mode calls, the desktop, shares, lookups, changes and the review panel are off. The server refuses to start if calls, the desktop, shares, lookups or changes are switched on; the review panel has no switch and answers 404.
+
+### Jira
+
+RFactory can also show a read-only standup of one Jira Cloud project with no Factory running. Put this in a scope file (the `brain` block is required but unused here):
+
+```json
+{
+  "name": "team-abc",
+  "source": {
+    "kind": "jira",
+    "cloud_id": "11111111-2222-3333-4444-555555555555",
+    "project": "ABC",
+    "email": "rfactory-reader@example.com",
+    "token_file": "/run/rfactory/jira-token",
+    "flagged_field": "customfield_10021"
+  },
+  "mapping": { "status": { "Waiting for customer": "blocked" } },
+  "brain": { "destination": "rfactory-host" },
+  "writes_enabled": false
+}
+```
+
+Start `node web/server.js` with `RFACTORY_SCOPE_FILE` (that file), `RFACTORY_ALLOWED_EMAILS` and `PORT`. The server listens on `127.0.0.1` and trusts the `X-Forwarded-Email` header, so it must sit behind the identity proxy (`deploy/oauth2-proxy.yaml`).
+
+Use a dedicated Jira account with *Browse projects* on the one project only, and a scoped API token with a read scope only (if the token screen offers it) and an expiry date. Put the token in a file with mode `0600` and never in the environment; renewing it means replacing the file and restarting the server.
+
+Every signed-in member sees every issue that account can read in the project, including issues Jira would hide from that member.
+
+Status rules (first match wins):
+
+| Rule | Condition | State |
+|---|---|---|
+| J0 | the status name is not a non-empty string | `unknown` |
+| J1 | the status name is an own key of `mapping.status`, mapped to one of the five states | the mapped state |
+| J2 | category `done` | `done` |
+| J3 | category `new` or `indeterminate`, `flagged_field` set in the scope, and the issue's value for it is a non-empty array | `blocked` |
+| J4 | category `indeterminate` | `in_progress` |
+| J5 | category `new` | `left` |
+| J6 | anything else | `unknown` |
+
+`mapping.status` lets an admin override specific status names; Jira's `done` category includes statuses such as "Won't do", and flags are read only when `flagged_field` names the field.
+
+In this mode calls, the desktop, shares, lookups, changes, the review panel and links to Jira are off.
+
 ## How the bot hears
 
 During a call, the bot hears either through the meeting platform's live captions (`platform`) or through RFactory's own speech-to-text service (`audio`), selected by `listen` (`auto`, `platform`, or `audio`) and `language`. See [`docs/hearing.md`](docs/hearing.md) for the `auto` rule, fallback when own transcription is not configured, privacy guarantees, environment and scope settings, and rollback.
+
+For the multi-participant live test runbook, see [`docs/multi-participant-test.md`](docs/multi-participant-test.md).
 
 ## Licence
 

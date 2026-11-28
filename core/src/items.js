@@ -67,10 +67,42 @@ function mapGithub(raw, mapping = {}) {
   return items;
 }
 
+function mapJira(issues, scope) {
+  const mapping = scope?.mapping?.status ?? {};
+  const flagField = scope?.source?.flagged_field;
+  return issues.map((issue) => {
+    const fields = issue?.fields;
+    const name = fields?.status?.name;
+    const category = fields?.status?.statusCategory?.key;
+    const flag = flagField && fields?.[flagField];
+    let state, rule;
+    if (typeof name !== 'string' || !name) {
+      [state, rule] = ['unknown', 'J0'];
+    } else if (Object.hasOwn(mapping, name) && STATES.includes(mapping[name])) {
+      [state, rule] = [mapping[name], 'J1'];
+    } else if (category === 'done') {
+      [state, rule] = ['done', 'J2'];
+    } else if ((category === 'new' || category === 'indeterminate') && Array.isArray(flag) && flag.length) {
+      [state, rule] = ['blocked', 'J3'];
+    } else if (category === 'indeterminate') {
+      [state, rule] = ['in_progress', 'J4'];
+    } else if (category === 'new') {
+      [state, rule] = ['left', 'J5'];
+    } else {
+      [state, rule] = ['unknown', 'J6'];
+    }
+    const displayName = fields?.assignee?.displayName;
+    const updated = typeof fields?.updated === 'string' ? Date.parse(fields.updated) : NaN;
+    return { id: issue?.key, kind: 'issue', title: fields?.summary, url: '', state, source_state: name, rule, basis: 'observed',
+      assignees: typeof displayName === 'string' && displayName ? [displayName] : [],
+      updated_at: Number.isNaN(updated) ? null : new Date(updated).toISOString(), evidence: [] };
+  });
+}
+
 function summarise(items) {
   const c = Object.fromEntries(STATES.map((s) => [s, 0]));
   for (const i of items) c[i.state]++;
   return c;
 }
 
-module.exports = { mapGithub, summarise, STATES };
+module.exports = { mapGithub, mapJira, summarise, STATES };
