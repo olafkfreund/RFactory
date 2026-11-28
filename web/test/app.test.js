@@ -871,11 +871,9 @@ test('Jira reply in Jira mode renders the five lists, Jira texts, no links, and 
   assert.equal(jiraPage.byId.summary.textContent, 'Jira project ABC: 1 done, 1 in progress, 1 blocked, 1 left, 1 unknown.');
   assert.equal(jiraPage.byId.destination.textContent, 'Summary by the server; counts are taken from Jira.');
 
-  // No <a> even when url matches ISSUE_URL; hostile title & source_state are textContent only
+  // No <a> even when the URL matches ISSUE_URL. The browser test checks HTML parsing.
   assert.equal(jiraPage.byId.done.all().filter((n) => n.tag === 'a').length, 0);
-  assert.ok(!jiraPage.byId.done.all().some((n) => n.tag === 'img'));
   assert.ok(jiraPage.byId.done.textContent.includes('<img src=x onerror=1>'));
-  assert.ok(!jiraPage.byId.unknown.all().some((n) => n.tag === 'b'));
   assert.ok(jiraPage.byId.unknown.textContent.includes('<b>x</b>'));
 
   // Without newest_update and with summary_error

@@ -228,6 +228,18 @@ the token file in the pod comes with the first real Jira deployment).
   `jira-token-missing`. Each closes a path where a raw error could
   otherwise surface.
 
+### Final review deviations from this plan
+
+- **D5** Step 1 opens the token once, validates that descriptor with
+  `fstatSync`, and reads it through the same descriptor. A nonblocking
+  open lets validation reject a FIFO without waiting for a writer.
+- **D6** Step 1 also refuses `notes_enabled: true` for Jira scopes with
+  `invalid-scope`.
+- **D7** Step 4's empty, complete summary explains that the search covers
+  non-Done issues and issues updated in the last 14 days. It suggests
+  checking browse access if matches were expected.
+- **D8** Step 4 excludes `/live.html` and `/live.js` from Jira mode.
+
 ## Steps
 
 Line numbers are for this branch at `8a069e2`. After step 0 the lines in

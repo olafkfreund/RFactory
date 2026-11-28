@@ -23,7 +23,7 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
   if (makeRedactor([]).toModel(text) !== text) throw new Error('scope-credential');
   const scope = JSON.parse(text);
   if (scope.source?.kind === 'jira' &&
-      [scope.writes_enabled, scope.lookups_enabled, scope.shares_enabled, scope.investigations_enabled].includes(true)) {
+      [scope.writes_enabled, scope.lookups_enabled, scope.shares_enabled, scope.investigations_enabled, scope.notes_enabled].includes(true)) {
     throw new Error('invalid-scope');
   }
   if (Object.hasOwn(scope, 'avatar')) {
@@ -155,12 +155,15 @@ function loadScope(file, env = process.env, secrets = [], extras = {}) {
     if (mapping !== undefined && (!plain(mapping) ||
         (Object.hasOwn(mapping, 'status') && (!plain(mapping.status) ||
          !Object.values(mapping.status).every((state) => STATES.includes(state)))))) throw new Error('invalid-scope');
-    let file;
-    try { file = fs.statSync(token_file); }
-    catch { throw new Error('jira-token-file'); }
-    if (!file.isFile() || (file.mode & 0o7777) !== 0o600) throw new Error('jira-token-file-mode');
-    try { jiraToken = fs.readFileSync(token_file, 'utf8').trim(); }
-    catch { throw new Error('jira-token-file'); }
+    try {
+      // A FIFO must not block startup before fstat can reject it.
+      const fd = fs.openSync(token_file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      try {
+        const file = fs.fstatSync(fd);
+        if (file.isFile() && (file.mode & 0o7777) === 0o600) jiraToken = fs.readFileSync(fd, 'utf8').trim();
+      } finally { fs.closeSync(fd); }
+    } catch { throw new Error('jira-token-file'); }
+    if (jiraToken === undefined) throw new Error('jira-token-file-mode');
     if (!/^\S{8,}$/.test(jiraToken)) throw new Error('invalid-jira-token');
   } else {
     if (scope.source?.kind !== 'github' || scope.writes_enabled || (scope.lookups_enabled && Object.hasOwn(scope.source, 'github_read'))) throw new Error('invalid-scope');

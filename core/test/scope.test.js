@@ -384,13 +384,14 @@ test('Jira scope validates fields, reads a 0600 token and redacts both credentia
     }
 
     const off = { ...scope };
-    for (const flag of ['writes', 'lookups', 'shares', 'investigations']) {
+    for (const flag of ['writes', 'lookups', 'shares', 'investigations', 'notes']) {
       const field = flag + '_enabled';
       const enabled = { ...scope, [field]: true };
       fails('invalid-scope', enabled);
       fails('invalid-scope', enabled, { ['RFACTORY_' + flag.toUpperCase()]: 'on' });
       off[field] = false;
     }
+    fails('invalid-scope', { ...scope, brain: f.scope.brain, notes_enabled: true }, { RFACTORY_NOTES: 'on' });
     assert.deepEqual(load(off), off);
     fails('invalid-projects', { ...scope, projects: { allow: [{ id: 'repo:2' }] } });
 
@@ -399,6 +400,25 @@ test('Jira scope validates fields, reads a 0600 token and redacts both credentia
     fails('jira-token-file-mode', { ...scope, source: { ...source, token_file: dir } });
     fails('jira-token-file', { ...scope, source: { ...source, token_file: tokenFile + '-missing' } });
     fs.chmodSync(tokenFile, 0o600);
+
+    const replacement = tokenFile + '-replacement';
+    fs.writeFileSync(replacement, 'synthetic-unvalidated-replacement', { mode: 0o644 });
+    const fstatSync = fs.fstatSync;
+    let checkedFd;
+    try {
+      fs.fstatSync = (fd) => {
+        const stat = fstatSync(fd);
+        checkedFd = fd;
+        fs.renameSync(replacement, tokenFile);
+        return stat;
+      };
+      const loaded = {};
+      load(scope, {}, [], loaded);
+      assert.deepEqual(loaded, { jiraToken: token });
+    } finally { fs.fstatSync = fstatSync; }
+    assert.throws(() => fstatSync(checkedFd), { code: 'EBADF' });
+    fs.chmodSync(tokenFile, 0o600);
+
     for (const value of ['1234567', token + ' extra']) {
       fs.writeFileSync(tokenFile, value);
       fails('invalid-jira-token');
@@ -406,11 +426,15 @@ test('Jira scope validates fields, reads a 0600 token and redacts both credentia
     const readFileSync = fs.readFileSync;
     try {
       fs.readFileSync = (name, ...args) => {
-        if (name === tokenFile) throw new Error(token);
+        if (typeof name === 'number') {
+          checkedFd = name;
+          throw new Error(token);
+        }
         return readFileSync(name, ...args);
       };
       fails('jira-token-file');
     } finally { fs.readFileSync = readFileSync; }
+    assert.throws(() => fstatSync(checkedFd), { code: 'EBADF' });
   } finally { f.cleanup(); }
 });
 

@@ -1194,7 +1194,7 @@ test('Jira standup: exact reply, redaction, and summary for complete, empty and 
 
   for (const [items, truncated, expected] of [
     [jiraItems, true, summary + cut],
-    [[], false, empty + ' No issues were read: check that the Jira account can see the project.'],
+    [[], false, empty + ' No issues matched the search for non-Done issues or issues updated in the last 14 days. If you expected matches, check that the Jira account can see the project.'],
     [[], true, empty + cut],
   ]) {
     result = { ...result, items, truncated };
@@ -1223,12 +1223,15 @@ test('Jira app only permits member requests for static files, config and standup
   const calls = [];
   const boom = () => { calls.push('unexpected dependency call'); throw new Error('touched'); };
   const double = new Proxy({}, { get: () => boom });
-  const get = await start(t, { source: { kind: 'jira', snapshot: boom }, call: double, actions: double,
-    shares: double, investigations: double, desktop: {}, scope: jiraScope() });
+  const call = new Proxy({ config: { listen: 'audio', sttConfigured: true } },
+    { get: (target, key) => Object.hasOwn(target, key) ? target[key] : boom });
+  const get = await start(t, { source: { kind: 'jira', snapshot: boom }, call, actions: double,
+    shares: double, investigations: double, notes: double, profiles: { runner: double }, desktop: {}, scope: jiraScope() });
   for (const [url, method = 'GET'] of [
     ['/api/review'], ['/api/review/K-1'], ['/api/actions'], ['/api/actions/1/approve', 'POST'], ['/api/shares'],
     ['/api/investigations'], ['/api/call', 'POST'], ['/api/call', 'DELETE'], ['/api/call/events'], ['/api/projects'],
-    ['/p/x'], ['/api/nope'], ['/api/standup'], ['/api/config', 'POST'], ['/desktop.html'], ['/', 'HEAD'],
+    ['/api/notes'], ['/api/profiles'], ['/p/x'], ['/api/nope'], ['/api/standup'], ['/api/config', 'POST'],
+    ['/desktop.html'], ['/live.html'], ['/live.js'], ['/', 'HEAD'],
   ]) {
     const r = await get(url, { method });
     assert.equal(r.status, 404, method + ' ' + url);

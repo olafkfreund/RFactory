@@ -156,9 +156,9 @@
     "semantic_hash": "e66632c1c801a7287fc155e9c1089d8c"
   },
   "core/src/scope.js": {
-    "mtime": 1795851391.3428676,
-    "seen": 1795851679.397779,
-    "ast_hash": "78473d915cdb9208b5660335d6a0c664",
+    "mtime": 1795852224.2230337,
+    "seen": 1795852359.1211963,
+    "ast_hash": "2febb43c7130da50746bf7416140b304",
     "semantic_hash": ""
   },
   "core/src/share/board.js": {
@@ -306,9 +306,9 @@
     "semantic_hash": "f4d3808ed1f9824f4674abe3a2c5a141"
   },
   "core/test/scope.test.js": {
-    "mtime": 1795851834.7060943,
-    "seen": 1795851896.8634152,
-    "ast_hash": "3ad7f9ae5f44ae9fb1d532314773a43e",
+    "mtime": 1795852305.2200677,
+    "seen": 1795852359.1213353,
+    "ast_hash": "08dc415d992c9913c8a61d7c672a7999",
     "semantic_hash": ""
   },
   "core/test/speech.test.js": {
@@ -846,9 +846,9 @@
     "semantic_hash": "36944221dfef764c977a20fac5d25214"
   },
   "web/server.js": {
-    "mtime": 1795851633.4915771,
-    "seen": 1795851679.3982935,
-    "ast_hash": "328dcdd2a42729d213a49e98ecd1bf5b",
+    "mtime": 1795852224.2240336,
+    "seen": 1795852359.121739,
+    "ast_hash": "b026abcf41440b90c3dd79f154d84998",
     "semantic_hash": ""
   },
   "web/share-desktop.js": {
@@ -876,9 +876,9 @@
     "semantic_hash": ""
   },
   "web/test/app.test.js": {
-    "mtime": 1795851821.4699278,
-    "seen": 1795851896.8638287,
-    "ast_hash": "ebc79e8fa56caf72736d62865d43c26a",
+    "mtime": 1795852305.2210677,
+    "seen": 1795852359.1217587,
+    "ast_hash": "e74fcfa4a6d6277233a4f328cde27ec2",
     "semantic_hash": ""
   },
   "web/test/call.test.js": {
@@ -912,9 +912,9 @@
     "semantic_hash": ""
   },
   "web/test/server.test.js": {
-    "mtime": 1795851633.492577,
-    "seen": 1795851679.3983312,
-    "ast_hash": "87722b648e8f906d04cf0b15107bf808",
+    "mtime": 1795852224.2250338,
+    "seen": 1795852359.1217806,
+    "ast_hash": "2ef3f107a5cfd1fe7e0e6c8ac621f0fc",
     "semantic_hash": ""
   },
   "web/test/share-desktop.test.js": {
@@ -1398,9 +1398,9 @@
     "semantic_hash": ""
   },
   "web/test/shell-browser.test.js": {
-    "mtime": 1795785614.3405244,
-    "seen": 1795851679.3983378,
-    "ast_hash": "1948a858f9bd833396990192e9484b0b",
+    "mtime": 1795852343.113552,
+    "seen": 1795852359.1217883,
+    "ast_hash": "a439d7f48245caded945c19374677871",
     "semantic_hash": ""
   },
   "web/test/stt.test.js": {
@@ -3186,9 +3186,9 @@
     "semantic_hash": ""
   },
   "plan/2026-11-27-59-jira-confluence.md": {
-    "mtime": 1795785720.1014602,
-    "seen": 1795851679.3987586,
-    "ast_hash": "8ff6552918356669f427d525ee3876ec",
+    "mtime": 1795852343.1145523,
+    "seen": 1795852359.122287,
+    "ast_hash": "804da487247c6845d55b7f48849eb68a",
     "semantic_hash": ""
   },
   "spec/2026-11-27-59-jira-confluence.md": {

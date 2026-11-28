@@ -13,6 +13,8 @@ const STATIC = {
   '/tokens.css': ['tokens.css', 'text/css; charset=utf-8'],
   '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
   '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
+};
+const LIVE_STATIC = {
   '/live.html': ['live.html', 'text/html; charset=utf-8'],
   '/live.js': ['live.js', 'text/javascript; charset=utf-8'],
 };
@@ -77,6 +79,7 @@ function keepAlive(desktop_id, runner, ms) {
 function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
   const jira = source.kind === 'jira';
+  const files = jira ? STATIC : { ...STATIC, ...LIVE_STATIC, ...(desktop ? DESKTOP_STATIC : {}) };
   const reads = createReads({ scope: jira ? null : scope });
   const { allowed } = reads; // null: everything below is as before #52
   const send = (res, status, type, body) => { res.writeHead(status, { ...HEADERS, 'Content-Type': type }); res.end(body); };
@@ -126,7 +129,7 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     if (view.kind === 'jira') {
       summary = `Jira project ${scope.source.project}: ${tally}.`;
       if (raw.truncated) summary += ' The project has more issues than were read.';
-      else if (raw.items.length === 0) summary += ' No issues were read: check that the Jira account can see the project.';
+      else if (raw.items.length === 0) summary += ' No issues matched the search for non-Done issues or issues updated in the last 14 days. If you expected matches, check that the Jira account can see the project.';
     } else {
       summary = `Repository: ${tally}.${raw.truncated ? ' The repository has more items than were read.' : ''}`;
     }
@@ -174,7 +177,6 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
     }
     if (req.method === 'GET' && url === '/api/config') return json(res, 200, { commit, ...(jira ? {} : call?.config || {}), projects: !!allowed,
       ...(jira || source.kind === 'github' ? { source: source.kind } : {}) });
-    const files = desktop ? { ...STATIC, ...DESKTOP_STATIC } : STATIC;
     if (req.method === 'GET' && Object.hasOwn(files, url)) {
       const [file, type] = files[url];
       return send(res, 200, type, fs.readFileSync(path.join(PUBLIC, file)));
