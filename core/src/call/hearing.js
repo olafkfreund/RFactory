@@ -19,6 +19,8 @@ const ASK = '^[\\s,.:;-]*(?:please[,\\s]+)?(?:(?:can|could|would|will) you\\s+(?
 const NOTE = new RegExp(`${ASK}(?:(?:take|make|add)\\s+a\\s+note(?![-\\w])(?:\\s*[:,]|\\s+(?:that|to|of|about)\\b|\\s*$)|note(?![-\\w])|decision(?:\\s*[:,]|\\s+(?:is|was)\\b)|we(?:\\s+have|['’]ve)?\\s+decided\\b|action(?:\\s+item)?\\s+for\\s+\\w|blocker(?:\\s*[:,]|\\s+(?:is|on)\\b))`, 'i');
 // the headline request is the whole utterance
 const NOTES = new RegExp(`${ASK}(?:what\\s+did\\s+you\\s+note(?:\\s+down)?|read\\s+(?:me\\s+)?(?:back\\s+)?the\\s+notes|what\\s+are\\s+the\\s+notes)(?:\\s+(?:please|so far))?\\s*[?.!]*$`, 'i');
+const ASK_PROVIDER = /^(?:please\s+)?ask\s+(open\s*ai|claude)\b[\s,:-]*(.*)$/i;
+const SECOND_OPINION = /^(?:please\s+)?(?:(?:give me|get|can i get)\s+)?(?:a\s+)?second opinion\b(?:\s+(?:on|about))?[\s,:?-]*(.*)$/i;
 
 // keep old caption labels for rollback; the bot's own speech never wakes it (#62)
 const SELF_NAMES = Object.freeze(['You', 'Factory (AI)', 'RFactory Bot (AI)', 'RFactory Bot']);
@@ -71,9 +73,13 @@ function createHearing({ quietMs = 1500, clock = globalThis, onAddressed, selfNa
           const history = block.slots[i] || (block.slots[i] = []);
           if (accepted && addressed && n && !history.some((seen) => n.startsWith(seen) || seen.startsWith(n))) {
             history.push(n);
+            const ask = ASK_PROVIDER.exec(addressed);
+            const second = SECOND_OPINION.exec(addressed);
+            const providerRequest = ask ? { provider: /^claude$/i.test(ask[1]) ? 'anthropic' : 'openai', text: ask[2] }
+              : second ? { secondOpinion: true, text: second[1] } : null;
             onAddressed({
               kind: LEAVE.test(addressed) ? 'leave' : SHARE.test(addressed) ? 'share' : INVESTIGATE.test(addressed) ? 'investigate' : notes && NOTES.test(addressed) ? 'notes' : notes && NOTE.test(addressed) ? 'note' : ACTION.test(addressed) ? 'action' : STANDUP.test(addressed) ? 'standup' : 'question',
-              text: addressed, speaker: block.speaker, id,
+              text: addressed, speaker: block.speaker, id, ...(providerRequest ? { providerRequest } : {}),
             });
           }
           i++;

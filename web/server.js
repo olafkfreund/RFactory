@@ -3,6 +3,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { summarise } = require('@rfactory/core/src/items.js');
+const { projectProviders } = require('@rfactory/core/src/scope.js');
 const { createReads, refusal, describe, CARD_KEY } = require('./reads.js');
 const { createVmSpawn, platformOf } = require('./vm-call.js');
 
@@ -96,6 +97,10 @@ function createApp({ source, redactor, roles, call = null, schedule = null, acti
 
   const bind = (id) => reads.bind(source, id);
   const viewOf = (binding) => reads.viewOf(source, binding);
+  const withProviders = (project) => {
+    const providers = scope?.projects?.allow.find((entry) => entry.id === project.id)?.providers;
+    return providers ? { ...project, providers: providers.map(({ provider, model }) => ({ provider, model })) } : project;
+  };
   const readView = async (query) => allowed ? viewOf(await bind(query.get('project'))) : source;
   const readFailed = (res) => (error) => error?.refusal ? json(res, error.refusal, { error: error.message })
     : json(res, 502, { error: error?.message === 'project-resolve-failed' ? error.message : sourceCode(error) });
@@ -166,7 +171,7 @@ function createApp({ source, redactor, roles, call = null, schedule = null, acti
     if (allowed && req.method === 'GET' && /^\/p\/[^/]+$/.test(url)) return send(res, 200, STATIC['/'][1], fs.readFileSync(path.join(PUBLIC, STATIC['/'][0])));
     if (allowed && req.method === 'GET' && (url === '/api/projects' || url === '/api/projects/resolve')) {
       (url === '/api/projects' ? reads.listProjects(source) : resolveSlug(query.get('slug')))
-        .then((body) => json(res, 200, body), readFailed(res));
+        .then((body) => json(res, 200, Array.isArray(body) ? body.map(withProviders) : withProviders(body)), readFailed(res));
       return;
     }
     if (source.kind === 'github' && req.method === 'GET' && /^\/api\/review(\/|$)/.test(url)) return json(res, 404, { error: 'not-found' });
@@ -348,17 +353,26 @@ function createApp({ source, redactor, roles, call = null, schedule = null, acti
           if (!body || !validLink(body.link)) return json(res, 400, { error: 'bad-link' });
           if (body.listen !== undefined && !['auto', 'platform', 'audio'].includes(body.listen)) return json(res, 400, { error: 'invalid-listen' });
           if (allowed && !allowed.has(body.project_id)) return json(res, 403, { error: 'project-not-allowed' });
+          let choice;
+          if (Object.hasOwn(body, 'provider') || Object.hasOwn(body, 'model')) {
+            const approved = allowed && projectProviders(scope, body.project_id).some(({ provider, model }) =>
+              provider === body.provider && model === body.model);
+            if (!approved) return json(res, 403, { error: 'provider-unavailable' });
+            choice = { provider: body.provider, model: body.model };
+          }
           if (!zoomEnabled && platformOf(body.link) === 'zoom') return json(res, 503, { error: 'zoom-unavailable' });
           if (slot.starting || call.running) return json(res, 409, { error: 'busy' });
           let started;
           if (allowed) {
             slot.starting = true; // before any await: an overlapping start is refused
-            started = bind(body.project_id).then((binding) => call.start(body.link, { listen: body.listen, binding, view: viewOf(binding) }))
+            started = bind(body.project_id).then((binding) => call.start(body.link, { listen: body.listen, binding, view: viewOf(binding),
+              ...(choice ? { choice } : {}) }))
               .finally(() => { slot.starting = false; });
           } else started = call.start(body.link, { listen: body.listen });
           return started.then(() => json(res, 202, { ok: true }), (error) => {
             if (error?.refusal || error?.message === 'project-resolve-failed') return readFailed(res)(error);
             if (error?.message === 'busy') return json(res, 409, { error: 'busy' });
+            if (error?.message === 'provider-unavailable') return json(res, 403, { error: 'provider-unavailable' });
             return error?.message === 'stt-not-configured' ? json(res, 400, { error: 'stt-not-configured' }) : json(res, 500, { error: 'call-error' });
           });
         });
@@ -552,6 +566,8 @@ async function main() {
   const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir,
     rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
+  const openAi = extras.openAiKeys && ((config, snapshot, options) => require('@rfactory/core/src/brains/openai-responses.js')
+    .openAiTurn(config, extras.openAiKeys.get(config.key_file), snapshot, options, { redactor }));
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
   let runner = null;
   if (process.env.RFACTORY_DESKTOP === '1') { // off by default: existing deployments are unchanged
@@ -583,7 +599,7 @@ async function main() {
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, notes, desktop,
-      record, grants, ...(lookup ? { ...lookup, scope } : {}),
+      record, grants, scope, openAi, ...(lookup ?? {}),
       ...(runner ? { runner, spawn: createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   const commit = process.env.RFACTORY_COMMIT || '';

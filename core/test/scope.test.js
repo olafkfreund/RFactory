@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loadScope, resolveListen } = require('../src/scope.js');
+const { loadScope, resolveListen, projectProviders } = require('../src/scope.js');
+const { destinationHash } = require('../src/brains/destination.js');
 const { makeRedactor } = require('../src/redact.js');
 const portraits = require('../../bot/avatars/manifest.json').portraits;
 
@@ -21,9 +22,9 @@ function fixture() {
     brain: { kind: 'claude-cli', home: dir, approved_hash: '', destination: 'third-party' },
     writes_enabled: false,
   };
-  const load = (secrets = [], env = {}) => {
+  const load = (secrets = [], env = {}, extras = {}) => {
     fs.writeFileSync(file, JSON.stringify(scope));
-    return loadScope(file, env, secrets);
+    return loadScope(file, env, secrets, extras);
   };
   return { scope, keyFile, load, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
@@ -40,6 +41,48 @@ test('loads CFactory and Claude CLI scope, collecting the key for redaction', ()
     f.scope.brain.approved_hash = 'a'.repeat(64);
     assert.deepEqual(f.load([]), f.scope);
   } finally { f.cleanup(); }
+});
+
+test('provider choices are project-specific, destination approved and backed by a private key file', (t) => {
+  const f = fixture(); t.after(f.cleanup);
+  const keyFile = path.join(path.dirname(f.keyFile), 'broker-openai');
+  const credential = 'sk-' + 'k'.repeat(32);
+  fs.writeFileSync(keyFile, credential, { mode: 0o600 });
+  const openAi = { provider: 'openai', model: 'gpt-5-mini', base_url: 'https://api.openai.com/v1', key_file: keyFile,
+    input_usd_per_million: 1, output_usd_per_million: 5 };
+  openAi.approved_hash = destinationHash({ ...openAi, kind: 'openai' });
+  const claude = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
+  claude.approved_hash = destinationHash({ kind: 'anthropic', base_url: 'https://api.anthropic.com', model: claude.model });
+  f.scope.lookups_enabled = true;
+  const entry = { id: 'repo:2', providers: [claude, openAi] };
+  f.scope.projects = { allow: [entry, { id: 'repo:3' }] };
+  const secrets = [], extras = {};
+  const scope = f.load(secrets, {}, extras);
+  assert.deepEqual(projectProviders(scope, 'repo:2'), [claude, openAi]);
+  assert.deepEqual(projectProviders(scope, 'repo:3'), [{ provider: 'anthropic', model: 'default' }]);
+  assert.deepEqual(secrets, [key, credential]);
+  assert.equal(extras.openAiKeys.get(keyFile), credential);
+  assert.equal(makeRedactor(secrets).toModel(credential), '[redacted]');
+
+  for (const [providers, error] of [
+    [[openAi, openAi], /invalid-providers/],
+    [[{ ...openAi, key_file: 'relative' }], /invalid-providers/],
+    [[{ ...openAi, model: 'another' }], /destination-changed/],
+    [[{ ...openAi, base_url: 'https://wrong.example/v1' }], /destination-changed/],
+    [[{ ...openAi, output_usd_per_million: 0 }], /invalid-providers/],
+    [[{ ...claude, model: 'claude-other' }], /destination-changed/],
+  ]) {
+    entry.providers = providers;
+    assert.throws(() => f.load(), error);
+  }
+  entry.providers = [claude, openAi];
+  for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'https_proxy', 'NODE_USE_ENV_PROXY']) {
+    assert.throws(() => f.load([], { [name]: '' }), /destination-override/);
+  }
+  assert.throws(() => f.load([], { NODE_TLS_REJECT_UNAUTHORIZED: '0' }), /destination-override/);
+  assert.deepEqual(f.load([], { NODE_EXTRA_CA_CERTS: '/etc/ssl/local.pem', NODE_TLS_REJECT_UNAUTHORIZED: '1' }), f.scope);
+  fs.chmodSync(keyFile, 0o644);
+  assert.throws(() => f.load(), /openai-key-file-mode/);
 });
 
 test('avatar accepts anchored ids, non-empty choices and random, and rejects invalid values', () => {

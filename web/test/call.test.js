@@ -1351,17 +1351,27 @@ test('end to end: conflicting agent prose and several run_tests results reach TT
 });
 
 // #51: lookups on. The fake brain pushes into the turn context the endpoint was given.
-function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brainTurn, sourceSnapshot, sourceStandup, ttsSay } = {}) {
+function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brainTurn, openAi, sourceSnapshot, sourceStandup, ttsSay } = {}) {
   const records = [], turns = [], contexts = new Map(), revoked = [];
   const endpoint = {
     register(ctx) { const token = `token-${contexts.size + 1}`; contexts.set(token, ctx); return token; },
     revoke(token) { revoked.push(token); contexts.get(token).controller.abort(); },
+    toolsFor() { return []; },
+    remaining(token) { return 8 - contexts.get(token).rounds; },
+    async call(token, name, args) {
+      const ctx = contexts.get(token);
+      if (ctx.rounds >= 8) { ctx.roundLimited = true; return { error: 'round-limit' }; }
+      ctx.rounds++;
+      ctx.reads.push({ tool: name, ref: args.card_key, ok: true, kind: 'card' });
+      return { result: {} };
+    },
   };
   const f = setup({ sourceSnapshot, sourceStandup, ttsSay, brainTurn: async (snap, options) => {
     turns.push(options);
     const ctx = options.lookup && contexts.get(options.lookup.token);
     return brainTurn ? brainTurn(ctx, options) : { text: 'FCT-1 is blocked.', cost: 0.1, model: 'claude-x' };
   }, extra: { lookups: {}, endpoint, lookupUrl: 'http://127.0.0.1:1/mcp', project: { repositoryId: 2, github },
+    lookupsFor: () => ({ lookups: {}, githubs: [] }), openAi,
     scope: { lookups_enabled: true, ...scope }, record: { append: async (line) => { records.push(line); } } } });
   const said = () => f.messages().filter((m) => m.type === 'speak').map((m) => Buffer.from(m.wav, 'base64').toString());
   const end = async () => { const stopping = f.manager.stop(); f.children[0].close(); await stopping; f.restore(); };
@@ -1370,6 +1380,103 @@ function lookupCall({ scope = {}, github = { owner: 'Olaf', repo: 'Demo' }, brai
 // a brain turn that only ends when its signal aborts, as the real one does
 const untilAborted = (ctx, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
 const settle = async () => { await flush(); await flush(); await flush(); };
+
+const CLAUDE_CHOICE = { provider: 'anthropic', model: 'default' };
+const OPENAI_CHOICE = { provider: 'openai', model: 'gpt-5-mini' };
+const providerBinding = { projectId: 'repo:2', name: 'Demo', repositories: [{ id: 2, path: 'owner/demo' }] };
+const providerScope = (providers = [CLAUDE_CHOICE, OPENAI_CHOICE]) => ({
+  projects: { allow: [{ id: providerBinding.projectId, providers }] },
+});
+const startWithProviders = (f, choice) => f.manager.start('link', { choice, binding: providerBinding, view: { snapshot: async () => f.snapshot } });
+
+test('an explicit model is the call default, and a one-question override returns to it', async () => {
+  const { destinationHash } = require('../../core/src/brains/destination.js');
+  const configuredClaude = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
+  configuredClaude.approved_hash = destinationHash({ kind: 'anthropic', base_url: 'https://api.anthropic.com', model: configuredClaude.model });
+  const openAiTurns = [];
+  const f = lookupCall({ scope: providerScope([CLAUDE_CHOICE, configuredClaude, OPENAI_CHOICE]),
+    openAi: async (config, _snapshot, options) => { openAiTurns.push([config, options]); return { text: 'FCT-1 is blocked.', model: 'gpt-5-mini-2025-08-07', cost: 0.03 }; } });
+  try {
+    await startWithProviders(f, configuredClaude);
+    assert.deepEqual(f.manager.current().find(({ type }) => type === 'provider'),
+      { type: 'provider', provider: configuredClaude.provider, model: configuredClaude.model });
+    let spokenAt = 0;
+    for (const [i, command] of ['what is blocked?', 'ask OpenAI: what now?', 'what is next?'].entries()) {
+      await f.heard(String(i), `Factory, ${command}`);
+      spokenAt = await finishSpeech(f, spokenAt);
+      assert.equal(f.manager.current().find(({ type }) => type === 'provider').provider, 'anthropic');
+    }
+    assert.deepEqual(f.turns.map(({ model, question }) => [model, question]),
+      [[configuredClaude.model, 'what is blocked?'], [configuredClaude.model, 'what is next?']]);
+    assert.deepEqual(openAiTurns.map(([config, { question }]) => [config, question]), [[OPENAI_CHOICE, 'what now?']]);
+    assert.deepEqual(f.events.filter(({ type }) => type === 'answer').map(({ provider, model }) => [provider, model]),
+      [['anthropic', 'claude-x'], ['openai', 'gpt-5-mini-2025-08-07'], ['anthropic', 'claude-x']]);
+  } finally { await f.end(); }
+});
+
+test('without live lookups, ask Claude is a plain question and a second provider is refused', async () => {
+  const f = lookupCall({ scope: { lookups_enabled: false } });
+  try {
+    await f.manager.start('link');
+    await f.heard('1', 'Factory, ask Claude what is blocked?');
+    const spoken = await finishSpeech(f);
+    assert.equal(f.turns[0].question, 'ask Claude what is blocked?');
+    assert.equal(f.events.find(({ type }) => type === 'answer').provider, undefined);
+    await f.heard('2', 'Factory, second opinion on what is blocked?');
+    await finishSpeech(f, spoken);
+    assert.equal(f.turns.length, 1);
+    assert.match(f.events.filter(({ type }) => type === 'answer').at(-1).text, /second answer provider is not available/);
+  } finally { await f.end(); }
+});
+
+test('second opinion shares deadline, tools and cost, and the other provider still answers after a failure', async () => {
+  const openAiTurns = [];
+  const f = lookupCall({ scope: { ...providerScope(), lookup_budget_usd: 0.4 }, brainTurn: async (ctx) => {
+    ctx.rounds += 7;
+    ctx.reads.push({ tool: 'get_card', kind: 'card', ref: 'FCT-1', ok: true });
+    throw Object.assign(new Error('provider-error'), { cost: 0.1 });
+  }, openAi: async (_config, _snapshot, options) => {
+    openAiTurns.push(options);
+    assert.equal(options.lookup.remaining(), 1);
+    await options.lookup.call('get_card', { card_key: 'FCT-1' });
+    assert.equal(options.lookup.remaining(), 0);
+    assert.deepEqual(await options.lookup.call('get_card', { card_key: 'FCT-2' }), { error: 'round-limit' });
+    options.onCost(0.15);
+    return { text: 'FCT-1 is blocked. Some work is pending. The scope is known.', model: 'gpt-5-mini', cost: 0.15 };
+  } });
+  try {
+    await startWithProviders(f);
+    await f.heard('1', 'Factory, second opinion on what is blocked?'); await finishSpeech(f);
+    assert.equal(f.turns[0].deadline, openAiTurns[0].deadline);
+    assert.equal(f.turns[0].signal, openAiTurns[0].signal);
+    assert.equal(openAiTurns[0].lookup.budgetUsd, 0.3);
+    assert.deepEqual(f.records.map(({ provider, rounds, cost, outcome }) => [provider, rounds, cost, outcome]),
+      [['anthropic', 7, 0.1, 'provider-error'], ['openai', 1, 0.15, 'answered-partial']]);
+    const [, second] = f.events.filter(({ type }) => type === 'answer');
+    assert.equal(second.text, 'FCT-1 is blocked. Some work is pending.');
+    assert.equal(second.sources[0].ref, 'FCT-1');
+    assert.equal(f.manager.current().find(({ type }) => type === 'limits').spent_usd, 0.25);
+  } finally { await f.end(); }
+});
+
+test('Stop aborts the OpenAI half of a second opinion and settles its reserved usage', async () => {
+  let openAiSignal;
+  const f = lookupCall({ scope: providerScope(), openAi: async (_config, _snapshot, { signal, onCost }) => {
+    openAiSignal = signal;
+    onCost(0.02);
+    return new Promise(() => {});
+  } });
+  try {
+    await startWithProviders(f);
+    await f.heard('1', 'Factory, second opinion on what is blocked?'); await settle();
+    assert.equal(openAiSignal.aborted, false);
+    const stopped = f.manager.stop(); f.children[0].close(); await stopped; await settle();
+    assert.equal(openAiSignal.aborted, true);
+    assert.deepEqual(f.records.map(({ provider, outcome, cost }) => [provider, outcome, cost]),
+      [['anthropic', 'answered', 0.1], ['openai', 'aborted', 0.02]]);
+    assert.ok(!f.events.some(({ type }) => type === 'answer'));
+  } finally { f.restore(); }
+});
 
 test('a lookup answer is spoken as at most 3 sentences without markdown; the page keeps it whole', async () => {
   const long = 'One is `done`. Two is **open**.\n\nThree is left. Four is blocked. Five is new.';

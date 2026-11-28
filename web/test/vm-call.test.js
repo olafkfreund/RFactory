@@ -127,7 +127,8 @@ test('vm spawn: the chosen avatar (opts.env.RFACTORY_AVATAR) reaches runner.crea
 
 test('vm spawn: RFACTORY_LISTEN and RFACTORY_LANGUAGE reach runner.create; none sends no key', async () => {
   const seen = [];
-  for (const env of [{ RFACTORY_LISTEN: 'audio', RFACTORY_LANGUAGE: 'de' }, {}]) {
+  for (const env of [{ RFACTORY_LISTEN: 'audio', RFACTORY_LANGUAGE: 'de', OPENAI_API_KEY: 'fixture-key',
+    OPENAI_BASE_URL: 'https://api.openai.com/v1', RFACTORY_SCOPE_FILE: '/private/scope' }, {}]) {
     const f = fake();
     const create = f.runner.create;
     f.runner.create = async (b) => { seen.push(b); return create(b); };
@@ -138,6 +139,7 @@ test('vm spawn: RFACTORY_LISTEN and RFACTORY_LANGUAGE reach runner.create; none 
   }
   assert.equal(seen[0].listen, 'audio');
   assert.equal(seen[0].language, 'de');
+  assert.deepEqual(Object.keys(seen[0]).sort(), ['call_id', 'language', 'listen', 'platform', 'scope']);
   assert.ok(!('listen' in seen[1]) && !('language' in seen[1]));
 });
 

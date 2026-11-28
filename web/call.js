@@ -4,7 +4,8 @@ const { spawn: nodeSpawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const { createHearing, SELF_NAMES } = require('../core/src/call/hearing.js');
-const { resolveListen } = require('../core/src/scope.js');
+const { resolveListen, projectProviders, CLAUDE } = require('../core/src/scope.js');
+const { checkClaudeModel } = require('../core/src/brains/destination.js');
 const { platformOf } = require('./vm-call.js');
 const { toWhisperLanguage } = require('../core/src/stt-languages.js');
 const { toSpeech } = require('@rfactory/core/src/call/speech.js');
@@ -26,11 +27,14 @@ const SORRY = "Sorry, I can't answer that right now.";
 const ANSWER_MS = 90000; // #51: a lookup answer, counted from the question's arrival
 const repositoryName = (project) => project?.github ? `${project.github.owner}/${project.github.repo}` : null;
 const usd = (n) => Math.round(n * 1e6) / 1e6;
+const providerName = (provider) => provider === 'openai' ? 'OpenAI' : 'Claude';
+const sameProvider = (a, b) => a.provider === b.provider && a.model === b.model;
+const NO_PROVIDER = 'That answer provider is not available for this project.';
 
 // #51: a spoken lookup answer is at most 3 sentences, without markdown; the page keeps the full text
-function spoken(text) {
+function spoken(text, sentences = 3) {
   const plain = String(text).replace(/[`*_#>]+/g, '').replace(/\s+/g, ' ').trim();
-  return plain.split(/(?<=[.!?])\s+/).slice(0, 3).join(' ');
+  return plain.split(/(?<=[.!?])\s+/).slice(0, sentences).join(' ');
 }
 
 // what the turn delivered, one entry per card, issue, PR or file
@@ -49,7 +53,7 @@ function sourcesOf(reads) {
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, notes = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
-  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null, grants = null }) {
+  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null, grants = null, openAi = null }) {
   const lookupsOn = !!(lookups && scope?.lookups_enabled);
   const budget = scope?.lookup_budget_usd ?? 2;
   let sttConfigured = !!stt;
@@ -64,7 +68,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   let callCount = 0; // unique per call, so a late request from an old call cannot match a new one
   const now = () => typeof clock.now === 'function' ? clock.now() : Date.now();
   const emit = (event) => {
-    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project', 'notes'].includes(event.type)) current.set(event.type, event);
+    if (['state', 'mic', 'voice', 'greeting', 'hearing', 'roster', 'limits', 'project', 'notes', 'provider'].includes(event.type)) current.set(event.type, event);
     if (event.type === 'action-pending' || event.type === 'action-updated') actionEvents.set(event.action.id, event);
     if (event.type.startsWith('share-')) shareEvents.set(event.share.id || 'unavailable', event);
     if (event.type === 'investigation-updated') investigationEvents.set(event.investigation.id, event);
@@ -298,38 +302,41 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
 
   function emitLimits(c) {
     if (call !== c) return;
-    emit({ type: 'limits', budget_usd: budget, spent_usd: c.lookupSpend, answer_seconds: ANSWER_MS / 1000,
+    emit({ type: 'limits', budget_usd: budget, spent_usd: usd(c.lookupSpend), answer_seconds: ANSWER_MS / 1000,
       lookups_per_question: 8, exhausted: c.lookupSpend >= budget, github: repositoryName(c.project),
       ...(c.project?.bound ? { githubs: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}) });
   }
 
-  // one line per question turn; never question text, answer text or tool output
-  function recordLookup(c, question, { outcome, model = null, reads = [], rounds = 0, cost = null }) {
+  function announceProvider(choice) {
+    emit({ type: 'provider', provider: choice.provider, model: choice.model });
+  }
+
+  // One line per provider turn with delivered references, without question, answer or tool contents.
+  function recordLookup(c, question, { outcome, provider = 'anthropic', model = null, reads = [], rounds = 0, cost = null }) {
     const bind = c.binding ? { project_id: c.binding.projectId, repository_ids: c.binding.repositories.map((r) => r.id) } : {};
-    Promise.resolve().then(() => record.append({ kind: 'lookup', question_id: question.id, ...bind, provider: 'anthropic', model,
-      reads: reads.map(({ tool, ref, ok }) => ({ tool, ref, ok })), failed: reads.filter((r) => !r.ok).length, rounds, cost, outcome }))
+    Promise.resolve().then(() => record.append({ kind: 'lookup', question_id: question.id, ...bind, provider, model,
+      reads: reads.map(({ tool, ref, ok, repo }) => ({ tool, ref, ok, ...(repo ? { repo } : {}) })),
+      failed: reads.filter((r) => !r.ok).length, rounds, cost, outcome }))
       .catch((error) => logFor(c, `lookup record failed: ${error.message}`));
   }
 
-  async function lookupAnswer(c, question, generation) {
+  async function lookupAnswer(c, question, generation, choices) {
     const stale = () => c.generation !== generation || c.stopping;
-    // it waited in the queue past its deadline: no turn is started
-    if (!stale() && now() >= question.arrivedAt + ANSWER_MS) {
-      recordLookup(c, question, { outcome: 'timeout' });
+    const deadline = question.arrivedAt + ANSWER_MS;
+    if (!stale() && now() >= deadline) {
+      recordLookup(c, question, { outcome: 'timeout', provider: choices[0].provider });
       await queueSpeech(c, SORRY, generation);
       return;
     }
     const controller = new AbortController();
     const { signal } = controller;
-    const deadline = question.arrivedAt + ANSWER_MS;
     const ctx = { project: c.project, ...(c.lookups ? { lookups: c.lookups } : {}), deadline, controller, signal,
-      tools: [...FACTORY, ...(c.project.github || c.project.githubs?.length ? GITHUB : [])],
+      tools: [...FACTORY, ...(c.project?.github || c.project?.githubs?.length ? GITHUB : [])],
       rounds: 0, roundLimited: false, commit: null, reads: [] };
     const token = endpoint.register(ctx);
     c.lookupTurn = ctx;
     if (stale()) controller.abort();
     let expired = false;
-    // a cue still waiting to play when the turn ends or is replaced is dropped
     const cue = (text) => { if (!signal.aborted) queueSpeech(c, text, generation, () => signal.aborted); };
     const timers = [
       clock.setTimeout(() => cue('One moment.'), 3000),
@@ -340,45 +347,123 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       const fail = () => reject(new Error('aborted'));
       if (signal.aborted) fail(); else signal.addEventListener('abort', fail, { once: true });
     });
-    let snap, text, outcome, cost = null, model = null;
+    const attributed = c.providerSelection || !!question.providerRequest;
+    const responses = [];
+    let interrupted = false;
     try {
-      snap = await Promise.race([aborted, snapshot(c)]);
-      // raced too: a brain that ignores the signal must not hang the queue
-      const result = await Promise.race([aborted, brain.turn(snap, { deadline, question: question.text, signal,
-        lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: usd(budget - c.lookupSpend) } })]);
-      ({ cost = null, model = null } = result);
-      if (signal.aborted) throw new Error('aborted');
-      const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
-        ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
-        evidence: ctx.reads.filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
-      text = checked.text;
-      outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
+      const snap = await Promise.race([aborted, snapshot(c)]);
+      for (const choice of choices) {
+        if (signal.aborted || stale()) break;
+        const { provider } = choice;
+        const approved = projectProviders(scope, c.projectId).find((config) => sameProvider(config, choice));
+        if (!approved || (provider === 'openai' && !openAi)) {
+          recordLookup(c, question, { outcome: 'provider-unavailable', provider, model: choice.model });
+          responses.push({ provider, model: choice.model, text: NO_PROVIDER });
+          continue;
+        }
+        if (c.lookupSpend >= budget) {
+          recordLookup(c, question, { outcome: 'budget-skipped', provider });
+          responses.push({ provider, model: choice.model, text: 'The call has reached its answer budget.' });
+          break;
+        }
+        if (attributed) announceProvider(choice);
+        const beforeReads = ctx.reads.length;
+        const beforeRounds = ctx.rounds;
+        ctx.roundLimited = false;
+        let text, outcome, cost = null, model = choice.model === 'default' ? null : choice.model;
+        try {
+          if (provider === 'anthropic') checkClaudeModel(approved);
+          const remaining = usd(budget - c.lookupSpend);
+          const params = { deadline, question: question.text, signal };
+          // Race both providers: Stop must release the queue even if transport ignores cancellation.
+          const result = await Promise.race([aborted, provider === 'openai'
+            ? openAi(approved, snap, { ...params, onCost: (amount) => { cost = amount; }, lookup: {
+              tools: endpoint.toolsFor(token), budgetUsd: remaining,
+              remaining: () => endpoint.remaining(token), call: (name, args) => endpoint.call(token, name, args),
+            } })
+            : brain.turn(snap, { ...params, ...(model ? { model } : {}),
+              lookup: { url: lookupUrl, token, tools: ctx.tools, budgetUsd: remaining } })]);
+          cost = result.cost ?? cost;
+          if (typeof result.model === 'string') model = redactor.toModel(result.model);
+          if (signal.aborted) throw new Error('aborted');
+          const checked = checkFactsDetailed(redactor.toModel(result.text), snap, { repo: repositoryName(c.project)?.toLowerCase() ?? null,
+            ...(c.project?.bound ? { repos: c.project.githubs.map((g) => `${g.owner}/${g.repo}`) } : {}),
+            evidence: ctx.reads.slice(beforeReads).filter((r) => r.ok && r.evidence).map((r) => r.evidence) });
+          text = checked.text;
+          outcome = checked.cut || ctx.roundLimited ? 'answered-partial' : 'answered';
+        } catch (error) {
+          cost = error.cost ?? cost;
+          if (typeof error.model === 'string') model = redactor.toModel(error.model);
+          outcome = expired || error.message === 'brain-timeout' ? 'timeout' : signal.aborted ? 'aborted'
+            : error.message === 'provider-error' ? 'provider-error' : 'error';
+          text = outcome === 'provider-error' ? "The model isn't available right now."
+            : attributed && error.message === 'budget-exceeded' ? "There isn't enough answer budget left for that question." : SORRY;
+          if (outcome !== 'aborted' && !stale()) log(`brain failed: ${expired ? 'brain-timeout' : error.message}${error.detail ? ` (${error.detail})` : ''}`);
+        }
+        if (!Number.isFinite(cost) || cost < 0) cost = null;
+        c.lookupSpend += cost ?? (provider === 'anthropic' ? 0.25 : 0);
+        const reads = ctx.reads.slice(beforeReads);
+        recordLookup(c, question, { outcome, provider, model, reads, rounds: ctx.rounds - beforeRounds, cost });
+        emitLimits(c);
+        if (outcome !== 'aborted' && !stale()) responses.push({ provider, model, text, snapshot: snap, sources: sourcesOf(reads) });
+      }
     } catch (error) {
-      cost = error.cost ?? cost;
-      outcome = expired || error.message === 'brain-timeout' ? 'timeout' : signal.aborted ? 'aborted'
-        : error.message === 'provider-error' ? 'provider-error' : 'error';
-      text = outcome === 'provider-error' ? "The model isn't available right now." : SORRY;
+      const outcome = expired ? 'timeout' : signal.aborted ? 'aborted' : 'error';
+      recordLookup(c, question, { outcome, provider: choices[0].provider });
       if (outcome !== 'aborted' && !stale()) {
-        log(snap ? `brain failed: ${expired ? 'brain-timeout' : error.message}${error.detail ? ` (${error.detail})` : ''}`
-          : `source failed: ${expired || error?.message === 'source-timeout' ? 'source-timeout' : 'source-error'}`);
+        log(`source failed: ${expired || error?.message === 'source-timeout' ? 'source-timeout' : 'source-error'}`);
+        responses.push({ provider: choices[0].provider, text: SORRY });
+      }
+    } finally {
+      for (const timer of timers) clock.clearTimeout(timer);
+      interrupted = signal.aborted && !expired;
+      endpoint.revoke(token);
+      c.lookupTurn = null;
+    }
+    if (stale()) return;
+    if (!interrupted) {
+      for (const { provider, model, text, ...response } of responses) {
+        if (stale()) return;
+        const brief = choices.length > 1 ? spoken(text, 2) : text;
+        if (response.snapshot || attributed) emit({ type: 'answer', text: brief, ...response, ...(attributed ? { provider, model } : {}) });
+        await queueSpeech(c, attributed ? `${providerName(provider)}: ${spoken(brief)}` : spoken(brief), generation);
       }
     }
-    // the outcome is settled above: revoke() aborts the signal itself
-    for (const timer of timers) clock.clearTimeout(timer);
-    endpoint.revoke(token);
-    c.lookupTurn = null;
-    c.lookupSpend = usd(c.lookupSpend + (cost ?? 0.25));
-    recordLookup(c, question, { outcome, model, reads: ctx.reads, rounds: ctx.rounds, cost });
-    emitLimits(c);
-    if (outcome === 'aborted' || stale()) return;
-    if (snap) emit({ type: 'answer', text, snapshot: snap, sources: sourcesOf(ctx.reads) });
-    await queueSpeech(c, spoken(text), generation);
+    if (!stale() && choices.some((choice) => !sameProvider(choice, c.provider))) announceProvider(c.provider);
   }
 
   async function answer(c, question, generation) {
-    if (lookupsOn && question.kind === 'question') {
-      if (c.lookupSpend < budget) return lookupAnswer(c, question, generation);
-      recordLookup(c, question, { outcome: 'budget-skipped' });
+    if (question.kind === 'question') {
+      const request = !lookupsOn && question.providerRequest?.provider === 'anthropic' ? undefined : question.providerRequest;
+      const available = c.providerChoices.filter((choice) =>
+        projectProviders(scope, c.projectId).some((config) => sameProvider(config, choice)));
+      let choices = [c.provider];
+      const unavailable = (text, provider) => {
+        if (record) recordLookup(c, question, { outcome: 'provider-unavailable', provider });
+        emit({ type: 'answer', text });
+        return queueSpeech(c, text, generation);
+      };
+      if (request?.secondOpinion) {
+        const other = available.find(({ provider }) => provider !== c.provider.provider);
+        if (!lookupsOn || !other || !available.some((choice) => sameProvider(choice, c.provider))) return unavailable(
+          'A second answer provider is not available for this project.', c.provider.provider);
+        choices.push(other);
+      } else if (request) {
+        choices = available.filter(({ provider }) => provider === request.provider);
+        if (!choices.length || !lookupsOn) return unavailable(NO_PROVIDER, request.provider);
+        choices = [choices.find((choice) => sameProvider(choice, c.provider)) ?? choices[0]];
+      }
+      const text = request ? redactor.toModel(request.text.trim()) || (request.secondOpinion ? c.lastQuestion : '') : question.text;
+      if (!text) { await queueSpeech(c, 'What question would you like me to answer?', generation); return; }
+      c.lastQuestion = text;
+      if (lookupsOn) {
+        if (c.lookupSpend < budget) return lookupAnswer(c, { ...question, text }, generation, choices);
+        recordLookup(c, question, { outcome: 'budget-skipped', provider: choices[0].provider });
+        if (request || c.providerSelection) {
+          await queueSpeech(c, 'The call has reached its answer budget.', generation);
+          return;
+        }
+      }
     }
     const timer = clock.setTimeout(() => { queueSpeech(c, 'One moment.', generation); }, 3000);
     let snap;
@@ -593,7 +678,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   function greet(c) {
     if (c.greeted) return;
     c.greeted = true;
-    queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}. Say 'Hey Factory' and your question.`);
+    const provider = c.providerSelection ? ` ${providerName(c.provider.provider)} is answering.` : '';
+    queueSpeech(c, `Factory here${c.binding ? `, for ${c.binding.name}` : ''}.${provider} Say 'Hey Factory' and your question.`);
   }
   // #56: times and counts only, never caption text
   function captionSeen(c) {
@@ -667,8 +753,13 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     else log('dropped unknown child message');
   }
 
-  async function start(link, { listen: override, binding = null, view = null } = {}) {
+  async function start(link, { listen: override, binding = null, view = null, choice } = {}) {
     if (call) throw new Error('busy');
+    const providerChoices = projectProviders(scope, binding?.projectId).map(({ provider, model }) => ({ provider, model }));
+    const provider = choice ? providerChoices.find((option) => sameProvider(option, choice)) :
+      providerChoices.find((option) => sameProvider(option, CLAUDE)) ?? providerChoices[0];
+    if (!provider || (provider.provider === 'openai' && (!openAi || !lookupsOn))) throw new Error('provider-unavailable');
+    const providerSelection = providerChoices.length > 1 || !sameProvider(provider, CLAUDE);
     const platform = platformOf(link) ?? 'teams';
     const selected = resolveListen({ listen: override === undefined ? listen : override, platform, sttConfigured });
     const whisperLanguage = toWhisperLanguage(language);
@@ -688,7 +779,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     // #52: the whole call reads through its project's view
     const target = binding ? { binding, view } : undefined;
     const own = binding && lookupsOn ? lookupsFor(binding) : null;
-    const c = { binding, view: binding ? view : source,
+    const c = { binding, view: binding ? view : source, provider, providerChoices, providerSelection, lastQuestion: '',
       sessionId: randomUUID(), linkHash: hashLink(link), projectId: binding ? binding.projectId : null,
       maskLink: (text) => link.startsWith('https://') ? text.replaceAll(link, '[redacted]') : text,
       project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
@@ -749,6 +840,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
         ...(selected === 'platform' && !sttConfigured ? { notConfigured: true } : {}) });
       emit({ type: 'state', state: 'joining' });
       if (lookupsOn) emitLimits(c);
+      if (providerSelection) announceProvider(provider);
       child.stdin.write(`${link}\n`);
     } catch (error) { // a call that cannot be set up is torn down; its slot is free once its child has gone
       killGroup(c, 'SIGKILL');

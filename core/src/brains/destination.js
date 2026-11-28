@@ -2,9 +2,28 @@
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const OPENAI_URL = 'https://api.openai.com/v1';
 
 function destinationHash({ kind, base_url, model }) {
   return createHash('sha256').update(`${kind}|${base_url}|${model}`).digest('hex');
+}
+
+function checkOpenAiDestination(config, env = process.env) {
+  if (Object.entries(env).some(([key, value]) => /^(?:OPENAI_(?:API_KEY(?:_FILE)?|BASE_URL|API_BASE|PROXY|ORGANIZATION|ORG_ID|PROJECT_ID)|(?:HTTPS?|ALL)_PROXY|NODE_USE_ENV_PROXY)$/i.test(key) ||
+      (/^NODE_TLS_REJECT_UNAUTHORIZED$/i.test(key) && value === '0'))) {
+    throw new Error('destination-override');
+  }
+  if (config.provider !== 'openai' || config.base_url !== OPENAI_URL ||
+      typeof config.model !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(config.model) ||
+      destinationHash({ ...config, kind: 'openai' }) !== config.approved_hash) throw new Error('destination-changed');
+}
+
+function checkClaudeModel(config) {
+  if (config.model === 'default') return;
+  if (typeof config.model !== 'string' || !/^claude-[a-z0-9-]{1,73}$/.test(config.model) ||
+      destinationHash({ kind: 'anthropic', base_url: 'https://api.anthropic.com', model: config.model }) !== config.approved_hash) {
+    throw new Error('destination-changed');
+  }
 }
 
 async function resolveDestination(config, env = process.env) {
@@ -43,4 +62,4 @@ function checkClaudeHome(home) {
   if (hasOverride(value)) throw new Error('destination-override');
 }
 
-module.exports = { destinationHash, resolveDestination, claudeHash, checkClaudeHome };
+module.exports = { destinationHash, resolveDestination, claudeHash, checkClaudeHome, checkOpenAiDestination, checkClaudeModel };

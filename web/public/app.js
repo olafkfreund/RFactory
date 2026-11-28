@@ -162,6 +162,31 @@ const projectIds = new WeakMap();
 const sourceKinds = new WeakMap(); // standalone source kind per document ('github' | 'jira'): no review, no call, no approval lists
 const scoped = (doc, url) => (projectIds.has(doc) ? `${url}?project=${encodeURIComponent(projectIds.get(doc))}` : url);
 const UNAVAILABLE = "This project isn't available for calls";
+const PROVIDER_UNAVAILABLE = 'The selected provider is not available for this project.';
+const PROVIDER_LABELS = { anthropic: 'Claude', openai: 'OpenAI' };
+const providerStatuses = new WeakMap();
+
+function formatProvider(provider, model) {
+  if (!Object.hasOwn(PROVIDER_LABELS, provider)) return '';
+  const name = PROVIDER_LABELS[provider];
+  return model && model !== 'default' ? `${name} (${model})` : name;
+}
+
+function validProviders(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { provider, model } = entry;
+    if (!Object.hasOwn(PROVIDER_LABELS, provider) || typeof model !== 'string' || !model.trim()) continue;
+    const key = `${provider}:${model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ provider, model });
+  }
+  return out;
+}
 
 async function run(doc) {
   const status = doc.getElementById('status');
@@ -951,6 +976,11 @@ function handleCall(doc, event, now = Date.now()) {
     if (states[event.state] && doc.getElementById('call-hearing')) set('call-hearing', states[event.state]);
   }
   else if (event.type === 'voice') set('call-voice', `voice: ${event.voice}`);
+  else if (event.type === 'provider') {
+    const status = providerStatuses.get(doc);
+    const provider = formatProvider(event.provider, event.model);
+    if (status && provider) status.textContent = `Question provider: ${provider}`;
+  }
   else if (event.type === 'greeting') set('call-error', event.result === 'done' ? 'greeting played (not confirmed heard)' : `greeting ${event.result}; the bot may not be heard`);
   else if (['question', 'answer', 'log'].includes(event.type)) {
     const li = el(doc, 'li');
@@ -958,7 +988,7 @@ function handleCall(doc, event, now = Date.now()) {
       li.appendChild(el(doc, 'div', `${event.speaker} (display name, not verified) asked, ${event.kind}:`, 'who'));
       li.appendChild(el(doc, 'div', event.text));
     } else if (event.type === 'answer') {
-      li.appendChild(el(doc, 'div', 'RFactory answered:', 'who'));
+      li.appendChild(el(doc, 'div', `${formatProvider(event.provider, event.model) || 'RFactory'} answered:`, 'who'));
       li.appendChild(el(doc, 'div', event.text, 'answer'));
       for (const source of event.sources || []) li.appendChild(renderSource(doc, source));
       const s = event.snapshot;
@@ -992,9 +1022,34 @@ function wireProjectCall(doc, project) {
   if (project) wireElevation(doc);
   const get = (id) => doc.getElementById(id);
   const error = get('call-error');
+  const providers = validProviders(project?.providers);
+  let picker;
+  if (providers.some(({ provider, model }) => provider !== 'anthropic' || model !== 'default')) {
+    const form = el(doc, 'div', undefined, 'call-form');
+    const label = el(doc, 'label', 'Question provider');
+    label.setAttribute('for', 'call-provider');
+    form.appendChild(label);
+    picker = form.appendChild(el(doc, 'select'));
+    picker.setAttribute('id', 'call-provider');
+    for (const [index, { provider, model }] of providers.entries()) {
+      const option = picker.appendChild(el(doc, 'option', formatProvider(provider, model)));
+      option.value = String(index);
+    }
+    const defaultIndex = providers.findIndex(({ provider, model }) => provider === 'anthropic' && model === 'default');
+    picker.value = String(Math.max(0, defaultIndex));
+    get('call-projects').appendChild(form);
+    const status = el(doc, 'p', '', 'fine');
+    status.setAttribute('role', 'status');
+    get('call-projects').appendChild(status);
+    providerStatuses.set(doc, status);
+  }
   let stream = null;
   let generation; // the call this page saw: Leave names it, so it cannot end a later one
-  const close = () => { stream?.close(); stream = null; };
+  const close = () => {
+    stream?.close(); stream = null;
+    const status = providerStatuses.get(doc);
+    if (status) status.textContent = '';
+  };
   async function refresh() {
     let status;
     try {
@@ -1034,13 +1089,18 @@ function wireProjectCall(doc, project) {
       const r = await fetch('/api/call', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) {
         const code = String((await r.json()).error);
-        error.textContent = code.startsWith('project-') ? UNAVAILABLE : `Failed: ${code}`;
+        error.textContent = code.startsWith('project-') ? UNAVAILABLE
+          : code === 'provider-unavailable' ? PROVIDER_UNAVAILABLE : `Failed: ${code}`;
       }
     } catch { error.textContent = 'Failed: network'; }
     await refresh();
   }
-  get('call-join').addEventListener('click', () => project && send('POST',
-    { link: get('call-link').value.trim(), listen: get('call-listen').value, project_id: project.id }));
+  get('call-join').addEventListener('click', () => {
+    if (!project) return;
+    const choice = picker && picker.value !== '' ? providers[Number(picker.value)] : undefined;
+    if (picker && !choice) { error.textContent = PROVIDER_UNAVAILABLE; return; }
+    return send('POST', { link: get('call-link').value.trim(), listen: get('call-listen').value, project_id: project.id, ...choice });
+  });
   get('call-leave').addEventListener('click', () => send('DELETE', { generation }));
   setInterval(refresh, 5000);
   return refresh();
