@@ -9,10 +9,13 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
   let speakingEvent;
   let lastStepAt = -Infinity;
   let lastPose;
+  let pairingCode = null;
   let consecutiveErrors = 0;
   let loggedErrors = 0;
   const avatar = window.__rfAvatar = {
     errors: 0,
+    setPairingCode(code) { pairingCode = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(code) ? code : null; },
+    clearPairingCode() { pairingCode = null; },
     idle() {
       state.idle();
       lastStepAt = -Infinity;
@@ -122,6 +125,18 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
     }
     ctx.fillStyle = '#282828';
     ctx.fillRect(0, height - 100, width, 100);
+    if (pairingCode) {
+      const bannerHeight = Math.round(height * 0.16);
+      ctx.save();
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, bannerHeight);
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.round(bannerHeight * 0.68)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`Code: ${pairingCode}`, width / 2, bannerHeight / 2, width * 0.62);
+      ctx.restore();
+    }
     ctx.fillStyle = '#fe8019';
     ctx.fillRect(width - 120, 24, 96, 56);
     ctx.fillStyle = '#1d2021';

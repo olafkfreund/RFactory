@@ -148,6 +148,52 @@ function avatarPage(calls, confirmations = [true], errors = 0) {
   } };
 }
 
+test('pairing IPC applies the latest code after avatar installation and clears without logging or playing it', async () => {
+  for (const clearEarly of [true, false]) {
+    let release;
+    const installed = new Promise((resolve) => { release = resolve; });
+    const pairing = [];
+    const page = { evaluate: async (fn, value) => {
+      const source = fn.toString();
+      if (source.includes('eval(source)')) return installed;
+      if (source.includes('setPairingCode')) {
+        pairing.push(value);
+        if (value === 'EEEEEE') throw new Error('Evaluation failed for EEEEEE');
+      }
+      return false;
+    } };
+    const s = await joined({ env: { RFACTORY_AVATAR: 'm01' }, page, readFile: async (file) => fs.readFileSync(file) });
+    try {
+      assert.ok(s.states().includes('in-call'));
+      s.msg({ type: 'pairing-code', code: 'A2CD34' });
+      s.msg({ type: 'pairing-code', code: 'B3CD45' });
+      if (clearEarly) s.msg({ type: 'pairing-clear' });
+      await tick();
+      assert.deepStrictEqual(pairing, []);
+      release();
+      await tick();
+      assert.deepStrictEqual(pairing, clearEarly ? [] : ['B3CD45']);
+      s.msg({ type: 'pairing-code', code: 'EEEEEE' });
+      await tick();
+      s.msg({ type: 'pairing-clear' });
+      await tick();
+      assert.deepStrictEqual(pairing.slice(-2), ['EEEEEE', null]);
+      s.call._inner.emit('captions-ready');
+      assert.strictEqual(s.speaks.length, 0);
+      assert.doesNotMatch(JSON.stringify([s.calls.chat, s.out]), /A2CD34|B3CD45|EEEEEE/);
+    } finally { release(); s.stdin.end(); await s.done; }
+  }
+});
+
+test('a join error quoting a Teams link does not log its URL or passcode', async () => {
+  const link = 'https://teams.microsoft.com/meet/123?p=sample-passcode-only';
+  const s = setup({ platform: 'teams', join: async () => { throw new Error(`Cannot navigate to ${link}`); } });
+  s.stdin.write(`${link}\n`);
+  assert.strictEqual(await s.done, 1);
+  assert.match(s.logs(), /Cannot navigate to \[redacted\]/);
+  assert.doesNotMatch(JSON.stringify(s.out), /sample-passcode-only/);
+});
+
 test('a Teams link reaches join unchanged and the avatar camera is not checked by a Meet label', async () => {
   const link = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d';
   const calls = { order: [] };

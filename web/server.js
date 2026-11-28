@@ -54,6 +54,11 @@ function sameOrigin(req) {
   try { return new URL(req.headers.origin).host === req.headers.host; } catch { return false; }
 }
 
+function sameOriginStrict(req) {
+  const site = req.headers['sec-fetch-site'];
+  return sameOrigin(req) && (site === undefined || site === 'same-origin');
+}
+
 // verify only (RFACTORY_BRAIN_RECORD): one JSON line per brain input, redacted as it is sent; a failed write never breaks the brain
 function recordBrain(brain, redactor, file) {
   const add = (input) => { try { fs.appendFileSync(file, `${JSON.stringify(redactor.toModel(input))}\n`); } catch { /* verify aid only */ } };
@@ -76,7 +81,7 @@ function keepAlive(desktop_id, runner, ms) {
   t.unref();
 }
 
-function createApp({ source, redactor, roles, call = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
+function createApp({ source, redactor, roles, call = null, schedule = null, actions = null, shares = null, live, investigations = null, notes = null, desktop = null, profiles = null, heartbeatMs = 10000, commit = '', scope = null, slot = { starting: false } }) { // slot.starting: #52, the call slot, reserved while a project is resolved
   let busy = false;
   const jira = source.kind === 'jira';
   const files = jira ? STATIC : { ...STATIC, ...LIVE_STATIC, ...(desktop ? DESKTOP_STATIC : {}) };
@@ -285,6 +290,51 @@ function createApp({ source, redactor, roles, call = null, actions = null, share
       return;
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
+    if (call && schedule && req.method === 'GET' && url === '/api/call/grant') {
+      const { grant, pending, scheduled } = !allowed || call.project?.id === query.get('project')
+        ? call.grantStatus() : { grant: null, pending: false, scheduled: false };
+      return json(res, 200, { grant, pending, can_approve: roles.has(email, 'approver'), scheduled, generation: call.generation });
+    }
+    const pairing = call && schedule && req.method === 'POST' && /^\/api\/call\/grant\/(request|verify|revoke)$/.exec(url);
+    if (pairing) {
+      if (!roles.has(email, 'approver') || !sameOriginStrict(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+      readJson(req).then(async (body) => {
+        if (!body || body.generation !== call.generation) return json(res, 409, { error: 'stale-generation' });
+        if (allowed && call.project?.id !== query.get('project')) return json(res, 409, { error: 'not-this-project' });
+        const verb = pairing[1];
+        const { status, error, grant, revoked } = await (verb === 'request' ? call.requestPairing(email, body.scope)
+          : verb === 'verify' ? call.verifyPairing(email, body.code) : call.revokeGrant(email, body.grant_id));
+        return json(res, status, { ...(error ? { error } : { ok: true }), ...(grant ? { grant } : {}), ...(revoked ? { revoked } : {}) });
+      }).catch(() => json(res, 500, { error: 'internal' }));
+      return;
+    }
+    const schedules = schedule && /^\/api\/call\/schedules(?:\/([\w-]{1,64}))?$/.exec(url);
+    if (schedules) {
+      const id = schedules[1];
+      const projectId = allowed ? query.get('project') : null;
+      const canApprove = roles.has(email, 'approver');
+      if (req.method === 'GET' && !id) {
+        if (allowed && !allowed.has(projectId)) return json(res, 403, { error: 'project-not-allowed' });
+        return json(res, 200, { slots: schedule.list({ projectId }), can_approve: canApprove });
+      }
+      if ((req.method === 'POST' && !id) || (req.method === 'DELETE' && id)) {
+        if (!canApprove || !sameOriginStrict(req)) { req.resume(); return json(res, 403, { error: 'forbidden' }); }
+        if (allowed && !allowed.has(projectId)) { req.resume(); return json(res, 403, { error: 'project-not-allowed' }); }
+        const failed = () => json(res, 500, { error: 'record-failed' });
+        if (id) {
+          req.resume();
+          try {
+            return schedule.remove(id, allowed ? { projectId } : undefined) ? json(res, 200, { ok: true })
+              : json(res, 404, { error: 'not-found' });
+          } catch { return failed(); }
+        }
+        readJson(req).then((body) => {
+          const slot = schedule.add({ link: body?.link, starts_at: body?.starts_at, ends_at: body?.ends_at, projectId, createdBy: email });
+          return slot ? json(res, 201, { slot }) : json(res, 400, { error: 'invalid-slot' });
+        }).catch(failed);
+        return;
+      }
+    }
     if (allowed && call && req.method === 'GET' && url === '/api/call/status') {
       return json(res, 200, { running: call.running, starting: slot.starting, generation: call.generation, project: call.project });
     }
@@ -361,12 +411,13 @@ function refuseJiraEnv(env) {
   }
 }
 
-// The record exists when writes, shares, investigations, lookups, notes or agents are on; only writes build a writer and its managers
+// The record exists when calls, writes, shares, investigations, lookups, notes or agents are on; only writes build a writer and its managers
 // (loadScope refuses investigations without writes).
-async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind }) {
+const ACTIONS_DIR = '/var/lib/rfactory/actions';
+async function composeWrites({ scope, source, brain, redactor, roles, dir, rebind, callsEnabled = process.env.RFACTORY_CALLS === '1' }) {
   let actions = null, shares = null, investigations = null, notes = null;
-  if (!scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.notes_enabled && !scope.agents?.length) return { actions, shares, investigations };
-  const record = require('./actions-record.js').createRecord({ dir: dir || '/var/lib/rfactory/actions', redactor });
+  if (!callsEnabled && !scope.writes_enabled && !scope.shares_enabled && !scope.lookups_enabled && !scope.notes_enabled && !scope.agents?.length) return { actions, shares, investigations };
+  const record = require('./actions-record.js').createRecord({ dir: dir || ACTIONS_DIR, redactor });
   record.prune();
   setInterval(() => record.prune(), 86400000).unref();
   if (scope.shares_enabled) {
@@ -492,7 +543,8 @@ async function main() {
   const realBrain = createClaudeBrain(scope, redactor);
   const brain = process.env.RFACTORY_BRAIN_RECORD ? recordBrain(realBrain, redactor, process.env.RFACTORY_BRAIN_RECORD) : realBrain;
   const reads = createReads({ scope });
-  const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir: process.env.RFACTORY_ACTIONS_DIR,
+  const dir = process.env.RFACTORY_ACTIONS_DIR || ACTIONS_DIR;
+  const { actions, shares, investigations, notes, record } = await composeWrites({ scope, source, brain, redactor, roles, dir,
     rebind: reads.allowed ? (id) => reads.bind(source, id) : undefined });
   const lookup = await composeLookups({ scope, key: secrets[0], redactor, token: extras.githubToken, tokens: extras.githubTokens });
   console.log(lookup ? `lookups: on (factory${lookup.project.github ? ', github' : ''})` : 'lookups: off');
@@ -504,6 +556,7 @@ async function main() {
   }
   let desktop = null;
   let call = null;
+  let schedule = null;
   if (runner) {
     const guest = async (route, body) => { const r = await runner.call(route, body); if (r.status !== 200) throw new Error('runner-refused'); return r.body; };
     desktop = require('./desktop-routes.js').createDesktop({ roles, scopeName: scope.name, runner, writesEnabled: scope.writes_enabled === true,
@@ -518,18 +571,20 @@ async function main() {
       destroy: (id) => runner.destroy(id), openVnc: (id) => runner.openVnc(id) });
   }
   if (process.env.RFACTORY_CALLS === '1') {
+    schedule = require('./schedule.js').createScheduleRegistry({ dir, validLink, projectMode: !!reads.allowed });
+    const grants = require('./grants.js').createGrantManager({ record, redactor, roles, schedule });
     const { createTts } = require('./tts.js');
     const tts = createTts({ voicePath: process.env.RFACTORY_VOICE });
     const maleTts = process.env.RFACTORY_VOICE_MALE && fs.existsSync(process.env.RFACTORY_VOICE_MALE)
       ? createTts({ voicePath: process.env.RFACTORY_VOICE_MALE }) : tts;
     call = require('./call.js').createCallManager({ source, brain, tts, maleTts, avatar: scope.avatar, listen: scope.listen, language: scope.language, redactor, actions, shares, investigations, notes, desktop,
-      ...(lookup ? { ...lookup, scope, record } : {}),
+      record, grants, ...(lookup ? { ...lookup, scope } : {}),
       ...(runner ? { runner } : {}), ...(runner ? { spawn: require('./vm-call.js').createVmSpawn({ runner, scope: scope.name }) } : {}) });
   }
   const commit = process.env.RFACTORY_COMMIT || '';
   const agents = await composeAgents({ scope, agents: extras.agents, key: secrets[0], redactor, call, slot, actions, shares, investigations, record, commit });
   console.log(agents ? `agents: on (${extras.agents.length})` : 'agents: off');
-  return createApp({ source, scope, redactor, roles, call, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
+  return createApp({ source, scope, redactor, roles, call, schedule, actions, shares, investigations, notes, desktop, profiles: runner ? { runner, scope: scope.name } : null,
     commit, slot }).listen(Number(process.env.PORT) || 8080, '127.0.0.1');
 }
 

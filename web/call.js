@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn: nodeSpawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const { createHearing, SELF_NAMES } = require('../core/src/call/hearing.js');
 const { resolveListen } = require('../core/src/scope.js');
@@ -12,6 +13,7 @@ const { summarise } = require('@rfactory/core/src/items.js');
 const { buildStandup, speakStandupHeadline } = require('@rfactory/core/src/standup.js');
 const { createShareDesktop } = require('./share-desktop.js');
 const { createStt } = require('./stt.js');
+const { hashLink } = require('./schedule.js');
 const portraits = require('../bot/avatars/manifest.json').portraits;
 
 const MAX_IN = 64 * 1024;
@@ -46,7 +48,7 @@ function sourcesOf(reads) {
 function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tts, avatar, random = Math.random,
   redactor, clock = globalThis, quietMs = 1500, botCmd = BOT_CMD, actions = null, desktop = null, shares = null, investigations = null, notes = null, runner = null,
   listen = 'auto', language = 'en', sttUrl = process.env.RFACTORY_STT_URL, sttSecretFile = process.env.RFACTORY_STT_SECRET_FILE,
-  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null }) {
+  stt = null, lookups = null, endpoint = null, lookupUrl = null, lookupsFor = null, project = null, scope = null, record = null, grants = null }) {
   const lookupsOn = !!(lookups && scope?.lookups_enabled);
   const budget = scope?.lookup_budget_usd ?? 2;
   let sttConfigured = !!stt;
@@ -109,17 +111,65 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     queueSpeech(c, result ? [...event.counts, redactor.logSafeWindow(event.summary)].join(' ') : text);
   });
   if (notes) notes.subscribe((event) => { if (!foreign(event)) emit(outgoing(event)); });
-  const log = (message) => emit({ type: 'log', message: String(redactor.logSafe(String(message))) });
+  const safeCallText = (message) => redactor.logSafe(call ? call.maskLink(String(message)) : String(message));
+  const log = (message) => emit({ type: 'log', message: safeCallText(message) });
   let call = null;
   const logFor = (c, message) => { if (call === c) log(message); };
   const stopCall = (c, reason) => (call === c ? stop(reason) : Promise.resolve());
+  const isLive = (c) => !!c && call === c && c.inCall === true && !c.stopping;
+  const pairingUnavailable = () => ({ status: 409, error: 'not-in-call' });
+  grants?.subscribe((event, sessionId) => {
+    const c = call;
+    if (c?.sessionId !== sessionId) return;
+    if (event.type === 'pairing-clear') {
+      send(c, { type: 'pairing-clear' });
+      emit(outgoing({ type: 'grant-updated', state: 'code-cleared', generation: callCount }));
+      return;
+    }
+    if (isLive(c)) {
+      if (event.state === 'granted') queueSpeech(c, `This call is elevated, scope ${event.scope}.`);
+      if (['revoked', 'expired'].includes(event.state)) queueSpeech(c, 'Elevated access has ended.');
+    }
+    emit(outgoing({ ...event, generation: callCount }));
+  });
+
+  async function requestPairing(email, scope) {
+    const c = call;
+    if (!grants || !isLive(c)) return pairingUnavailable();
+    const { status, error, code, codeId } = await grants.requestCode(email, { ...pairingContext(c), scope });
+    if (!code) return { status, error };
+    if (!isLive(c) || !grants.isPending(codeId)) return pairingUnavailable();
+    if (!send(c, { type: 'pairing-code', code })) {
+      grants.endCall(c.sessionId, 'delivery-failed');
+      return { status: 500, error: 'delivery-failed' };
+    }
+    emit(outgoing({ type: 'grant-updated', state: 'code-issued', generation: callCount }));
+    return { status };
+  }
+
+  function pairingContext({ sessionId, linkHash, projectId, inCall }) {
+    return { sessionId, linkHash, projectId, inCall };
+  }
+  function verifyPairing(email, code) {
+    const c = call;
+    return grants && isLive(c) ? grants.verifyCode(email, { ...pairingContext(c), isLive: () => isLive(c), code }) : pairingUnavailable();
+  }
+  function revokeGrant(email, grantId) {
+    return grants && isLive(call) ? grants.revoke(email, { grantId }) : pairingUnavailable();
+  }
+  function grantStatus() {
+    return grants && isLive(call) ? grants.status(pairingContext(call)) : { grant: null, pending: false, scheduled: false };
+  }
 
   function send(c, message) {
     if (call !== c || c.exited) return false;
     const line = JSON.stringify(message);
     if (Buffer.byteLength(line) > MAX_OUT) { log('dropped oversize outgoing line'); return false; }
     try { c.child.stdin.write(`${line}\n`); return true; }
-    catch (error) { log(`child write failed: ${error.message}`); return false; }
+    catch (error) {
+      log(message.type.startsWith('pairing-') ? 'pairing delivery failed' : `child write failed: ${error.message}`);
+      return false;
+    }
   }
 
   function killGroup(c, signal) {
@@ -133,7 +183,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const c = call;
     if (!c) return;
     if (c.stopping) return c.stopping;
+    c.inCall = false;
     c.closed = true;
+    grants?.endCall(c.sessionId, reason);
     c.lookupTurn?.controller.abort();
     clock.clearTimeout(c.turn?.timer);
     if (c.listen === 'audio') log(`stt pending=${c.requests.size} dropped=${c.dropped}`);
@@ -538,8 +590,9 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     catch { log('dropped malformed child line'); return; }
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
-      emit({ type: 'state', state: msg.state, ...(msg.code ? { code: redactor.logSafe(String(msg.code)) } : {}) });
-      if (msg.state === 'in-call') { c.inCall = true; c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
+      c.inCall = msg.state === 'in-call';
+      emit({ type: 'state', state: msg.state, ...(msg.code ? { code: safeCallText(msg.code) } : {}) });
+      if (c.inCall) { c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       if (c.holdGreeting && c.inCall) captionSeen(c);
@@ -596,6 +649,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const target = binding ? { binding, view } : undefined;
     const own = binding && lookupsOn ? lookupsFor(binding) : null;
     const c = { binding, view: binding ? view : source,
+      sessionId: randomUUID(), linkHash: hashLink(link), projectId: binding ? binding.projectId : null,
+      maskLink: (text) => link.startsWith('https://') ? text.replaceAll(link, '[redacted]') : text,
       project: binding && project ? { repositoryId: project.repositoryId, github: own?.githubs.length === 1 ? own.githubs[0] : null,
         githubs: own?.githubs ?? [], bound: true } : project,
       lookups: own?.lookups ?? null,
@@ -662,6 +717,7 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   }
 
   return { get running() { return !!call; }, get generation() { return callCount; },
+    requestPairing, verifyPairing, revokeGrant, grantStatus,
     get project() { return call?.binding ? { id: call.binding.projectId, name: call.binding.name } : null; },
     get projectCall() { return call?.projectCall ?? null; }, config: { listen, sttConfigured }, start, stop, current: () => [...current.values(), ...actionEvents.values(), ...shareEvents.values(), ...investigationEvents.values()],
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };

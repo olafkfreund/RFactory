@@ -457,18 +457,24 @@ const ALPHA = { id: 'id-a', name: 'Alpha', slug: 'alpha', repositories: [{ id: 1
 const BETA = { id: 'id-b', name: 'Beta <b>', slug: 'beta', repositories: [{ id: 3, path: 'o/b' }] };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null } } = {}) {
+async function projectPage(t, path, { config = { projects: true }, routes = {}, status = { running: false, starting: false, generation: 0, project: null }, elevation = false } = {}) {
   const { doc, byId } = shim();
   for (const id of ['run', 'status', 'stale', 'summary-card', 'call', 'call-join', 'call-leave', 'call-link', 'call-listen', 'call-error', 'call-state-text', 'call-log',
     'call-mic', 'call-voice', 'call-projects', 'call-project', 'project-info', 'call-busy', 'actions', 'actions-pending', 'actions-history', 'actions-count', 'history',
     'share', 'share-list', 'investigation', 'investigation-list', 'notes', 'notes-list', 'notes-status']) byId[id] = new Node('x');
   byId['call-leave'].disabled = true;
-  const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], status };
+  if (elevation) {
+    for (const id of ['call-elevation', 'grant-status', 'grant-error', 'grant-request', 'grant-request-button', 'grant-scope', 'grant-verify',
+      'grant-verify-button', 'grant-code', 'grant-revoke', 'call-schedule', 'schedule-slots', 'schedule-add', 'schedule-link',
+      'schedule-start', 'schedule-end', 'schedule-status']) byId[id] = new Node('x');
+  }
+  const page = { doc, byId, requests: [], streams: [], timers: [], assigned: [], headers: [], status };
   const answers = { '/api/projects': [200, [ALPHA, BETA]], '/api/projects/resolve?slug=alpha': [200, ALPHA], ...routes };
   const real = { fetch: global.fetch, EventSource: global.EventSource, setInterval: global.setInterval };
   t.after(() => Object.assign(global, real));
   global.fetch = async (url, options = {}) => {
     page.requests.push([options.method || 'GET', url, ...(options.body ? [JSON.parse(options.body)] : [])]);
+    page.headers.push(options.headers);
     const [code, body] = answers[url] || (url === '/api/call/status' ? [200, page.status]
       : url === '/api/call' ? answers.call || [202, { ok: true }] : [403, { error: 'project-not-allowed' }]);
     return { ok: code < 300, status: code, json: async () => body };
@@ -483,6 +489,67 @@ async function projectPage(t, path, { config = { projects: true }, routes = {}, 
   page.poll = async () => { await page.timers[0](); await settle(); };
   return page;
 }
+
+test('elevation controls get generation from grant status, scope mutations and clear submitted secrets', async (t) => {
+  for (const projects of [false, true]) {
+    const path = projects ? '/p/alpha' : '/';
+    const suffix = projects ? '?project=id-a' : '';
+    const grants = '/api/call/grant';
+    const schedules = '/api/call/schedules';
+    const state = { grant: null, pending: false, scheduled: true, can_approve: true, generation: 42 };
+    const schedule = { slots: [{ id: 'meeting', label: '<img> Meeting', starts_at: 2000000000000, ends_at: 2000000036000 }], can_approve: true };
+    const routes = {
+      [grants + suffix]: [200, state],
+      [`${grants}/request${suffix}`]: [200, {}],
+      [`${grants}/verify${suffix}`]: [200, {}],
+      [`${grants}/revoke${suffix}`]: [200, {}],
+      [schedules + suffix]: [200, schedule],
+      [`${schedules}/meeting${suffix}`]: [200, {}],
+    };
+    const p = await projectPage(t, path, { config: { projects }, routes, elevation: true,
+      status: { running: true, generation: 3, project: ALPHA } });
+    const get = (id) => p.byId[id];
+    const submit = (id) => get(id).listeners.submit({ preventDefault() {} });
+    const mutation = (verb, url, body) => {
+      const index = p.requests.findIndex(([method, requested]) => method === verb && requested === url + suffix);
+      assert.notEqual(index, -1, url);
+      assert.equal(p.headers[index]['x-rfactory-action'], '1');
+      assert.deepEqual(p.requests[index], [verb, url + suffix, ...(body ? [body] : [])]);
+    };
+    assert.equal(get('grant-request').hidden, false);
+    assert.equal(get('grant-verify').hidden, true);
+    get('grant-scope').value = 'tests';
+    state.pending = true;
+    await p.click('grant-request-button');
+    mutation('POST', `${grants}/request`, { scope: 'tests', generation: 42 });
+    assert.equal(get('grant-verify').hidden, false);
+    const code = 'A2CD34';
+    get('grant-code').value = code;
+    const submitting = submit('grant-verify');
+    assert.equal(get('grant-code').value, '');
+    await submitting;
+    mutation('POST', `${grants}/verify`, { code, generation: 42 });
+    state.pending = false;
+    state.grant = { grant_id: 'grant-1', granted_by: '<script>owner', scope: 'tests', expires_at: 2000000000000 };
+    p.streams[0].send({ type: 'grant-updated', state: 'granted' });
+    await settle();
+    assert.match(get('grant-status').textContent, /Elevated.*tests.*<script>owner.*expires/);
+    assert.equal(get('grant-revoke').hidden, false);
+    await p.click('grant-revoke');
+    mutation('POST', `${grants}/revoke`, { grant_id: 'grant-1', generation: 42 });
+    assert.equal(get('schedule-slots').all().some((node) => node.tag === 'img'), false);
+    await get('schedule-slots').all().find((node) => node.tag === 'button').listeners.click();
+    mutation('DELETE', `${schedules}/meeting`);
+    const link = 'https://teams.microsoft.com/meet/123?p=fixture';
+    get('schedule-link').value = link;
+    get('schedule-start').value = '2033-05-18T10:00';
+    get('schedule-end').value = '2033-05-18T10:30';
+    await submit('schedule-add');
+    mutation('POST', schedules, { link, starts_at: new Date('2033-05-18T10:00').getTime(), ends_at: new Date('2033-05-18T10:30').getTime() });
+    assert.equal(get('schedule-link').value, '');
+    if (!projects) assert.ok(!p.urls().includes('/api/call/status'));
+  }
+});
 
 test('a project page shows its repositories, scopes every read and starts with the stable id', async (t) => {
   const p = await projectPage(t, '/p/alpha');

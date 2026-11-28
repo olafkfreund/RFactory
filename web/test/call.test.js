@@ -8,6 +8,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { createCallManager } = require('../call.js');
 const { createInvestigationManager } = require('../investigations.js');
+const { createGrantManager } = require('../grants.js');
+const { hashLink } = require('../schedule.js');
 const { makeRedactor } = require('../../core/src/redact.js');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -82,6 +84,110 @@ async function finishSpeech(f, from = 0) {
   await flush();
   return index;
 }
+
+function pairingCall(t, config = {}) {
+  const link = 'https://teams.microsoft.com/meet/123?p=not-for-the-log';
+  const clock = fakeClock();
+  const rows = [], speech = [], questions = [], transcriptions = [];
+  const slot = { id: 'slot', ends_at: 500000 };
+  const record = { append: async (row) => { rows.push(row); await config.append?.(row); } };
+  const grants = createGrantManager({ clock, record, roles: { has: () => true },
+    schedule: { match: ({ linkHash, projectId }) => linkHash === hashLink(link) && projectId === (config.projectId ?? null) ? slot : null } });
+  const f = setup({ extra: { clock, grants }, listen: 'audio', stt: { transcribe: async (pcm) => {
+    transcriptions.push(pcm); return { text: '' };
+  } }, brainTurn: async (...args) => { questions.push(args); return { text: '' }; },
+  ttsSay: async (text) => { speech.push(text); return Buffer.from(text); } });
+  t.after(f.restore);
+  return { ...f, clock, link, rows, speech, questions, transcriptions };
+}
+
+test('pairing follows in-call state, clears the bot tile and speaks activation and revoke once', async (t) => {
+  const f = pairingCall(t);
+  const { manager } = f;
+  const email = 'Approver@Example.com';
+  await manager.start(f.link);
+  const child = f.children[0];
+  for (const state of ['joining', 'lobby']) {
+    child.output({ type: 'state', state });
+    assert.equal((await manager.requestPairing(email, 'tests')).status, 409);
+    assert.equal((await manager.verifyPairing(email, 'BBBBBB')).status, 409);
+    assert.equal(manager.revokeGrant(email, 'none').status, 409);
+  }
+  child.output({ type: 'state', state: 'in-call' });
+  const request = () => manager.requestPairing(email, 'tests');
+  const ipc = () => f.messages().filter(({ type }) => type.startsWith('pairing-'));
+  assert.deepEqual(await request(), { status: 200 });
+  assert.equal(manager.grantStatus().pending, true);
+  await request();
+  assert.deepEqual(ipc().map(({ type }) => type), ['pairing-code', 'pairing-clear', 'pairing-code']);
+  const wrong = 'submitted-private-text';
+  for (let i = 0; i < 3; i++) assert.deepEqual(await manager.verifyPairing(email, wrong), { status: 400, error: 'invalid-code' });
+  assert.equal(ipc().at(-1).type, 'pairing-clear');
+  assert.equal(manager.grantStatus().pending, false);
+  await request();
+  f.clock.tick(120000);
+  assert.equal(ipc().at(-1).type, 'pairing-clear');
+  await request();
+  const { code } = ipc().at(-1);
+  const { grant } = await manager.verifyPairing(email, code);
+  assert.equal(ipc().at(-1).type, 'pairing-clear');
+  assert.equal(manager.grantStatus().grant.grant_id, grant.grant_id);
+  const granted = f.events.find(({ state }) => state === 'granted');
+  assert.deepEqual(granted, { type: 'grant-updated', state: 'granted', ...grant });
+  let completed = await finishSpeech(f);
+  assert.equal(f.speech.filter((line) => line === 'This call is elevated, scope tests.').length, 1);
+  const revoking = manager.revokeGrant(email, grant.grant_id);
+  assert.equal(manager.grantStatus().grant, null);
+  assert.deepEqual(await revoking, { status: 200, revoked: true });
+  completed = await finishSpeech(f, completed);
+  assert.equal(f.speech.filter((line) => line === 'Elevated access has ended.').length, 1);
+  await request();
+  const second = await manager.verifyPairing(email, ipc().at(-1).code);
+  assert.equal(second.status, 200);
+  completed = await finishSpeech(f, completed);
+  f.clock.tick(second.grant.expires_at - f.clock.now());
+  await finishSpeech(f, completed);
+  assert.equal(manager.grantStatus().grant, null);
+  assert.equal(f.speech.filter((line) => line === 'Elevated access has ended.').length, 2);
+  await request();
+  child.stderr.emit('data', Buffer.from(f.link));
+  const stopping = manager.stop();
+  assert.equal((await request()).status, 409);
+  assert.deepEqual(f.messages().slice(-2).map(({ type }) => type), ['pairing-clear', 'leave']);
+  child.close();
+  await stopping;
+  assert.equal(f.questions.length + f.transcriptions.length, 0);
+  const publicData = JSON.stringify([f.events, f.rows, f.speech]);
+  for (const secret of [code, wrong, f.link, 'not-for-the-log']) assert.ok(!publicData.includes(secret));
+});
+
+test('disconnect aborts an in-flight grant, ends a live grant and separates successive project calls', async (t) => {
+  const audit = deferred();
+  let wait = true;
+  const f = pairingCall(t, { projectId: 'project', append: (row) => row.state === 'granted' && wait ? audit.promise : undefined });
+  const { manager } = f;
+  const begin = async () => {
+    await manager.start(f.link, { binding: { projectId: 'project', name: 'Project', repositories: [] } });
+    f.children.at(-1).output({ type: 'state', state: 'in-call' });
+    await manager.requestPairing('approve@example.com', 'read');
+    return f.messages().findLast(({ type }) => type === 'pairing-code').code;
+  };
+  const close = async () => { f.children.at(-1).close(); await manager.stop(); };
+  const code = await begin();
+  const verifying = manager.verifyPairing('approve@example.com', code);
+  await close();
+  audit.resolve();
+  assert.equal((await verifying).status, 409);
+  assert.equal(f.events.some(({ state }) => state === 'granted'), false);
+  wait = false;
+  const next = await begin();
+  assert.equal((await manager.verifyPairing('approve@example.com', next)).status, 200);
+  assert.equal(f.events.find(({ state }) => state === 'granted').generation, 2);
+  await close();
+  assert.equal(manager.grantStatus().grant, null);
+  assert.equal(f.rows.at(-1).state, 'ended');
+  assert.notEqual(f.rows[0].session_id, f.rows.at(-1).session_id);
+});
 
 test('avatar resolves once per call and the child receives its id only when set', async () => {
   for (const [avatar, random, expected] of [

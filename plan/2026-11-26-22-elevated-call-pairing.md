@@ -102,3 +102,7 @@ All open questions were already resolved in `spec/2026-11-26-22-elevated-call-pa
 ## Open questions
 
 None
+
+## Deviations
+
+- Step 8 also updates the existing `web/test/pod.test.js` fake-Podman assertions to verify the calls-only mount and keep the full offline suite aligned with step 4. No live pod is involved.
