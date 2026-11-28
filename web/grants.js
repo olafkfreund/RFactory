@@ -100,7 +100,7 @@ function createGrantManager({ record, roles, schedule, clock = Date }) {
       if (!equal) reason = 'invalid-code';
     }
     if (reason) {
-      if (pending && (++pending.attempts >= 3 || reason === 'expired')) clearCode();
+      if (pending && (reason === 'expired' || (pending.entry.requested_by === actor && ++pending.attempts >= 3))) clearCode();
       try {
         await append('code-rejected', { ...binding(ctx), code_id: pending?.entry.code_id ?? null, entered_by: actor, reason });
       } catch { return fail(500, 'record-failed'); }
@@ -114,7 +114,13 @@ function createGrantManager({ record, roles, schedule, clock = Date }) {
       try { await append('granted', grant); }
       catch { return fail(500, 'record-failed'); }
       const eligible = slotFor(ctx);
-      if (!ctx.isLive?.(ctx.sessionId) || !eligible || eligible.id !== slot.id || now() >= grant.expires_at) {
+      const stale = !ctx.isLive?.(ctx.sessionId) ? 'call-not-live'
+        : eligible?.id !== slot.id ? 'schedule-ineligible' : now() >= grant.expires_at ? 'time-limit' : null;
+      if (stale) {
+        const { grant_id, session_id, link_hash, project_id } = grant;
+        try {
+          await append(stale === 'time-limit' ? 'expired' : 'ended', { grant_id, session_id, link_hash, project_id, reason: stale });
+        } catch { return fail(500, 'record-failed'); }
         return fail(409, 'activation-stale');
       }
       active = Object.freeze(grant);
@@ -139,10 +145,11 @@ function createGrantManager({ record, roles, schedule, clock = Date }) {
     if (active?.session_id === sessionId) finishGrant('ended', reason);
   }
 
-  function status(ctx) {
+  function status(ctx, email) {
     expireGrant();
+    const pending = Boolean(waiting?.ready && matches(waiting.entry, ctx) && now() < waiting.entry.expires_at);
     return { grant: active && matches(active, ctx) ? details(active) : null,
-      pending: Boolean(waiting?.ready && matches(waiting.entry, ctx) && now() < waiting.entry.expires_at),
+      pending, can_verify: pending && waiting.entry.requested_by === email?.toLowerCase() && roles.has(email, 'approver'),
       scheduled: Boolean(slotFor(ctx)) };
   }
 
@@ -154,6 +161,7 @@ function createGrantManager({ record, roles, schedule, clock = Date }) {
   }
 
   return { requestCode, verifyCode, revoke, endCall, status, check,
+    discardCode: (codeId) => { if (waiting?.entry.code_id === codeId) clearCode(); },
     // Call delivery may resume after a replacement, consumption or teardown.
     isPending: (codeId) => waiting?.ready && waiting.entry.code_id === codeId && now() < waiting.entry.expires_at,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };

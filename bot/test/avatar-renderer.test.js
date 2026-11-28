@@ -158,6 +158,7 @@ test('a still face renders speaking frames and shows and clears the pairing bann
       const portraitDataUrl = 'data:image/webp;base64,' + fs.readFileSync(path.join(__dirname, '../avatars/m04.webp')).toString('base64');
       await page.evaluate((script) => eval(script), buildRendererSource({ portraitDataUrl, anchors: stillAnchors }));
       const result = await page.evaluate(() => {
+        const beforeRendering = __rfAvatar.setPairingCode('A2CD34');
         const frames = [];
         for (let i = 0; i < 8; i++) {
           labels.length = 0;
@@ -166,14 +167,19 @@ test('a still face renders speaking frames and shows and clears the pairing bann
         }
         const frame = () => { labels.length = 0; renderer.render(); return { labels: [...labels], pixel: bannerPixel() }; };
         const before = frame();
-        __rfAvatar.setPairingCode('A2CD34');
+        labels.length = 0;
+        const displayed = __rfAvatar.setPairingCode('A2CD34');
+        const immediate = [...labels];
         const pairing = frame();
         __rfAvatar.clearPairingCode();
         const after = frame();
-        return { frames, before, pairing, after, errors: __rfAvatar.errors };
+        return { frames, before, pairing, after, beforeRendering, displayed, immediate, errors: __rfAvatar.errors };
       });
       assert.equal(result.errors, 0);
       assert.deepEqual(errors, []);
+      assert.equal(result.beforeRendering, false);
+      assert.equal(result.displayed, true);
+      assert.ok(result.immediate.includes('Code: A2CD34'));
       assert.ok(result.pairing.labels.includes('Code: A2CD34'));
       assert.deepEqual(result.pairing.pixel, [0, 0, 0, 255]);
       assert.notDeepEqual(result.pairing, result.before);

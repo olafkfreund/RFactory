@@ -820,8 +820,9 @@ const localTime = (timestamp) => new Date(timestamp).toLocaleString([], { dateSt
 function wireElevation(doc) {
   const get = (id) => doc.getElementById(id);
   if (!get('call-elevation')) return;
-  let grantState, revision = 0, mutatingGrant = false;
-  async function refreshGrant() {
+  let grantState, revision = 0, mutatingGrant = false, inCall = false;
+  async function refreshGrant(callState) {
+    if (callState) inCall = callState === 'in-call';
     const request = ++revision;
     let state;
     try {
@@ -832,14 +833,15 @@ function wireElevation(doc) {
     grantState = state;
     get('call-elevation').hidden = !state;
     if (!state) return;
-    const { grant, scheduled, pending, can_approve } = state;
+    const { grant, scheduled, pending, can_approve, can_verify, display_ready } = state;
     get('grant-status').textContent = grant
       ? `Elevated · ${grant.scope} · approved by ${grant.granted_by} · expires ${localTime(grant.expires_at)}`
-      : pending && can_approve ? 'A code is displayed on the bot’s camera tile.'
-        : scheduled ? 'Scheduled call · elevated access is inactive.' : 'Pairing is available during a scheduled call.';
-    get('grant-request').hidden = !can_approve || !scheduled || !!grant;
+      : pending && can_verify ? 'A code is displayed on the bot’s camera tile.'
+        : scheduled ? (display_ready ? 'Scheduled call · elevated access is inactive.' : 'The bot’s camera tile is unavailable for pairing.')
+          : 'Pairing is available during a scheduled call.';
+    get('grant-request').hidden = !can_approve || !scheduled || !display_ready || !!grant;
     get('grant-request-button').textContent = pending ? 'Request new code' : 'Request code';
-    get('grant-verify').hidden = !can_approve || !pending || !scheduled || !!grant;
+    get('grant-verify').hidden = !can_verify || !scheduled || !display_ready || !!grant;
     if (get('grant-verify').hidden) get('grant-code').value = '';
     get('grant-revoke').hidden = !can_approve || !grant;
   }
@@ -904,7 +906,7 @@ function wireElevation(doc) {
     const input = get('grant-code');
     const code = input.value;
     input.value = '';
-    return changeGrant('verify', { code });
+    if (grantState?.can_verify) return changeGrant('verify', { code });
   });
   get('grant-revoke').addEventListener('click', () => {
     if (grantState?.grant) return changeGrant('revoke', { grant_id: grantState.grant.grant_id });
@@ -918,6 +920,7 @@ function wireElevation(doc) {
       ends_at: new Date(get('schedule-end').value).getTime() });
   });
   grantRefresh.set(doc, refreshGrant);
+  setInterval(() => { if (inCall) return refreshGrant(); }, 5000);
   refreshGrant();
   loadSchedule().catch(() => {});
 }
@@ -938,7 +941,7 @@ function handleCall(doc, event, now = Date.now()) {
     doc.getElementById('call-leave').disabled = !live;
     if (doc.getElementById('call-listen')) doc.getElementById('call-listen').disabled = live;
     if (event.state === 'stopped') loadNotes(doc);
-    grantRefresh.get(doc)?.();
+    grantRefresh.get(doc)?.(event.state);
   } else if (event.type === 'mic') set('call-mic', event.muted ? 'the bot may not be heard (mic muted, local observation)' : 'mic open (local observation)');
   else if (event.type === 'hearing') {
     const states = { captions: `Hearing: captions${event.notConfigured ? ' (own transcription not configured)' : ''}`,
@@ -1016,7 +1019,11 @@ function wireProjectCall(doc, project) {
     stream.onmessage = (m) => {
       try {
         const event = JSON.parse(m.data);
-        if (['ended', 'busy', 'idle'].includes(event.type)) { close(); refresh(); } // or the browser would reconnect for ever
+        if (['ended', 'busy', 'idle'].includes(event.type)) {
+          grantRefresh.get(doc)?.(event.type);
+          close();
+          refresh();
+        } // or the browser would reconnect for ever
         else handleCall(doc, event);
       } catch { /* drop a malformed event */ }
     };

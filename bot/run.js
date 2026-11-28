@@ -1,6 +1,6 @@
 'use strict';
 // Bot child process (plan step 4). stdin: first line is the call link (Meet or Teams), then JSON lines
-// {type:'speak',seq,wav}|{type:'cancel'}|{type:'leave'}|{type:'pairing-code',code}|{type:'pairing-clear'}. stdout: JSON lines
+// {type:'speak',seq,wav}|{type:'cancel'}|{type:'leave'}|{type:'pairing-code',code,code_id}|{type:'pairing-clear'}. stdout: JSON lines
 // {type:'state'|'heard'|'mic'|'spoke'|'log', ...}. Limits: 4 MiB per line in, 64 KiB out (D1).
 const fs = require('fs');
 const os = require('os');
@@ -55,7 +55,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
   let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, closing = false, heardPcm = false, segment = 0;
   let holdChat = false, chatSent = false, captionsKnown = false;
-  let pendingPairingCode = null, avatarPage = null, pairingUpdate = Promise.resolve();
+  let avatarPage = null, displayReady = false, pairingUpdate = Promise.resolve();
   const gates = new Map(), playback = [], lastSpeech = new Map(), recent = new Map();
   let retryResolve = null, joinWaitResolve = null, stopping = null, starting = null, exitCode = 0, playGen = 0;
   let finish;
@@ -228,13 +228,25 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     });
   }
 
-  function showPairingCode() {
-    const page = avatarPage;
-    if (!page) return;
-    pairingUpdate = pairingUpdate.then(() => page.evaluate((code) => {
-      if (code) window.__rfAvatar?.setPairingCode(code);
-      else window.__rfAvatar?.clearPairingCode();
-    }, pendingPairingCode)).catch(() => {});
+  function setPairingDisplay(ready) {
+    displayReady = ready;
+    send({ type: 'pairing-display', ready });
+  }
+
+  function showPairingCode(code = null, codeId) {
+    pairingUpdate = pairingUpdate.then(async () => {
+      let displayed = false;
+      if (avatarPage && (!code || (displayReady && !closing && state === 'in-call'))) {
+        try {
+          displayed = await avatarPage.evaluate((value) => {
+            if (value) return window.__rfAvatar?.setPairingCode(value) === true;
+            window.__rfAvatar?.clearPairingCode();
+            return false;
+          }, code);
+        } catch { /* Evaluation errors can contain the code. */ }
+      }
+      if (codeId && !closing) send({ type: 'pairing-result', code_id: codeId, displayed });
+    });
   }
 
   async function startAvatar() {
@@ -253,7 +265,6 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
       await page.evaluate((source) => eval(source), script);
       if (stopping) return;
       avatarPage = page;
-      if (pendingPairingCode) showPairingCode();
       for (let attempt = 0; attempt < 3; attempt++) {
         if (stopping) return;
         try {
@@ -266,14 +277,19 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
           if (call.platform === 'meet' ? await page.evaluate(() => !!document.querySelector('button[aria-label="Turn off camera"]'))
             : (typeof call._inner?.setCameraOn !== 'function' || (await call._inner.setCameraOn(true)) !== false)) {
             if (stopping) return;
+            setPairingDisplay(true);
             const poll = async () => {
               if (stopping) return;
               try {
-                if (await page.evaluate(() => window.__rfAvatar?.errors ?? 0) >= 30) {
-                  if (!stopping) { log('avatar failed: render'); await call.camera.setOn(false); }
+                if (await page.evaluate(() => window.__rfAvatar?.errors ?? 30) >= 30) {
+                  if (!stopping) {
+                    setPairingDisplay(false);
+                    log('avatar failed: render');
+                    await call.camera.setOn(false);
+                  }
                   return;
                 }
-              } catch (e) { if (!stopping) log(`avatar failed: ${e.message}`); return; }
+              } catch { if (!stopping && displayReady) setPairingDisplay(false); return; }
               if (!stopping) pollTimer = d.clock.setTimeout(poll, 5000);
             };
             pollTimer = d.clock.setTimeout(poll, 5000);
@@ -309,10 +325,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   function stop(reason, code = 0) {
     if (stopping) return stopping;
     closing = true;
-    if (pendingPairingCode) {
-      pendingPairingCode = null;
-      showPairingCode();
-    }
+    if (avatarPage) showPairingCode();
     gates.clear();
     recent.clear();
     if (rosterTimer) d.clock.clearTimeout(rosterTimer);
@@ -559,12 +572,10 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
     if (msg.type === 'speak' && Number.isInteger(msg.seq) && typeof msg.wav === 'string') play(msg);
     else if (msg.type === 'cancel') { idleAvatar(); cancelAll(); }
     else if (msg.type === 'leave') stop('leave');
-    else if (msg.type === 'pairing-clear' || (msg.type === 'pairing-code' &&
-      typeof msg.code === 'string' && /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(msg.code))) {
-      if (!closing) {
-        pendingPairingCode = msg.type === 'pairing-code' && state === 'in-call' ? msg.code : null;
-        showPairingCode();
-      }
+    else if (msg.type === 'pairing-clear') { if (!closing) showPairingCode(); }
+    else if (msg.type === 'pairing-code' && typeof msg.code_id === 'string' && /^[a-f0-9-]{36}$/.test(msg.code_id) &&
+      typeof msg.code === 'string' && /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(msg.code)) {
+      if (!closing) showPairingCode(msg.code, msg.code_id);
     }
     else log('dropped unknown message');
     return true;

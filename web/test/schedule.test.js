@@ -15,7 +15,7 @@ function fixture(t, projectMode = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-schedules-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const clock = { time: start - 300001, now() { return this.time; } };
-  const open = () => createScheduleRegistry({ dir, clock, validLink: (url) => url === link, projectMode });
+  const open = () => createScheduleRegistry({ dir, clock, validLink: (url) => [link, 'https://meet.google.com/abc-defg-hij'].includes(url), projectMode });
   return { open, clock, file: path.join(dir, 'schedules.json') };
 }
 
@@ -24,6 +24,7 @@ test('persists only hashes, matches the inclusive time window, and filters proje
   const slot = open().add({ ...entry, projectId: 'a' });
   const registry = open();
   assert.equal(slot.created_by, 'owner@example.com');
+  assert.equal(slot.label, 'teams.microsoft.com');
   assert.deepEqual(registry.list({ projectId: 'a' }), [slot]);
   assert.deepEqual(registry.list({ projectId: 'b' }), []);
   assert.equal(slot.link_hash, undefined);
@@ -41,6 +42,18 @@ test('persists only hashes, matches the inclusive time window, and filters proje
   assert.equal(match('a'), null);
   assert.equal(registry.remove(slot.id), true);
   assert.equal(registry.remove(slot.id), false);
+});
+
+test('labels distinguish meeting hosts and older entries keep a generic label', (t) => {
+  const { open, file } = fixture(t);
+  const registry = open();
+  registry.add(entry);
+  const meet = registry.add({ ...entry, link: 'https://meet.google.com/abc-defg-hij' });
+  assert.equal(meet.label, 'meet.google.com');
+  const slots = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete slots[0].label;
+  fs.writeFileSync(file, JSON.stringify(slots));
+  assert.deepEqual(open().list().map(({ label }) => label), ['Meeting', 'meet.google.com']);
 });
 
 test('validates slots and prunes on startup and writes', (t) => {

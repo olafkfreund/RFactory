@@ -93,12 +93,22 @@ function pairingCall(t, config = {}) {
   const record = { append: async (row) => { rows.push(row); await config.append?.(row); } };
   const grants = createGrantManager({ clock, record, roles: { has: () => true },
     schedule: { match: ({ linkHash, projectId }) => linkHash === hashLink(link) && projectId === (config.projectId ?? null) ? slot : null } });
-  const f = setup({ extra: { clock, grants }, listen: 'audio', stt: { transcribe: async (pcm) => {
+  const f = setup({ extra: { clock, grants }, listen: config.listen ?? 'audio', stt: { transcribe: async (pcm) => {
     transcriptions.push(pcm); return { text: '' };
   } }, brainTurn: async (...args) => { questions.push(args); return { text: '' }; },
   ttsSay: async (text) => { speech.push(text); return Buffer.from(text); } });
   t.after(f.restore);
-  return { ...f, clock, link, rows, speech, questions, transcriptions };
+  async function request(email, scope, displayed = true) {
+    const child = f.children.at(-1);
+    const start = f.messages().length;
+    const requested = f.manager.requestPairing(email, scope);
+    await flush();
+    const { code_id } = f.messages().slice(start).find(({ type }) => type === 'pairing-code') ?? {};
+    assert.ok(code_id);
+    child.output({ type: 'pairing-result', code_id, displayed });
+    return requested;
+  }
+  return { ...f, request, grants, clock, link, rows, speech, questions, transcriptions };
 }
 
 test('pairing follows in-call state, clears the bot tile and speaks activation and revoke once', async (t) => {
@@ -114,7 +124,8 @@ test('pairing follows in-call state, clears the bot tile and speaks activation a
     assert.equal(manager.revokeGrant(email, 'none').status, 409);
   }
   child.output({ type: 'state', state: 'in-call' });
-  const request = () => manager.requestPairing(email, 'tests');
+  child.output({ type: 'pairing-display', ready: true });
+  const request = () => f.request(email, 'tests');
   const ipc = () => f.messages().filter(({ type }) => type.startsWith('pairing-'));
   assert.deepEqual(await request(), { status: 200 });
   assert.equal(manager.grantStatus().pending, true);
@@ -150,9 +161,8 @@ test('pairing follows in-call state, clears the bot tile and speaks activation a
   assert.equal(manager.grantStatus().grant, null);
   assert.equal(f.speech.filter((line) => line === 'Elevated access has ended.').length, 2);
   await request();
-  child.stderr.emit('data', Buffer.from(f.link));
   const stopping = manager.stop();
-  assert.equal((await request()).status, 409);
+  assert.equal((await manager.requestPairing(email, 'tests')).status, 409);
   assert.deepEqual(f.messages().slice(-2).map(({ type }) => type), ['pairing-clear', 'leave']);
   child.close();
   await stopping;
@@ -169,7 +179,8 @@ test('disconnect aborts an in-flight grant, ends a live grant and separates succ
   const begin = async () => {
     await manager.start(f.link, { binding: { projectId: 'project', name: 'Project', repositories: [] } });
     f.children.at(-1).output({ type: 'state', state: 'in-call' });
-    await manager.requestPairing('approve@example.com', 'read');
+    f.children.at(-1).output({ type: 'pairing-display', ready: true });
+    await f.request('approve@example.com', 'read');
     return f.messages().findLast(({ type }) => type === 'pairing-code').code;
   };
   const close = async () => { f.children.at(-1).close(); await manager.stop(); };
@@ -187,6 +198,83 @@ test('disconnect aborts an in-flight grant, ends a live grant and separates succ
   assert.equal(manager.grantStatus().grant, null);
   assert.equal(f.rows.at(-1).state, 'ended');
   assert.notEqual(f.rows[0].session_id, f.rows.at(-1).session_id);
+});
+
+test('pairing requires a display and a matching render acknowledgement, and clears failed delivery', async (t) => {
+  const f = pairingCall(t);
+  const email = 'approve@example.com';
+  const unavailable = { status: 409, error: 'display-unavailable' };
+  await f.manager.start(f.link);
+  const child = f.children[0];
+  t.after(() => child.close());
+  child.output({ type: 'state', state: 'in-call' });
+  assert.equal(f.manager.grantStatus(email).display_ready, false);
+  assert.deepEqual(await f.manager.requestPairing(email, 'read'), unavailable);
+  assert.deepEqual(f.rows, []);
+  child.output({ type: 'pairing-display', ready: true });
+  assert.deepEqual(await f.request(email, 'read', false), unavailable);
+  assert.equal(f.manager.grantStatus(email).pending, false);
+  const requesting = f.manager.requestPairing(email, 'read');
+  await flush();
+  const { code } = f.messages().findLast(({ type }) => type === 'pairing-code');
+  assert.equal(f.manager.grantStatus(email).pending, false);
+  assert.deepEqual(await f.manager.verifyPairing(email, code), { status: 409, error: 'busy' });
+  child.output({ type: 'pairing-result', code_id: 'stale', displayed: true });
+  f.clock.tick(5000);
+  assert.deepEqual(await requesting, unavailable);
+  assert.equal(f.messages().at(-1).type, 'pairing-clear');
+  assert.deepEqual(await f.request(email, 'read'), { status: 200 });
+  assert.equal(f.manager.grantStatus(email).can_verify, true);
+  child.output({ type: 'pairing-display', ready: false });
+  assert.equal(f.manager.grantStatus(email).pending, false);
+  assert.equal(f.messages().at(-1).type, 'pairing-clear');
+});
+
+test('leaving in-call for the lobby clears pending codes and ends active elevation even after re-entry', async (t) => {
+  const audit = deferred();
+  let delayGrant = false;
+  const f = pairingCall(t, { append: ({ state }) => delayGrant && state === 'granted' ? audit.promise : undefined });
+  const email = 'approve@example.com';
+  await f.manager.start(f.link);
+  const child = f.children[0];
+  t.after(() => child.close());
+  const state = (state) => child.output({ type: 'state', state });
+  child.output({ type: 'pairing-display', ready: true });
+  state('in-call');
+  await f.request(email, 'read');
+  state('lobby');
+  assert.equal(f.messages().at(-1).type, 'pairing-clear');
+  state('in-call');
+  assert.equal(f.manager.grantStatus(email).pending, false);
+  await f.request(email, 'read');
+  const code = () => f.messages().findLast(({ type }) => type === 'pairing-code').code;
+  const { grant } = await f.manager.verifyPairing(email, code());
+  const ctx = { sessionId: f.rows.at(-1).session_id, linkHash: hashLink(f.link), projectId: null, scope: 'read' };
+  assert.equal(f.grants.check(ctx).ok, true);
+  state('joining');
+  assert.equal(f.grants.check(ctx).ok, false);
+  assert.equal(f.rows.at(-1).grant_id, grant.grant_id);
+  assert.equal(f.rows.at(-1).reason, 'joining');
+  state('in-call');
+  assert.equal(f.manager.grantStatus(email).grant, null);
+  await f.request(email, 'read');
+  delayGrant = true;
+  const activating = f.manager.verifyPairing(email, code());
+  state('lobby');
+  state('in-call');
+  audit.resolve();
+  assert.deepEqual(await activating, { status: 409, error: 'activation-stale' });
+  assert.equal(f.rows.at(-1).reason, 'call-not-live');
+  assert.equal(f.grants.check(ctx).ok, false);
+});
+
+test('platform stderr logs replace the current meeting URL including its query', async (t) => {
+  const f = pairingCall(t, { listen: 'platform' });
+  await f.manager.start(f.link);
+  const child = f.children[0];
+  t.after(() => child.close());
+  child.stderr.emit('data', Buffer.from(`Cannot navigate to ${f.link}`));
+  assert.deepEqual(f.events.at(-1), { type: 'log', message: 'Cannot navigate to [redacted]' });
 });
 
 test('avatar resolves once per call and the child receives its id only when set', async () => {

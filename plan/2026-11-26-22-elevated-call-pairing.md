@@ -106,3 +106,10 @@ None
 ## Deviations
 
 - Step 8 also updates the existing `web/test/pod.test.js` fake-Podman assertions to verify the calls-only mount and keep the full offline suite aligned with step 4. No live pod is involved.
+- Steps 3–6 require a camera-ready worker and a per-code render acknowledgement before the request succeeds. The worker returns the opaque code ID and render result over IPC. Requests before camera confirmation or after failed or timed-out rendering return `409 display-unavailable`. The portal exposes display availability and hides verification until rendering is acknowledged.
+- Step 2 closes a recorded activation that became stale with an `ended` or `expired` audit row carrying the same grant ID and the stale reason. A closing write failure returns `500 record-failed` and leaves elevation inactive.
+- Steps 2, 4, and 6 expose caller-specific `can_verify` and show Verify only to the requesting approver. Another approver’s submission is still rejected and audited but does not spend the requester’s attempts.
+- Step 3 invalidates pending and active elevation on any transition out of `in-call`. Re-entry cannot make an activation from the previous presence valid.
+- Step 6 polls grant status every five seconds while in-call so the controls reflect schedule changes without a call or grant event.
+- Step 1 persists the validated meeting hostname as the schedule label. Older slots without a hostname label still display “Meeting.”
+- Step 8 also retains the existing `desktop/verify/verify.test.js` fixture changes. The fake `kubectl` keeps the tests offline, and the heartbeat assertion waits for observed requests within a deadline.

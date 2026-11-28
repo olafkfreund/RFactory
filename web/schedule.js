@@ -7,8 +7,8 @@ const path = require('node:path');
 const HOUR = 3600000;
 const DAY = 24 * HOUR;
 const hashLink = (link) => createHash('sha256').update(link).digest('hex');
-const publicSlot = ({ id, project_id, starts_at, ends_at, created_by }) =>
-  ({ id, project_id, starts_at, ends_at, created_by, label: 'Meeting' });
+const publicSlot = ({ id, project_id, starts_at, ends_at, created_by, label = 'Meeting' }) =>
+  ({ id, project_id, starts_at, ends_at, created_by, label });
 
 function createScheduleRegistry({ dir, validLink, clock = Date, projectMode = false }) {
   const file = path.join(dir, 'schedules.json');
@@ -37,7 +37,7 @@ function createScheduleRegistry({ dir, validLink, clock = Date, projectMode = fa
     if (typeof link !== 'string' || !validLink(link) || !Number.isSafeInteger(starts_at) ||
       !Number.isSafeInteger(ends_at) || starts_at >= ends_at || ends_at - starts_at > HOUR ||
       ends_at <= now || (projectMode && !projectId)) return null;
-    const slot = { id: randomUUID(), link_hash: hashLink(link), project_id: projectId,
+    const slot = { id: randomUUID(), link_hash: hashLink(link), label: new URL(link).hostname, project_id: projectId,
       starts_at, ends_at, created_by: createdBy.toLowerCase(), created_at: now };
     save([...prune(slots, now), slot]);
     return publicSlot(slot);

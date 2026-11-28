@@ -122,6 +122,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     const c = call;
     if (c?.sessionId !== sessionId) return;
     if (event.type === 'pairing-clear') {
+      c.delivery?.finish(false);
+      c.displayedCodeId = null;
       send(c, { type: 'pairing-clear' });
       emit(outgoing({ type: 'grant-updated', state: 'code-cleared', generation: callCount }));
       return;
@@ -136,12 +138,25 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   async function requestPairing(email, scope) {
     const c = call;
     if (!grants || !isLive(c)) return pairingUnavailable();
+    if (!c.displayReady) return { status: 409, error: 'display-unavailable' };
+    if (c.delivery) return { status: 409, error: 'busy' };
     const { status, error, code, codeId } = await grants.requestCode(email, { ...pairingContext(c), scope });
     if (!code) return { status, error };
     if (!isLive(c) || !grants.isPending(codeId)) return pairingUnavailable();
-    if (!send(c, { type: 'pairing-code', code })) {
-      grants.endCall(c.sessionId, 'delivery-failed');
-      return { status: 500, error: 'delivery-failed' };
+    const displayed = c.displayReady && await new Promise((resolve) => {
+      const timer = clock.setTimeout(() => c.delivery.finish(false), 5000);
+      c.delivery = { codeId, finish(ok) {
+        clock.clearTimeout(timer);
+        c.delivery = null;
+        if (ok) c.displayedCodeId = codeId;
+        resolve(ok);
+      } };
+      if (!send(c, { type: 'pairing-code', code, code_id: codeId })) c.delivery.finish(false);
+    });
+    if (!isLive(c)) return pairingUnavailable();
+    if (!displayed || !c.displayReady || !grants.isPending(codeId)) {
+      grants.discardCode(codeId);
+      return { status: 409, error: 'display-unavailable' };
     }
     emit(outgoing({ type: 'grant-updated', state: 'code-issued', generation: callCount }));
     return { status };
@@ -152,13 +167,20 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
   }
   function verifyPairing(email, code) {
     const c = call;
-    return grants && isLive(c) ? grants.verifyCode(email, { ...pairingContext(c), isLive: () => isLive(c), code }) : pairingUnavailable();
+    if (!grants || !isLive(c)) return pairingUnavailable();
+    if (c.delivery) return { status: 409, error: 'busy' };
+    const presence = c.presence;
+    return grants.verifyCode(email, { ...pairingContext(c), isLive: () => isLive(c) && c.presence === presence, code });
   }
   function revokeGrant(email, grantId) {
     return grants && isLive(call) ? grants.revoke(email, { grantId }) : pairingUnavailable();
   }
-  function grantStatus() {
-    return grants && isLive(call) ? grants.status(pairingContext(call)) : { grant: null, pending: false, scheduled: false };
+  function grantStatus(email) {
+    const c = call;
+    if (!grants || !isLive(c)) return { grant: null, pending: false, can_verify: false, scheduled: false, display_ready: false };
+    const status = grants.status(pairingContext(c), email);
+    return { ...status, display_ready: c.displayReady,
+      ...(!c.displayedCodeId ? { pending: false, can_verify: false } : {}) };
   }
 
   function send(c, message) {
@@ -590,10 +612,25 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
     catch { log('dropped malformed child line'); return; }
     if (!msg || typeof msg !== 'object') { log('dropped malformed child line'); return; }
     if (msg.type === 'state' && ['joining', 'lobby', 'in-call', 'left', 'removed', 'error'].includes(msg.state)) {
+      const wasInCall = c.inCall;
       c.inCall = msg.state === 'in-call';
+      if (wasInCall && !c.inCall) {
+        c.presence++;
+        grants?.endCall(c.sessionId, msg.state);
+      }
       emit({ type: 'state', state: msg.state, ...(msg.code ? { code: safeCallText(msg.code) } : {}) });
       if (c.inCall) { c.inCallAt = now(); if (!c.holdGreeting) greet(c); }
       if (['left', 'removed', 'error'].includes(msg.state)) stop(msg.state);
+    } else if (msg.type === 'pairing-display' && typeof msg.ready === 'boolean') {
+      if (c.displayReady === msg.ready) return;
+      c.displayReady = msg.ready;
+      if (!msg.ready) {
+        c.delivery?.finish(false);
+        grants?.discardCode(c.displayedCodeId);
+      }
+      emit(outgoing({ type: 'grant-updated', state: 'display-changed', generation: callCount }));
+    } else if (msg.type === 'pairing-result' && c.delivery && msg.code_id === c.delivery.codeId) {
+      c.delivery.finish(msg.displayed === true);
     } else if (msg.type === 'heard' && c.listen === 'platform' && (typeof msg.id === 'string' || typeof msg.id === 'number') && typeof msg.text === 'string') {
       if (c.holdGreeting && c.inCall) captionSeen(c);
       c.hearing.heard({ id: msg.id, speaker: msg.speaker, text: msg.text });
@@ -659,7 +696,8 @@ function createCallManager({ spawn = nodeSpawn, source, brain, tts, maleTts = tt
       waiters: new Map(), queue: [], working: false, speech: Promise.resolve(), snapshot: null, fetchedAt: 0, standup: null, standupAt: 0,
       tts: callTts, voice: callTts.voice, shares: new Set(), investigations: new Set(), announced: new Set(), showLog: false, listen: selected, language: whisperLanguage,
       stt: client, parts: new Map(), seen: new Set(), requests: new Set(), dropped: 0, closed: false,
-      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false,
+      turn: null, turns: [], noticeFailed: false, roster: { count: 0 }, inCall: false, presence: 0,
+      displayReady: false, delivery: null, displayedCodeId: null,
       holdGreeting: selected === 'platform' && platform === 'meet', greeted: false, inCallAt: 0, firstCaption: false, captionLines: 0, captionTimer: null, lookupTurn: null, lookupSpend: 0, batch: null, runningBatch: null };
     call = c;
     child.on('error', (error) => { logFor(c, `child failed: ${error.message}`); stopCall(c, 'child error'); });

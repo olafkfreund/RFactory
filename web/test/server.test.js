@@ -600,7 +600,8 @@ test('pairing HTTP routes enforce roles, strict origin, generation and project, 
   const link = 'https://teams.microsoft.com/meet/123?p=fixture-only-passcode';
   const redactor = makeRedactor([]);
   const viewer = 'viewer@example.com';
-  const roles = rolesFor(`${ME},${viewer}`, ME);
+  const approver = 'other@example.com';
+  const roles = rolesFor(`${ME},${viewer},${approver}`, `${ME},${approver}`);
   const makeSchedule = () => createScheduleRegistry({ dir, validLink: (url) => url === link, projectMode: true });
   const compose = () => composeWrites({ scope: scope52, roles, redactor, dir, callsEnabled: true });
   const { actions, shares, investigations, record } = await compose();
@@ -639,7 +640,20 @@ test('pairing HTTP routes enforce roles, strict origin, generation and project, 
   assert.equal((await get('/api/call', posting({ link, project_id: ALPHA }))).status, 202);
   const { generation } = w.call;
   assert.equal((await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }))[0], 409);
-  w.children[0].stdout.emit('data', '{"type":"state","state":"in-call"}\n');
+  const child = w.children[0];
+  const output = (msg) => child.stdout.emit('data', `${JSON.stringify(msg)}\n`);
+  output({ type: 'state', state: 'in-call' });
+  assert.deepEqual(await request('POST', `${grants}/request`, { body: { generation, scope: 'tests' } }),
+    [409, { error: 'display-unavailable' }]);
+  output({ type: 'pairing-display', ready: true });
+  const write = child.stdin.write;
+  child.stdin.write = (line) => {
+    if (line.startsWith('{')) {
+      const { type, code_id } = JSON.parse(line);
+      if (type === 'pairing-code') output({ type: 'pairing-result', code_id, displayed: true });
+    }
+    return write(line);
+  };
   for (const verb of ['request', 'verify', 'revoke']) {
     const mutation = `${grants}/${verb}`;
     for (const headers of [{ 'x-rfactory-action': '' }, { 'Sec-Fetch-Site': 'same-site' }, { Origin: 'https://foreign.example' }]) {
@@ -657,7 +671,11 @@ test('pairing HTTP routes enforce roles, strict origin, generation and project, 
   assert.deepEqual(issued, [200, { ok: true }]);
   const { code } = w.input.filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).find(({ type }) => type === 'pairing-code');
   const pending = await request('GET', grants, { email: viewer });
-  assert.deepEqual(pending, [200, { grant: null, pending: true, can_approve: false, scheduled: true, generation }]);
+  const pendingStatus = { grant: null, pending: true, can_verify: false, can_approve: false, scheduled: true, display_ready: true, generation };
+  assert.deepEqual(pending, [200, pendingStatus]);
+  assert.deepEqual(await request('GET', grants, { email: approver }), [200, { ...pendingStatus, can_approve: true }]);
+  assert.deepEqual(await request('GET', grants, { email: ME.toUpperCase() }),
+    [200, { ...pendingStatus, can_approve: true, can_verify: true }]);
   const submitted = 'private-wrong-entry';
   const invalid = await request('POST', `${grants}/verify`, { body: { generation, code: submitted } });
   assert.deepEqual(invalid, [400, { error: 'invalid-code' }]);
@@ -665,7 +683,7 @@ test('pairing HTTP routes enforce roles, strict origin, generation and project, 
   assert.equal(verified, 200);
   assert.equal(grant.scope, 'tests');
   const outside = await request('GET', grants, { project: BETA });
-  assert.deepEqual(outside, [200, { grant: null, pending: false, can_approve: true, scheduled: false, generation }]);
+  assert.deepEqual(outside, [200, { grant: null, pending: false, can_verify: false, can_approve: true, scheduled: false, display_ready: false, generation }]);
   const revoked = await request('POST', `${grants}/revoke`, { body: { generation, grant_id: grant.grant_id } });
   assert.deepEqual(revoked, [200, { ok: true, revoked: true }]);
 

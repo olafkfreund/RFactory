@@ -14,7 +14,16 @@ function installAvatar({ portraitDataUrl, anchors, sourceLine }, { createState, 
   let loggedErrors = 0;
   const avatar = window.__rfAvatar = {
     errors: 0,
-    setPairingCode(code) { pairingCode = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(code) ? code : null; },
+    setPairingCode(code) {
+      pairingCode = null;
+      const surface = [...surfaces].at(-1);
+      if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(code) || !lastPose ||
+        !surface?.canvas.width || !surface.canvas.height || avatar.errors >= 30) return false;
+      pairingCode = code;
+      try { draw(surface, lastPose, performance.now()); }
+      catch { pairingCode = null; return false; }
+      return true;
+    },
     clearPairingCode() { pairingCode = null; },
     idle() {
       state.idle();

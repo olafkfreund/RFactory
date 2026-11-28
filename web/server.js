@@ -291,9 +291,9 @@ function createApp({ source, redactor, roles, call = null, schedule = null, acti
     }
     if (desktop && url.startsWith('/api/desktop/')) return desktop.handle({ req, res, email, url, json, readJson });
     if (call && schedule && req.method === 'GET' && url === '/api/call/grant') {
-      const { grant, pending, scheduled } = !allowed || call.project?.id === query.get('project')
-        ? call.grantStatus() : { grant: null, pending: false, scheduled: false };
-      return json(res, 200, { grant, pending, can_approve: roles.has(email, 'approver'), scheduled, generation: call.generation });
+      const status = !allowed || call.project?.id === query.get('project') ? call.grantStatus(email)
+        : { grant: null, pending: false, can_verify: false, scheduled: false, display_ready: false };
+      return json(res, 200, { ...status, can_approve: roles.has(email, 'approver'), generation: call.generation });
     }
     const pairing = call && schedule && req.method === 'POST' && /^\/api\/call\/grant\/(request|verify|revoke)$/.exec(url);
     if (pairing) {

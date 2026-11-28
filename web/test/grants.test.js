@@ -60,9 +60,13 @@ test('gates pairing by approver, in-call, scope and slot, and locks out after th
   assert.equal((await f.issue()).status, 409);
   f.setSlot({ id: 'scheduled', ends_at: f.deps.clock.now() + 1000 });
   const { code } = await f.issue();
-  assert.equal((await f.verify(code, {}, 'Other@example.com')).status, 409);
+  assert.equal(f.manager.status(f.ctx, email).can_verify, true);
+  assert.equal(f.manager.status(f.ctx, 'Other@example.com').can_verify, false);
+  for (let i = 0; i < 3; i++) assert.equal((await f.verify(code, {}, 'Other@example.com')).status, 409);
+  assert.equal(f.manager.status(f.ctx, email).can_verify, true);
   assert.equal((await f.verify(code, { projectId: 'wrong' })).status, 409);
   f.setSlot(null);
+  assert.equal((await f.verify(code)).status, 409);
   assert.equal((await f.verify(code)).status, 409);
   assert.equal(f.manager.status(f.ctx).pending, false);
   f.setSlot({ id: 'scheduled', ends_at: f.deps.clock.now() + 1000 });
@@ -99,17 +103,28 @@ test('consumes once and reserves the grant slot across overlapping verification 
 });
 
 test('record failure, session loss and slot loss during activation fail closed and release the slot', async () => {
-  for (const stale of ['record', 'call', 'schedule']) {
+  for (const stale of ['record', 'call', 'schedule', 'expiry', 'closing-record']) {
     const f = fixture();
     const { code } = await f.issue();
-    f.record.append = async () => {
+    f.record.append = async (row) => {
       if (stale === 'record') throw new Error('offline');
-      if (stale === 'call') f.goOffline();
-      if (stale === 'schedule') f.setSlot(null);
+      if (row.state === 'granted') {
+        if (stale === 'call' || stale === 'closing-record') f.goOffline();
+        if (stale === 'schedule') f.setSlot(null);
+        if (stale === 'expiry') f.tick(3600000);
+      } else if (stale === 'closing-record') throw new Error('offline');
+      f.rows.push(row);
     };
-    assert.equal((await f.verify(code)).status, stale === 'record' ? 500 : 409);
+    assert.equal((await f.verify(code)).status, stale.endsWith('record') ? 500 : 409);
     assert.equal(f.manager.check(f.ctx).ok, false);
     assert.equal(f.events.some(({ type }) => type === 'grant-updated'), false);
+    if (!stale.endsWith('record')) {
+      const [granted, closed] = f.rows.slice(-2);
+      assert.equal(granted.state, 'granted');
+      assert.equal(closed.state, stale === 'expiry' ? 'expired' : 'ended');
+      assert.equal(closed.reason, { call: 'call-not-live', schedule: 'schedule-ineligible', expiry: 'time-limit' }[stale]);
+      for (const key of ['grant_id', 'session_id', 'link_hash', 'project_id']) assert.equal(closed[key], granted[key]);
+    }
     f.record.append = async () => {};
     f.setSlot({ id: 'scheduled', ends_at: f.deps.clock.now() + 1000 });
     assert.equal((await f.issue()).status, 200);

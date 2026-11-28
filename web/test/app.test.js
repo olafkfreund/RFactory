@@ -496,7 +496,7 @@ test('elevation controls get generation from grant status, scope mutations and c
     const suffix = projects ? '?project=id-a' : '';
     const grants = '/api/call/grant';
     const schedules = '/api/call/schedules';
-    const state = { grant: null, pending: false, scheduled: true, can_approve: true, generation: 42 };
+    const state = { grant: null, pending: false, scheduled: true, can_approve: true, can_verify: false, display_ready: true, generation: 42 };
     const schedule = { slots: [{ id: 'meeting', label: '<img> Meeting', starts_at: 2000000000000, ends_at: 2000000036000 }], can_approve: true };
     const routes = {
       [grants + suffix]: [200, state],
@@ -520,6 +520,7 @@ test('elevation controls get generation from grant status, scope mutations and c
     assert.equal(get('grant-verify').hidden, true);
     get('grant-scope').value = 'tests';
     state.pending = true;
+    state.can_verify = true;
     await p.click('grant-request-button');
     mutation('POST', `${grants}/request`, { scope: 'tests', generation: 42 });
     assert.equal(get('grant-verify').hidden, false);
@@ -530,6 +531,7 @@ test('elevation controls get generation from grant status, scope mutations and c
     await submitting;
     mutation('POST', `${grants}/verify`, { code, generation: 42 });
     state.pending = false;
+    state.can_verify = false;
     state.grant = { grant_id: 'grant-1', granted_by: '<script>owner', scope: 'tests', expires_at: 2000000000000 };
     p.streams[0].send({ type: 'grant-updated', state: 'granted' });
     await settle();
@@ -549,6 +551,38 @@ test('elevation controls get generation from grant status, scope mutations and c
     assert.equal(get('schedule-link').value, '');
     if (!projects) assert.ok(!p.urls().includes('/api/call/status'));
   }
+});
+
+test('pairing eligibility refreshes during a live call and Verify is restricted to its requester', async (t) => {
+  const url = '/api/call/grant';
+  const state = { grant: null, pending: false, scheduled: false, can_approve: true, can_verify: false, display_ready: true, generation: 1 };
+  const p = await projectPage(t, '/', { config: { projects: false }, routes: { [url]: [200, state] }, elevation: true });
+  const stream = p.streams[0];
+  const request = p.byId['grant-request'];
+  const verify = p.byId['grant-verify'];
+  stream.send({ type: 'state', state: 'in-call' });
+  await settle();
+  assert.equal(request.hidden, true);
+  state.scheduled = true;
+  await p.poll();
+  assert.equal(request.hidden, false);
+  state.pending = true;
+  await p.poll();
+  assert.equal(verify.hidden, true);
+  state.can_verify = true;
+  await p.poll();
+  assert.equal(verify.hidden, false);
+  state.display_ready = false;
+  state.pending = state.can_verify = false;
+  await p.poll();
+  assert.equal(request.hidden, true);
+  assert.equal(verify.hidden, true);
+  assert.match(p.byId['grant-status'].textContent, /camera tile is unavailable/);
+  stream.send({ type: 'state', state: 'stopped' });
+  await settle();
+  const requests = p.requests.length;
+  await p.poll();
+  assert.equal(p.requests.length, requests);
 });
 
 test('a project page shows its repositories, scopes every read and starts with the stable id', async (t) => {
