@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 25
 spec: spec/2026-11-26-25-user-guide-feature-list.md
 coders:
@@ -96,6 +96,10 @@ Run by the lead after Step 1:
 
 Revert the slice 1 merge commit on `main` (or `git checkout main -- README.md` on the branch before merge). Because `.github/workflows/deploy.yml:7-9` triggers on every push to `main`, reverting on `main` also requires the owner's timing OK and an agent-bus announcement.
 
+## Decisions (2026-11-28)
+
+- Owner approved the plan with its recommendation: no open design questions remained (all design decisions were settled in the approved intent and spec); proceed with Step 1 using `agy`, run the lead checks, then get the owner's timing OK and announce on the agent bus before merging to `main`.
+
 ## Open questions
 
-None. All design decisions were settled in the approved intent and spec. Recommendation: approve this plan, run Step 1 with `agy`, run the lead checks, then get the owner's timing OK and announce on the agent bus before merging to `main`.
+None.
