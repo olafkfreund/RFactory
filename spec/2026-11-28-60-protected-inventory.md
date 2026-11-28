@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 60
 intent: intent/2026-11-27-60-e2e-repo-cleanup.md
 amends: spec/2026-11-27-60-e2e-repo-cleanup.md
