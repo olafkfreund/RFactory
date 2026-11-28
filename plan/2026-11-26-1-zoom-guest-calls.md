@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 1
 spec: spec/2026-11-26-1-zoom-guest-calls.md
 coders:
@@ -104,9 +104,11 @@ Enable ordinary Zoom invite links in the desktop-VM call path. Start with a smal
 - Revert the commits on the task branch, re-pin the previous runner image (`deploy/k8s/rfactory-desktops/runner.yaml:33`) and previous `RF_GUEST_BOOT_IMAGE`, `RF_GUEST_DISK_IMAGE`, and `RF_GUEST_CMDLINE` (`deploy/k8s/rfactory-desktops/runner.yaml:49-51`), and roll back the web deployment (all with owner OK and agent-bus notice).
 - `web/server.js`, `web/call.js:531`, and `desktop/ranges/ranges.json` changes are isolated to Zoom hosts, while Step 2's `notice-failed` handling and UI wording changes are shared across Meet, Teams, and Zoom (and covered by the web/bot rollback).
 
+## Decisions (2026-11-28)
+
+1. **`core/src/scope.js:16` default for `zoom`**: Keep `platform !== 'meet' && sttConfigured ? 'audio' : 'platform'` until Step 8's live `listen: 'audio'` check completes; switch `zoom` default to `'platform'` only if `listen: 'audio'` fails or degrades.
+2. **Additional Zoom-owned CDN/static domains beyond `zoom.us` in `RF_PLATFORM_NAMES` (`desktop/runner/runner.js:214`)**: Keep egress closed to everything else during Step 6; only add a Zoom-owned static/CDN domain with its source if the live feasibility test fails to load the client without it.
+
 ## Open questions
 
-1. Should `core/src/scope.js:16` default `zoom` to `'platform'` or `'audio'`?
-   - Recommendation: Keep `platform !== 'meet' && sttConfigured ? 'audio' : 'platform'` until Step 8's live `listen: 'audio'` check completes; switch `zoom` default to `'platform'` only if `listen: 'audio'` fails or degrades.
-2. Does Zoom's web client require any additional Zoom-owned CDN/static domain beyond `zoom.us` in `RF_PLATFORM_NAMES` (`desktop/runner/runner.js:214`)?
-   - Recommendation: Keep egress closed to everything else during Step 6; only add a Zoom-owned static/CDN domain with its source if the live feasibility test fails to load the client without it.
+None.
