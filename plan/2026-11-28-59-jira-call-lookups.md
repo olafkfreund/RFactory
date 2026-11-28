@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 59
 spec: spec/2026-11-28-59-jira-call-lookups.md
 coders:
