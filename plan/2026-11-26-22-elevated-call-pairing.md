@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 22
 spec: spec/2026-11-26-22-elevated-call-pairing.md
 coders:
@@ -93,6 +93,12 @@ Run after all edits (lead runs builds and the single live check):
 - Owner-run or explicitly owner-authorized: revert the commits on the feature branch (or `git revert` the merge commit) and redeploy `web/Containerfile` and `desktop/guest/agent.nix`.
 - Active grants live in memory only, so restarting drops any active elevation while preserving registered slots in `<dataDir>/schedules.json`.
 
+## Decisions (2026-11-28)
+
+All open questions were already resolved in `spec/2026-11-26-22-elevated-call-pairing.md` and confirmed with plan approval:
+1. **Avatar tile readability in live Meet/Teams:** Implement the avatar tile overlay in slice 1 and verify readability during the single live check; only add the shared-view banner fallback if the live check shows the tile is illegible.
+2. **Grace period duration:** Use `10 minutes` (`600000` ms) after `ends_at`, capped at `issued_at + 60 minutes` and call end.
+
 ## Open questions
 
-None — all open questions were resolved in `spec/2026-11-26-22-elevated-call-pairing.md` (Decisions 2026-11-28: avatar tile overlay first, 10-minute grace period).
+None
