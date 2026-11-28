@@ -54,6 +54,7 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   const handles = new Set();
   let call = null, host = null, bridge = null, dir = null, timer = null, pollTimer = null, retryTimer = null, joinWait = null;
   let leftTimer = null, rosterTimer = null, noAudioTimer = null, noticeTimer = null, captionsDialogTimer = null;
+  let captionsDialogVisibleAt = null;
   let closing = false, heardPcm = false, segment = 0;
   let holdChat = false, chatSent = false, captionsKnown = false;
   let avatarPage = null, displayReady = false, pairingUpdate = Promise.resolve();
@@ -193,14 +194,22 @@ async function run({ stdin, stdout, deps = {}, env = process.env }) {
   // shortcut: uses the provider's private page until its post-admission sweep can handle this in captions mode.
   async function watchCaptionsDialog() {
     if (closing) return;
-    const page = call._inner?.page;
+    const page = call?._inner?.page;
     try {
       if (page) {
         const close = page.locator('[role="dialog"]:visible').filter({ hasText: /captions and translation/i })
           .getByRole('button', { name: /^(close|dismiss)( (dialog|captions and translation))?$/i }).first();
-        if (await close.isVisible() && !closing) await close.click({ timeout: 1000 });
+        if (await close.isVisible()) {
+          // Give the provider time to toggle captions through this same popup.
+          const now = d.clock.now();
+          captionsDialogVisibleAt ??= now;
+          if (!closing && now - captionsDialogVisibleAt >= 2500) {
+            await close.click({ timeout: 1000 });
+            captionsDialogVisibleAt = null;
+          }
+        } else captionsDialogVisibleAt = null;
       }
-    } catch { /* Meet may replace the dialog between checks. */ }
+    } catch { captionsDialogVisibleAt = null; }
     if (!closing) captionsDialogTimer = d.clock.setTimeout(watchCaptionsDialog, 1000);
   }
 

@@ -126,6 +126,7 @@ test('the guest helper does not run for a Teams link, and a throwing page never 
 
 test('the Meet captions watcher dismisses only the visible matching dialog after admission and stops polling on leave', async () => {
   const clicked = [];
+  const now = { value: 0 };
   let releaseJoin, polls = 0, releaseVisibility;
   const captions = { text: 'CAPTIONS AND TRANSLATION', visible: false, buttons: ['Turn off captions', 'Dismiss dialog'] };
   const dialogs = [{ text: 'Settings', visible: true, buttons: ['Close'] }, captions];
@@ -149,7 +150,7 @@ test('the Meet captions watcher dismisses only the visible matching dialog after
       }) };
     } };
   }
-  const s = await joined({ page, join: () => new Promise((resolve) => { releaseJoin = resolve; }) });
+  const s = await joined({ page, now, join: () => new Promise((resolve) => { releaseJoin = resolve; }) });
   const poll = () => s.timers.filter((t) => t.ms === 1000).at(-1);
   try {
     assert.strictEqual(polls, 0);
@@ -158,6 +159,19 @@ test('the Meet captions watcher dismisses only the visible matching dialog after
     assert.deepStrictEqual(clicked, []);
 
     captions.visible = true;
+    await poll().fn();
+    now.value = 1000;
+    await poll().fn();
+    assert.deepStrictEqual(clicked, []);
+
+    captions.visible = false;
+    now.value = 2000;
+    await poll().fn();
+    captions.visible = true;
+    now.value = 3000;
+    await poll().fn();
+    assert.deepStrictEqual(clicked, []);
+    now.value = 6000;
     await poll().fn();
     assert.deepStrictEqual(clicked, ['Dismiss dialog']);
 

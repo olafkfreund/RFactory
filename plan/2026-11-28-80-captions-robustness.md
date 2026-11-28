@@ -93,3 +93,8 @@ Single live check (owner-authorized if merged/deployed, lead-run once in Google 
 ## Open questions
 
 None.
+
+## Deviations
+
+1. Step 5 waits for the close control to remain visible across polls for at least 2.5 seconds. The pinned provider opens the same popup while enabling captions and can take just over two seconds to finish. The grace period lets the provider finish and the bot still dismisses a persistent dialog. The watcher checks for a missing call or page before polling the DOM.
+2. The implementation was integrated with the later Zoom, pairing, CLI and Jira changes on `main` before running the package suites. The existing call tests now assert captions and audio routing explicitly.
