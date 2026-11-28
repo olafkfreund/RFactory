@@ -7,7 +7,7 @@ coders:
   2: codex  # safety regression fixtures
 reviewers:
   - agy    # independent plan review against the approved spec
-  - codex  # fresh diff review against the approved plan
+  - claude # independent diff review across the implementation
 ---
 
 # Plan: Keep protected cards visible in the held inventory
@@ -16,9 +16,9 @@ The inventory may report a protected card when it joins to the e2e set by an exp
 
 ## Steps
 
-1. `core/bin/e2e-inventory.js` build, association and hold logic. Preserve the explicit repository ID from card projection. Check the held ID against validated hold entries. Keep the ambiguity error for an unheld or unresolved association. Derive `protected-card` before passing held sets to shared-project handling, and ensure a protected set has no actions even with manual release or archive entries. Keep the protected repository checks and include the resulting set and association in the existing record hash.
-2. `core/test/e2e-inventory.test.js`. Replace only the intentional protected-card abort case with an explicit held case and add the unheld, unresolved, shared-project, release and archive cases. Test that before and after comparisons detect a changed or missing protected card. Keep the protected-baseline and duplicate-mapping cases.
-3. Manager review. Run `node --test core/test/e2e-inventory.test.js core/test/cfactory.test.js`, the full core suite and `git diff --check`. Refresh the graph. Verify the protected GitHub repository's identity and visibility through an authoritative read before requesting approval for the next live inventory invocation. The campaign confirmation and exact-hash removal approvals remain separate.
+1. `core/bin/e2e-inventory.js` build, association and hold logic. Preserve the explicit repository ID from card projection. Check the held ID against validated hold entries. Keep the ambiguity error for an unheld or unresolved association. Derive `protected-card` before passing held sets to shared-project handling, and ensure a protected set has no actions even with manual release or archive entries. Keep the protected repository checks and retain the default repository in the hash along with the resulting set and explicit association.
+2. `core/test/e2e-inventory.test.js`. Replace only the intentional protected-card abort case with an explicit held case and add the unheld, unresolved, issue-reference-only, default-fallback-only, shared-project, release and archive cases. Assert empty actions for the full protected set and that a changed default repository changes the hash. Test that before and after comparisons detect a changed or missing protected card. Keep the protected-baseline and duplicate-mapping cases.
+3. Manager review. Run `node --test core/test/e2e-inventory.test.js core/test/cfactory.test.js`, the full core suite and `git diff --check`. Refresh the graph. Ask the owner or repository administrator to confirm its current GitHub identity and inspect read access using an account with visibility. Bring any proposed baseline change back for separate approval. After the owner authorizes a single live retry, record its report or failure. The campaign confirmation and exact-hash removal approvals remain separate.
 
 ## Tests
 
