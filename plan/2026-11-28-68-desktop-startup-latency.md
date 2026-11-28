@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 68
 spec: spec/2026-11-28-68-desktop-startup-latency.md
 coders:
