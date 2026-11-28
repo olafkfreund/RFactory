@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 80
 spec: spec/2026-11-28-80-captions-robustness.md
 coders:
