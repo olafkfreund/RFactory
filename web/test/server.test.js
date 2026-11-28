@@ -1008,6 +1008,49 @@ test('project lookups: GitHub only with the default repository, and a project tu
   await client.close();
 });
 
+test('project lookups: Jira binding is per-project and captured immutably at call startup', async (t) => {
+  const { composeLookups } = require('../server.js');
+  const createSource = () => ({ start: async () => {}, forRepositories: () => ({}) });
+  const created = [];
+  const createJiraRead = ({ binding, token }) => {
+    created.push({ binding, token });
+    return {
+      issue: async (key) => ({ key, title: 'Jira item', state: 'done', source_state: 'Done' }),
+      list: async () => [],
+    };
+  };
+  const scope = {
+    lookups_enabled: true,
+    source: { repository_id: 1, mcp_url: 'x' },
+    projects: {
+      allow: [
+        { id: 'proj-a', jira_read: { cloud_id: '11111111-1111-4111-8111-111111111111', projects: ['ABC'], email: 'bot@example.com', token_file: '/run/secrets/jira' } },
+        { id: 'proj-b' },
+      ],
+    },
+  };
+  const made = await composeLookups({ scope, key: 'k', redactor: makeRedactor([]), jiraTokens: { 'proj-a': 'jira-tok-1' }, createSource, createJiraRead });
+  t.after(() => made.endpoint.close());
+
+  const a = made.lookupsFor({ projectId: 'proj-a', name: 'A', repositories: [{ id: 1, path: 'o/r1' }] });
+  const b = made.lookupsFor({ projectId: 'proj-b', name: 'B', repositories: [{ id: 1, path: 'o/r1' }] });
+  assert.deepEqual(a.jira, { projects: ['ABC'] });
+  assert.equal(b.jira, null);
+
+  // Mutating scope after startup must not affect the active call's Jira binding
+  scope.projects.allow[0].jira_read.projects.push('EVIL');
+  scope.projects.allow[0].jira_read.cloud_id = '22222222-2222-4222-8222-222222222222';
+  assert.deepEqual(created[0].binding.projects, ['ABC']);
+  assert.equal(created[0].binding.cloud_id, '11111111-1111-4111-8111-111111111111');
+
+  const ctxA = { project: { bound: true, jira: a.jira }, tools: ['find_cards', 'jira_issue', 'jira_list'], signal: new AbortController().signal, reads: [] };
+  const ctxB = { project: { bound: true, jira: b.jira }, tools: ['find_cards', 'jira_issue', 'jira_list'], signal: new AbortController().signal, reads: [] };
+  assert.deepEqual(a.lookups.tools(ctxA).map((x) => x.name), ['find_cards', 'jira_issue', 'jira_list']);
+  assert.deepEqual(b.lookups.tools(ctxB).map((x) => x.name), ['find_cards']);
+  assert.deepEqual(await a.lookups.call(ctxA, 'jira_issue', { key: 'EVIL-1' }), { error: 'lookup-refused' });
+  assert.deepEqual(await b.lookups.call(ctxB, 'jira_issue', { key: 'ABC-1' }), { error: 'lookup-refused' });
+});
+
 // #58: standup notes routes
 function fakeNotes() {
   const calls = [];

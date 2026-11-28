@@ -3,6 +3,7 @@ const { summarise } = require('./items.js');
 
 const REFERENCE = /https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)|\b([\w.-]+)\/([\w.-]+)#(\d+)|#(\d+)|\b(?:issue|PR|pull request)\s+#?(\d+)\b/gi;
 const CARD_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+const JIRA_KEY = /\b[A-Z][A-Z0-9_]+-\d+\b/g;
 const STATE = /\b(?:being worked on|in progress|not started|open PR|finished|blocked|failing|shipped|unknown|unclear|merged|closed|stuck|to do|done|left|open)\b/gi;
 const WORDS = 'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty'.split(' ');
 const COUNT = new RegExp(`\\b(\\d+|${WORDS.join('|')})\\s+(?:items?\\s+)?(${STATE.source})`, 'gi');
@@ -21,10 +22,15 @@ function checkFacts(text, snapshot) {
 }
 
 // evidence: items read live during the turn; they replace snapshot entries, but counts stay the snapshot's
-function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
+function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [], jiraBound = false, jiraListed = false }) {
   const items = snapshot.items || [];
   const counts = summarise(items);
-  const byKey = new Map([...items, ...evidence].map((item) => [item.id.includes('#') ? item.id.toLowerCase() : item.id, item]));
+  const byKey = new Map();
+  const jiraByKey = new Map();
+  for (const item of [...items, ...evidence]) {
+    if (item.kind === 'jira') jiraByKey.set(item.id, item);
+    else byKey.set(item.id.includes('#') ? item.id.toLowerCase() : item.id, item);
+  }
   const byNumber = new Map();
   for (const item of byKey.values()) {
     if (!item.id.includes('#')) continue;
@@ -32,22 +38,41 @@ function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
     byNumber.set(number, byNumber.has(number) ? null : item);
   }
   const allowed = repos?.map((name) => name.toLowerCase());
-  const itemFor = (ref) => ref.key ? byKey.get(ref.key) : ref.repo
-    ? (allowed ? allowed.includes(ref.repo) : ref.repo === repo) && byKey.get(`${ref.repo}#${ref.number}`)
-    : byNumber.get(ref.number);
+  const checkJira = jiraBound || jiraByKey.size > 0;
   let cut = false;
 
   const checked = text.split(/(?<=[.!?])(\s+)/).map((sentence, index) => {
     if (index % 2) return sentence;
+    const hasJira = /\bjira\b/i.test(sentence);
+    const hasCard = /\b(?:factory|card)\b/i.test(sentence);
+    const itemFor = (ref) => {
+      if (!ref.key) {
+        return ref.repo
+          ? (allowed ? allowed.includes(ref.repo) : ref.repo === repo) && byKey.get(`${ref.repo}#${ref.number}`)
+          : byNumber.get(ref.number);
+      }
+      if (!checkJira) return byKey.get(ref.key);
+      if (ref.sourceHint === 'jira') return jiraByKey.get(ref.key);
+      if (ref.sourceHint === 'card') return byKey.get(ref.key);
+      const inCard = byKey.get(ref.key);
+      const inJira = jiraByKey.get(ref.key);
+      if (inCard && inJira) return hasJira && !hasCard ? inJira : hasCard && !hasJira ? inCard : null;
+      if (inJira) return hasJira && !hasCard ? inJira : null;
+      if (inCard) return hasJira && !hasCard ? null : inCard;
+      return undefined;
+    };
     const references = [...sentence.matchAll(REFERENCE)].map((match) => ({
       number: Number(match[3] || match[6] || match[7] || match[8]),
       repo: match[1] ? `${match[1]}/${match[2]}`.toLowerCase()
         : match[4] ? `${match[4]}/${match[5]}`.toLowerCase() : null,
       start: match.index, end: match.index + match[0].length,
     }));
-    references.push(...[...sentence.matchAll(CARD_KEY)].map((match) => ({
-      key: match[0], start: match.index, end: match.index + match[0].length,
-    })));
+    references.push(...[...sentence.matchAll(checkJira ? JIRA_KEY : CARD_KEY)].map((match) => {
+      const before = sentence.slice(0, match.index);
+      const sourceHint = /\bjira(?:\s+issue)?\s+$/i.test(before) ? 'jira'
+        : /\b(?:factory\s+)?card\s+$/i.test(before) ? 'card' : null;
+      return { key: match[0], sourceHint, start: match.index, end: match.index + match[0].length };
+    }));
     const states = [...sentence.matchAll(STATE)].map((match) => ({
       state: CLAIM[match[0].toLowerCase()], start: match.index, end: match.index + match[0].length,
     }));
@@ -63,6 +88,8 @@ function checkFactsDetailed(text, snapshot, { repo, repos, evidence = [] }) {
       }, null);
       return nearest.state.state !== item.state;
     }) || countClaims.some((match) => {
+      // Jira lists are bounded. Factory counts cannot prove totals for Jira.
+      if (checkJira && (hasJira || (jiraListed && !hasCard))) return true;
       const amount = /^\d+$/.test(match[1]) ? Number(match[1]) : WORDS.indexOf(match[1].toLowerCase());
       return counts[CLAIM[match[2].toLowerCase()]] !== amount;
     }) || (references.length > 0 && states.some((state) =>

@@ -395,7 +395,8 @@ test('lookup limits and sources: links go to CFactory or the bound repository on
   handleCall(doc, limits);
   assert.equal(byId['call-limits'].textContent, 'Lookups: $0.25 of $2.00 · 90 s per answer · 8 lookups per question');
   handleCall(doc, { type: 'answer', text: 'x', sources: [
-    { kind: 'card', ref: 'FCT-1', title: '<b>t</b>' }, { kind: 'issue', ref: 3, title: 'bug' }, { kind: 'pr', ref: 4, title: '#4' },
+    { kind: 'card', ref: 'FCT-1', title: '<b>t</b>' }, { kind: 'jira', ref: 'FCT-1', title: '<b>j</b>' },
+    { kind: 'issue', ref: 3, title: 'bug' }, { kind: 'pr', ref: 4, title: '#4' },
     { kind: 'file', ref: 'src/a b.js', title: 'src/a b.js' }, { kind: 'file', ref: '../../evil/x' }, { kind: 'card', ref: 'javascript:1' },
   ] });
   const nodes = byId['call-log'].all();
@@ -404,6 +405,7 @@ test('lookup limits and sources: links go to CFactory or the bound repository on
     'https://github.com/o/r/blob/HEAD/src/a%20b.js']);
   assert.ok(!nodes.some((n) => n.tag === 'b'));
   assert.deepEqual(nodes.filter((n) => n.tag === 'button').map((n) => n.textContent), ['card FCT-1: <b>t</b>']);
+  assert.ok(nodes.some((n) => n.className === 'who' && n.textContent === 'Jira FCT-1: <b>j</b>'));
   handleCall(doc, { ...limits, exhausted: true, github: null });
   assert.equal(byId['call-limits'].textContent, 'lookup budget used');
 });

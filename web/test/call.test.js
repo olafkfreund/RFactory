@@ -1816,6 +1816,55 @@ test('two bound repositories offer GitHub tools and keep same-number and same-pa
   } finally { f.restore(); }
 });
 
+test('Jira-bound project call advertises Jira tools, keeps colliding card/Jira sources distinct, and checks facts', async () => {
+  const contexts = [];
+  const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
+  const f = setup({
+    brainTurn: async () => {
+      const reads = contexts.at(-1).reads;
+      reads.push({ tool: 'jira_list', ok: false, ref: '' });
+      reads.push({ tool: 'get_card', ok: true, kind: 'card', ref: 'FCT-1', title: 'Card',
+        evidence: { id: 'FCT-1', kind: 'card', state: 'blocked', title: 'Card' } });
+      reads.push({ tool: 'jira_issue', ok: true, kind: 'jira', ref: 'FCT-1', title: 'Jira item',
+        evidence: { id: 'FCT-1', kind: 'jira', state: 'done', title: 'Jira item' } });
+      reads.push({ tool: 'jira_issue', ok: true, kind: 'jira', ref: 'AB_1-2', title: 'Other Jira item',
+        evidence: { id: 'AB_1-2', kind: 'jira', state: 'left', title: 'Other Jira item' } });
+      return { text: 'Factory card FCT-1 is blocked. Jira issue FCT-1 is done. Jira issue AB_1-2 is open. 1 blocked.', cost: 0 };
+    },
+    extra: {
+      lookups: {}, endpoint, lookupUrl: 'url', scope: { lookups_enabled: true },
+      project: { repositoryId: 9, github: null },
+      lookupsFor: (binding) => ({
+        lookups: { call: () => {} },
+        githubs: [],
+        jira: binding.projectId === 'alpha' ? { projects: ['FCT', 'AB_1'] } : null,
+      }),
+    },
+  });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: viewFor('card') });
+    await f.heard('q1', 'Factory, what happened?');
+    await speakAll(f);
+    assert.deepEqual(contexts[0].tools.filter((t) => t.startsWith('jira_')), ['jira_issue', 'jira_list']);
+    const answer = f.events.filter((e) => e.type === 'answer').at(-1);
+    assert.equal(answer.text, 'Factory card FCT-1 is blocked. Jira issue FCT-1 is done. Jira issue AB_1-2 is open. 1 blocked.');
+    assert.ok(said(f).includes('Jira issue F C T 1 is done.'));
+    assert.ok(said(f).includes('Jira issue A B underscore 1 2 is open.'));
+    assert.deepEqual(answer.sources, [
+      { kind: 'card', ref: 'FCT-1', title: 'Card' },
+      { kind: 'jira', ref: 'FCT-1', title: 'Jira item' },
+      { kind: 'jira', ref: 'AB_1-2', title: 'Other Jira item' },
+    ]);
+    await endCall(f);
+
+    await f.manager.start('link', { binding: bindingFor('Beta', [2]), view: viewFor('card') });
+    await f.heard('q2', 'Factory, what happened?');
+    await speakAll(f);
+    assert.deepEqual(contexts[1].tools.filter((t) => t.startsWith('jira_')), []);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
 test('an earlier call\'s farewell, Leave timer and STT cannot stop or log into the next call', async () => {
   const farewell = deferred(), heard = deferred();
   const f = setup({ ttsSay: async (s) => { if (s === 'Leaving now.') await farewell.promise; return Buffer.from(s); },

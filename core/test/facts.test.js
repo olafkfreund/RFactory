@@ -128,3 +128,23 @@ test('consecutive failed sentences produce one spoken refusal, including snapsho
   assert.equal(checked('#99 is done. #98 is done.'), refused);
   assert.equal(checked('#99 is done. #98 is done. #3 is blocked.'), `${refused} #3 is blocked.`);
 });
+
+test('Jira evidence stays separate from Factory cards on key collisions', () => {
+  const snap = { items: [{ id: 'FCT-1', state: 'blocked' }] };
+  const evidence = [{ id: 'FCT-1', kind: 'jira', state: 'done' }, { id: 'AB_1-2', kind: 'jira', state: 'left' }];
+  const check = (text) => checkFactsDetailed(text, snap, { repo: null, evidence }).text;
+  assert.equal(check('Factory card FCT-1 is blocked.'), 'Factory card FCT-1 is blocked.');
+  assert.equal(check('Jira issue FCT-1 is done.'), 'Jira issue FCT-1 is done.');
+  assert.equal(check('Factory card FCT-1 is blocked and Jira issue FCT-1 is done.'), 'Factory card FCT-1 is blocked and Jira issue FCT-1 is done.');
+  assert.equal(check('In Jira, FCT-1 is done.'), 'In Jira, FCT-1 is done.');
+  assert.equal(check('FCT-1 is done.'), refused);
+  assert.equal(check('Jira issue FCT-1 is blocked.'), refused);
+  assert.equal(check('AB_1-2 is open.'), refused);
+  assert.equal(check('Jira has 1 blocked.'), refused);
+  assert.equal(checkFactsDetailed('1 blocked.', snap, { jiraBound: true, jiraListed: true }).text, refused);
+  assert.equal(checkFactsDetailed('Jira issue FCT-1 is blocked.', snap, { jiraBound: true }).text, refused);
+  assert.equal(checkFacts('Jira issue FCT-1 is blocked.', snap), 'Jira issue FCT-1 is blocked.');
+  assert.equal(check('Jira issue AB_1-2 is open.'), 'Jira issue AB_1-2 is open.');
+  assert.equal(check('1 blocked.'), '1 blocked.');
+  assert.equal(check('1 done.'), refused);
+});

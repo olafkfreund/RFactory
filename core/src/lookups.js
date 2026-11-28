@@ -4,14 +4,18 @@ const { mapCard } = require('./sources/cfactory.js');
 const { validPath, validNumber } = require('./sources/github-read.js');
 
 const CARD = /^[A-Z][A-Z0-9]+-\d+$/;
+const JIRA_PROJECT = /^[A-Z][A-Z0-9_]{1,19}$/;
+const JIRA_KEY = /^[A-Z][A-Z0-9_]{1,19}-\d+$/;
 const specs = {
   find_cards: { text: 'string', state: 'string?' }, get_card: { card_key: 'string' },
   card_comments: { card_key: 'string' }, card_runs: { card_key: 'string' },
   get_issue: { number: 'integer' }, issue_comments: { number: 'integer' },
   pr_diff: { number: 'integer' }, read_file: { path: 'string' },
+  jira_issue: { key: 'string' }, jira_list: { project: 'string', state: 'string?' },
 };
 const FACTORY = Object.keys(specs).slice(0, 4);
-const GITHUB = Object.keys(specs).slice(4);
+const GITHUB = Object.keys(specs).slice(4, 8);
+const JIRA = Object.keys(specs).slice(8);
 const wrap = (text) => ({ untrusted: true, text: String(text ?? '') });
 const clip = (text) => Array.from(String(text)).slice(0, 200).join('');
 // an investigation run's outcome, from its test results; what cannot be read is not called passed
@@ -21,7 +25,7 @@ function runResult(tests) {
   return tests.every((t) => t?.exit_code === 0 || (t?.parsed !== false && t?.failed === 0)) ? 'passed' : 'not-run';
 }
 
-function validate(name, args, repos = []) {
+function validate(name, args, repos = [], jiraProjects = []) {
   const spec = specs[name];
   if (!spec || !args || typeof args !== 'object' || Array.isArray(args)) return false;
   if (Object.keys(args).some((key) => !Object.hasOwn(spec, key) && !(repos.length > 1 && GITHUB.includes(name) && key === 'repo'))) return false;
@@ -33,9 +37,19 @@ function validate(name, args, repos = []) {
   if (name === 'find_cards') return args.text.length >= 1 && args.text.length <= 200 && (args.state === undefined || STATES.includes(args.state));
   if (Object.hasOwn(args, 'card_key')) return CARD.test(args.card_key);
   if (name === 'read_file') return validPath(args.path);
+  if (name === 'jira_issue') {
+    if (!JIRA_KEY.test(args.key)) return false;
+    const project = args.key.slice(0, args.key.lastIndexOf('-'));
+    return jiraProjects.length === 0 || jiraProjects.includes(project);
+  }
+  if (name === 'jira_list') {
+    if (!JIRA_PROJECT.test(args.project)) return false;
+    if (jiraProjects.length > 0 && !jiraProjects.includes(args.project)) return false;
+    return args.state === undefined || STATES.includes(args.state);
+  }
   return true;
 }
-function schema(name, repos = []) {
+function schema(name, repos = [], jiraProjects = []) {
   const properties = {};
   const required = [];
   for (const [key, type] of Object.entries(specs[name])) {
@@ -46,6 +60,12 @@ function schema(name, repos = []) {
   if (properties.card_key) properties.card_key.pattern = CARD.source;
   if (properties.path) properties.path.maxLength = 300;
   if (repos.length > 1 && GITHUB.includes(name)) { properties.repo = { type: 'string', enum: repos }; required.push('repo'); }
+  if (name === 'jira_issue') properties.key.pattern = JIRA_KEY.source;
+  if (name === 'jira_list') {
+    if (jiraProjects.length) properties.project.enum = jiraProjects;
+    else properties.project.pattern = JIRA_PROJECT.source;
+    properties.state.enum = STATES;
+  }
   return { type: 'object', properties, required, additionalProperties: false };
 }
 function cap(value, limit) {
@@ -80,21 +100,35 @@ function cap(value, limit) {
   }
   return final();
 }
-function createLookups({ source, github, redactor }) {
+function createLookups({ source, github, jira = null, redactor }) {
   const clients = github instanceof Map ? github : null;
   const names = clients ? [...clients.keys()] : [];
   const bound = (ctx) => ctx.project?.github || ctx.project?.githubs?.length;
+  const boundJira = (ctx) => Boolean(ctx.project?.jira?.projects?.length);
   return {
-    tools(ctx) { return ctx.tools.filter((name) => specs[name] && (FACTORY.includes(name) || (github && bound(ctx)))).map((name) => ({
-      name, description: `Read ${name.replaceAll('_', ' ')} in ${GITHUB.includes(name)
-        ? names.length > 1 ? 'the selected GitHub repository' : `the GitHub repository ${ctx.project.github.owner}/${ctx.project.github.repo}` : 'the bound project'}`, inputSchema: schema(name, names),
-    })); },
+    tools(ctx) {
+      const jiraProjects = ctx.project?.jira?.projects ?? [];
+      return ctx.tools.filter((name) => specs[name] && (
+        FACTORY.includes(name) ||
+        (GITHUB.includes(name) && github && bound(ctx)) ||
+        (JIRA.includes(name) && jira && boundJira(ctx))
+      )).map((name) => ({
+        name,
+        description: `Read ${name.replaceAll('_', ' ')} in ${GITHUB.includes(name)
+          ? names.length > 1 ? 'the selected GitHub repository' : `the GitHub repository ${ctx.project.github.owner}/${ctx.project.github.repo}`
+          : JIRA.includes(name) ? `the bound Jira project${jiraProjects.length > 1 ? 's' : ''} (${jiraProjects.join(', ')})` : 'the bound project'}`,
+        inputSchema: schema(name, names, jiraProjects),
+      }));
+    },
     async call(ctx, name, args) {
       // only a delivered read logs a ref: a model's argument could carry question text into the record
       const entry = { tool: name, ref: '', ok: false };
       let ref = args?.card_key ?? args?.number ?? args?.path ?? '';
       try {
-        if (!ctx.tools.includes(name) || !validate(name, args, names) || (GITHUB.includes(name) && (!github || !bound(ctx)))) throw new Error('lookup-refused');
+        const jiraProjects = ctx.project?.jira?.projects ?? [];
+        if (!ctx.tools.includes(name) || !validate(name, args, names, jiraProjects) ||
+          (GITHUB.includes(name) && (!github || !bound(ctx))) ||
+          (JIRA.includes(name) && (!jira || !boundJira(ctx)))) throw new Error('lookup-refused');
         if (ctx.signal?.aborted) throw new Error('aborted');
         const selected = GITHUB.includes(name) ? names.length > 1 ? args.repo : names[0] : null;
         const reader = selected ? clients.get(selected) : github;
@@ -150,6 +184,25 @@ function createLookups({ source, github, redactor }) {
                 summary: wrap(typeof findings === 'object' ? JSON.stringify(findings) : findings), at: run.at || run.updated_at };
             }
           }
+        } else if (JIRA.includes(name)) {
+          if (name === 'jira_issue') {
+            const item = await jira.issue(args.key, { signal: ctx.signal });
+            if (item?.key !== args.key) throw new Error('jira-not-found');
+            ref = item.key; kind = 'jira'; title = item.title;
+            evidence = { id: item.key, kind: 'jira', title: item.title, state: item.state, source_state: item.source_state,
+              rule: 'live', basis: 'observed', assignees: [], updated_at: '', evidence: [] };
+            result = { key: item.key, title: wrap(item.title), state: item.state, source_state: wrap(item.source_state) };
+          } else {
+            const rawItems = await jira.list(args.project, args.state, { signal: ctx.signal });
+            if (!Array.isArray(rawItems)) throw new Error('jira-bad-reply');
+            const items = rawItems.filter((item) => item && typeof item.key === 'string' && JIRA_KEY.test(item.key) &&
+              item.key.slice(0, item.key.lastIndexOf('-')) === args.project);
+            ref = items.map((x) => x.key).join(',');
+            kind = 'jira';
+            evidence = items.map((x) => ({ id: x.key, kind: 'jira', title: x.title, state: x.state, source_state: x.source_state,
+              rule: 'live', basis: 'observed', assignees: [], updated_at: '', evidence: [] }));
+            result = items.map((x) => ({ key: x.key, title: wrap(x.title), state: x.state, source_state: wrap(x.source_state) }));
+          }
         } else {
           const number = args.number;
           if (name === 'get_issue') {
@@ -163,14 +216,15 @@ function createLookups({ source, github, redactor }) {
           else if (name === 'pr_diff') { kind = 'pr'; title = `#${number}`; result = (await reader.prDiff(readCtx, number)).map((x) => ({ ...x, filename: wrap(x.filename), patch: wrap(x.patch) })); }
           else { kind = 'file'; title = args.path; result = await reader.readFile(readCtx, args.path); if (result.content !== undefined) result.content = wrap(result.content); }
         }
-        const safe = cap(redactor.toModel({ result }), 8 * 1024);
+        const safe = cap(redactor.toModel({ result, ...(name === 'jira_list' && result.length === 20 ? { limited: true } : {}) }), 8 * 1024);
         const proof = evidence && redactor.toModel(evidence);
         Object.assign(entry, { ref: redactor.toModel(ref), ok: true, ...(GITHUB.includes(name) && ctx.project.bound ? { repo: `${gh.owner}/${gh.repo}` } : {}), ...(kind ? { kind } : {}),
-          ...(title ? { title: clip(redactor.toModel(title)) } : {}), ...(proof ? { evidence: { ...proof, title: clip(proof.title) } } : {}) });
+          ...(title ? { title: clip(redactor.toModel(title)) } : {}),
+          ...(proof ? { evidence: Array.isArray(proof) ? proof.map((p) => ({ ...p, title: clip(p.title) })) : { ...proof, title: clip(proof.title) } } : {}) });
         return safe;
       } catch { return { error: 'lookup-refused' }; }
       finally { ctx.reads.push(entry); }
     },
   };
 }
-module.exports = { createLookups, FACTORY, GITHUB, validate };
+module.exports = { createLookups, FACTORY, GITHUB, JIRA, validate };
