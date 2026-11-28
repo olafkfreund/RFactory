@@ -29,3 +29,7 @@ Run targeted Jira, scope, project and lookup tests, then the complete core and w
 ## Rollback
 
 Remove the Jira binding from the test project. The rest of the call and standalone standup use their previous paths. Any image rollback follows release approval.
+
+## Deviations
+
+- Updated the README feature list in this PR under its contributor rule. The new user and operator guides are in a separate draft PR and will need their Jira entry aligned when both changes land.
