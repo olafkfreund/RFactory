@@ -756,9 +756,9 @@
     "semantic_hash": "e42c778bbbb45b2ad21df6b3a1488f66"
   },
   "desktop/verify/verify.test.js": {
-    "mtime": 1795857199.2787826,
-    "seen": 1795857844.196061,
-    "ast_hash": "934100ee0d036c530c7f59deccc3e65c",
+    "mtime": 1795858041.1325827,
+    "seen": 1795858116.86107,
+    "ast_hash": "d6f8c2e7d3137d711223af79d710c62d",
     "semantic_hash": ""
   },
   "spike/hello-call.js": {

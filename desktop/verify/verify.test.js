@@ -116,14 +116,16 @@ test('fixture /login reports lengths only and /reset clears them', async () => {
   } finally { child.kill(); }
 });
 
-// run <bash script> with a fake `curl` (logs its arguments, answers with a desktop id) and a fake `node` in front of PATH
+// Run <bash script> with fake curl, kubectl and node so the helpers stay offline.
 function bash(script, { node = 'exit 0', env = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-'));
-  fs.writeFileSync(path.join(dir, 'curl'), `#!/bin/sh\necho "$@" >> "${dir}/curl.log"\necho '{"desktop_id":"abc"}'\n`, { mode: 0o755 });
+  const logFile = path.join(dir, 'curl.log');
+  fs.writeFileSync(path.join(dir, 'curl'), `#!/bin/sh\necho "$@" >> "$CURL_LOG"\necho '{"desktop_id":"abc"}'\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'node'), `#!/bin/sh\n${node}\n`, { mode: 0o755 });
-  const r = spawnSync('bash', ['-c', `set -uo pipefail; . "${LIB}"; ${script}`], {
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, VERIFY_CERT: 'c', VERIFY_KEY: 'k', VERIFY_CA: 'a', ...env }, encoding: 'utf8', timeout: 20000 });
-  const log = fs.existsSync(path.join(dir, 'curl.log')) ? fs.readFileSync(path.join(dir, 'curl.log'), 'utf8') : '';
+  const r = spawnSync('bash', ['-c', `set -uo pipefail; kubectl() { return 1; }; . "${LIB}"; ${script}`], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CURL_LOG: logFile,
+      VERIFY_CERT: 'c', VERIFY_KEY: 'k', VERIFY_CA: 'a', ...env }, encoding: 'utf8', timeout: 20000 });
+  const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
   fs.rmSync(dir, { recursive: true });
   return { out: r.stdout, err: r.stderr, log, status: r.status };
 }
@@ -336,7 +338,15 @@ test('observer skips Chrome when already stopped and exits promptly after closin
 const beats = (log) => log.split('\n').filter((l) => /\/heartbeat/.test(l) && l.includes('"desktop_id":"abc"')).length;
 
 test('new_desktop keeps a server heartbeat running; NO_BEAT=1 withholds it', () => {
-  const kept = bash('BEAT_SECS=0.2; new_desktop c s; sleep 1.2; stop_beat "$DID"; echo "did=$DID"');
+  const kept = bash(`
+    BEAT_SECS=0.2
+    new_desktop c s || exit 1
+    deadline=$((SECONDS + 10))
+    until [ "$(grep -c '/heartbeat$' "$CURL_LOG")" -ge 3 ] || [ "$SECONDS" -ge "$deadline" ]; do sleep 0.1; done
+    stop_beat "$DID"
+    echo "did=$DID"
+  `);
+  assert.equal(kept.status, 0, kept.err);
   assert.match(kept.out, /did=abc/);
   assert.ok(beats(kept.log) >= 3, kept.log);
   const withheld = bash('NO_BEAT=1 BEAT_SECS=0.2; new_desktop c s; sleep 1; echo "did=$DID"');
