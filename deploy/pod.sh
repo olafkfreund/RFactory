@@ -157,6 +157,7 @@ up() {
     "$proxy_image" \
     --alpha-config=/etc/oauth2-proxy/config.yaml \
     --redirect-url=http://127.0.0.1:4180/oauth2/callback \
+    --skip-jwt-bearer-tokens=true \
     --email-domain='*' --cookie-secure=false --reverse-proxy=false --skip-provider-button=true >/dev/null
   echo "rfactory pod up: http://127.0.0.1:4180"
 }
