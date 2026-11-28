@@ -126,7 +126,16 @@ test('start, greeting, voice, mic and stopped state', async () => {
     await assert.rejects(f.manager.start('other'), /busy/);
     f.children[0].output({ type: 'state', state: 'in-call' });
     await flush();
+    assert.equal(f.messages().find((m) => m.type === 'speak'), undefined);
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions-off', notConfigured: true });
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     assert.equal(f.messages().find((m) => m.type === 'speak').seq, 0);
+    assert.equal(f.manager.current().find((e) => e.type === 'hearing').state, 'captions');
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 1);
     f.children[0].output({ type: 'mic', muted: false });
     f.children[0].output({ type: 'spoke', seq: 0, result: 'done' });
     assert.ok(f.events.some((e) => e.type === 'greeting' && e.result === 'done'));
@@ -136,6 +145,112 @@ test('start, greeting, voice, mic and stopped state', async () => {
     f.children[0].close(); await stopping;
     assert.equal(f.manager.running, false);
     assert.equal(f.events.at(-1).state, 'stopped');
+  } finally { f.restore(); }
+});
+
+const MEET = 'https://meet.google.com/abc-defg-hij';
+const logsOf = (f) => f.events.filter((e) => e.type === 'log').map((e) => e.message);
+const speaks = (f) => f.messages().filter((m) => m.type === 'speak');
+async function stopNow(f) { const stopping = f.manager.stop(); f.children[0].close(); await stopping; }
+
+test('Meet captions off holds the greeting; a later on greets once', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.children[0].output({ type: 'captions', on: false });
+    await flush();
+    assert.equal(speaks(f).length, 0);
+    assert.ok(logsOf(f).some((m) => /^captions off ms=\d+$/.test(m)));
+    assert.deepEqual(f.manager.current().find((e) => e.type === 'hearing'), { type: 'hearing', state: 'captions-off', notConfigured: true });
+    f.children[0].output({ type: 'captions', on: true });
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(speaks(f).length, 1);
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('caption timing lines count from in-call and the summary fires 5 s after a heard line', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.clock.tick(2000);
+    f.children[0].output({ type: 'captions', on: true });
+    f.clock.tick(1000);
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'secret caption words', final: true });
+    f.children[0].output({ type: 'heard', id: 2, speaker: 'P', text: 'secret caption words', final: true });
+    f.clock.tick(5000);
+    await flush();
+    const lines = logsOf(f).filter((m) => /caption/.test(m));
+    assert.deepEqual(lines, ['captions on ms=2000', 'first caption ms=3000', 'captions heard ms=8000 lines=2']);
+    f.children[0].output({ type: 'heard', id: 3, speaker: 'P', text: 'secret caption words', final: true });
+    f.clock.tick(5000);
+    assert.equal(logsOf(f).filter((m) => m.startsWith('captions heard'))[1], 'captions heard ms=13000 lines=1');
+    for (const m of logsOf(f).filter((m) => /^(captions|first caption)/.test(m)))
+      assert.match(m, /^((captions (on|off)|first caption) ms=\d+|captions heard ms=\d+ lines=\d+)$/);
+    assert.ok(!logsOf(f).some((m) => m.includes('secret')));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Stop clears the pending caption summary', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    f.children[0].output({ type: 'captions', on: true });
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'hello', final: true });
+    const stopping = f.manager.stop();
+    f.clock.tick(5000);
+    f.children[0].close(); await stopping;
+    assert.ok(!logsOf(f).some((m) => m.startsWith('captions heard')));
+  } finally { f.restore(); }
+});
+
+test('a captions line before in-call is dropped', async () => {
+  const f = setup();
+  try {
+    await f.manager.start(MEET);
+    const before = f.events.length;
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.equal(speaks(f).length, 0);
+    assert.ok(!f.events.slice(before).some((e) => e.type === 'hearing'));
+    assert.ok(!logsOf(f).some((m) => m.startsWith('captions on')));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Meet with listen audio greets on in-call and drops a captions line', async () => {
+  const f = setup({ stt: { transcribe: async () => ({ text: '' }) } });
+  try {
+    await f.manager.start(MEET, { listen: 'audio' });
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await flush();
+    assert.equal(speaks(f).length, 1);
+    const before = f.events.length;
+    f.children[0].output({ type: 'captions', on: true });
+    await flush();
+    assert.ok(!f.events.slice(before).some((e) => e.type === 'hearing'));
+    assert.ok(logsOf(f).some((m) => /unknown/.test(m)));
+    await stopNow(f);
+  } finally { f.restore(); }
+});
+
+test('Teams in platform mode greets on in-call and writes no caption timing lines', async () => {
+  const f = setup();
+  try {
+    await f.manager.start('link');
+    assert.equal(f.manager.current().find((e) => e.type === 'hearing').state, 'captions');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await flush();
+    assert.equal(speaks(f)[0].seq, 0);
+    f.children[0].output({ type: 'heard', id: 1, speaker: 'P', text: 'hello', final: true });
+    f.clock.tick(5000);
+    assert.ok(!logsOf(f).some((m) => /first caption|captions heard/.test(m)));
+    await stopNow(f);
   } finally { f.restore(); }
 });
 
@@ -1281,7 +1396,7 @@ test('a brain that ignores the signal cannot hang the queue', async () => {
 });
 
 // #52: a call bound to one project
-const bindingFor = (name, ids, writable) => ({ projectId: name.toLowerCase(), name, writable,
+const bindingFor = (name, ids) => ({ projectId: name.toLowerCase(), name,
   repositories: ids.map((id) => ({ id, path: `o/r${id}` })) });
 const viewFor = (title) => ({ snapshot: async () => ({ items: [{ id: 'FCT-1', state: 'blocked', title }], fetched_at: 'today', newest_update: 'today' }),
   standupData: async () => ({ cards: [{ card_key: 'FCT-1', title, status: 'ready' }], conflicting: 0,
@@ -1301,7 +1416,7 @@ test('a project call greets by name, keeps its project event, reads its own view
   const f = setup({ sourceSnapshot: async () => { throw new Error('default-source-read'); },
     brainTurn: async (snapshot) => { turns.push(snapshot.items[0].title); return { text: 'Unknown.' }; } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [1, 2], true), view: viewFor('Alpha card') });
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1, 2]), view: viewFor('Alpha card') });
     assert.deepEqual([f.manager.generation, f.manager.project], [1, { id: 'alpha', name: 'Alpha' }]);
     assert.deepEqual(f.manager.current().find((e) => e.type === 'project'),
       { type: 'project', id: 'alpha', name: 'Alpha', repositories: [{ id: 1, path: 'o/r1' }, { id: 2, path: 'o/r2' }] });
@@ -1314,7 +1429,7 @@ test('a project call greets by name, keeps its project event, reads its own view
     await endCall(f);
     assert.deepEqual(f.events.slice(-2), [{ type: 'state', state: 'stopped' }, { type: 'ended' }]);
     assert.equal(f.manager.project, null);
-    await f.manager.start('link', { binding: bindingFor('Beta', [3], false), view: viewFor('Beta card') });
+    await f.manager.start('link', { binding: bindingFor('Beta', [3]), view: viewFor('Beta card') });
     assert.equal(f.manager.current().find((e) => e.type === 'project').name, 'Beta');
     assert.doesNotMatch(JSON.stringify(f.manager.current()), /Alpha/);
     await endCall(f);
@@ -1333,7 +1448,7 @@ test('a project call drops a manager event from another call: not delivered, rep
   const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
   const f = setup({ extra: { actions, shares, investigations } });
   try {
-    const options = { binding: bindingFor('Alpha', [2], true), view: viewFor('card') };
+    const options = { binding: bindingFor('Alpha', [2]), view: viewFor('card') };
     await f.manager.start('link', options);
     await endCall(f);
     await f.manager.start('link', options);
@@ -1357,35 +1472,39 @@ test('a project call drops a manager event from another call: not delivered, rep
   } finally { f.restore(); }
 });
 
-test('writes: a project without the default repository answers an action as a question', async () => {
-  const actions = fakeManager(), turns = [];
-  const f = setup({ brainTurn: async (snapshot, options) => { turns.push(options.question); return { text: 'Unknown.' }; }, extra: { actions } });
+test('writes: a project without the default repository takes an action like any other', async () => {
+  const actions = fakeManager();
+  const f = setup({ extra: { actions } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [3], false), view: viewFor('card') });
-    await f.heard('a', 'Factory, build status of FCT-1?');
+    const options = { binding: bindingFor('Alpha', [3]), view: viewFor('card') };
+    await f.manager.start('link', options);
+    await f.heard('a', 'Factory, create a card called Login');
     await speakAll(f);
-    assert.equal(f.events.find((e) => e.type === 'question').kind, 'question');
-    assert.equal(turns.length, 1);
-    assert.equal(actions.requests.length, 0);
+    assert.equal(actions.requests.length, 1);
+    assert.deepEqual(actions.started, [[1, options]]);
     assert.doesNotMatch(said(f).join(' '), /Changes aren't available/);
     await endCall(f);
   } finally { f.restore(); }
 });
 
-test('writes: a project without the default repository refuses investigations, shares and desktop requests; with it they work', async () => {
-  for (const writable of [false, true]) {
+test('writes: every project proposes actions, shares, investigations and desktop requests for its own call', async () => {
+  for (const ids of [[2], [3]]) {
     const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager(), desktop = fakeManager();
     const f = setup({ desktop, extra: { actions, shares, investigations } });
     try {
-      await f.manager.start('link', { binding: bindingFor('Alpha', [writable ? 2 : 3], writable), view: viewFor('card') });
+      const options = { binding: bindingFor('Alpha', ids), view: viewFor('card') };
+      await f.manager.start('link', options);
       for (const [id, text] of [['a', 'create a card called Login'], ['s', 'show the board'], ['i', 'investigate the login failure'], ['d', 'open the settings page']]) {
         await f.heard(id, `Factory, ${text}`);
         await speakAll(f);
       }
-      const managers = [actions, shares, investigations];
-      assert.deepEqual([...managers, desktop].map((m) => m.requests.length), writable ? [1, 1, 1, 1] : [0, 0, 0, 0]);
-      assert.deepEqual(managers.map((m) => m.started.length), writable ? [1, 1, 1] : [0, 0, 0]);
-      assert.equal(said(f).filter((s) => s === "Changes aren't available for this project yet.").length, writable ? 0 : 3); // share, investigation, desktop; the card request became a question
+      assert.deepEqual([actions, shares, investigations, desktop].map((m) => m.requests.length), [1, 1, 1, 1]);
+      assert.deepEqual(actions.started, [[1, options]]);
+      assert.deepEqual(investigations.started, [[1, options]]);
+      assert.equal(shares.started[0][1].binding, options.binding);
+      assert.equal(shares.started[0][1].view, options.view);
+      assert.equal(f.manager.projectCall.binding, options.binding);
+      assert.doesNotMatch(said(f).join(' '), /Changes aren't available/);
       await endCall(f);
     } finally { f.restore(); }
   }
@@ -1395,21 +1514,54 @@ test('a project lookup uses that call\'s repositories, GitHub only with the defa
   const made = [], contexts = [], records = [];
   const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
   const f = setup({ brainTurn: async () => ({ text: 'Unknown.', cost: 0 }), extra: { lookups: {}, endpoint, lookupUrl: 'url',
-    lookupsFor: (ids) => { const own = { ids }; made.push(own); return own; }, project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
+    lookupsFor: (binding) => { const own = { ids: binding.repositories.map((r) => r.id) }; made.push(own);
+      return { lookups: own, githubs: own.ids.includes(2) ? [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }] : [] }; },
+    project: { repositoryId: 2, github: { owner: 'Olaf', repo: 'Demo' } },
     scope: { lookups_enabled: true }, record: { append: async (line) => { records.push(line); } } } });
   try {
-    for (const [n, binding] of [bindingFor('Alpha', [1, 2], true), bindingFor('Beta', [3], false)].entries()) {
+    for (const [n, binding] of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])].entries()) {
       await f.manager.start('link', { binding, view: viewFor('card') });
       await f.heard(`q${n}`, 'Factory, what is blocked?');
       await speakAll(f);
-      assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.writable ? 'Olaf/Demo' : null);
+      assert.equal(f.manager.current().find((e) => e.type === 'limits').github, binding.repositories.some((r) => r.id === 2) ? 'Olaf/Demo' : null);
       await endCall(f);
     }
     assert.deepEqual(made.map((m) => m.ids), [[1, 2], [3]]);
     assert.deepEqual(contexts.map((c) => c.lookups), made);
     assert.deepEqual(contexts.map((c) => c.tools.includes('read_file')), [true, false]);
-    assert.deepEqual(contexts.map((c) => c.project.github), [{ owner: 'Olaf', repo: 'Demo' }, null]);
+    assert.deepEqual(contexts.map((c) => c.project.github), [{ repositoryId: 2, owner: 'Olaf', repo: 'Demo' }, null]);
     assert.deepEqual(records.map((r) => [r.project_id, r.repository_ids]), [['alpha', [1, 2]], ['beta', [3]]]);
+  } finally { f.restore(); }
+});
+
+test('two bound repositories offer GitHub tools and keep same-number and same-path sources distinct across calls', async () => {
+  const contexts = [], made = [], rows = [];
+  const endpoint = { register: (ctx) => { contexts.push(ctx); return `token-${contexts.length}`; }, revoke: () => {} };
+  const f = setup({ brainTurn: async () => {
+    const reads = contexts.at(-1).reads;
+    for (const repo of ['Owner/One', 'Owner/Two']) for (const [kind, ref] of [['issue', '7'], ['file', 'src/a.js']])
+      reads.push({ tool: kind, ok: true, kind, ref, repo, title: ref });
+    return { text: 'Unknown.', cost: 0 };
+  }, extra: { lookups: {}, endpoint, lookupUrl: 'url', scope: { lookups_enabled: true },
+    project: { repositoryId: 9, github: null }, record: { append: async (row) => rows.push(row) },
+    lookupsFor: (binding) => { const result = { lookups: { call: () => {} }, githubs: binding.projectId === 'alpha'
+      ? [{ repositoryId: 1, owner: 'Owner', repo: 'One' }, { repositoryId: 2, owner: 'Owner', repo: 'Two' }] : [] };
+    made.push(result); return result; } } });
+  try {
+    for (const binding of [bindingFor('Alpha', [1, 2]), bindingFor('Beta', [3])]) {
+      await f.manager.start('link', { binding, view: viewFor('card') });
+      await f.heard(`q${made.length}`, 'Factory, what happened?'); await speakAll(f);
+      const limits = f.manager.current().find((e) => e.type === 'limits');
+      assert.deepEqual(limits.githubs, binding.projectId === 'alpha' ? ['Owner/One', 'Owner/Two'] : []);
+      assert.equal(limits.github, null);
+      const answer = f.events.filter((e) => e.type === 'answer').at(-1);
+      assert.equal(answer.sources.length, 4);
+      assert.deepEqual(answer.sources.map((s) => s.repo), ['Owner/One', 'Owner/One', 'Owner/Two', 'Owner/Two']);
+      await endCall(f);
+    }
+    assert.notEqual(made[0].lookups, made[1].lookups);
+    assert.deepEqual(contexts.map((c) => c.tools.includes('get_issue')), [true, false]);
+    assert.equal(rows.length, 2);
   } finally { f.restore(); }
 });
 
@@ -1477,11 +1629,197 @@ test('a project standup is read from the call\'s own view', async () => {
   const view = viewFor('Own card');
   const f = setup({ sourceStandup: async () => { throw new Error('default-source-read'); } });
   try {
-    await f.manager.start('link', { binding: bindingFor('Alpha', [1], false), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: { ...view, standupData: () => { read.push('view'); return view.standupData(); } } });
     await f.heard('s', 'Factory, standup');
     await speakAll(f);
     assert.deepEqual(read, ['view']);
     assert.ok(f.events.some((e) => e.type === 'answer' && e.counts));
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+// #58: standup notes
+function fakeNotes({ count = 0 } = {}) {
+  const m = { listeners: [], started: [], added: [], closed: 0, ended: 0, count: () => count,
+    subscribe(fn) { m.listeners.push(fn); }, startCall(...args) { m.started.push(args); },
+    closeIntake() { m.closed++; }, endCall() { m.ended++; },
+    headline: () => 'I noted 1 decision. The list is on the page.',
+    note(raw, options) { if (m.closed) return { dropped: true }; m.added.push([raw, options]); return { text: 'Noted as a decision.' }; },
+    fire: (event) => m.listeners.forEach((fn) => fn(event)) };
+  return m;
+}
+const noteBrain = (note) => ({ turn: async () => ({ text: 'FCT-1 is blocked.' }), note });
+
+test('a note request speaks the server sentence, passes the call count, and a notes event reaches the page', async () => {
+  const notes = fakeNotes();
+  const asked = [];
+  const f = setup({ extra: { notes, brain: noteBrain(async (snap, options) => { asked.push([snap.items[0].id, options.request]); return { kind: 'decision', text: 'Ship it.' }; }) } });
+  try {
+    await f.manager.start('link');
+    assert.deepEqual(notes.started, [[1, { project: null, writable: false }]]);
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await f.heard('n', 'Factory, note that we ship Friday.', 'Eve');
+    await speakAll(f);
+    assert.deepEqual(asked, [['FCT-1', 'note that we ship Friday.']]);
+    assert.deepEqual(notes.added[0][0], { kind: 'decision', text: 'Ship it.' });
+    assert.equal(notes.added[0][1].generation, 1);
+    assert.equal(notes.added[0][1].speaker, 'Eve');
+    assert.ok(said(f).includes('Noted as a decision.'));
+    notes.fire({ type: 'notes', set: { id: 's1' } });
+    assert.deepEqual(f.events.filter((e) => e.type === 'notes'), [{ type: 'notes', set: { id: 's1' } }]);
+    assert.deepEqual(f.manager.current().filter((e) => e.type === 'notes'), [{ type: 'notes', set: { id: 's1' } }]);
+    await endCall(f);
+    assert.equal(notes.closed, 1);
+    assert.equal(notes.ended, 1);
+  } finally { f.restore(); }
+});
+
+test('a brain answer of none falls through to a question answer', async () => {
+  const notes = fakeNotes();
+  const turns = [];
+  const g = setup({ extra: { notes, brain: { turn: async (snap, o) => { turns.push(o.question); return { text: 'FCT-1 is blocked.' }; },
+    note: async () => ({ note: 'none' }) } } });
+  try {
+    await g.manager.start('link');
+    g.children[0].output({ type: 'state', state: 'in-call' });
+    await g.heard('n', 'Factory, note the blocker count on FCT-1');
+    await speakAll(g);
+    assert.equal(notes.added.length, 0);
+    assert.equal(turns.length, 1);
+    assert.match(said(g).join(' '), /F C T 1 is blocked\./);
+    await endCall(g);
+  } finally { g.restore(); }
+});
+
+test('a brain result after stop adds nothing', async () => {
+  const notes = fakeNotes();
+  const pending = deferred();
+  const f = setup({ extra: { notes, brain: noteBrain(() => pending.promise) } });
+  try {
+    await f.manager.start('link');
+    await f.heard('n', 'Factory, note that we ship Friday.');
+    await flush();
+    await endCall(f);
+    pending.resolve({ kind: 'decision', text: 'Ship it.' }); await flush();
+    assert.equal(notes.added.length, 0);
+    assert.equal(f.messages().filter((m) => m.type === 'speak').length, 0);
+  } finally { f.restore(); }
+});
+
+test('a brain error logs its code only and speaks the failure sentence', async () => {
+  const notes = fakeNotes();
+  const f = setup({ extra: { notes, brain: noteBrain(async () => { throw new Error('brain-timeout: secret detail of the sentence'); }) } });
+  try {
+    await f.manager.start('link');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await f.heard('n', 'Factory, note that we ship Friday.');
+    await speakAll(f);
+    assert.ok(f.events.some((e) => e.type === 'log' && e.message === 'note failed: brain-timeout'));
+    assert.doesNotMatch(JSON.stringify(f.events), /secret detail/);
+    assert.ok(said(f).includes("Sorry, I couldn't note that."));
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('what did you note speaks the headline and calls no brain', async () => {
+  const notes = fakeNotes();
+  const f = setup({ brainTurn: async () => { throw new Error('turn must not run'); },
+    extra: { notes, brain: noteBrain(async () => { throw new Error('note must not run'); }) } });
+  try {
+    await f.manager.start('link');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await f.heard('n', 'Factory, what did you note?');
+    await speakAll(f);
+    assert.match(said(f).join(' '), /I noted 1 decision\. The list is on the page\./);
+    assert.equal(f.events.filter((e) => e.type === 'log').length, 0);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('leave with notes says the headline first and waits 15 seconds; without notes it says only Leaving now', async () => {
+  const withNotes = fakeNotes({ count: 1 });
+  const f = setup({ extra: { notes: withNotes, brain: noteBrain(async () => ({ note: 'none' })) } });
+  try {
+    await f.manager.start('link');
+    await f.heard('l', 'Factory, leave.');
+    await flush();
+    assert.equal(withNotes.closed, 1);
+    assert.equal(said(f)[0], 'I noted 1 decision.');
+    f.clock.tick(14999); await flush();
+    assert.equal(f.messages().filter((m) => m.type === 'leave').length, 0);
+    await speakAll(f);
+    assert.equal(said(f).join(' '), 'I noted 1 decision. The list is on the page. Leaving now.');
+    assert.equal(f.messages().at(-1).type, 'leave');
+    f.children[0].close(); await f.manager.stop();
+  } finally { f.restore(); }
+  const none = fakeNotes();
+  const g = setup({ extra: { notes: none } });
+  try {
+    await g.manager.start('link');
+    await g.heard('l', 'Factory, leave.');
+    await flush();
+    assert.deepEqual(said(g), ['Leaving now.']);
+    g.clock.tick(5000); await flush();
+    assert.equal(g.messages().at(-1).type, 'leave');
+    g.children[0].close(); await g.manager.stop();
+  } finally { g.restore(); }
+});
+
+test('a note dictated while the bot says goodbye is not added', async () => {
+  const notes = fakeNotes({ count: 1 });
+  const f = setup({ extra: { notes, brain: noteBrain(async () => ({ kind: 'decision', text: 'Late.' })) } });
+  try {
+    await f.manager.start('link');
+    await f.heard('l', 'Factory, leave.');
+    await f.heard('n', 'Factory, note that it is late.');
+    await flush();
+    assert.equal(notes.added.length, 0);
+    f.children[0].close(); await f.manager.stop();
+  } finally { f.restore(); }
+});
+
+test('with notes null a note request is handled exactly as today', async () => {
+  const turns = [];
+  const f = setup({ brainTurn: async (snap, o) => { turns.push(o.question); return { text: 'FCT-1 is blocked.' }; } });
+  try {
+    await f.manager.start('link');
+    f.children[0].output({ type: 'state', state: 'in-call' });
+    await f.heard('n', 'Factory, note that we ship Friday.');
+    await speakAll(f);
+    assert.deepEqual(turns, ['note that we ship Friday.']);
+    assert.equal(f.events.find((e) => e.type === 'question' && e.id === 'n').kind, 'question');
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('in a project call a notes event from another generation is not forwarded; a new call replays no earlier set', async () => {
+  const notes = fakeNotes();
+  const f = setup({ extra: { notes, actions: fakeManager() } });
+  try {
+    await f.manager.start('link', { binding: { ...bindingFor('Alpha', [2]), writable: false }, view: viewFor('card') });
+    assert.deepEqual(notes.started[0], [1, { project: { id: 'alpha', name: 'Alpha' }, writable: false }]);
+    notes.fire({ type: 'notes', set: { id: 'old' }, generation: 99 });
+    notes.fire({ type: 'notes', set: { id: 'mine' }, generation: 1 });
+    assert.deepEqual(f.events.filter((e) => e.type === 'notes').map((e) => e.set.id), ['mine']);
+    assert.deepEqual(f.manager.current().filter((e) => e.type === 'notes').map((e) => e.set.id), ['mine']);
+    await endCall(f);
+    notes.fire({ type: 'notes', set: { id: 'late' }, generation: 1 });
+    assert.equal(f.events.filter((e) => e.type === 'notes').length, 1);
+    await f.manager.start('link', { binding: { ...bindingFor('Beta', [1, 2]), writable: true }, view: viewFor('card') });
+    assert.deepEqual(notes.started[1], [2, { project: { id: 'beta', name: 'Beta' }, writable: true }]);
+    assert.deepEqual(f.manager.current().filter((e) => e.type === 'notes'), []);
+    await endCall(f);
+  } finally { f.restore(); }
+});
+
+test('the call project id reaches all three proposal managers', async () => {
+  const actions = fakeManager(), shares = fakeManager(), investigations = fakeManager();
+  const f = setup({ extra: { actions, shares, investigations } });
+  try {
+    await f.manager.start('link', { binding: bindingFor('Alpha', [1]), view: viewFor('card') });
+    for (const manager of [actions, investigations, shares]) {
+      assert.equal(manager.started[0][1].binding.projectId, 'alpha');
+    }
     await endCall(f);
   } finally { f.restore(); }
 });

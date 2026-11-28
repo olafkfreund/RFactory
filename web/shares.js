@@ -20,18 +20,22 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   let pending;
   let active;
   let generation;
+  let projectId;
   let desktop;
+  let callTarget;
   let offEvent;
   let recovered = false;
 
   function emit(type, entry, extra = {}) {
-    const event = { ...safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state, ...extra } }), generation: entry.generation };
+    const event = { ...safe({ type, share: { ...entry.payload, hash: entry.hash, state: entry.state,
+      ...(entry.project_id ? { project_id: entry.project_id } : {}), ...extra } }), generation: entry.generation };
     for (const fn of listeners) { try { fn(event); } catch { /* A closed subscriber cannot interrupt sharing. */ } }
   }
 
   async function write(entry, state, extra = {}) {
     entry.state = state;
-    const item = safe({ kind: 'share', ...entry.payload, hash: entry.hash, state, ...extra });
+    const item = safe({ kind: 'share', ...entry.payload, hash: entry.hash, state,
+      ...(entry.project_id ? { project_id: entry.project_id } : {}), ...extra });
     await record.append(item);
     history.push(item);
     emit('share-updated', entry, extra);
@@ -42,7 +46,7 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   }
 
   async function frameFor(entry) {
-    if (entry.payload.view !== 'log') return board();
+    if (entry.payload.view !== 'log') return (entry.board || board)();
     const next = await entry.provider();
     if (next?.error) return next;
     if (!Array.isArray(next?.lines) || !next.lines.every((line) => typeof line === 'string')) throw new Error('invalid log lines');
@@ -169,11 +173,13 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     if (pending && now() >= Date.parse(pending.payload.expires_at)) await expire(pending);
     if (pending) return reply(409, 'A share is already waiting for approval.');
     const proposed_at = new Date(now()).toISOString();
-    const project = safe(scope.project || scope.name);
+    const target = callTarget;
+    const project = safe(target ? target.binding.name : scope.project || scope.name);
     const payload = Object.freeze({ id: randomUUID(), view: 'board', project, proposed_by: safe(String(speaker || 'Unknown')),
+      ...(target ? { project_id: target.binding.projectId, repository_ids: target.binding.repositories.map((x) => x.id) } : {}),
       proposed_at, expires_at: new Date(now() + PROPOSAL_MS).toISOString() });
     const entry = { payload, hash: hashPayload(payload), generation, desktop, state: 'pending', token: 0,
-      nonce: randomUUID() };
+      ...(!target && projectId ? { project_id: projectId } : {}), nonce: randomUUID(), ...(target ? { board: () => target.view.boardView() } : {}) };
     pending = entry;
     const approval_text = `Share the live CFactory board of ${project}, refreshed every 30 seconds.`;
     try { await write(entry, 'proposed', { approval_text }); }
@@ -230,14 +236,17 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     return reply(200, 'Share rejected.');
   }
 
-  async function openFor(owner, { view, provider, title, initial }) {
+  async function openFor(owner, { view, provider, title, initial, generation: wanted, target, projectId }) {
     if (view !== 'log' || typeof provider !== 'function') return reply(400, 'Invalid log share.');
     if (!recovered || !desktop || generation === undefined) return reply(409, 'No desktop for this call.');
+    if (wanted !== undefined && wanted !== generation) return reply(409, 'That call has ended.');
     if (!approvers.has(owner, 'approver')) return reply(403, 'Forbidden.');
     if (active) return reply(409, `Stop the ${active.payload.view} share first.`);
     const entry = { payload: Object.freeze({ id: randomUUID(), view, title: safe(String(title || 'Investigation log')),
-      proposed_by: safe(String(owner)), proposed_at: new Date(now()).toISOString() }),
-      hash: '', generation, desktop, state: 'starting', token: 1, nonce: randomUUID(), provider, initial, rawLines: [], pemOpen: null };
+      proposed_by: safe(String(owner)),
+      ...(target ? { project_id: target.project_id, repository_id: target.repository_id } : {}), proposed_at: new Date(now()).toISOString() }),
+      hash: '', generation, ...(!target && projectId ? { project_id: projectId } : {}), desktop,
+      state: 'starting', token: 1, nonce: randomUUID(), provider, initial, rawLines: [], pemOpen: null };
     active = entry; // claim the desktop before the first await
     entry.approved_by = String(owner).toLowerCase();
     try { await write(entry, 'approved', { approved_by: entry.approved_by }); }
@@ -260,18 +269,22 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
     return reply(200, 'Stopped sharing.');
   }
 
-  function list() {
-    return { pending: pending && pending.state === 'proposed' && now() < Date.parse(pending.payload.expires_at)
+  function list(includeExpired = false) {
+    return { pending: pending && pending.state === 'proposed' && (includeExpired || now() < Date.parse(pending.payload.expires_at))
       ? [safe({ ...pending.payload, hash: pending.hash, state: pending.state,
-        approval_text: `Share the live CFactory board of ${pending.payload.project}, refreshed every 30 seconds.` })] : [],
-    running: active ? safe({ ...active.payload, state: active.state }) : null, history: history.map(safe) };
+        approval_text: `Share the live CFactory board of ${pending.payload.project}, refreshed every 30 seconds.`,
+        ...(pending.project_id ? { project_id: pending.project_id } : {}) })] : [],
+    running: active ? safe({ ...active.payload, state: active.state,
+      ...(active.project_id ? { project_id: active.project_id } : {}) }) : null, history: history.map(safe) };
   }
 
   async function endCall() {
     const oldPending = pending;
     pending = undefined;
     generation = undefined;
+    projectId = undefined;
     desktop = undefined;
+    callTarget = undefined;
     offEvent?.(); offEvent = undefined;
     if (oldPending) await expire(oldPending);
     if (active) stopEntry(active, 'call-ended');
@@ -281,7 +294,9 @@ function createShareManager({ board, record, redactor, clock = Date, scope, appr
   async function startCall(nextGeneration, options = {}) {
     const ending = endCall(); // its synchronous part clears the old call before the new one is set (review P3)
     generation = nextGeneration;
+    projectId = options.projectId;
     desktop = options.desktop;
+    callTarget = options.binding ? { binding: options.binding, view: options.view } : undefined;
     if (desktop) offEvent = desktop.onEvent((event) => {
       if (event.type === 'desktop-gone') desktop = undefined;
       if (active && (event.shareId === active.payload.id || event.type === 'desktop-gone')) {
