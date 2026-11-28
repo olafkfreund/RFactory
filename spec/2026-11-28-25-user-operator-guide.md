@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 25
 intent: intent/2026-11-26-25-user-guide-feature-list.md
 ---
