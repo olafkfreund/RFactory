@@ -5,7 +5,10 @@ FROM docker.io/library/node:22-bookworm-slim
 # Google Chrome (Meet refuses Chromium; Phase 0), Xvfb for the headed bot, espeak-ng (TTS fallback),
 # python3-venv for Piper. `apt-get upgrade` takes Debian's security fixes the base image lacks (Trivy gate). Chrome is pinned: CHROME_VERSION is the version the first 1b build installed.
 ARG CHROME_VERSION=157.0.8103.78-1
+# Bump APT_REFRESH when the Trivy gate finds a fixed Debian CVE: the CD layer cache otherwise keeps the old upgrade layer.
+ARG APT_REFRESH=2026-11-28
 RUN set -eux; \
+    echo "apt refresh $APT_REFRESH"; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends xvfb xauth fonts-liberation fonts-noto-color-emoji \
