@@ -86,7 +86,7 @@ test('holds stay until a valid release and malformed hold lines fail', () => {
   f.holds.releases.push(release('named'));
   assert.equal(set(build(f), 10).state, 'remove');
   const bad = [
-    ...['scope', 'default', 'shared-project', 'running-work'].map((kind) => ({ releases: [release(kind)] })),
+    ...['scope', 'default', 'shared-project', 'running-work', 'protected-card'].map((kind) => ({ releases: [release(kind)] })),
     { holds: [{ repository_id: 10, reason: 'x', extra: true }] },
     { releases: [{ ...release('named'), link: 'bad' }] },
     { releases: [{ ...release('named'), by: '' }] },
@@ -146,6 +146,55 @@ test('ambiguous inventory and invalid factories fail closed', () => {
   }
   const f = fixture(); f.factories.p10.other = { checked: true, running: false };
   assert.throws(() => build(f), /invalid-factories/);
+});
+
+test('an explicitly held protected card blocks cleanup of its set and shared project', () => {
+  const f = fixture();
+  f.cfactory.cards[0].card_key = 'FCT-165';
+  f.holds.holds.push({ repository_id: 10, reason: 'protected repository' });
+  f.holds.releases.push(release('named'));
+  f.holds.archive.push({ repository_id: 10, by: 'owner', link: comment });
+  f.cfactory.repositories[3].aifactory_project_id = 'p10';
+  f.cfactory.projects = f.cfactory.projects.filter((p) => p.id !== 'p11');
+  f.cfactory.projects.find((p) => p.id === 'p10').repository_ids = [10, 11];
+
+  const approved = build(f);
+  const target = set(approved, 10);
+  assert.deepEqual(target.cards.map(({ card_key, repository_id }) => [card_key, repository_id]), [['FCT-165', 10]]);
+  assert.deepEqual(target.reasons, ['protected-card']);
+  assert.deepEqual(set(approved, 11).reasons, ['shared-project']);
+  for (const id of [10, 11]) {
+    assert.equal(set(approved, id).state, 'held');
+    assert.deepEqual(set(approved, id).actions, []);
+  }
+
+  for (const cards of [[{ ...f.cfactory.cards[0], status: 'ready' }, ...f.cfactory.cards.slice(1)], f.cfactory.cards.slice(1)]) {
+    const fresh = build({ ...f, cfactory: { ...f.cfactory, cards } });
+    assert.notEqual(fresh.hash, approved.hash);
+    assert.ok(compare(approved, fresh).some((line) => line.includes('FCT-165')));
+    assert.ok(compareAfter(approved, fresh).includes(`changed ${target.key} cards`));
+  }
+  const changedDefault = build({ ...f, cfactory: { ...f.cfactory, default_repository_id: 2 } });
+  assert.notEqual(changedDefault.hash, approved.hash);
+});
+
+test('protected e2e cards need an explicit association and a hold by that repository ID', () => {
+  const changes = [
+    (f) => { f.holds.holds = [{ github: path(10), reason: 'path only' }]; },
+    (f) => { Object.assign(f.cfactory.cards[0], { repository_id: null, issue_ref: `${path(10)}#1` }); },
+    (f) => { f.cfactory.cards[0].repository_id = null; f.cfactory.default_repository_id = 10; },
+    (f) => { f.cfactory.cards[0].repository_id = 99; },
+  ];
+  for (const change of changes) {
+    const f = fixture();
+    f.cfactory.cards[0].card_key = 'FCT-165';
+    f.holds.holds.push({ repository_id: 10, reason: 'protected repository' });
+    change(f);
+    assert.throws(() => build(f), /inventory-ambiguous/);
+  }
+  const f = fixture();
+  Object.assign(f.cfactory.cards[0], { card_key: 'FCT-165', repository_id: null });
+  assert.deepEqual(build(f).kept.cards, ['FCT-165']);
 });
 
 test('hash ignores ordering and timestamp; compare names each changed fact', () => {
